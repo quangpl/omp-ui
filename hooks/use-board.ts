@@ -12,6 +12,7 @@ import {
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { ApiRequestError, api, subscribeEvents } from "@/lib/api-client";
+import { SUBAGENT_STATUS_LABELS, parseSubagent } from "@/lib/subagents";
 import {
   TASK_STATUSES,
   type Board,
@@ -55,25 +56,30 @@ function message(error: unknown): string {
 export interface NewCardInput {
   title: string;
   description?: string;
-  /** Create in "In progress" and make sure its agent starts. */
+  /**
+   * Create in "In progress" and make sure its agent starts. Defaults to the board's `autoRun`:
+   * new cards on auto-run boards skip To do and start right away.
+   */
   start?: boolean;
 }
 
 /**
- * Create a card at the end of To do (In progress when `start`), then run its agent when the
- * board won't start it on its own. Toasts and resolves `null` when the card couldn't be created.
+ * Create a card at the end of In progress when it starts (see `NewCardInput.start`), else at the
+ * end of To do, then run its agent when the board won't start it on its own. Toasts and resolves
+ * `null` when the card couldn't be created.
  */
 export async function createCard(
   board: Pick<Board, "id" | "autoRun">,
   input: NewCardInput,
   options: { position?: number; onCreated?: (task: Task) => void } = {},
 ): Promise<Task | null> {
+  const start = input.start ?? board.autoRun;
   let task: Task;
   try {
     task = await api.tasks.create(board.id, {
       title: input.title,
       description: input.description || undefined,
-      status: input.start ? "in_progress" : "todo",
+      status: start ? "in_progress" : "todo",
       position: options.position,
     });
     options.onCreated?.(task);
@@ -82,7 +88,7 @@ export async function createCard(
     return null;
   }
   // Boards without autoRun don't start agents on their own; "start now" means run it.
-  if (input.start && !board.autoRun && task.agentState === "idle") {
+  if (start && !board.autoRun && task.agentState === "idle") {
     try {
       task = await api.tasks.run(task.id);
       options.onCreated?.(task);
@@ -137,6 +143,10 @@ export type ConnectionStatus = "connecting" | "live" | "reconnecting";
 function activityLine(kind: string, text: string): string | null {
   if (kind === "thinking") return "Thinking…";
   if (kind === "text") return "Writing…";
+  if (kind === "agent") {
+    const agent = parseSubagent(text);
+    return agent ? `⇉ ${agent.id}: ${SUBAGENT_STATUS_LABELS[agent.status].toLowerCase()}` : null;
+  }
   const firstLine = text.split("\n").find((line) => line.trim())?.trim();
   if (!firstLine) return null;
   if (kind === "tool") return firstLine.startsWith("▸") ? firstLine : `▸ ${firstLine}`;
@@ -334,14 +344,15 @@ export function useBoard(boardId: string): BoardController {
     [moveTask, endPosition],
   );
 
-  /** Create a card at the bottom of To do, or In progress when `start` is set (and start its agent). */
+  /** Create a card at the bottom of In progress (agent starts) or To do; see `NewCardInput.start`. */
   const createTask = useCallback(
     (input: NewCardInput): Promise<Task | null> => {
-      const status: TaskStatus = input.start ? "in_progress" : "todo";
+      const autoRun = boardRef.current?.autoRun ?? false;
+      const start = input.start ?? autoRun;
       return createCard(
-        { id: boardId, autoRun: boardRef.current?.autoRun ?? false },
-        input,
-        { position: endPosition(status), onCreated: upsertTask },
+        { id: boardId, autoRun },
+        { ...input, start },
+        { position: endPosition(start ? "in_progress" : "todo"), onCreated: upsertTask },
       );
     },
     [boardId, endPosition, upsertTask],

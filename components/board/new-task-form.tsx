@@ -40,7 +40,10 @@ export function NewTaskForm({
   /** Resolves true when the card was created (the form then resets). */
   onSubmit: (input: NewTaskInput) => Promise<boolean>;
   onCancel?: () => void;
-  /** Initial "Start agent now" (`Shift+N`, "New card & start agent"). */
+  /**
+   * "Start agent now" until the user flips it: the project's auto-run, or on for `Shift+N` and
+   * "New card & start agent". May change while open (the project picker).
+   */
   defaultStart?: boolean;
   /** Rendered above the title, e.g. a project picker when not on a board. */
   projectField?: ReactNode;
@@ -49,7 +52,9 @@ export function NewTaskForm({
   const id = useId();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [start, setStart] = useState(defaultStart);
+  /** The user's own choice; `null` follows `defaultStart`. */
+  const [startChoice, setStartChoice] = useState<boolean | null>(null);
+  const start = startChoice ?? defaultStart;
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
@@ -61,7 +66,7 @@ export function NewTaskForm({
     if (ok) {
       setTitle("");
       setDescription("");
-      setStart(defaultStart);
+      setStartChoice(null);
     }
   };
 
@@ -115,7 +120,7 @@ export function NewTaskForm({
             Creates the card in In progress and starts the agent.
           </span>
         </span>
-        <Switch id={`${id}-start`} checked={start} onCheckedChange={setStart} />
+        <Switch id={`${id}-start`} checked={start} onCheckedChange={setStartChoice} />
       </label>
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
         {onCancel && (
@@ -189,7 +194,7 @@ export function NewTaskDialog({
         />
         <p className="-mt-1 text-xs text-muted-foreground max-md:hidden">
           Press <Kbd>N</Kbd> anywhere for a new card, <Kbd>⇧</Kbd>
-          <Kbd>N</Kbd> to also start its agent.
+          <Kbd>N</Kbd> to always start its agent.
         </p>
       </DialogContent>
     </Dialog>

@@ -119,6 +119,10 @@ test("board: FAB adds a card, Start runs it, the detail drawer steers the agent 
   const newCard = page.getByRole("dialog", { name: "New card" });
   await expect(newCard).toHaveAttribute("data-vaul-drawer-direction", "bottom");
   await newCard.getByLabel("Title", { exact: true }).fill(title);
+  // Auto-run boards start new cards right away; park this one in To do to try the Start action.
+  const startNow = newCard.getByRole("switch", { name: /Start agent now/ });
+  await expect(startNow).toBeChecked();
+  await startNow.click();
   await newCard.getByRole("button", { name: "Create card" }).click();
   await expect(newCard).toBeHidden();
 

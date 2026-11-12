@@ -6,8 +6,13 @@
 //                         "argv" (argv, cwd, sorted envKeys and allowlisted env values at startup),
 //                         "command" (each stdin command),
 //                         "ui_response" (each extension_ui_response), "steer" (steered messages).
-//   FAKE_OMP_SCENARIO     Default prompt behaviour: success | error | crash | slow | confirm | stream.
+//   FAKE_OMP_SCENARIO     Default prompt behaviour: success | error | crash | slow | confirm | stream |
+//                         orchestrate.
 //                         "stream" emits 2 thinking_delta + 15 text_delta frames ~80ms apart, then succeeds.
+//                         "orchestrate" runs a `task` call with two subagents (Scout succeeds, Builder
+//                         fails), reporting progress via task tool updates and, when subscribed via
+//                         set_subagent_subscription, subagent_lifecycle/subagent_progress frames.
+//   FAKE_OMP_STEP_MS      Delay between orchestrate steps (default 80).
 //                         A prompt containing "[fake:<scenario>]" overrides it for that prompt.
 //   FAKE_OMP_SESSION_DIR  Parent dir for the per-process session temp dir (default: os tmpdir).
 //   FAKE_OMP_STARTUP      normal (default) | silent (never sends ready) | exit (exits 2 before ready).
@@ -77,6 +82,8 @@ let run = null;
 const uiWaiters = new Map();
 const uiResponses = [];
 let chunkSeq = 0;
+/** set_subagent_subscription level. */
+let subagentLevel = "off";
 
 function emit(frame) {
   process.stdout.write(`${JSON.stringify(frame)}\n`);
@@ -185,6 +192,107 @@ async function streamSuccessfully(current) {
   );
 }
 
+const ORCHESTRATE_AGENTS = [
+  { id: "Scout", agent: "scout", task: "Map the login form code and its tests." },
+  { id: "Builder", agent: "task", task: "Add validation to the login form." },
+];
+
+/** A `task` call fanning out to two subagents; stops early if the run is aborted meanwhile. */
+async function orchestrate(current) {
+  const stepMs = Number(process.env.FAKE_OMP_STEP_MS) || STREAM_DELAY_MS;
+  const step = () => new Promise((resolve) => setTimeout(resolve, stepMs));
+  const callId = "call-task-1";
+  const progress = ORCHESTRATE_AGENTS.map((a, index) => ({
+    index,
+    id: a.id,
+    agent: a.agent,
+    agentSource: "bundled",
+    status: "running",
+    task: a.task,
+    assignment: a.task,
+    description: a.task,
+    recentTools: [],
+    recentOutput: [],
+    toolCount: 0,
+    requests: 0,
+    tokens: 0,
+    cost: 0,
+    durationMs: 0,
+  }));
+  const subscribed = () => subagentLevel !== "off";
+  const lifecycle = (p, status) =>
+    subscribed() &&
+    emit({
+      type: "subagent_lifecycle",
+      payload: { id: p.id, agent: p.agent, agentSource: "bundled", description: p.description, status, index: p.index, parentToolCallId: callId },
+    });
+  const update = () => {
+    emit({
+      type: "tool_execution_update",
+      toolCallId: callId,
+      toolName: "task",
+      partialResult: { content: [], details: { results: [], totalDurationMs: 0, progress } },
+    });
+    if (subscribed()) {
+      for (const p of progress) {
+        emit({
+          type: "subagent_progress",
+          payload: { index: p.index, agent: p.agent, agentSource: "bundled", task: p.task, assignment: p.assignment, progress: p, parentToolCallId: callId },
+        });
+      }
+    }
+  };
+
+  emit({
+    type: "tool_execution_start",
+    toolCallId: callId,
+    toolName: "task",
+    intent: "Splitting the work",
+    args: { context: "Login form", tasks: ORCHESTRATE_AGENTS.map((a) => ({ name: a.id, agent: a.agent, task: a.task })) },
+  });
+  for (const p of progress) lifecycle(p, "started");
+  for (let tick = 1; tick <= 3; tick++) {
+    await step();
+    if (run !== current) return;
+    for (const p of progress) {
+      p.currentTool = tick % 2 ? "read" : "bash";
+      p.currentToolIntent = tick % 2 ? `Reading src/login-${tick}.tsx` : "Running the tests";
+      p.lastIntent = p.currentToolIntent;
+      p.recentTools.unshift({ tool: "grep", intent: `Searching step ${tick}`, isError: false, endMs: Date.now() });
+      p.recentOutput = [`step ${tick} output`, ...p.recentOutput].slice(0, 8);
+      p.toolCount = tick * 2;
+      p.requests = tick;
+      p.tokens = tick * 1000;
+      p.cost = tick * 0.01;
+      p.durationMs = tick * stepMs;
+    }
+    update();
+  }
+  await step();
+  if (run !== current) return;
+  const [scout, builder] = progress;
+  scout.status = "completed";
+  builder.status = "failed";
+  for (const p of progress) {
+    p.currentTool = undefined;
+    p.currentToolIntent = undefined;
+  }
+  lifecycle(scout, "completed");
+  lifecycle(builder, "failed");
+  const results = [
+    { ...scout, exitCode: 0, output: "Found the form in src/login.tsx; tests live in tests/login.test.ts.", stderr: "", truncated: false },
+    { ...builder, exitCode: 1, output: "", stderr: "Type error in src/login.tsx", error: "Type error in src/login.tsx", truncated: false },
+  ];
+  emit({
+    type: "tool_execution_end",
+    toolCallId: callId,
+    toolName: "task",
+    result: { content: [{ type: "text", text: "2 agents finished" }], details: { results, totalDurationMs: 4 * stepMs, progress } },
+    isError: false,
+  });
+  completeSuccessfully("Fake summary: orchestrated the work across two subagents.");
+}
+
 function scenarioOf(message) {
   const match = /\[fake:([a-z_]+)\]/.exec(String(message ?? ""));
   return match ? match[1] : defaultScenario;
@@ -225,6 +333,9 @@ async function startPrompt(command) {
       break;
     case "stream":
       await streamSuccessfully(run);
+      break;
+    case "orchestrate":
+      await orchestrate(run);
       break;
     case "confirm": {
       emit({ type: "extension_ui_request", id: "ui-notify-1", method: "notify", message: "heads up" });
@@ -291,6 +402,10 @@ async function handle(command) {
         queuedMessageCount: 0,
         todoPhases: [],
       });
+      return;
+    case "set_subagent_subscription":
+      subagentLevel = command.level;
+      respond(command, { level: command.level });
       return;
     case "get_last_assistant_text":
       respond(command, { text: lastAssistantText });

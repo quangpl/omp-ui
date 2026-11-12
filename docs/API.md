@@ -97,6 +97,7 @@ Both act on every project folder (`workdir` + `extraFolders`), or only on `folde
 ### Agent rules (Trello flow)
 
 - Move a card to **In progress** → omp agent starts in the board `workdir` (when the board has `autoRun`; otherwise press *Run*).
+- The web UI creates new cards on `autoRun` boards with `status: "in_progress"`, so they start right away (unless the user opts out). API clients choose `status` themselves; the default is still `todo`.
 - Agent finishes successfully → its final message is posted as an `agent` comment, every open feedback comment included in the run is **auto-resolved**, and the card moves to **Done**.
 - Agent fails → card stays in **In progress** with `agentState: "error"` and an agent comment explaining the error.
 - Comment on a **Done** card (or an idle In-progress card) → card reopens to **In progress** and the agent resumes the same omp session with the feedback.
