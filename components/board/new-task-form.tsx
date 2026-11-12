@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -17,6 +17,7 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
+import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -32,17 +33,23 @@ export interface NewTaskInput {
 export function NewTaskForm({
   onSubmit,
   onCancel,
+  defaultStart = false,
+  projectField,
   className,
 }: {
   /** Resolves true when the card was created (the form then resets). */
   onSubmit: (input: NewTaskInput) => Promise<boolean>;
   onCancel?: () => void;
+  /** Initial "Start agent now" (`Shift+N`, "New card & start agent"). */
+  defaultStart?: boolean;
+  /** Rendered above the title, e.g. a project picker when not on a board. */
+  projectField?: ReactNode;
   className?: string;
 }) {
   const id = useId();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [start, setStart] = useState(false);
+  const [start, setStart] = useState(defaultStart);
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
@@ -54,7 +61,7 @@ export function NewTaskForm({
     if (ok) {
       setTitle("");
       setDescription("");
-      setStart(false);
+      setStart(defaultStart);
     }
   };
 
@@ -66,6 +73,7 @@ export function NewTaskForm({
         void submit();
       }}
     >
+      {projectField}
       <div className="flex flex-col gap-2">
         <Label htmlFor={`${id}-title`}>Title</Label>
         <Input
@@ -128,11 +136,15 @@ export function NewTaskDialog({
   open,
   onOpenChange,
   isMobile,
+  defaultStart,
+  projectField,
   onCreate,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   isMobile: boolean;
+  defaultStart?: boolean;
+  projectField?: ReactNode;
   onCreate: (input: NewTaskInput) => Promise<boolean>;
 }) {
   const submit = async (input: NewTaskInput) => {
@@ -150,7 +162,12 @@ export function NewTaskDialog({
             <DrawerDescription>Describe the task for the agent.</DrawerDescription>
           </DrawerHeader>
           <div className="overflow-y-auto px-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
-            <NewTaskForm onSubmit={submit} onCancel={() => onOpenChange(false)} />
+            <NewTaskForm
+              onSubmit={submit}
+              onCancel={() => onOpenChange(false)}
+              defaultStart={defaultStart}
+              projectField={projectField}
+            />
           </div>
         </DrawerContent>
       </Drawer>
@@ -164,7 +181,16 @@ export function NewTaskDialog({
           <DialogTitle>New card</DialogTitle>
           <DialogDescription>Describe the task for the agent.</DialogDescription>
         </DialogHeader>
-        <NewTaskForm onSubmit={submit} onCancel={() => onOpenChange(false)} />
+        <NewTaskForm
+          onSubmit={submit}
+          onCancel={() => onOpenChange(false)}
+          defaultStart={defaultStart}
+          projectField={projectField}
+        />
+        <p className="-mt-1 text-xs text-muted-foreground max-md:hidden">
+          Press <Kbd>N</Kbd> anywhere for a new card, <Kbd>⇧</Kbd>
+          <Kbd>N</Kbd> to also start its agent.
+        </p>
       </DialogContent>
     </Dialog>
   );

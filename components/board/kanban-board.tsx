@@ -20,6 +20,7 @@ import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { STATUS_LABELS, TASK_STATUSES, type Task, type TaskStatus } from "@/lib/types";
 import { positionBetween, type TasksByStatus } from "@/hooks/use-board";
 import { BoardColumn, COLUMN_DROPPABLE_PREFIX } from "@/components/board/board-column";
+import { BoardContextMenu, type BoardMenuActions } from "@/components/board/card-context-menu";
 import { MobileBoard } from "@/components/board/mobile-board";
 import { TaskCard } from "@/components/board/task-card";
 
@@ -43,7 +44,8 @@ export interface KanbanBoardProps {
   /** Latest agent activity line per task id. */
   activity: Record<string, string>;
   isMobile: boolean;
-  onOpen: (taskId: string) => void;
+  /** Card clicks and the desktop right-click menus. */
+  menuActions: BoardMenuActions;
   moveTask: (taskId: string, status: TaskStatus, position: number) => Promise<void>;
   moveToStatus: (taskId: string, status: TaskStatus) => Promise<void>;
   /** Inline composer submit (desktop To do column). Resolves true when the card was created. */
@@ -62,7 +64,7 @@ export function KanbanBoard(props: KanbanBoardProps) {
         activity={props.activity}
         active={props.mobileColumn}
         onActiveChange={props.onMobileColumnChange}
-        onOpen={props.onOpen}
+        onOpen={props.menuActions.openCard}
         moveToStatus={props.moveToStatus}
         onAdd={props.onAdd}
       />
@@ -72,7 +74,7 @@ export function KanbanBoard(props: KanbanBoardProps) {
     <DesktopBoard
       columns={props.columns}
       activity={props.activity}
-      onOpen={props.onOpen}
+      menuActions={props.menuActions}
       moveTask={props.moveTask}
       onQuickCreate={props.onQuickCreate}
     />
@@ -82,10 +84,10 @@ export function KanbanBoard(props: KanbanBoardProps) {
 function DesktopBoard({
   columns,
   activity,
-  onOpen,
+  menuActions,
   moveTask,
   onQuickCreate,
-}: Pick<KanbanBoardProps, "columns" | "activity" | "onOpen" | "moveTask" | "onQuickCreate">) {
+}: Pick<KanbanBoardProps, "columns" | "activity" | "menuActions" | "moveTask" | "onQuickCreate">) {
   const sensors = useSensors(
     useSensor(FinePointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 8 } }),
@@ -221,25 +223,27 @@ function DesktopBoard({
         announcements,
         screenReaderInstructions: {
           draggable:
-            "Press Enter to open the card. Press Space to pick it up, use the arrow keys to move it, then Space again to drop it or Escape to cancel.",
+            "Press Enter to open the card, or Shift+F10 for its actions menu. Press Space to pick it up, use the arrow keys to move it, then Space again to drop it or Escape to cancel.",
         },
       }}
     >
-      <div className="grid h-full min-h-0 grid-cols-3 gap-3 p-3 lg:gap-4 lg:p-4">
-        {TASK_STATUSES.map((status) => (
-          <BoardColumn
-            key={status}
-            status={status}
-            tasks={ids[status].flatMap((id) => {
-              const task = taskById.get(id);
-              return task ? [task] : [];
-            })}
-            activity={activity}
-            onOpen={onOpen}
-            onCreate={status === "todo" ? onQuickCreate : undefined}
-          />
-        ))}
-      </div>
+      <BoardContextMenu actions={menuActions}>
+        <div className="grid h-full min-h-0 grid-cols-3 gap-3 p-3 lg:gap-4 lg:p-4">
+          {TASK_STATUSES.map((status) => (
+            <BoardColumn
+              key={status}
+              status={status}
+              tasks={ids[status].flatMap((id) => {
+                const task = taskById.get(id);
+                return task ? [task] : [];
+              })}
+              activity={activity}
+              menuActions={menuActions}
+              onCreate={status === "todo" ? onQuickCreate : undefined}
+            />
+          ))}
+        </div>
+      </BoardContextMenu>
       <DragOverlay>{activeTask ? <TaskCard task={activeTask} overlay /> : null}</DragOverlay>
     </DndContext>
   );

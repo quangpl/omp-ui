@@ -31,6 +31,8 @@ To use **Docker** instead (omp is included in the image, and your sign-ins are s
 
 Then ship the result with one tap: **Create PR/MR** or **Push to main**.
 
+**Quick actions.** Press <kbd>N</kbd> on any page to add a card (<kbd>Shift</kbd>+<kbd>N</kbd> also starts its agent); outside a board, the form asks which project. Right-click a card to open it, run or stop its agent, move, duplicate, copy its link, or delete it. Right-click the board background or a project on the Projects page to add a card there.
+
 <details>
 <summary>The details</summary>
 

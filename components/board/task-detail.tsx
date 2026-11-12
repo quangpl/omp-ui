@@ -686,7 +686,7 @@ function DescriptionEditor({
   );
 }
 
-function DeleteCardDialog({
+export function DeleteCardDialog({
   title,
   open,
   onOpenChange,
