@@ -46,7 +46,7 @@ interface LogEntry {
   cwd?: string;
   command?: { type: string; id?: string; message?: string };
   message?: string;
-  /** "print" entries (the advisor): the prompt read from stdin. */
+  /** "helper" entries (advisor, queue planner): the prompt a helper worker got. */
   prompt?: string;
 }
 
@@ -162,9 +162,9 @@ function publishedAgentStates(taskId: string): string[] {
   return states;
 }
 
-/** "print" entries of the smart-queue planner. */
+/** "helper" entries of the smart-queue planner. */
 function plannerEntries(): LogEntry[] {
-  return readLog().filter((e) => e.kind === "print" && e.prompt?.startsWith("You are the queue planner"));
+  return readLog().filter((e) => e.kind === "helper" && e.prompt?.startsWith("You are the queue planner"));
 }
 
 /** Task ids ordered by when their (latest) run started. */
@@ -344,7 +344,7 @@ describe("AgentManager run lifecycle", () => {
     const [result] = JSON.parse((run.summary ?? "").replace(/^Tool results: /, "")) as { isError: boolean; text: string }[];
     expect(result).toMatchObject({ isError: false });
     expect(result!.text).toContain("Advisor's decision: Use offset pagination with 20 items per page");
-    const [advisor] = readLog().filter((e) => e.kind === "print");
+    const [advisor] = readLog().filter((e) => e.kind === "helper");
     expect(flagValues(advisor?.argv, "--tools")).toEqual(["read,grep,glob"]);
     expect(advisor?.cwd).toBe(workdir);
     expect(advisor?.prompt).toContain("Offset or cursor pagination?");
@@ -368,7 +368,7 @@ describe("AgentManager run lifecycle", () => {
 
     expect(done.question).toBe("Should pagination default to 20 or 50 items per page?");
     expect(await repo.listRuns(task.id)).toHaveLength(2);
-    expect(readLog().filter((e) => e.kind === "print")).toHaveLength(2);
+    expect(readLog().filter((e) => e.kind === "helper")).toHaveLength(2);
     const comments = await repo.listComments(task.id);
     const followUp = comments.find((c) => c.author === "user");
     expect(followUp).toMatchObject({ resolved: true });
@@ -999,7 +999,7 @@ describe("AgentManager smart queue", () => {
 
     expect((await manager.queueSnapshot()).planning).toEqual([]);
     for (const task of tasks) await waitDone(task.id);
-    expect(readLog().filter((e) => e.kind === "print")).toEqual([]);
+    expect(readLog().filter((e) => e.kind === "helper")).toEqual([]);
   });
 });
 

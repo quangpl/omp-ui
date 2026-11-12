@@ -23,8 +23,10 @@ The `ADMIN_PASSWORD` env var, when set, is applied at server boot (overwrites th
 | --- | --- | --- |
 | GET | `/health` | `{ ok: true, version, db: "sqlite"\|"mongodb"\|"postgres", agents: { running: string[], queued: string[] } }` (no auth). Reads the database, so a database or agent manager that does not answer makes it fail (500); `bin/supervisor.mjs` force-restarts the server after repeated failures. The first call after boot resumes interrupted and failed cards (see Agent rules) |
 | GET | `/system` | `{ version, db, omp: { path, installed: boolean, version: string\|null } }` |
-| GET | `/settings` | `AppSettings`: `{ maxConcurrentAgents, ompPath, approvalMode, defaultModel, autoModel, smartQueue, browser, autoRetry, maxAutoRetries }` |
-| PATCH | `/settings` | `Partial<AppSettings>` → `AppSettings`. `autoModel` (boolean, default `true`): on boards without a model, pick a model role per run from the card (see README). `smartQueue` (boolean, default `true`): a read-only planner agent orders each project's queued cards and links dependent ones through `blockedBy` (see Agent queue). `autoRetry` (boolean, default `true`) and `maxAutoRetries` (integer 0–20, default `5`): automatic retries of failed runs (see Agent rules) |
+| GET | `/system/restart` | `RestartStatus`: `{ available, mode: "cli"\|"pm2"\|null, reason: string\|null, running, log: string\|null, buildFailed, restarting }`. `available` is true when the omp-ui CLI started this server (`DATA_DIR/omp-ui.pid` names its supervisor) and it is not attached to a terminal; otherwise `reason` says why (Docker, dev mode, `start -f`). `running`: agents a restart would interrupt. `log`: last 60 lines of the last restart's output (`DATA_DIR/restart.log`, colors stripped); `buildFailed`: that build failed and the previous build was started instead. `restarting`: a restart's CLI process is still running |
+| POST | `/system/restart` | Stop, rebuild and start the server: runs `omp-ui restart --rebuild` (`omp-ui pm2 restart --rebuild` under pm2) in a detached process, output to `DATA_DIR/restart.log`. `202 { ok: true, mode, interrupted }`; the server goes down within seconds. `409` with the reason when unavailable or a restart is already running |
+| GET | `/settings` | `AppSettings`: `{ maxConcurrentAgents, ompPath, approvalMode, defaultModel, autoModel, smartQueue, browser, autoRetry, maxAutoRetries }`. `maxConcurrentAgents` is `"auto"` (default; the limit follows the machine, see [Agent queue](#agent-queue)) or an integer 1–16 |
+| PATCH | `/settings` | `Partial<AppSettings>` → `AppSettings`. `maxConcurrentAgents`: `"auto"` or an integer 1–16, else 400 `maxConcurrentAgents must be "auto" or an integer between 1 and 16`. `autoModel` (boolean, default `true`): on boards without a model, pick a model role per run from the card (see README). `smartQueue` (boolean, default `true`): a read-only planner agent orders each project's queued cards and links dependent ones through `blockedBy` (see Agent queue). `autoRetry` (boolean, default `true`) and `maxAutoRetries` (integer 0–20, default `5`): automatic retries of failed runs (see Agent rules) |
 
 ## Stats
 
@@ -35,11 +37,30 @@ The `ADMIN_PASSWORD` env var, when set, is applied at server boot (overwrites th
 
 `AiStats.quota` and `AiStats.usage` each carry `available: boolean` and a plain-language `error` (e.g. `"omp is not installed"`, `"omp usage took too long to respond"`); a failing `omp` command never fails the request. Each quota limit has `usedFraction` (0–1), `windowLabel` (e.g. `"5 Hour"`) and `resetsAt` (ISO). Timestamps are ISO strings.
 
+## OMP config
+
+omp's own user config file: `config.yml` in the agent folder that `omp config path` reports (the **Settings → OMP** page). Saves are checked with the omp CLI on a temporary copy, the previous file is kept at `backupPath` (`config.yml.bak`), and the file is replaced atomically (temp file + rename). OMP UI's `approvalMode`, board/default model and `autoModel` override the matching omp keys for its own runs.
+
+| Method | Path | Body | Response |
+| --- | --- | --- | --- |
+| GET | `/omp-config` | – | `OmpConfigSnapshot`: `{ path, backupPath, format: "yaml", exists, version, raw, values, defaults, schema }`. `version`: content hash of `raw`. `values`: schema key → value set in the file (`null` = unset); `defaults`: what omp uses when unset. `schema`: `OmpConfigField[]` (`{ key, label, type: "model"\|"enum"\|"boolean"\|"number"\|"string", group: "models"\|"behavior"\|"tools", help, options?, min?, max?, placeholder? }`; model roles are `modelRoles.<role>`). 503 when omp is missing or not executable; 500 when the file is not valid YAML |
+| PUT | `/omp-config` | `{ values, version? }` (schema key → value; `null` unsets it) or `{ raw, version? }` (the whole file, at most 1 MB) | `OmpConfigSnapshot` after saving. 400 when both or neither of `values`/`raw` are sent, for an unknown key or invalid value, or when omp rejects the config; 409 when `version` no longer matches the file on disk |
+| GET | `/omp-config/models?refresh=1` | – | `{ models: OmpModel[] }`, each `{ selector: "provider/model-id", name, provider, thinking: string[] }` (chat models from `omp models --json`; `thinking` is empty for models that do not reason). Cached 5 min; `refresh=1` bypasses the cache |
+
 ## Dashboard
 
 | Method | Path | Response |
 | --- | --- | --- |
-| GET | `/dashboard` | `Dashboard`: everything the home page shows in one request — `boards` (each `BoardWithCounts` plus `lastActivityAt` and `attentionCount`, most recently active first), `totals` (cards per column across all projects), `attention` (cards that need you: `reason: "failed"` when the agent errored, `"stalled"` when a card sits In progress with no agent working on it; failed first, at most 12), `finished` (Done cards an agent worked on, newest first, at most 6), `queue` (`QueueSnapshot`) and `setup: { hasCard, hasRun, hasDone }` for the getting-started checklist |
+| GET | `/dashboard` | `Dashboard`: everything the home page shows in one request (fields below) |
+
+- `generatedAt`; `totals` (cards per column across all projects).
+- `boards`: each `BoardWithCounts` plus `lastActivityAt`, `attentionCount`, `needsYouCount`, `runs30d: { succeeded, failed }` (runs that ended in the last 30 days; stopped runs are not counted) and `git` (`GitStatus[]`, one per project folder, cached a few seconds); most recently active first.
+- `attention`: cards that need you (`reason: "failed"` when the agent errored, `"stalled"` when a card sits In progress with no agent working on it; failed first, at most 12). `finished`: Done cards an agent worked on, newest first, at most 6.
+- `needsYou`: `NeedsYouCard[]`, most urgent first, at most 50 (`needsYouTotal` is the full count). Each is a dashboard card plus `reasons` (every one that applies, most urgent first: `"question"`, `"failed"`, `"retrying"`, `"feedback"`, `"stalled"`, `"unpushed"`), `question` (the agent's question, truncated; `null` unless `reasons` has `"question"`), `retryAt` and `pushedAt`.
+- `queue` (`QueueSnapshot`) and `live`: one `{ taskId, startedAt, model, activity, activityAt }` per running or queued entry (`startedAt` is `null` while queued; `activity` is the agent's latest tool call, status or first line of text).
+- `stats`: `day` (last 24 h) and `week` (last 7 days), each `{ runs, succeeded, failed, avgDurationMs, shipped, created }`; `daily`: the same 7 days as rolling 24-hour buckets `{ runs, succeeded, failed, shipped }`, oldest first.
+- `activity`: newest first, at most 12, each `{ kind: "created"|"succeeded"|"failed"|"stopped"|"pushed", at, taskId, boardId, boardName, title, durationMs, detail }`.
+- `setup: { hasCard, hasRun, hasDone, hasPush, settingsSaved, dockerAvailable }` for the getting-started checklist (`dockerAvailable`: the docker CLI reaches a daemon, cached a few minutes).
 
 ## Boards (projects)
 
@@ -62,6 +83,7 @@ A board is one project. `workdir` is the main folder (omp runs there); `extraFol
 | GET | `/boards/:id/git` | – | `GitStatus[]`, one per project folder (`workdir` first, then `extraFolders`) |
 | GET | `/boards/:id/git/branches?folder=<abs>` | – | `GitBranches`: `current` (null when detached) and `branches` – local ones newest first, then `origin` branches without a local copy (`remoteOnly: true`). No fetch; reflects the last fetch. 400 if `folder` is not a project folder or not a git repository |
 | POST | `/boards/:id/git/branches` | `{ folder, branch }` | `GitStatus` of `folder` after checking out `branch` (a `remoteOnly` branch becomes a local branch tracking `origin`). Uncommitted changes carry over; if they would be overwritten git refuses and the 400 says so. 400 if the branch doesn't exist; 409 while any agent on the board is queued or running |
+| POST | `/boards/:id/git/push` | – | `{ results: GitRepoActionResult[] }`, one per project git repo – the header's quick push (tap the “N changes” chip). Commits each repo's changes as “Update from OMP UI (N files)” and pushes to its default branch, like “Push to main” but not tied to a card (no comment, no `pushedAt`). 400 if no project folder is a git repository; 409 while any agent on the board is queued or running (boards without dedicated workspaces) |
 
 Folder rules: `workdir` and every `extraFolders` entry must be an absolute path to an existing directory (400 names the bad folder). `extraFolders` holds at most 20 entries; entries are trimmed and de-duplicated, and any entry equal to `workdir` is dropped. Changing `workdir` to a folder that is listed in `extraFolders` removes it from `extraFolders`.
 
@@ -98,27 +120,38 @@ Git never prompts: commands run without a terminal (`GIT_TERMINAL_PROMPT=0`, SSH
 | DELETE | `/tasks/:id/workspace` | – | `TaskWorkspace` after removing the card's worktrees and their local branch; 409 while its agent is queued or running |
 | GET | `/tasks/:id/files` | – | `SharedFiles` of the card |
 | POST | `/tasks/:id/files?name=<file>` | raw file bytes | `SharedFiles` (201); replaces a file of the same name; max 100 MB |
-| GET | `/tasks/:id/files/<name>` | – | the file. Images, PDF and plain text open inline; anything else (HTML, SVG, …) is always a download. `?download=1` forces a download |
+| GET | `/tasks/:id/files/<name>` | – | the file. Images, video (`.mp4`, `.webm`, `.mov`), audio (`.mp3`, `.wav`, `.ogg`), PDF and plain text open inline; anything else (HTML, SVG, …) is always a download. `?download=1` forces a download |
 | DELETE | `/tasks/:id/files/<name>` | – | `SharedFiles` |
+| GET | `/tasks/:id/diff` | – | `TaskDiff`: the card's code changes. See [Code changes](#code-changes) |
+| GET | `/tasks/:id/diff/summary` | – | `DiffSummary`: a one- or two-sentence summary of the changes. See [Code changes](#code-changes) |
+| POST | `/tasks/:id/diff/summary` | – | `DiffSummary`, written again (drops the cached one) |
 
 ### Card writer
 
 The new-card form turns free text into a card with a read-only `omp --mode rpc` agent (steered to answer after 8 lookups, 16 for long requests), then creates it with `POST /boards/:id/tasks`.
 
-- `POST /boards/:id/tasks/draft` with `{ text }` (1–2,000,000 characters) → `200 application/x-ndjson`, one `DraftStreamEvent` JSON object per line: `{ "type": "activity", "text" }` while the agent works, then exactly one `{ "type": "draft", "draft": CardDraft, "model": string | null }` or `{ "type": "error", "message" }`. `CardDraft` = `{ title, description, orchestrate, waitFor: [{ id, title }] }`. Closing the request stops the agent. `429` when 4 drafts are already running server-wide.
+- `POST /boards/:id/tasks/draft` with `{ text }` (1–2,000,000 characters) → `200 application/x-ndjson`, one `DraftStreamEvent` JSON object per line: `{ "type": "activity", "text" }` while the agent works, then exactly one `{ "type": "draft", "draft": CardDraft, "model": string | null }` or `{ "type": "error", "message" }`. `CardDraft` = `{ title, description, orchestrate, waitFor: [{ id, title }] }`. Closing the request stops the agent. `429` when half the server's logical cores (at least 4, at most 16) drafts are already running server-wide.
 - Nothing is created by the draft call. To create the card, `POST /boards/:id/tasks` with the draft's `title` and `description` (when `orchestrate` is true, append the orchestration line that makes omp split the work across parallel subagents) and the `waitFor` ids as `blockedBy`.
 - `POST /boards/:id/tasks` accepts an optional `brief` (string, the original free text, 1–2,000,000 characters): it is saved as the card file `brief.md` before the agent starts, and the description gets a line pointing the agent to it. The web UI sends it when the text is 2,000+ characters and differs from the description.
+
+### Code changes
+
+`GET /tasks/:id/diff` → `TaskDiff`: `{ taskId, repos, stats: { files, additions, deletions }, truncated, hash, generatedAt }`. One `RepoDiff` per folder the card works in (its worktree, else the project folder): `{ folder, name, isRepo, branch, baseRef, commitsAhead, files, truncated, command, error }`. `baseRef` is the ref committed changes are compared against (e.g. `origin/main`; `null` = uncommitted changes only), `commitsAhead` the commits on HEAD not on it, `command` a shell command that shows the full diff, `error` a plain-language git failure (`null` when fine). Each `DiffFile` is `{ path, oldPath, status: "A"|"M"|"D"|"R", additions, deletions, binary, untracked, patch, truncated }`; `patch` holds the unified diff hunks without the file header. Caps: 400 KB of patch text in total and 160 KB per file; untracked files over 256 KB and binary files are listed without content (`patch: null`, `truncated` or `binary` set). `hash` is a content hash of the changes.
+
+`GET /tasks/:id/diff/summary` → `DiffSummary`: `{ text, source: "model"|"fallback", pending, error, hash }`. A helper agent writes the summary; it is cached by `hash` (`DATA_DIR/runtime/diff-summaries/<hash>.json`). The request waits up to 15 s for it; until then (or when the agent fails, with the reason in `error`) `text` is the deterministic file-count line (`source: "fallback"`). While `pending` is true, ask again for the agent's text. `POST` the same path to write it again.
 
 ## Agent queue
 
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
-| GET | `/queue` | – | `QueueSnapshot`: `limit` (max agents at once), `running` and `queued` (start order) `QueueEntry`s, each with the blocking cards that are not Done yet (`waitingFor`), `planning` (held until the planner has ordered its project's queued cards) and `planNote` (the planner's one-line reason, or `null`); `planning` lists the projects being planned right now (`{ boardId, boardName }[]`) |
+| GET | `/queue` | – | `QueueSnapshot`: `limit` (the effective limit, `concurrency.limit`), `concurrency` (see below), `running` and `queued` (start order) `QueueEntry`s, each with the blocking cards that are not Done yet (`waitingFor`), `planning` (held until the planner has ordered its project's queued cards) and `planNote` (the planner's one-line reason, or `null`); `planning` lists the projects being planned right now (`{ boardId, boardName }[]`) |
 | POST | `/queue` | `{ taskId, position }` | `QueueSnapshot` after moving a queued card (`position` 0 starts next); 409 if the card is not queued |
 
 Queued cards start in queue order as slots free up, skipping cards whose `blockedBy` cards are not all Done; a card reaching Done re-checks the queue.
 
 With `smartQueue` on, newly queued cards are held for ~1.5 s so cards added together are planned in one batch: a read-only planner agent reorders the project's queued cards (prerequisites and quick unblockers first) and adds the inferred prerequisites to each card's `blockedBy`, so independent cards run in parallel and dependent ones wait. If the planner fails, the cards run in plain FIFO order.
+
+`concurrency` = `{ mode: "auto"|"manual", limit, boundBy: "cpu"|"memory"|"max"|null, cpus, freeMemoryBytes, totalMemoryBytes, reason }`. With `maxConcurrentAgents: "auto"` (the default; `MAX_AGENTS=auto`), `limit` = min(logical cores, running agents + free memory ÷ ~600 MB after keeping 10% of RAM free (at most 2 GB), 32), re-checked every 30 s; `boundBy` names the bound that applied. With a number, `mode` is `manual` and `boundBy` is `null`. `reason` is one line for the UI, e.g. `"Auto: 12 parallel (16 cores, 28 GB free)"`.
 
 ### Git buttons (Push to main / Create PR)
 
@@ -141,7 +174,7 @@ Both act on every project folder (`workdir` + `extraFolders`), or only on `folde
 - Comment on a **Done** card (or an idle In-progress card) → card reopens to **In progress** and the agent resumes the same omp session with the feedback.
 - Comment while the agent is **running** → feedback is steered into the live session.
 - Move to **To do**/**Done** manually while running → agent is stopped.
-- The web UI never sets an arbitrary status: cards move by themselves as their agent works, and the only status-affecting controls are its quick actions — **Start**/**Resume**/**Retry** = `POST /tasks/:id/run`, **Stop** = `POST /tasks/:id/stop`, **Revert to To do** = `PATCH /tasks/:id` with `{ status: "todo" }`. Dragging in the UI only reorders within a column (PATCH `position`). API clients can still PATCH any `status`.
+- The web UI never sets an arbitrary status: cards move by themselves as their agent works, and the only status-affecting controls are its quick actions — **Start**/**Resume**/**Retry** = `POST /tasks/:id/run`, **Stop** = `POST /tasks/:id/stop`, **Revert to To do** = `PATCH /tasks/:id` with `{ status: "todo" }`. Done cards not pushed yet also get **Push to main** = `POST /tasks/:id/git/push` (no status change). Dragging in the UI only reorders within a column (PATCH `position`). API clients can still PATCH any `status`.
 
 ### Workspaces, files, browser and collaboration
 
@@ -150,10 +183,50 @@ Both act on every project folder (`workdir` + `extraFolders`), or only on `folde
 - **Browser control** (`AppSettings.browser`: `off` · `headless` · `visible` · `relay`): written to a per-run omp config overlay (`--config`); screenshots go to the card's `screenshots/` folder.
 - **Agent-to-agent tools** (omp RPC host tools, scoped to the card's board): `board_list_cards`, `board_read_card`, `board_create_card` (new card with `createdByTaskId`, its agent starts unless `start: false`; at most 20 per card, 3 levels deep), `board_message_card` (a `Comment` with `author: "user"` and `fromTaskId` = sender, handled like feedback), `board_wait_for_cards` (blocks until the cards are no longer queued/running; the waiting agent's slot is lent to the queue meanwhile). Plus `ask_advisor` (`{ question, options?, context? }`): the advisor decides the question instead of the user, or marks it as one only the user can answer.
 
+## Docker
+
+Long jobs stream `200 application/x-ndjson`, one `DockerJobEvent` per line: `{ "type": "log", "line" }` while the command works, then one `{ "type": "done", ok, message, id? }`.
+
+| Method | Path | Body | Response |
+| --- | --- | --- | --- |
+| GET | `/docker/running` | – | `RunningSummary`: `{ available, error, containers: DockerContainer[], composeProjects: ComposeProject[] }`, running only (the sidebar badge and its popover). When Docker is unavailable, `available` is `false` and `error` says why; the request does not fail |
+| POST | `/docker/quick-run` | `QuickRunSpec`: `RunContainerSpec` fields (`image`, `name?`, `env?`, `volumes?`, `restart?`, `command?`, `network?`, `interactive?`, `privileged?`) plus `autoPorts?` (publish every port the image EXPOSEs; ignored when `ports` is given) and `ports?: { container, host?, protocol? }[]` | NDJSON job; `done.id` is the container id. Pulls the image when missing; busy host ports move to the next free one (default host port = container port, 8000+port below 1024); a taken name gets a `-2` suffix |
+| POST | `/docker/quick-compose` | `QuickComposeSpec`: exactly one of `template` (template id), `yaml` or `url`, plus `name?` and `env?` | NDJSON job; `done.id` is the project name. Runs compose `up` as a new project (a taken name gets a `-2` suffix); busy host ports move to free ones |
+| GET | `/docker/compose-url?url=<url>` | – | `{ yaml, url }`: downloads a compose file (at most 512 KB, with a timeout). GitHub/GitLab blob links and gists become raw links; 400 when the link returns a web page or the file is too large |
+| GET | `/docker/registry/search?q=&registry=dockerhub\|quay` | – | `HubRepository[]`: `{ name, description, stars, pulls, official, verified? }` (`verified`: Docker Hub Verified Publisher) |
+| GET | `/docker/registry/tags?repo=<postgres\|owner/name\|quay.io/ns/name>` | – | recent `HubTag[]`: `{ name, size, updatedAt }` |
+
+Registry search and tag results are cached for 2 min; each registry request times out after 6 s.
+
+## Memory
+
+OMP UI fronts a local [agentmemory](https://github.com/rohitg00/agentmemory) server (`AGENTMEMORY_URL`, default `http://127.0.0.1:3111`) that gives card runs persistent memory (see README).
+
+| Method | Path | Response |
+| --- | --- | --- |
+| GET | `/memory?refresh=1` | `MemoryStatus`: `{ enabled: "auto"\|"true"\|"false", installed, installSource: "path"\|"npx"\|null, version, url, viewerUrl, reachable, healthy, starting, error, level, headline, problems: { level, message, fix? }[], embeddings, embeddingsSource: "server"\|"config", llm, stats, omp: { agentDir, connected, mcp, error } }`. `embeddings` is `"bm25"` (keyless) or the embedding provider (`"local"`, `"openai"`, …), read from the running server or else `~/.agentmemory/.env`; `llm` is the summary provider (`"noop"` when keyless, `null` while down); `stats` is `{ memories, sessions, observations, lessons }` or `null`; `level`/`headline`/`problems` come from agentmemory's own status check. `omp.connected`: `agentmemory connect omp` installed its extension in omp's agent dir; `omp.mcp`: with the MCP toolset. `refresh=1` looks for the CLI again |
+| POST | `/memory/start` | `MemoryStatus`. Starts the server unless it is healthy: through the `systemctl --user` unit `agentmemory.service` when it is enabled, else the `agentmemory` CLI. Answers within a minute, with `starting: true` while it still boots. 409 when agentmemory is not installed or `AGENTMEMORY_URL` is not a loopback address |
+| POST | `/memory/connect-omp` | `MemoryStatus` after running `agentmemory connect omp --with-mcp` (installs agentmemory's OMP extension, skills and MCP toolset into omp's agent dir). 409 when not installed; 502 with the CLI output when it fails |
+
+The browse routes below proxy the memory server and normalize its records (types in [`lib/memory-types.ts`](../lib/memory-types.ts)). When the server does not answer they return `503 { error, installed, healthy: false }`. `range` is `24h`, `7d`, `30d`, `90d` or `all`; `cursor` is the previous page's `nextCursor`.
+
+| Method | Path | Query | Response |
+| --- | --- | --- | --- |
+| GET | `/memory/memories` | `project`, `type`, `q`, `range`, `limit` (default 40, ≤100), `cursor` | `MemoryListResponse`: `{ items: MemoryItem[], total, nextCursor }`. Long-term memories (latest versions), newest first, ranked when `q` is given. `total` is `null` with a `range` |
+| GET | `/memory/memories/:id` | `layer` (`memory`\|`observation`), `sessionId` (speeds up an observation lookup) | `MemoryDetail`: a `MemoryItem` plus `{ content, facts, concepts, files, sessionIds, version, isLatest, agentId, origin, forgetAfter, sessions: MemorySession[], related: MemoryItem[] }`. Without `layer`, memories are tried first. 404 when not found |
+| DELETE | `/memory/memories/:id` | `layer` (`memory`, default, or `observation`), `sessionId` (required for observations) | `{ deleted }`; permanently forgets the record. 404 when nothing was deleted |
+| GET | `/memory/search` | `q` (required), `project`, `layer` (`all`, default, `memory` or `observation`), `type`, `range`, `limit` (default 30, ≤40) | `MemorySearchResponse`: `{ mode, items: MemoryItem[], lessons: MemoryLesson[] }`. Hybrid search (BM25, plus vectors and graph when configured); items carry `score`; `lessons` (`{ id, content, confidence, score, project, createdAt }`) only with `layer=all` |
+| GET | `/memory/sessions` | `project`, `status` (`active`\|`completed`\|`abandoned`), `q`, `limit` (default 30, ≤100), `cursor` | `MemorySessionsResponse`: `{ items: MemorySession[], nextCursor }`, newest first |
+| GET | `/memory/sessions/:id` | `limit` (default 50, ≤200), `cursor` | `MemorySessionDetail`: `{ session, keyDecisions, filesModified, observations: MemoryItem[], total, nextCursor }`, observations newest first. 404 when not found |
+| GET | `/memory/stats` | – | `MemoryStoreStats`: `{ version, provider, embeddingProvider, counts: { sessions, activeSessions, observations, memories, latestMemories, lessons, graphNodes, graphEdges }, projects, types, agents, sessionStatuses, sessionProjects, flags: { key, label, enabled }[] }`. `projects` (`{ value, count, boardId, boardName }`) also lists every board by its folder name; the facets are `{ value, count }[]`. `embeddingProvider: "none"` means keyword-only recall |
+
+- `MemoryItem` = `{ id, layer: "memory"\|"observation"\|"lesson"\|"insight", type, title, summary (≤280 chars), project, sessionId, createdAt, updatedAt, importance (0–10), confidence (0–1), score }`.
+- `MemorySession` = `{ id, project, cwd, status, startedAt, endedAt, observationCount, model, agentId, firstPrompt, title, narrative, tags, card }`; `card` (`{ boardId, taskId, title }`) links a session to the card whose run it recorded, else `null`.
+
 ## Live updates
 
 `GET /events?boardId=<id>` – Server-Sent Events. Each message: `data: <ServerEvent JSON>\n\n`. Omit `boardId` to receive everything; `queue.updated` is sent on every stream. A `: ping` comment is sent every 20 s.
 
 Run events of kind `agent` hold a JSON `SubagentSnapshot` (one subagent of an orchestrated run); the latest per `id` is its state. They are written when a subagent appears, changes status or reports, and when the run ends (subagents still working are marked `aborted`). Progress in between is sent only live as `run.agent`.
 
-Types (`Board`, `Task`, `Comment`, `Run`, `RunEvent`, `AppSettings`, `ServerEvent`, `FsBrowseResult`, `GitStatus`, `GitRepoActionResult`, `GitActionResult`, `SharedFiles`, `TaskWorkspace`, `QueueSnapshot`) are defined in [`lib/types.ts`](../lib/types.ts).
+Types (`Board`, `Task`, `Comment`, `Run`, `RunEvent`, `AppSettings`, `ServerEvent`, `FsBrowseResult`, `GitStatus`, `GitRepoActionResult`, `GitActionResult`, `SharedFiles`, `TaskWorkspace`, `QueueSnapshot`, `ConcurrencyInfo`, `Dashboard`, `OmpConfigSnapshot`, `OmpModel`, `MemoryStatus`) are defined in [`lib/types.ts`](../lib/types.ts); `TaskDiff` and `DiffSummary` in [`lib/diff-types.ts`](../lib/diff-types.ts); `RunningSummary`, `QuickRunSpec`, `QuickComposeSpec`, `DockerJobEvent` and `HubRepository` in [`lib/docker-types.ts`](../lib/docker-types.ts); the `/memory/*` browse shapes in [`lib/memory-types.ts`](../lib/memory-types.ts).

@@ -4,15 +4,16 @@
 // - When a run ends with questions in its summary, the advisor triages them: it answers what it
 //   can (sending the agent back to work when an answer changes the result) and keeps for the user
 //   only the questions that need their own judgment.
-// It runs `omp -p --mode json` in the project with read-only tools, like the card writer.
+// It runs on a warm `omp --mode rpc` helper worker in the project with read-only tools, like the
+// card writer.
 import { readModelRoles } from "@/lib/agent/model-select";
-import { existingFolders, extractJsonObject, runOmpPrint } from "@/lib/agent/omp-print";
+import { existingFolders, extractJsonObject, runOmpHelper } from "@/lib/agent/omp-helper";
 import { clip } from "@/lib/card-draft";
 import { childEnv } from "@/lib/child-env";
 import type { AppSettings, Board, Task } from "@/lib/types";
 
-/** omp stops the advisor itself after this long (`--max-time`). */
-const MAX_TIME_SECONDS = 180;
+/** The advisor is cancelled after this long. */
+const TIMEOUT_SECONDS = 210;
 /** Longest question / context / option list taken from the agent (characters). */
 const MAX_FIELD = 6_000;
 const MAX_OPTIONS = 12;
@@ -231,18 +232,20 @@ export function formatAnswers(answers: QuestionTriage["answers"]): string {
 async function runAdvisor(scope: AdvisorScope, prompt: string): Promise<string> {
   const { settings, workdir, board, signal } = scope;
   const env = childEnv();
-  const addDirs = await existingFolders(scope.extraFolders, workdir);
-  const roles = await readModelRoles(settings.ompPath, workdir, env);
+  const [addDirs, roles] = await Promise.all([
+    existingFolders(scope.extraFolders, workdir),
+    readModelRoles(settings.ompPath, workdir, env),
+  ]);
   signal.throwIfAborted();
   // omp's own `advisor` role, else the reasoning `slow` role, else the usual model thinking harder.
   const role = roles?.advisor ? "@advisor" : roles?.slow ? "@slow" : null;
-  return runOmpPrint({
+  return runOmpHelper({
     command: settings.ompPath,
     cwd: workdir,
     addDirs,
     model: role ?? (board.model?.trim() || settings.defaultModel.trim() || null),
     thinking: role ? null : "high",
-    maxTimeSeconds: MAX_TIME_SECONDS,
+    timeoutSeconds: TIMEOUT_SECONDS,
     env,
     prompt,
     signal,

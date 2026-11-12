@@ -23,25 +23,34 @@ export function randomSecret(): string {
   return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
 }
 
+/** SI units (1 kB = 1000 B), matching how the docker CLI prints sizes. */
 export function formatBytes(bytes: number): string {
-  const units = ["B", "KB", "MB", "GB", "TB"];
+  const units = ["B", "kB", "MB", "GB", "TB"];
   let value = bytes;
   let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
     unit++;
   }
   return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
 }
 
-export const STATE_STYLES: Record<ContainerState, { dot: string; label: string }> = {
-  running: { dot: "bg-emerald-500", label: "Running" },
-  paused: { dot: "bg-amber-500", label: "Paused" },
-  restarting: { dot: "bg-amber-500 animate-pulse", label: "Restarting" },
-  created: { dot: "bg-sky-500", label: "Created" },
-  removing: { dot: "bg-muted-foreground animate-pulse", label: "Removing" },
-  exited: { dot: "bg-muted-foreground/50", label: "Stopped" },
-  dead: { dot: "bg-destructive", label: "Dead" },
+export const STATE_STYLES: Record<ContainerState, { dot: string; label: string; text: string }> = {
+  running: { dot: "bg-emerald-500", label: "Running", text: "text-emerald-700 dark:text-emerald-400" },
+  paused: { dot: "bg-amber-500", label: "Paused", text: "text-amber-700 dark:text-amber-400" },
+  restarting: {
+    dot: "bg-amber-500 animate-pulse motion-reduce:animate-none",
+    label: "Restarting",
+    text: "text-amber-700 dark:text-amber-400",
+  },
+  created: { dot: "bg-sky-500", label: "Created", text: "text-sky-700 dark:text-sky-400" },
+  removing: {
+    dot: "bg-muted-foreground animate-pulse motion-reduce:animate-none",
+    label: "Removing",
+    text: "text-muted-foreground",
+  },
+  exited: { dot: "bg-muted-foreground/50", label: "Stopped", text: "text-muted-foreground" },
+  dead: { dot: "bg-destructive", label: "Dead", text: "text-destructive" },
 };
 
 export function StateDot({ state, className }: { state: ContainerState; className?: string }) {
@@ -64,9 +73,10 @@ export function Notice({
 }) {
   return (
     <div
+      role={tone === "error" ? "alert" : undefined}
       className={cn(
-        "flex gap-3 rounded-xl border border-dashed p-4 text-sm",
-        tone === "error" && "border-destructive/40 bg-destructive/5",
+        "animate-fade-in-soft flex gap-3 rounded-xl border p-4 text-sm",
+        tone === "error" ? "border-destructive/30 bg-destructive/5" : "border-dashed",
       )}
     >
       <TriangleAlertIcon
@@ -80,12 +90,74 @@ export function Notice({
   );
 }
 
-export function EmptyState({ title, children }: { title: string; children?: React.ReactNode }) {
+export function EmptyState({
+  title,
+  children,
+  icon,
+  action,
+  compact = false,
+}: {
+  title: string;
+  children?: React.ReactNode;
+  icon?: React.ReactNode;
+  action?: React.ReactNode;
+  /** A one-line row instead of a centered block, for secondary sections. */
+  compact?: boolean;
+}) {
+  if (compact) {
+    return (
+      <div className="flex flex-col gap-3 rounded-xl border border-dashed px-4 py-3.5 text-sm sm:flex-row sm:items-center">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground max-sm:hidden [&_svg]:size-4">
+          {icon ?? <BoxIcon />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">{title}</p>
+          {children && <div className="text-xs text-muted-foreground">{children}</div>}
+        </div>
+        {action}
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed px-6 py-10 text-center">
-      <BoxIcon className="size-6 text-muted-foreground" />
+      <span className="mb-1 flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground [&_svg]:size-5">
+        {icon ?? <BoxIcon />}
+      </span>
       <p className="text-sm font-medium">{title}</p>
-      {children && <div className="text-sm text-muted-foreground">{children}</div>}
+      {children && <div className="max-w-sm text-sm text-balance text-muted-foreground">{children}</div>}
+      {action && <div className="mt-2">{action}</div>}
+    </div>
+  );
+}
+
+/** Title row of a page section: label, count and trailing actions on one line. */
+export function SectionHeader({
+  id,
+  title,
+  count,
+  description,
+  actions,
+  className,
+}: {
+  id?: string;
+  title: string;
+  count?: number | string;
+  description?: React.ReactNode;
+  actions?: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex flex-wrap items-end justify-between gap-x-4 gap-y-2", className)}>
+      <div className="min-w-0">
+        <h2 id={id} className="flex items-baseline gap-2 text-base font-semibold tracking-tight">
+          {title}
+          {count !== undefined && (
+            <span className="text-sm font-normal text-muted-foreground tabular-nums">{count}</span>
+          )}
+        </h2>
+        {description && <p className="mt-0.5 text-xs text-pretty text-muted-foreground">{description}</p>}
+      </div>
+      {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
     </div>
   );
 }

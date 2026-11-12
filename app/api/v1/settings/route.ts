@@ -1,5 +1,5 @@
 import { HttpError, json, readJson, withApi } from "@/lib/server/http";
-import { getAppSettings, updateAppSettings } from "@/lib/settings";
+import { MAX_EXPLICIT_AGENTS, getAppSettings, updateAppSettings } from "@/lib/settings";
 import { BROWSER_MODES, type AppSettings, type ApprovalMode, type BrowserMode } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -10,10 +10,10 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
   const patch: Partial<AppSettings> = {};
   if (body.maxConcurrentAgents !== undefined) {
     const n = body.maxConcurrentAgents;
-    if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 16) {
-      throw new HttpError(400, "maxConcurrentAgents must be an integer between 1 and 16");
+    if (n !== "auto" && (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > MAX_EXPLICIT_AGENTS)) {
+      throw new HttpError(400, `maxConcurrentAgents must be "auto" or an integer between 1 and ${MAX_EXPLICIT_AGENTS}`);
     }
-    patch.maxConcurrentAgents = n;
+    patch.maxConcurrentAgents = n === "auto" ? "auto" : Number(n);
   }
   if (body.ompPath !== undefined) {
     const p = body.ompPath;

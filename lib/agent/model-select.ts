@@ -180,18 +180,28 @@ export function chooseModel(input: {
 }
 
 const ROLES_TIMEOUT_MS = 5_000;
+/** Reads in flight per omp + folder: cards launching together share one `omp config` process. */
+const rolesInFlight = new Map<string, Promise<ModelRoles | null>>();
 
 /**
  * Model roles omp resolves in `cwd` (global config plus the project's `.omp`), via
  * `omp config get modelRoles --json`. Null when omp cannot report them (old omp, bad path).
+ * Concurrent calls for the same omp and folder share one read; later calls read again.
  */
 export function readModelRoles(ompPath: string, cwd: string, env: NodeJS.ProcessEnv): Promise<ModelRoles | null> {
+  const key = JSON.stringify([ompPath, cwd]);
+  const pending = rolesInFlight.get(key);
+  if (pending) return pending;
   const { promise, resolve } = Promise.withResolvers<ModelRoles | null>();
+  rolesInFlight.set(key, promise);
   execFile(
     ompPath,
     ["config", "get", "modelRoles", "--json"],
     { cwd, env, timeout: ROLES_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
-    (err, stdout) => resolve(err ? null : parseRoles(String(stdout))),
+    (err, stdout) => {
+      rolesInFlight.delete(key);
+      resolve(err ? null : parseRoles(String(stdout)));
+    },
   );
   return promise;
 }

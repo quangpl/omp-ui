@@ -235,6 +235,93 @@
   scrollbar-color: color-mix(in oklch, var(--color-foreground) 18%, transparent) transparent;
 }
 
+/* ── Success feedback: "card added" toast ───────────────────────────
+   Badge pops in, check draws, ring + sparks burst once; a bottom bar
+   counts down the toast and pauses while sonner pauses (hover). */
+
+@keyframes success-pop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes check-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes success-ring {
+  from {
+    transform: scale(0.9);
+    opacity: 0.6;
+  }
+  to {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+@keyframes success-spark {
+  0% {
+    transform: rotate(var(--spark-angle)) translateY(-10px) scale(1);
+    opacity: 0;
+  }
+  25% {
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(var(--spark-angle)) translateY(-26px) scale(0);
+    opacity: 0;
+  }
+}
+
+@keyframes toast-countdown {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+@utility animate-success-pop {
+  animation: success-pop 0.45s var(--ease-spring) both;
+}
+
+@utility animate-check-draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: check-draw 0.35s var(--ease-out-smooth) 0.22s forwards;
+}
+
+@utility animate-success-ring {
+  animation: success-ring 0.7s var(--ease-out-smooth) 0.15s both;
+}
+
+@utility animate-success-spark {
+  animation: success-spark 0.65s var(--ease-out-smooth) 0.2s both;
+}
+
+@utility animate-toast-countdown {
+  animation: toast-countdown linear both;
+}
+
+[data-sonner-toast][data-expanded="true"] .animate-toast-countdown {
+  animation-play-state: paused;
+}
+
 /* ── Visualize: agents as workers ───────────────────────────────────
    Robot worker idle loops (transform/opacity only) and the XP pop. */
 
@@ -326,7 +413,9 @@
 
 @media (prefers-reduced-motion: reduce) {
   .animate-card-in,
-  .animate-fade-in-soft {
+  .animate-fade-in-soft,
+  .animate-success-pop,
+  .animate-check-draw {
     animation-duration: 0.01ms;
     animation-delay: 0ms;
   }
@@ -337,5 +426,10 @@
   .animate-worker-snore,
   .animate-xp-pop {
     animation: none;
+  }
+  .animate-success-ring,
+  .animate-success-spark {
+    animation: none;
+    opacity: 0;
   }
 }

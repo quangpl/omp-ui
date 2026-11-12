@@ -553,6 +553,142 @@ volumes:
   gitea:
 `,
   },
+  {
+    id: "mysql-adminer",
+    title: "MySQL + Adminer",
+    description: "MySQL on 3306 with the Adminer database UI on http://localhost:8085 (server \"mysql\").",
+    categories: ["database"],
+    logo: icon("mysql"),
+    env: [{ name: "MYSQL_ROOT_PASSWORD", label: "Root password", secret: true }],
+    compose: `services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: \${MYSQL_ROOT_PASSWORD}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysqldata:/var/lib/mysql
+  adminer:
+    image: adminer:latest
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: mysql
+    ports:
+      - "8085:8080"
+    depends_on:
+      - mysql
+volumes:
+  mysqldata:
+`,
+  },
+  {
+    id: "elastic-kibana",
+    title: "Elasticsearch + Kibana",
+    description:
+      "Single-node Elasticsearch on 9200 (security off, for local development) with Kibana on http://localhost:5601.",
+    categories: ["database", "search", "monitoring"],
+    logo: icon("elasticsearch"),
+    compose: `services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.3
+    restart: unless-stopped
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+volumes:
+  esdata:
+`,
+  },
+  {
+    id: "n8n-postgres",
+    title: "n8n + PostgreSQL",
+    description: "n8n workflow automation on http://localhost:5678, storing its data in PostgreSQL.",
+    categories: ["automation"],
+    logo: icon("n8n"),
+    env: [{ name: "DB_PASSWORD", label: "Database password", secret: true }],
+    compose: `services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: n8n
+      POSTGRES_PASSWORD: \${DB_PASSWORD}
+      POSTGRES_DB: n8n
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: db
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: \${DB_PASSWORD}
+      N8N_SECURE_COOKIE: "false"
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8ndata:/home/node/.n8n
+    depends_on:
+      - db
+volumes:
+  dbdata:
+  n8ndata:
+`,
+  },
+  {
+    id: "minio-console",
+    title: "MinIO (S3) + bucket setup",
+    description:
+      "S3-compatible storage on 9000 with the console on http://localhost:9001; creates a \"local\" bucket on start.",
+    categories: ["storage"],
+    logo: icon("minio"),
+    env: [
+      { name: "MINIO_USER", label: "Access key", default: "minioadmin" },
+      { name: "MINIO_PASSWORD", label: "Secret key", secret: true },
+    ],
+    compose: `services:
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: \${MINIO_USER}
+      MINIO_ROOT_PASSWORD: \${MINIO_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+  createbucket:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    restart: "no"
+    entrypoint: >
+      /bin/sh -c "until mc alias set local http://minio:9000 \${MINIO_USER} \${MINIO_PASSWORD}; do sleep 1; done;
+      mc mb --ignore-existing local/local"
+volumes:
+  miniodata:
+`,
+  },
 ].map((t) => ({ ...t, source: "builtin", kind: "compose" }) as ContainerTemplate);
 
 export const BUILTIN_TEMPLATES: readonly ContainerTemplate[] = [...CONTAINERS, ...COMPOSE];

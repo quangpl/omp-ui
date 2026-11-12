@@ -8,6 +8,8 @@ import {
   LoaderCircle,
   MessageSquareText,
   Network,
+  Terminal,
+  TextWrap,
   TriangleAlert,
   Wrench,
 } from "lucide-react";
@@ -37,6 +39,14 @@ const STICK_THRESHOLD = 48;
 const TOOL_GROUP_INLINE = 3;
 /** Lines of a folded tool group still shown while it is the live tail. */
 const TOOL_GROUP_TAIL = 2;
+/** localStorage key of the "wrap long lines" preference. */
+const WRAP_KEY = "omp-ui:agent-log-wrap";
+/**
+ * Monospace output (tool calls, errors, prompt) wraps by default; with wrapping off it keeps its
+ * lines and the timeline scrolls sideways inside its own box (driven by `data-wrap` on `group/log`).
+ */
+const MONO_WRAP =
+  "whitespace-pre-wrap break-all group-data-[wrap=false]/log:whitespace-pre group-data-[wrap=false]/log:break-normal";
 
 const RUN_STATUS: Record<RunStatus, { label: string; className: string }> = {
   running: {
@@ -107,14 +117,18 @@ function EventLine({ event }: { event: RunEvent }) {
           <span aria-hidden className="shrink-0">
             ▸
           </span>
-          <span className="min-w-0 break-all whitespace-pre-wrap">
-            {event.text.replace(/^▸\s*/, "")}
-          </span>
+          <span className={cn("min-w-0", MONO_WRAP)}>{event.text.replace(/^▸\s*/, "")}</span>
         </div>
       );
     case "error":
       return (
-        <div className="rounded-md bg-destructive/10 px-2.5 py-1.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-destructive break-words dark:bg-destructive/20">
+        <div
+          className={cn(
+            "rounded-md bg-destructive/10 px-2.5 py-1.5 font-mono text-xs leading-relaxed text-destructive dark:bg-destructive/20",
+            MONO_WRAP,
+            "break-words group-data-[wrap=false]/log:w-max group-data-[wrap=false]/log:min-w-full",
+          )}
+        >
           {event.text}
         </div>
       );
@@ -365,6 +379,23 @@ export function AgentLog({
   // null = follow the latest run.
   const [pickedRunId, setPickedRunId] = useState<string | null>(null);
   const [showAllRuns, setShowAllRuns] = useState(false);
+  // Wrap long monospace lines (default) or keep them and scroll the timeline sideways.
+  const [wrap, setWrapState] = useState(true);
+  useEffect(() => {
+    try {
+      setWrapState(localStorage.getItem(WRAP_KEY) !== "false");
+    } catch {
+      // Default.
+    }
+  }, []);
+  const setWrap = (next: boolean) => {
+    setWrapState(next);
+    try {
+      localStorage.setItem(WRAP_KEY, String(next));
+    } catch {
+      // Not persisted (private mode); the toggle still applies.
+    }
+  };
   const selectedRun =
     (pickedRunId && sortedRuns.find((run) => run.id === pickedRunId)) || sortedRuns[0] || null;
   const runId = selectedRun?.id ?? null;
@@ -504,8 +535,13 @@ export function AgentLog({
 
   if (sortedRuns.length === 0) {
     return (
-      <div className="px-4 py-10 text-center text-sm text-muted-foreground">
-        The agent hasn&apos;t run on this card yet. Press Start to run it.
+      <div className="flex flex-col items-center gap-2 px-6 py-12 text-center">
+        <span className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
+          <Terminal className="size-5" />
+        </span>
+        <p className="max-w-xs text-sm text-muted-foreground">
+          The agent hasn&apos;t run on this card yet. Press Start to run it.
+        </p>
       </div>
     );
   }
@@ -513,7 +549,7 @@ export function AgentLog({
   const visibleRuns = showAllRuns ? sortedRuns : sortedRuns.slice(0, COLLAPSED_RUN_COUNT);
 
   return (
-    <div className="flex flex-col gap-4 px-4 py-4">
+    <div className="flex min-w-0 flex-col gap-5 px-4 py-5 md:px-5">
       {sortedRuns.length > 1 && (
         <div className="flex flex-col gap-1.5">
           <h3 className="text-xs font-medium text-muted-foreground">Runs</h3>
@@ -528,7 +564,7 @@ export function AgentLog({
                     aria-pressed={selected}
                     onClick={() => setPickedRunId(run.id === sortedRuns[0].id ? null : run.id)}
                     className={cn(
-                      "flex min-h-11 w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-sm transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+                      "flex min-h-11 w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-sm transition-[background-color,border-color,transform] outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.99] md:min-h-10",
                       selected ? "border-foreground/25 bg-muted" : "hover:bg-muted/50",
                     )}
                   >
@@ -562,8 +598,8 @@ export function AgentLog({
       )}
 
       {selectedRun && (
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
+        <div data-wrap={wrap} className="group/log flex min-w-0 flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2 text-xs text-muted-foreground">
             <RunStatusBadge status={selectedRun.status} />
             <span title={formatDateTime(selectedRun.startedAt)}>
               Started {formatRelative(selectedRun.startedAt, now)}
@@ -575,17 +611,54 @@ export function AgentLog({
                   new Date(selectedRun.startedAt).getTime(),
               )}
             </span>
+            <div className="ml-auto flex items-center gap-1">
+              {running && (
+                <span
+                  title={following ? "Scrolls with new output" : "Scroll to the end to follow again"}
+                  className={cn(
+                    "inline-flex h-6 items-center gap-1.5 rounded-full px-2 text-[11px] font-medium",
+                    following
+                      ? "bg-sky-500/10 text-sky-700 dark:bg-sky-400/15 dark:text-sky-300"
+                      : "bg-muted text-muted-foreground",
+                  )}
+                >
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "size-1.5 rounded-full",
+                      following ? "bg-sky-500 motion-safe:animate-pulse" : "bg-muted-foreground/60",
+                    )}
+                  />
+                  {following ? "Live" : "Paused"}
+                </span>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                role="switch"
+                aria-checked={wrap}
+                title="Wrap long lines of tool calls, errors and the prompt"
+                onClick={() => setWrap(!wrap)}
+                className={cn(
+                  "h-8 gap-1.5 px-2 text-xs text-muted-foreground max-md:h-11 max-md:px-3",
+                  wrap && "bg-accent text-foreground",
+                )}
+              >
+                <TextWrap />
+                Wrap
+              </Button>
+            </div>
           </div>
 
           <RunOverview events={events} agents={agents.length} />
 
           {selectedRun.prompt && (
             <details className="group rounded-lg border text-xs">
-              <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1.5 px-3 font-medium text-muted-foreground select-none [&::-webkit-details-marker]:hidden">
+              <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1.5 px-3 font-medium text-muted-foreground select-none md:min-h-9 [&::-webkit-details-marker]:hidden">
                 <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
                 Prompt
               </summary>
-              <pre className="max-h-72 overflow-auto border-t px-3 py-2 font-mono leading-relaxed break-words whitespace-pre-wrap">
+              <pre className={cn("max-h-72 overflow-auto border-t px-3 py-2 font-mono leading-relaxed", MONO_WRAP, "break-words")}>
                 {selectedRun.prompt}
               </pre>
             </details>
@@ -598,7 +671,7 @@ export function AgentLog({
           )}
           <div
             data-vaul-no-drag
-            className="flex flex-col gap-2.5"
+            className="flex min-w-0 flex-col gap-2.5 group-data-[wrap=false]/log:overflow-x-auto group-data-[wrap=false]/log:overscroll-x-contain group-data-[wrap=false]/log:pb-2"
           >
             {loadedRunId !== runId && events.length === 0 ? (
               <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">

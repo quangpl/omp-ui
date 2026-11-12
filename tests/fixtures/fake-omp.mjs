@@ -23,12 +23,17 @@
 //   FAKE_OMP_PROTOCOLS    Comma-separated supportedProtocolVersions advertised in ready (default "1,2").
 //   FAKE_OMP_MODEL_ROLES  JSON object `omp config get modelRoles --json` reports (default {});
 //                         "fail" makes that command exit 1. Logged as a "config" entry, not "argv".
-//   FAKE_OMP_PLAN         Reply text of the queue planner (print mode, prompt starting with "You are the
+//   FAKE_OMP_PLAN         Reply text of the queue planner (a helper prompt starting with "You are the
 //                         queue planner"); default {"order":[],"cards":[]}; "fail" exits 1 without an answer.
 //   FAKE_OMP_SKILLS       JSON array of {name, description} that `omp skill list --json` reports as
 //                         {"skills": [...]} (default []). Logged as a "skill" entry, not "argv".
 //   FAKE_OMP_DRAFT        Reply text of the card writer (an RPC prompt starting with "You are the card
 //                         writer"; see cardWriter), used verbatim instead of the card it writes.
+//
+// Helper workers (started with --no-session: card writer, advisor, queue planner) are pooled and
+// reused across prompts via new_session. They log "helper_argv" at startup instead of "argv",
+// every prompt as a "helper" entry {argv, cwd, prompt}, and other commands as "helper_command"
+// instead of "command", so card-run assertions only see card runs.
 //
 // Test-only commands (answered like real commands): fake_echo {value, delayMs}, fake_crash,
 // fake_chunked {size}, fake_bad_chunk.
@@ -66,34 +71,26 @@ if (argv[0] === "skill") {
   await new Promise(() => undefined);
 }
 
-// Print mode (`-p --mode json`, the advisor): reads the prompt from stdin, logs it as a "print"
-// entry (not "argv"), and answers with one assistant message chosen by a `[fake-advisor:<mode>]`
-// marker in the prompt (the card's text is part of it):
+// Helper replies (advisor and queue planner prompts on a helper worker): one assistant message
+// chosen by a `[fake-advisor:<mode>]` marker in the prompt (the card's text is part of it):
 //   (none)       consult: a decision; triage: every question left for the user, unchanged.
 //   user         consult: marked for the user.
 //   answer       triage: answers the question and sends the agent back to work (followUp); the
 //                followUp carries "[fake:question] [fake-advisor:answer]", so the next run asks again.
 //   fail         exits 1 without an answer.
-// A queue planner prompt ("You are the queue planner…") is answered with FAKE_OMP_PLAN instead.
-if (argv.includes("-p")) {
-  let prompt = "";
-  for await (const chunk of process.stdin) prompt += chunk;
-  log("print", { argv, cwd: process.cwd(), prompt });
-  const answer = (text) => {
-    const message = { role: "assistant", content: [{ type: "text", text }], stopReason: "stop", timestamp: Date.now() };
-    process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`, () => process.exit(0));
-  };
+// A queue planner prompt ("You are the queue planner…") is answered with FAKE_OMP_PLAN instead, a
+// code-changes summary prompt ("You summarise code changes…") with a fixed one-line summary.
+// Returns the reply text, or { fail: stderr line }.
+function helperReply(prompt) {
   if (prompt.startsWith("You are the queue planner")) {
     const plan = process.env.FAKE_OMP_PLAN || '{"order":[],"cards":[]}';
-    if (plan === "fail") process.stderr.write("fake omp: planner exploded\n", () => process.exit(1));
-    else answer(plan);
-    await new Promise(() => undefined);
+    return plan === "fail" ? { fail: "fake omp: planner exploded" } : plan;
+  }
+  if (prompt.startsWith("You summarise code changes for a reviewer.")) {
+    return "Adds a Changes tab that shows the card's diff with a short summary.";
   }
   const mode = /\[fake-advisor:([a-z_]+)\]/.exec(prompt)?.[1] ?? "";
-  if (mode === "fail") {
-    process.stderr.write("fake omp: advisor exploded\n", () => process.exit(1));
-    await new Promise(() => undefined);
-  }
+  if (mode === "fail") return { fail: "fake omp: advisor exploded" };
   const questions = /<questions>\n([\s\S]*?)\n<\/questions>/.exec(prompt)?.[1];
   let reply;
   if (questions === undefined) {
@@ -110,9 +107,11 @@ if (argv.includes("-p")) {
   } else {
     reply = { answers: [], userQuestion: questions, followUp: null };
   }
-  answer(JSON.stringify(reply));
-  await new Promise(() => undefined);
+  return JSON.stringify(reply);
 }
+
+/** A pooled helper worker (card writer, advisor, queue planner) rather than a card run. */
+const helper = argv.includes("--no-session");
 
 /** Environment variables whose values the "argv" entry records (credentials in, OMP UI secrets out). */
 const LOGGED_ENV = [
@@ -125,7 +124,7 @@ const LOGGED_ENV = [
   "DATABASE_URL",
 ];
 
-log("argv", {
+log(helper ? "helper_argv" : "argv", {
   argv,
   cwd: process.cwd(),
   envKeys: Object.keys(process.env).sort(),
@@ -480,6 +479,12 @@ async function startPrompt(command) {
     await cardWriter(command.message);
     return;
   }
+  if (helper) {
+    const reply = helperReply(String(command.message ?? ""));
+    if (typeof reply === "object") process.stderr.write(`${reply.fail}\n`, () => process.exit(1));
+    else finishRun(assistant(reply, "stop"));
+    return;
+  }
 
   switch (scenario) {
     case "success":
@@ -555,7 +560,9 @@ async function handle(command) {
     }
     return;
   }
-  log("command", { command });
+  if (!helper) log("command", { command });
+  else if (command.type === "prompt") log("helper", { argv, cwd: process.cwd(), prompt: String(command.message ?? "") });
+  else log("helper_command", { command });
 
   switch (command.type) {
     case "negotiate_protocol":
@@ -593,6 +600,11 @@ async function handle(command) {
       return;
     case "get_last_assistant_text":
       respond(command, { text: lastAssistantText });
+      return;
+    case "new_session":
+      if (run) finishRun(assistant("", "aborted", "Session replaced"));
+      lastAssistantText = null;
+      respond(command, { cancelled: false });
       return;
     case "prompt":
       if (run) {

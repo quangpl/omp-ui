@@ -34,6 +34,8 @@ export interface BoardMenuActions {
   revertToTodo: (taskId: string) => Promise<void>;
   runAgent: (taskId: string) => Promise<void>;
   stopAgent: (taskId: string) => Promise<void>;
+  /** Quick action on Done cards: commit and push to the default branch. Null when the project can't ship. */
+  pushToMain: ((taskId: string) => Promise<void>) | null;
   duplicate: (task: Task) => Promise<void>;
   /** Asks for confirmation before deleting. */
   requestDelete: (task: Task) => void;
@@ -78,8 +80,9 @@ function NewCardItems({ actions }: { actions: BoardMenuActions }) {
 }
 
 /**
- * Right-click menu for one card: open, quick actions (start/resume/retry/stop/revert), duplicate,
- * copy, delete, plus "New card". The card's column follows its agent, so there is no "Move to".
+ * Right-click menu for one card: open, quick actions (start/resume/retry/stop/revert/push),
+ * duplicate, copy, delete, plus "New card". The card's column follows its agent, so there is no
+ * "Move to".
  */
 export function CardContextMenu({
   task,
@@ -114,7 +117,7 @@ export function CardContextMenu({
           Open card
           <ContextMenuShortcut>↵</ContextMenuShortcut>
         </ContextMenuItem>
-        {quickActionsFor(task).map((action) => (
+        {quickActionsFor(task, { canPush: actions.pushToMain !== null }).map((action) => (
           <ContextMenuItem
             key={action.id}
             title={action.hint}

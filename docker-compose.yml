@@ -10,7 +10,12 @@ name: omp-ui
 
 services:
   omp-ui:
-    build: .
+    build:
+      context: .
+      args:
+        # Opt-in persistent agent memory (agentmemory): AGENTMEMORY_VERSION=latest in .env, then
+        # `docker compose build`. Empty = not installed.
+        AGENTMEMORY_VERSION: ${AGENTMEMORY_VERSION:-}
     image: omp-ui:latest
     restart: unless-stopped
     ports:
@@ -63,6 +68,10 @@ services:
       - HTTP_PROXY
       - HTTPS_PROXY
       - NO_PROXY
+      # agentmemory (when the image includes it): auto|true|false, and whether the entrypoint may
+      # run `agentmemory connect omp` against the mounted omp config.
+      - AGENTMEMORY_ENABLED
+      - AGENTMEMORY_CONNECT_OMP
     volumes:
       - ./data:/data
       # Your projects: the folder picker starts here and cloned repositories land here
@@ -95,6 +104,8 @@ services:
       - ~/.config/glab-cli:/home/omp/.config/glab-cli
       # AWS profiles (Bedrock)
       - ~/.aws:/home/omp/.aws:ro
+      # agentmemory state: config, secret, engine binary and memories (AGENTMEMORY_DATA_DIR)
+      - agentmemory:/home/omp/.agentmemory
     depends_on:
       mongo:
         condition: service_started
@@ -138,3 +149,4 @@ services:
 volumes:
   mongo-data:
   pg-data:
+  agentmemory:

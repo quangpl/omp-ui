@@ -104,6 +104,7 @@ export function createProject({ build = true }: { build?: boolean } = {}): TempP
   const cli = path.join(root, "bin", "omp-ui.mjs");
   fs.copyFileSync(CLI_SOURCE, cli);
   fs.copyFileSync(SUPERVISOR_SOURCE, path.join(root, "bin", "supervisor.mjs"));
+  fs.copyFileSync(path.join(REPO_ROOT, "bin", "agentmemory.mjs"), path.join(root, "bin", "agentmemory.mjs"));
   const wrapper = path.join(root, "omp-ui");
   fs.copyFileSync(WRAPPER_SOURCE, wrapper);
   fs.chmodSync(wrapper, 0o755);
@@ -127,6 +128,8 @@ export function createProject({ build = true }: { build?: boolean } = {}): TempP
     NO_COLOR: "1",
     LANG: "C.UTF-8",
     TMPDIR: os.tmpdir(),
+    // Servers these tests start must neither start nor write to the real agentmemory server.
+    AGENTMEMORY_ENABLED: "false",
   };
 
   const envFile = path.join(root, ".env");

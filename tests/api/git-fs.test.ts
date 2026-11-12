@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { api, env, freshEnv, setupAdmin, teardown, tempDir, waitFor } from "./helpers";
 
 import * as boardGitRoute from "@/app/api/v1/boards/[id]/git/route";
+import * as boardPushRoute from "@/app/api/v1/boards/[id]/git/push/route";
 import * as boardBranchesRoute from "@/app/api/v1/boards/[id]/git/branches/route";
 import * as boardTasksRoute from "@/app/api/v1/boards/[id]/tasks/route";
 import * as boardsRoute from "@/app/api/v1/boards/route";
@@ -17,7 +18,7 @@ import * as taskPushRoute from "@/app/api/v1/tasks/[id]/git/push/route";
 import * as taskRoute from "@/app/api/v1/tasks/[id]/route";
 import * as taskRunRoute from "@/app/api/v1/tasks/[id]/run/route";
 import * as taskStopRoute from "@/app/api/v1/tasks/[id]/stop/route";
-import type { Board, Comment, FsBrowseResult, GitActionResult, GitBranches, GitStatus, Task } from "@/lib/types";
+import type { Board, BoardPushResult, Comment, FsBrowseResult, GitActionResult, GitBranches, GitStatus, Task } from "@/lib/types";
 
 interface Repo {
   work: string;
@@ -83,6 +84,13 @@ async function gitAction(action: "push" | "pr", taskId: string, body: Record<str
 
 async function boardGit(boardId: string) {
   return api<GitStatus[] & { error?: string }>(boardGitRoute, "GET", `/boards/${boardId}/git`, {
+    params: { id: boardId },
+  });
+}
+
+async function boardPush(boardId: string) {
+  return api<BoardPushResult & { error?: string }>(boardPushRoute, "POST", `/boards/${boardId}/git/push`, {
+    body: {},
     params: { id: boardId },
   });
 }
@@ -332,6 +340,48 @@ describe("git status and quick actions", () => {
     const status = await boardGit(plain.id);
     expect(status.body).toEqual([expect.objectContaining({ isRepo: false })]);
   });
+
+  it(
+    "quick push commits and pushes every project repo, and waits for running agents",
+    async () => {
+      const web = makeRepo("quick-web");
+      const api2 = makeRepo("quick-api");
+      const docs = tempDir(path.join("projects", "quick-docs"));
+      const quick = await createBoard({ name: "Quick", workdir: web.work, extraFolders: [api2.work, docs], autoRun: false });
+      writeFileSync(path.join(web.work, "a.txt"), "a\n");
+      writeFileSync(path.join(web.work, "b.txt"), "b\n");
+      writeFileSync(path.join(api2.work, "c.txt"), "c\n");
+
+      const busy = await createTask(quick.id, "Busy agent [fake:slow]");
+      await api<Task>(taskRunRoute, "POST", `/tasks/${busy.id}/run`, { params: { id: busy.id } });
+      await waitFor(async () => (await taskDetail(busy.id)).task.agentState === "running", 20_000);
+      const blocked = await boardPush(quick.id);
+      expect(blocked.status).toBe(409);
+      expect(blocked.body).toEqual({ error: "Wait for the agent to finish first." });
+      expect(git(web.work, "status", "--porcelain")).not.toBe("");
+      await api<Task>(taskStopRoute, "POST", `/tasks/${busy.id}/stop`, { params: { id: busy.id } });
+
+      const res = await boardPush(quick.id);
+      expect(res.status).toBe(200);
+      // Only git repos are pushed; the plain folder is left out.
+      expect(res.body.results.map((r) => r.folder)).toEqual([web.work, api2.work]);
+      for (const [result, repo] of [[res.body.results[0], web], [res.body.results[1], api2]] as const) {
+        expect(result).toMatchObject({ branch: "main", error: null, skipped: false });
+        expect(remoteHead(repo.bare, "main")).toMatchObject({ sha: result.commit, subject: "Update from OMP UI (3 files)" });
+      }
+      expect((await boardGit(quick.id)).body.slice(0, 2).every((s) => !s.dirty && s.ahead === 0)).toBe(true);
+
+      const nothing = await boardPush(quick.id);
+      expect(nothing.body.results.every((r) => r.skipped && !r.error)).toBe(true);
+
+      const plain = await createBoard({ name: "Quick plain", workdir: tempDir("quick-plain"), autoRun: false });
+      const none = await boardPush(plain.id);
+      expect(none.status).toBe(400);
+      expect(none.body.error).toBe("This project's folders aren't git repositories, so there is nothing to push.");
+      expect((await boardPush(MISSING_ID)).status).toBe(404);
+    },
+    GIT_TIMEOUT,
+  );
 
   it(
     "explains a rejected push when the remote has newer commits",

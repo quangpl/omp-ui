@@ -1,7 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { Geist } from "next/font/google";
-import { BottomTabs } from "@/components/bottom-tabs";
+import { cookies } from "next/headers";
+import { AppShell } from "@/components/app-shell";
 import { Providers } from "@/components/providers";
 import { cn } from "@/lib/utils";
 
@@ -26,13 +27,14 @@ export const viewport: Viewport = {
   ],
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  // Persisted by the sidebar itself (components/ui/sidebar.tsx); expanded unless collapsed before.
+  const sidebarOpen = (await cookies()).get("sidebar_state")?.value !== "false";
   return (
     <html lang="en" className={cn("font-sans", geist.variable)} suppressHydrationWarning>
       <body>
         <Providers>
-          {children}
-          <BottomTabs />
+          <AppShell defaultOpen={sidebarOpen}>{children}</AppShell>
         </Providers>
       </body>
     </html>

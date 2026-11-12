@@ -69,7 +69,7 @@ export function restartStatus(): Omit<RestartStatus, "running"> {
 
 /**
  * Hand the restart to a detached `omp-ui restart --rebuild` (or `pm2 restart --rebuild`). It stops
- * this server (running agents are interrupted, as on any restart), builds and starts the new one;
+ * this server (running agents are interrupted; boot recovery resumes them), builds and starts the new one;
  * its output goes to DATA_DIR/restart.log.
  */
 export function startRestart(): RestartMode {

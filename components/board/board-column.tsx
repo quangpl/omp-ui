@@ -1,21 +1,25 @@
 "use client";
 
 import { type CSSProperties, useRef, useState } from "react";
+import { LoaderCircle, Play, Square } from "lucide-react";
 import { useDndContext, useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/utils";
 import { STATUS_LABELS, type Task, type TaskStatus } from "@/lib/types";
 import { type BoardMenuActions, CardContextMenu } from "@/components/board/card-context-menu";
+import { bulkTargets, useBulkRunner } from "@/components/board/bulk-actions";
 import { InlineComposer, type QuickCreate } from "@/components/board/inline-composer";
 import { useNewCard } from "@/components/new-card";
 import {
   type QuickActionHandlers,
   type QuickActionId,
+  isPinnedQuickAction,
   quickActionsFor,
   runQuickAction,
 } from "@/components/board/quick-actions";
 import { TaskCard } from "@/components/board/task-card";
+import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -58,16 +62,24 @@ function useQuickActionRunner(taskId: string, handlers: QuickActionHandlers) {
 const HIDDEN_UNTIL_CARD_ACTIVE =
   "pointer-events-none opacity-0 group-hover/card:pointer-events-auto group-hover/card:opacity-100 group-focus-within/card:pointer-events-auto group-focus-within/card:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100";
 
+/** Stop, Push to main and Retry stay on the card without hovering: each is that card's next step. */
+function staysVisible(id: QuickActionId): boolean {
+  return isPinnedQuickAction(id) || id === "retry";
+}
+
 /**
- * Desktop quick actions in a card's top-right corner, revealed on hover/focus. Stop stays visible
- * while the agent runs. Rendered beside (not inside) the card button so the card keeps its name.
+ * Desktop quick actions in a card's top-right corner, revealed on hover/focus. Stop (agent
+ * running), Retry (agent failed) and Push to main (finished, not pushed yet) stay visible.
+ * Rendered beside (not inside) the card button so the card keeps its name.
  */
 export function CardQuickActionStrip({
   task,
+  canPush,
   pending,
   onRun,
 }: {
-  task: Pick<Task, "status" | "agentState">;
+  task: Pick<Task, "status" | "agentState" | "retryAt" | "pushedAt">;
+  canPush: boolean;
   /** Action currently in flight; all buttons are disabled meanwhile. */
   pending: QuickActionId | null;
   onRun: (id: QuickActionId) => void;
@@ -75,7 +87,7 @@ export function CardQuickActionStrip({
   return (
     // Reversed so the primary action sits in the corner and secondary ones grow leftwards.
     <div className="absolute top-1.5 right-1.5 z-10 flex flex-row-reverse items-center gap-1">
-      {quickActionsFor(task).map((action) => (
+      {quickActionsFor(task, { canPush }).map((action) => (
         <Tooltip key={action.id}>
           <TooltipTrigger asChild>
             <button
@@ -94,7 +106,7 @@ export function CardQuickActionStrip({
                 "hover:bg-accent hover:text-accent-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
                 "disabled:cursor-wait disabled:*:opacity-50 [&_svg]:size-3.5",
                 action.id === "revert" ? "text-muted-foreground" : "text-foreground",
-                action.id !== "stop" && HIDDEN_UNTIL_CARD_ACTIVE,
+                !staysVisible(action.id) && HIDDEN_UNTIL_CARD_ACTIVE,
               )}
             >
               <action.icon
@@ -118,12 +130,16 @@ function SortableTaskCard({
   index,
   activity,
   menuActions,
+  selected,
+  onToggleSelect,
 }: {
   task: Task;
   /** Position in the column; staggers the entry animation. */
   index: number;
   activity: string | undefined;
   menuActions: BoardMenuActions;
+  selected: boolean;
+  onToggleSelect: (taskId: string) => void;
 }) {
   const {
     active,
@@ -139,6 +155,12 @@ function SortableTaskCard({
   // anything mounting mid-drag.
   const [animateIn] = useState(() => active === null);
   const { pending, run } = useQuickActionRunner(task.id, menuActions);
+  const canPush = menuActions.pushToMain !== null;
+  // Corner slots (from the right) up to the last always-visible action; the title stays clear of them.
+  const pinnedSlots = quickActionsFor(task, { canPush }).reduce(
+    (slots, action, i) => (staysVisible(action.id) ? i + 1 : slots),
+    0,
+  );
 
   return (
     <CardContextMenu task={task} actions={menuActions}>
@@ -157,13 +179,18 @@ function SortableTaskCard({
           <TaskCard
             task={task}
             placeholder={isDragging}
+            selected={selected}
             activity={activity}
             activatorRef={setActivatorNodeRef}
             dragAttributes={attributes}
             dragListeners={listeners}
-            quickActions={<CardQuickActionStrip task={task} pending={pending} onRun={run} />}
-            onOpen={() => {
-              if (!isDragging) menuActions.openCard(task.id);
+            quickActions={<CardQuickActionStrip task={task} canPush={canPush} pending={pending} onRun={run} />}
+            pinnedQuickActions={pinnedSlots}
+            onOpen={(event) => {
+              if (isDragging) return;
+              // ⌘/Ctrl/⇧+click picks cards for a bulk quick action instead of opening one.
+              if (event.metaKey || event.ctrlKey || event.shiftKey) onToggleSelect(task.id);
+              else menuActions.openCard(task.id);
             }}
             onAnswer={() => {
               if (isDragging) return;
@@ -183,6 +210,8 @@ export function BoardColumn({
   tasks,
   activity,
   menuActions,
+  selected,
+  onToggleSelect,
   onCreate,
 }: {
   status: TaskStatus;
@@ -190,6 +219,10 @@ export function BoardColumn({
   activity: Record<string, string>;
   /** Card clicks and right-click menu actions. */
   menuActions: BoardMenuActions;
+  /** Ids of the selected cards (board-wide). */
+  selected: ReadonlySet<string>;
+  /** ⌘/Ctrl/⇧+click on a card. */
+  onToggleSelect: (taskId: string) => void;
   /** When set, shows the inline "Add a card" composer at the bottom. */
   onCreate?: QuickCreate;
 }) {
@@ -206,28 +239,64 @@ export function BoardColumn({
   });
   const highlighted = isOver && dragStatus === status;
   const listRef = useRef<HTMLDivElement | null>(null);
+  const bulk = useBulkRunner(menuActions);
+  // To do offers "Start all", In progress "Stop all"; Done has no column-wide action.
+  const headerAction =
+    status === "todo"
+      ? { key: "R" as const, label: "Start all", icon: Play, targets: bulkTargets(tasks, "R", false) }
+      : status === "in_progress"
+        ? { key: "S" as const, label: "Stop all", icon: Square, targets: bulkTargets(tasks, "S", false) }
+        : null;
 
   return (
     <section
       aria-label={STATUS_LABELS[status]}
       className={cn(
-        "flex min-h-0 min-w-0 flex-col rounded-xl border transition-[background-color,box-shadow] duration-200",
+        "flex min-h-0 min-w-0 snap-start flex-col rounded-xl border transition-[background-color,box-shadow] duration-200",
         highlighted ? "bg-accent/40 ring-1 ring-primary/30" : "bg-muted/40 dark:bg-muted/20",
       )}
     >
-      <header className="flex items-center gap-2 px-3.5 pt-3 pb-2">
+      {/* Fixed height so all three headers line up whether or not the column has a bulk action. */}
+      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border/50 pr-1.5 pl-3.5">
         <StatusDot status={status} />
-        <h2 className="text-sm font-semibold">{STATUS_LABELS[status]}</h2>
-        <span className="rounded-full bg-background px-2 py-0.5 text-xs text-muted-foreground tabular-nums ring-1 ring-border">
+        <h2 className="truncate text-[0.8125rem] font-semibold tracking-tight">{STATUS_LABELS[status]}</h2>
+        <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-background px-1.5 text-[11px] font-medium text-muted-foreground tabular-nums ring-1 ring-border">
           {tasks.length}
         </span>
+        {headerAction && headerAction.targets.length > 0 && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                aria-label={`${headerAction.label} (${headerAction.targets.length})`}
+                aria-busy={bulk.pending !== null || undefined}
+                disabled={bulk.pending !== null}
+                onClick={() => bulk.run(headerAction.targets.map((target) => target.task), headerAction.key)}
+                className="ml-auto h-7 shrink-0 gap-1.5 px-2 text-muted-foreground hover:text-foreground active:translate-y-px"
+              >
+                {bulk.pending ? (
+                  <LoaderCircle aria-hidden className="animate-spin motion-reduce:animate-none" />
+                ) : (
+                  <headerAction.icon aria-hidden className="fill-current" />
+                )}
+                {headerAction.label}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              {headerAction.label} · {headerAction.targets.length}{" "}
+              {headerAction.targets.length === 1 ? "card" : "cards"}
+            </TooltipContent>
+          </Tooltip>
+        )}
       </header>
       <div
         ref={(node) => {
           setNodeRef(node);
           listRef.current = node;
         }}
-        className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2"
+        className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pt-2 pb-3"
       >
         <SortableContext
           items={tasks.map((t) => t.id)}
@@ -242,6 +311,8 @@ export function BoardColumn({
                 index={index}
                 activity={activity[task.id]}
                 menuActions={menuActions}
+                selected={selected.has(task.id)}
+                onToggleSelect={onToggleSelect}
               />
             ))}
             {tasks.length === 0 &&

@@ -742,7 +742,12 @@ describe("agent flow with the fake omp", () => {
       expect(failed.task.status).toBe("in_progress");
       expect(failed.task.agentError).toBe("Fake model error: rate limited");
       const agentComments = failed.comments.filter((c) => c.author === "agent");
-      expect(agentComments.map((c) => c.body)).toEqual(["Agent failed: Fake model error: rate limited"]);
+      // Retried automatically in its omp session after 15 s (retries are on by default).
+      expect(agentComments.map((c) => c.body)).toEqual([
+        "Agent failed: Fake model error: rate limited\n\nRetrying automatically in 15s (retry 1 of 5).",
+      ]);
+      expect(failed.task.autoRetries).toBe(1);
+      expect(Date.parse(failed.task.retryAt ?? "")).toBeGreaterThan(Date.now());
 
       const runs = await listRuns(created.id);
       expect(runs).toHaveLength(1);
@@ -758,6 +763,8 @@ describe("agent flow with the fake omp", () => {
       expect(stopped.status).toBe(200);
       expect(stopped.body.agentState).toBe("idle");
       expect(stopped.body.agentError).toBeNull();
+      // …and cancels the pending automatic retry.
+      expect(stopped.body.retryAt).toBeNull();
       expect(stopped.body.status).toBe("in_progress");
     },
     60_000,
@@ -771,6 +778,8 @@ describe("agent flow with the fake omp", () => {
       expect(failed.task.status).toBe("in_progress");
       expect(failed.task.agentError).toContain("segmentation fault");
       expect((await listRuns(created.id))[0].status).toBe("failed");
+      // Cancel its automatic retry so it does not run during later tests.
+      await api(taskStopRoute, "POST", `/tasks/${created.id}/stop`, { params: { id: created.id } });
     },
     60_000,
   );
@@ -874,7 +883,7 @@ describe("agent flow with the fake omp", () => {
         await waitForTask(second.id, (t) => t.agentState === "running");
         await api(taskStopRoute, "POST", `/tasks/${second.id}/stop`, { params: { id: second.id } });
       } finally {
-        await api(settingsRoute, "PATCH", "/settings", { body: { maxConcurrentAgents: 2 } });
+        await api(settingsRoute, "PATCH", "/settings", { body: { maxConcurrentAgents: "auto" } });
       }
     },
     60_000,
@@ -935,29 +944,36 @@ describe("settings, health and system", () => {
     const res = await api<AppSettings>(settingsRoute, "GET", "/settings");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      maxConcurrentAgents: 2,
+      maxConcurrentAgents: "auto",
       ompPath: FAKE_OMP,
       approvalMode: "yolo",
       defaultModel: "",
       autoModel: true,
       smartQueue: true,
       browser: "headless",
+      autoRetry: true,
+      maxAutoRetries: 5,
     });
   });
 
   it("PATCH /settings rejects invalid values with 400 and leaves settings unchanged", async () => {
     const before = (await api<AppSettings>(settingsRoute, "GET", "/settings")).body;
     const cases: [Record<string, unknown>, string][] = [
-      [{ maxConcurrentAgents: 0 }, "maxConcurrentAgents must be an integer between 1 and 16"],
-      [{ maxConcurrentAgents: 17 }, "maxConcurrentAgents must be an integer between 1 and 16"],
-      [{ maxConcurrentAgents: 2.5 }, "maxConcurrentAgents must be an integer between 1 and 16"],
-      [{ maxConcurrentAgents: "3" }, "maxConcurrentAgents must be an integer between 1 and 16"],
+      [{ maxConcurrentAgents: 0 }, 'maxConcurrentAgents must be "auto" or an integer between 1 and 16'],
+      [{ maxConcurrentAgents: 17 }, 'maxConcurrentAgents must be "auto" or an integer between 1 and 16'],
+      [{ maxConcurrentAgents: 2.5 }, 'maxConcurrentAgents must be "auto" or an integer between 1 and 16'],
+      [{ maxConcurrentAgents: "3" }, 'maxConcurrentAgents must be "auto" or an integer between 1 and 16'],
+      [{ maxConcurrentAgents: "Auto!" }, 'maxConcurrentAgents must be "auto" or an integer between 1 and 16'],
       [{ approvalMode: "bogus" }, "approvalMode must be one of: yolo, write, always-ask"],
       [{ ompPath: "   " }, "ompPath must be a non-empty string"],
       [{ ompPath: 7 }, "ompPath must be a non-empty string"],
       [{ defaultModel: "m".repeat(201) }, "defaultModel must be a string of at most 200 characters"],
       [{ autoModel: "yes" }, "autoModel must be a boolean"],
       [{ smartQueue: 1 }, "smartQueue must be a boolean"],
+      [{ autoRetry: "on" }, "autoRetry must be a boolean"],
+      [{ maxAutoRetries: 21 }, "maxAutoRetries must be an integer between 0 and 20"],
+      [{ maxAutoRetries: -1 }, "maxAutoRetries must be an integer between 0 and 20"],
+      [{ maxAutoRetries: 1.5 }, "maxAutoRetries must be an integer between 0 and 20"],
       [{ maxConcurrentAgents: 3, approvalMode: "nope" }, "approvalMode must be one of: yolo, write, always-ask"],
     ];
     for (const [body, error] of cases) {
@@ -981,10 +997,21 @@ describe("settings, health and system", () => {
       autoModel: true,
       smartQueue: true,
       browser: "headless",
+      autoRetry: true,
+      maxAutoRetries: 5,
     });
 
     const partial = await api<AppSettings>(settingsRoute, "PATCH", "/settings", {
-      body: { maxConcurrentAgents: 1, approvalMode: "always-ask", defaultModel: "", autoModel: false, smartQueue: false, browser: "off" },
+      body: {
+        maxConcurrentAgents: 1,
+        approvalMode: "always-ask",
+        defaultModel: "",
+        autoModel: false,
+        smartQueue: false,
+        browser: "off",
+        autoRetry: false,
+        maxAutoRetries: 0,
+      },
     });
     expect(partial.body).toEqual({
       maxConcurrentAgents: 1,
@@ -994,13 +1021,24 @@ describe("settings, health and system", () => {
       autoModel: false,
       smartQueue: false,
       browser: "off",
+      autoRetry: false,
+      maxAutoRetries: 0,
     });
     expect((await api<AppSettings>(settingsRoute, "GET", "/settings")).body).toEqual(partial.body);
     expect((await api<AppSettings>(settingsRoute, "PATCH", "/settings", { body: {} })).body).toEqual(partial.body);
 
     // Restore for the other tests in this suite.
     await api(settingsRoute, "PATCH", "/settings", {
-      body: { maxConcurrentAgents: 2, approvalMode: "yolo", ompPath: FAKE_OMP, autoModel: true, smartQueue: true, browser: "headless" },
+      body: {
+        maxConcurrentAgents: "auto",
+        approvalMode: "yolo",
+        ompPath: FAKE_OMP,
+        autoModel: true,
+        smartQueue: true,
+        browser: "headless",
+        autoRetry: true,
+        maxAutoRetries: 5,
+      },
     });
   });
 

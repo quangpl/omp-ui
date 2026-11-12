@@ -16,6 +16,18 @@ export interface RunContext {
 const SUMMARY_INSTRUCTION =
   "Finish with a concise summary of what you did (this summary is shown to the user on the card): what changed, how you verified it, and anything left for the user to decide.";
 
+/**
+ * Ends the summary with a `## Report` the card renders as a report card (outcome, tests, changes,
+ * screenshot gallery). Image links use the card's file URLs so the user can open and comment on them.
+ */
+function reportInstruction(task: Task, context?: RunContext): string {
+  const folder = context ? `this card's shared files folder (${context.taskFiles})` : "this card's shared files folder";
+  return `When the work involves a UI or tests, save screenshots of the result and test result files (reports, logs) to ${folder}. End the summary, after any question for the user, with a short \`## Report\` section: an \`Outcome:\` line (one sentence: done, partly done or failed, and why); a \`Tests:\` line with the counts you observed (e.g. \`Tests: 42 passed, 0 failed\`, or \`Tests: not run\`); a \`Changes:\` line with \`git diff --shortstat\` of your work when code changed; and one markdown image per saved screenshot, linked by its path inside that folder as \`![what it shows](/api/v1/tasks/${task.id}/files/<path>)\` (e.g. \`![cart page](/api/v1/tasks/${task.id}/files/screenshots/cart.png)\`), with other saved files linked the same way as \`[name](/api/v1/tasks/${task.id}/files/<path>)\`.`;
+}
+
+const PUSH_INSTRUCTION =
+  "Do not push on your own; the user ships the work from the card. But when the task or the user's feedback explicitly asks you to push to main (or the default branch) or to open a pull/merge request, do it directly without asking for confirmation: commit, push, and open the PR/MR (gh or glab), then put the branch and the PR/MR URL in your Report.";
+
 const HEADLESS_INSTRUCTION =
   "Nobody can answer questions during this run, so do not stop to ask. When you or one of your subagents are unsure which way to go (approach, library, design or behavior choice, unclear scope), call the ask_advisor tool and follow its decision. Leave a question for the user (at the end of your summary) only when it needs their own judgment: personal preference or taste, private information, business/legal/money decisions, or destructive actions the task does not ask for; meanwhile make the most reasonable, easily reversible assumption and mention it in your summary.";
 
@@ -79,7 +91,9 @@ export function buildPrompt(
       `Address all of the feedback above in ${where}. Make the changes and verify them.`,
       ...(needsOrchestration(null, feedback) ? [ORCHESTRATE_INSTRUCTION] : []),
       HEADLESS_INSTRUCTION,
+      PUSH_INSTRUCTION,
       SUMMARY_INSTRUCTION,
+      reportInstruction(task, context),
     ].join("\n");
   }
 
@@ -93,7 +107,9 @@ export function buildPrompt(
       `Check the current state of ${where}, finish any remaining work, and verify it.`,
       ...(needsOrchestration(task, []) ? [ORCHESTRATE_INSTRUCTION] : []),
       HEADLESS_INSTRUCTION,
+      PUSH_INSTRUCTION,
       SUMMARY_INSTRUCTION,
+      reportInstruction(task, context),
     ].join("\n");
   }
 
@@ -117,7 +133,9 @@ export function buildPrompt(
     ...(needsOrchestration(task, feedback) ? [`- ${ORCHESTRATE_INSTRUCTION}`] : []),
     "- Verify it: run the relevant build, tests, or a quick check as appropriate.",
     `- ${HEADLESS_INSTRUCTION}`,
+    `- ${PUSH_INSTRUCTION}`,
     `- ${SUMMARY_INSTRUCTION}`,
+    `- ${reportInstruction(task, context)}`,
   );
   return lines.join("\n");
 }
@@ -191,10 +209,10 @@ function collaborationLines(task: Task, context: RunContext): string[] {
   const lines = [
     ...(context.workspaceBranch
       ? [
-          `- You work in a dedicated git worktree on branch \`${context.workspaceBranch}\`, separate from other cards' agents. Stay on this branch; do not push — the user ships it from the card.`,
+          `- You work in a dedicated git worktree on branch \`${context.workspaceBranch}\`, separate from other cards' agents. Stay on this branch; the user ships it from the card (see the push rule in the instructions).`,
         ]
       : []),
-    `- Files: ${context.taskFiles} holds files shared on this card; read the ones relevant to the task, and save deliverables meant for the user there (reports, exports, screenshots). ${context.boardFiles} is shared by every card of this board; use it to hand files to other cards' agents.`,
+    `- Files: ${context.taskFiles} holds files shared on this card; read the ones relevant to the task, and save deliverables meant for the user there (reports, exports, screenshots). Feedback starting with \`> re: <path>\` is about that file in this folder (e.g. a screenshot). ${context.boardFiles} is shared by every card of this board; use it to hand files to other cards' agents.`,
     `- Other agents may be working on other cards of this board at the same time. Your card id is ${task.id}. Board tools: board_list_cards and board_read_card show the cards; board_create_card delegates a clearly separable piece of work to a new card with its own agent (give it a complete brief; prefer doing small work yourself); board_message_card sends a message to another card's agent; board_wait_for_cards waits until cards finish and returns their summaries.`,
   ];
   if (context.browser !== "off") {

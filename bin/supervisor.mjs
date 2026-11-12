@@ -19,7 +19,11 @@
 //   OMP_UI_HEALTH_FAILURES      failed probes in a row before a force restart (default 3; 0 = never)
 //   OMP_UI_HEALTH_GRACE_MS      startup time before failures count (default 120000)
 //   OMP_UI_STOP_TIMEOUT_MS      SIGTERM → SIGKILL escalation (default 8000)
+//   AGENTMEMORY_ENABLED         auto (default) | true | false: keep the agentmemory memory server
+//                               running (bin/agentmemory.mjs) — checked at boot, then every
+//                               OMP_UI_MEMORY_CHECK_MS (default 300000; 0 = boot only). Never fatal.
 import { spawn } from "node:child_process";
+import { agentmemoryMode, ensureAgentmemory } from "./agentmemory.mjs";
 
 const [command, ...args] = process.argv.slice(2);
 if (!command) {
@@ -183,6 +187,31 @@ function stop(signal) {
   else process.exit(0);
 }
 
+const MEMORY_CHECK_MS = envMs("OMP_UI_MEMORY_CHECK_MS", 300_000);
+let memoryState = null;
+
+/** Start the memory server when it is down; logs only when its state changes. */
+async function keepMemory() {
+  if (stopping) return;
+  const result = await ensureAgentmemory();
+  const missingQuietly = result.state === "missing" && agentmemoryMode() === "auto";
+  if (result.state !== memoryState && !missingQuietly) {
+    const detail = result.detail ? `: ${result.detail}` : "";
+    const messages = {
+      running: `memory server is up (${result.url})`,
+      started: `started the memory server (${result.url})`,
+      starting: `memory server is still starting (${result.url})`,
+      missing: "AGENTMEMORY_ENABLED=true but agentmemory is not installed (npx -y @agentmemory/agentmemory@latest)",
+      "remote-down": `memory server at ${result.url} is not answering`,
+      failed: `could not start the memory server${detail}`,
+    };
+    if (messages[result.state]) say(messages[result.state]);
+  }
+  memoryState = result.state;
+  if (MEMORY_CHECK_MS > 0 && result.state !== "disabled" && !stopping) setTimeout(keepMemory, MEMORY_CHECK_MS).unref();
+}
+
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => stop(signal));
 
 start();
+void keepMemory();

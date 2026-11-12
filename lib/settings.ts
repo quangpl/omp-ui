@@ -3,13 +3,18 @@ import { BROWSER_MODES, DEFAULT_SETTINGS, type AppSettings, type ApprovalMode } 
 
 const KEY = "app_settings";
 const APPROVAL_MODES: ApprovalMode[] = ["yolo", "write", "always-ask"];
+/** Highest explicit agent limit (the automatic one has its own cap). */
+export const MAX_EXPLICIT_AGENTS = 16;
 
-/** Stored settings merged over defaults; env vars (OMP_PATH, MAX_AGENTS) override the defaults. */
+/**
+ * Stored settings merged over defaults; env vars (OMP_PATH, MAX_AGENTS) override the defaults.
+ * MAX_AGENTS: a number is an explicit limit; `auto` or unset derives it from the machine.
+ */
 export async function getAppSettings(repo: Repository): Promise<AppSettings> {
   const base: AppSettings = {
     ...DEFAULT_SETTINGS,
     ompPath: process.env.OMP_PATH || DEFAULT_SETTINGS.ompPath,
-    maxConcurrentAgents: Number(process.env.MAX_AGENTS) || DEFAULT_SETTINGS.maxConcurrentAgents,
+    maxConcurrentAgents: parseAgentLimit(process.env.MAX_AGENTS) ?? DEFAULT_SETTINGS.maxConcurrentAgents,
   };
   const raw = await repo.getSetting(KEY);
   if (!raw) return base;
@@ -29,9 +34,18 @@ export async function updateAppSettings(
   return next;
 }
 
+/** `"auto"`, or a whole number clamped to 1…MAX_EXPLICIT_AGENTS; null when `value` is neither. */
+export function parseAgentLimit(value: unknown): AppSettings["maxConcurrentAgents"] | null {
+  if (typeof value === "string" && value.trim().toLowerCase() === "auto") return "auto";
+  const n = Math.floor(Number(value));
+  if (value === null || value === "" || !Number.isFinite(n) || n < 1) return null;
+  return Math.min(MAX_EXPLICIT_AGENTS, n);
+}
+
 function sanitize(s: AppSettings): AppSettings {
   return {
-    maxConcurrentAgents: Math.min(16, Math.max(1, Math.floor(Number(s.maxConcurrentAgents) || 1))),
+    // Stored numbers (older versions only had numbers) stay explicit limits.
+    maxConcurrentAgents: parseAgentLimit(s.maxConcurrentAgents) ?? DEFAULT_SETTINGS.maxConcurrentAgents,
     ompPath: String(s.ompPath || "omp").trim(),
     approvalMode: APPROVAL_MODES.includes(s.approvalMode) ? s.approvalMode : "yolo",
     defaultModel: String(s.defaultModel ?? "").trim(),

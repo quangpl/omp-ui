@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
+  BrainIcon,
   CheckIcon,
   CopyIcon,
   CpuIcon,
@@ -9,26 +10,29 @@ import {
   InfoIcon,
   KeyRoundIcon,
   Loader2Icon,
+  RotateCcwIcon,
   ServerIcon,
   SmartphoneIcon,
+  SquareTerminalIcon,
   TriangleAlertIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
 import { PasswordInput } from "@/components/password-input";
+import { MemorySettingsSection } from "@/components/settings/memory-settings";
+import { OmpSettingsSection } from "@/components/settings/omp-settings";
+import { SettingsNav, type SettingsNavItem } from "@/components/settings/settings-nav";
+import {
+  SettingsField,
+  SettingsGroup,
+  SettingsPanel,
+  SettingsSection,
+  SettingsToggle,
+} from "@/components/settings/settings-section";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -38,9 +42,10 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { api, type SystemInfo } from "@/lib/api-client";
-import type { AppSettings, ApprovalMode, BrowserMode } from "@/lib/types";
-import { copyText } from "@/lib/utils";
+import type { AppSettings, ApprovalMode, BrowserMode, ConcurrencyInfo } from "@/lib/types";
+import { cn, copyText } from "@/lib/utils";
 
 const APPROVAL_MODES: { value: ApprovalMode; label: string; hint: string }[] = [
   {
@@ -79,57 +84,141 @@ const BROWSER_OPTIONS: { value: BrowserMode; label: string; hint: string }[] = [
   },
 ];
 
-const MIN_PASSWORD = 8;
-const FIELD = "h-11 md:h-9";
+const SECTIONS: SettingsNavItem[] = [
+  { id: "agent", label: "Agent", icon: <CpuIcon /> },
+  { id: "omp", label: "OMP", icon: <SquareTerminalIcon /> },
+  { id: "memory", label: "Memory", icon: <BrainIcon /> },
+  { id: "system", label: "System", icon: <ServerIcon /> },
+  { id: "security", label: "Security", icon: <KeyRoundIcon /> },
+  { id: "api", label: "Mobile & API", icon: <SmartphoneIcon /> },
+];
 
-function SectionHeader({
-  icon,
-  title,
-  description,
+const MIN_PASSWORD = 8;
+/** Highest explicit agent limit the server accepts (MAX_EXPLICIT_AGENTS). */
+const MAX_AGENTS = 16;
+/** The server re-samples the automatic agent limit every 30 s. */
+const CONCURRENCY_REFRESH_MS = 30_000;
+const FIELD = "h-11 md:h-9";
+const SELECT_TRIGGER = "w-full data-[size=default]:h-11 md:data-[size=default]:h-9";
+
+type LimitMode = "auto" | "manual";
+
+function errorText(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
+/** The effective agent limit from GET /queue, re-read while the page is visible. */
+function useConcurrency(): [ConcurrencyInfo | null, () => void] {
+  const [info, setInfo] = useState<ConcurrencyInfo | null>(null);
+
+  const refresh = useCallback(() => {
+    api.queue
+      .get()
+      .then((snapshot) => setInfo(snapshot.concurrency ?? null))
+      .catch(() => {
+        // Only feeds helper text; keep the last value.
+      });
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const id = window.setInterval(() => {
+      if (!document.hidden) refresh();
+    }, CONCURRENCY_REFRESH_MS);
+    return () => window.clearInterval(id);
+  }, [refresh]);
+
+  return [info, refresh];
+}
+
+/** Two-option segmented radio group (Auto / Manual). */
+function LimitModeToggle({
+  value,
+  onChange,
+  disabled,
 }: {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
+  value: LimitMode;
+  onChange: (mode: LimitMode) => void;
+  disabled?: boolean;
 }) {
+  const options: { value: LimitMode; label: string }[] = [
+    { value: "auto", label: "Auto" },
+    { value: "manual", label: "Manual" },
+  ];
   return (
-    <CardHeader className="flex items-start gap-3">
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary [&_svg]:size-4">
-        {icon}
-      </span>
-      <div className="min-w-0 space-y-1">
-        <CardTitle>{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-      </div>
-    </CardHeader>
+    <div
+      role="radiogroup"
+      aria-labelledby="max-agents-label"
+      className="grid w-full grid-cols-2 rounded-lg bg-muted p-1 sm:w-56"
+      onKeyDown={(e) => {
+        if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+        e.preventDefault();
+        const next = value === "auto" ? "manual" : "auto";
+        onChange(next);
+        e.currentTarget.querySelector<HTMLButtonElement>(`[data-value="${next}"]`)?.focus();
+      }}
+    >
+      {options.map((option) => {
+        const checked = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={checked}
+            data-value={option.value}
+            tabIndex={checked ? 0 : -1}
+            disabled={disabled}
+            onClick={() => onChange(option.value)}
+            className={cn(
+              "h-10 rounded-md text-sm font-medium transition-[background-color,color,box-shadow,transform] outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.98] disabled:opacity-50 md:h-7",
+              checked
+                ? "bg-background text-foreground shadow-sm ring-1 ring-foreground/10"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
-function AgentSettingsCard() {
+function AgentSettingsSection() {
   const [saved, setSaved] = useState<AppSettings | null>(null);
   const [draft, setDraft] = useState<AppSettings | null>(null);
+  const [limitMode, setLimitMode] = useState<LimitMode>("auto");
   const [maxAgents, setMaxAgents] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [concurrency, refreshConcurrency] = useConcurrency();
 
-  useEffect(() => {
-    api.settings
-      .get()
-      .then((settings) => {
-        setSaved(settings);
-        setDraft(settings);
-        setMaxAgents(String(settings.maxConcurrentAgents));
-      })
-      .catch((err) =>
-        setLoadError(err instanceof Error && err.message ? err.message : "Could not load settings."),
-      );
+  const applySettings = useCallback((settings: AppSettings) => {
+    setSaved(settings);
+    setDraft(settings);
+    setLimitMode(settings.maxConcurrentAgents === "auto" ? "auto" : "manual");
+    setMaxAgents(settings.maxConcurrentAgents === "auto" ? "" : String(settings.maxConcurrentAgents));
   }, []);
 
+  const load = useCallback(() => {
+    setLoadError(null);
+    api.settings
+      .get()
+      .then(applySettings)
+      .catch((err) => setLoadError(errorText(err, "Could not load settings.")));
+  }, [applySettings]);
+
+  useEffect(load, [load]);
+
   const parsedMax = Number(maxAgents);
-  const maxValid = Number.isInteger(parsedMax) && parsedMax >= 1 && parsedMax <= 16;
+  const maxValid =
+    limitMode === "auto" || (Number.isInteger(parsedMax) && parsedMax >= 1 && parsedMax <= MAX_AGENTS);
+  const limitValue: AppSettings["maxConcurrentAgents"] = limitMode === "auto" ? "auto" : parsedMax;
   const dirty =
     saved !== null &&
     draft !== null &&
-    (String(saved.maxConcurrentAgents) !== maxAgents ||
+    (saved.maxConcurrentAgents !== limitValue ||
       saved.ompPath !== draft.ompPath ||
       saved.approvalMode !== draft.approvalMode ||
       saved.defaultModel !== draft.defaultModel ||
@@ -139,13 +228,21 @@ function AgentSettingsCard() {
       saved.maxAutoRetries !== draft.maxAutoRetries ||
       saved.browser !== draft.browser);
 
+  function onLimitModeChange(mode: LimitMode) {
+    setLimitMode(mode);
+    // Switching to a fixed limit starts from what the machine allows right now.
+    if (mode === "manual" && !maxAgents) {
+      setMaxAgents(String(Math.min(MAX_AGENTS, Math.max(1, concurrency?.limit ?? 2))));
+    }
+  }
+
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!draft || !dirty || saving || !maxValid) return;
     setSaving(true);
     try {
       const next = await api.settings.update({
-        maxConcurrentAgents: parsedMax,
+        maxConcurrentAgents: limitValue,
         ompPath: draft.ompPath.trim(),
         approvalMode: draft.approvalMode,
         defaultModel: draft.defaultModel.trim(),
@@ -155,12 +252,11 @@ function AgentSettingsCard() {
         maxAutoRetries: draft.maxAutoRetries,
         browser: draft.browser,
       });
-      setSaved(next);
-      setDraft(next);
-      setMaxAgents(String(next.maxConcurrentAgents));
+      applySettings(next);
+      refreshConcurrency();
       toast.success("Settings saved");
     } catch (err) {
-      toast.error(err instanceof Error && err.message ? err.message : "Could not save settings.");
+      toast.error(errorText(err, "Could not save settings."));
     } finally {
       setSaving(false);
     }
@@ -168,237 +264,299 @@ function AgentSettingsCard() {
 
   const mode = APPROVAL_MODES.find((m) => m.value === draft?.approvalMode);
   const browser = BROWSER_OPTIONS.find((b) => b.value === draft?.browser);
+  const limitHint =
+    limitMode === "auto"
+      ? concurrency?.mode === "auto"
+        ? concurrency.reason
+        : "Derived from this server's cores and free memory, re-checked every 30 s."
+      : `Extra runs wait in a queue (1–${MAX_AGENTS}).`;
 
   return (
-    <Card>
-      <SectionHeader
-        icon={<CpuIcon />}
-        title="Agent"
-        description="How omp is launched for every board."
-      />
+    <SettingsSection
+      id="agent"
+      icon={<CpuIcon />}
+      title="Agent"
+      description="How omp is launched for every board."
+    >
       {loadError ? (
-        <CardContent>
-          <p className="text-sm text-destructive">{loadError}</p>
-        </CardContent>
+        <SettingsPanel className="flex flex-col items-start gap-3 p-4 sm:flex-row sm:items-center sm:p-5">
+          <div className="flex min-w-0 flex-1 gap-3">
+            <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
+            <div className="min-w-0 space-y-0.5">
+              <p className="font-medium">Couldn't load agent settings</p>
+              <p className="text-destructive">{loadError}</p>
+            </div>
+          </div>
+          <Button type="button" variant="outline" onClick={load} className={cn(FIELD, "w-full gap-2 sm:w-auto")}>
+            <RotateCcwIcon />
+            Try again
+          </Button>
+        </SettingsPanel>
       ) : !draft ? (
-        <CardContent className="space-y-5" aria-busy="true">
-          {Array.from({ length: 4 }, (_, i) => (
-            <div key={i} className="space-y-2">
-              <Skeleton className="h-4 w-32" />
-              <Skeleton className="h-11 w-full md:h-9" />
-            </div>
-          ))}
-        </CardContent>
-      ) : (
-        <form onSubmit={onSubmit} noValidate className="contents">
-          <CardContent className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="max-agents">Max concurrent agents</Label>
-              <Input
-                id="max-agents"
-                type="number"
-                inputMode="numeric"
-                min={1}
-                max={16}
-                step={1}
-                value={maxAgents}
-                onChange={(e) => setMaxAgents(e.target.value)}
-                aria-invalid={maxValid ? undefined : true}
-                disabled={saving}
-                className={FIELD}
-              />
-              <p className={maxValid ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>
-                {maxValid ? "Extra runs wait in a queue." : "Enter a whole number from 1 to 16."}
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="omp-path">omp path</Label>
-              <Input
-                id="omp-path"
-                value={draft.ompPath}
-                onChange={(e) => setDraft({ ...draft, ompPath: e.target.value })}
-                placeholder="omp"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                disabled={saving}
-                className={`${FIELD} font-mono`}
-              />
-              <p className="text-xs text-muted-foreground">Executable name on PATH or absolute path.</p>
-            </div>
-
-            <div className="space-y-2 sm:col-span-2">
-              <Label htmlFor="approval-mode">Approval mode</Label>
-              <Select
-                value={draft.approvalMode}
-                onValueChange={(value) => setDraft({ ...draft, approvalMode: value as ApprovalMode })}
-                disabled={saving}
-              >
-                <SelectTrigger
-                  id="approval-mode"
-                  className="w-full data-[size=default]:h-11 md:data-[size=default]:h-9"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent position="popper">
-                  {APPROVAL_MODES.map((m) => (
-                    <SelectItem key={m.value} value={m.value} className="min-h-11 md:min-h-8">
-                      {m.label}
-                    </SelectItem>
+        <SettingsPanel>
+          <div aria-busy="true" className="divide-y">
+            {[2, 1, 3].map((rows, group) => (
+              <div key={group} className="space-y-5 p-4 sm:p-5">
+                <Skeleton className="h-3 w-20" />
+                <div className="grid gap-5 sm:grid-cols-2">
+                  {Array.from({ length: rows }, (_, i) => (
+                    <div key={i} className={cn("space-y-2", rows % 2 === 1 && i === rows - 1 && "sm:col-span-2")}>
+                      <Skeleton className="h-4 w-32" />
+                      <Skeleton className="h-11 w-full md:h-9" />
+                      <Skeleton className="h-3 w-3/4" />
+                    </div>
                   ))}
-                </SelectContent>
-              </Select>
-              {mode && <p className="text-xs text-muted-foreground">{mode.hint}</p>}
-            </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </SettingsPanel>
+      ) : (
+        <form onSubmit={onSubmit} noValidate>
+          <SettingsPanel>
+            <SettingsGroup title="Runtime">
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                <SettingsField
+                  label="omp path"
+                  htmlFor="omp-path"
+                  hint="Executable name on PATH or absolute path."
+                >
+                  <Input
+                    id="omp-path"
+                    value={draft.ompPath}
+                    onChange={(e) => setDraft({ ...draft, ompPath: e.target.value })}
+                    placeholder="omp"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    disabled={saving}
+                    className={`${FIELD} font-mono`}
+                  />
+                </SettingsField>
 
-            <div className="space-y-2 sm:col-span-2">
-              <Label htmlFor="default-model">Default model</Label>
-              <Input
-                id="default-model"
-                value={draft.defaultModel}
-                onChange={(e) => setDraft({ ...draft, defaultModel: e.target.value })}
-                placeholder="omp default"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                disabled={saving}
-                className={FIELD}
-              />
-              <p className="text-xs text-muted-foreground">
-                Used when a board has no model of its own. Leave empty for omp's default.
-              </p>
-            </div>
+                <SettingsField label="Approval mode" htmlFor="approval-mode" hint={mode?.hint}>
+                  <Select
+                    value={draft.approvalMode}
+                    onValueChange={(value) => setDraft({ ...draft, approvalMode: value as ApprovalMode })}
+                    disabled={saving}
+                  >
+                    <SelectTrigger id="approval-mode" className={SELECT_TRIGGER}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent position="popper">
+                      {APPROVAL_MODES.map((m) => (
+                        <SelectItem key={m.value} value={m.value} className="min-h-11 md:min-h-8">
+                          {m.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </SettingsField>
 
-            <label htmlFor="auto-model" className="flex min-h-12 cursor-pointer items-center gap-4 sm:col-span-2">
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium">Auto-select model per card</span>
-                <span className="block text-xs text-muted-foreground">
-                  On boards without a model, each run picks one from the card: omp's <code>smol</code> role for
-                  small edits, <code>slow</code> for debugging, performance, security and architecture work,{" "}
-                  <code>designer</code> (if configured) for UI work, the default model otherwise.
-                </span>
-              </span>
-              <Switch
-                id="auto-model"
-                checked={draft.autoModel}
-                onCheckedChange={(checked) => setDraft({ ...draft, autoModel: checked })}
-                disabled={saving}
-              />
-            </label>
+                <SettingsField
+                  label="Browser control"
+                  htmlFor="browser-mode"
+                  hint={browser?.hint}
+                  className="sm:col-span-2"
+                >
+                  <Select
+                    value={draft.browser}
+                    onValueChange={(value) => setDraft({ ...draft, browser: value as BrowserMode })}
+                    disabled={saving}
+                  >
+                    <SelectTrigger id="browser-mode" className={SELECT_TRIGGER}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent position="popper">
+                      {BROWSER_OPTIONS.map((b) => (
+                        <SelectItem key={b.value} value={b.value} className="min-h-11 md:min-h-8">
+                          {b.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </SettingsField>
+              </div>
+            </SettingsGroup>
 
-            <label htmlFor="smart-queue" className="flex min-h-12 cursor-pointer items-center gap-4 sm:col-span-2">
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium">Smart queue</span>
-                <span className="block text-xs text-muted-foreground">
-                  When you add several cards, an agent orders them and links the ones that depend on each other, so
-                  independent cards run in parallel and the rest wait for what they build on.
-                </span>
-              </span>
-              <Switch
-                id="smart-queue"
-                checked={draft.smartQueue}
-                onCheckedChange={(checked) => setDraft({ ...draft, smartQueue: checked })}
-                disabled={saving}
-              />
-            </label>
-
-            <label htmlFor="auto-retry" className="flex min-h-12 cursor-pointer items-center gap-4 sm:col-span-2">
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium">Retry failed runs automatically</span>
-                <span className="block text-xs text-muted-foreground">
-                  A failed or interrupted run resumes its agent session after 15 s, 30 s, 1 min… and cards left
-                  working, queued or failed resume when the server restarts. A success or a manual run resets the
-                  count.
-                </span>
-              </span>
-              <Switch
-                id="auto-retry"
-                checked={draft.autoRetry}
-                onCheckedChange={(checked) => setDraft({ ...draft, autoRetry: checked })}
-                disabled={saving}
-              />
-            </label>
-
-            {draft.autoRetry && (
-              <div className="space-y-2">
-                <Label htmlFor="max-auto-retries">Retries per card</Label>
+            <SettingsGroup title="Models">
+              <SettingsField
+                label="Default model"
+                htmlFor="default-model"
+                hint="Used when a board has no model of its own. Leave empty for omp's default."
+              >
                 <Input
-                  id="max-auto-retries"
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  max={20}
-                  step={1}
-                  value={draft.maxAutoRetries}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      maxAutoRetries: Math.min(20, Math.max(0, Math.floor(Number(e.target.value) || 0))),
-                    })
-                  }
+                  id="default-model"
+                  value={draft.defaultModel}
+                  onChange={(e) => setDraft({ ...draft, defaultModel: e.target.value })}
+                  placeholder="omp default"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   disabled={saving}
                   className={FIELD}
                 />
-                <p className="text-xs text-muted-foreground">Then the card stays failed until you run it (0–20).</p>
-              </div>
-            )}
+              </SettingsField>
 
-            <div className="space-y-2 sm:col-span-2">
-              <Label htmlFor="browser-mode">Browser control</Label>
-              <Select
-                value={draft.browser}
-                onValueChange={(value) => setDraft({ ...draft, browser: value as BrowserMode })}
-                disabled={saving}
+              <SettingsToggle
+                htmlFor="auto-model"
+                title="Auto-select model per card"
+                description={
+                  <>
+                    On boards without a model, each run picks one from the card: omp's <code>smol</code> role for
+                    small edits, <code>slow</code> for debugging, performance, security and architecture work,{" "}
+                    <code>designer</code> (if configured) for UI work, the default model otherwise.
+                  </>
+                }
               >
-                <SelectTrigger
-                  id="browser-mode"
-                  className="w-full data-[size=default]:h-11 md:data-[size=default]:h-9"
+                <Switch
+                  id="auto-model"
+                  checked={draft.autoModel}
+                  onCheckedChange={(checked) => setDraft({ ...draft, autoModel: checked })}
+                  disabled={saving}
+                />
+              </SettingsToggle>
+            </SettingsGroup>
+
+            <SettingsGroup title="Queue">
+              <SettingsField
+                label="Max concurrent agents"
+                labelId="max-agents-label"
+                htmlFor={limitMode === "manual" ? "max-agents" : undefined}
+                hint={limitHint}
+                error={maxValid ? null : `Enter a whole number from 1 to ${MAX_AGENTS}.`}
+              >
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <LimitModeToggle value={limitMode} onChange={onLimitModeChange} disabled={saving} />
+                  {limitMode === "manual" && (
+                    <Input
+                      id="max-agents"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={MAX_AGENTS}
+                      step={1}
+                      value={maxAgents}
+                      onChange={(e) => setMaxAgents(e.target.value)}
+                      aria-invalid={maxValid ? undefined : true}
+                      disabled={saving}
+                      className={`${FIELD} w-full font-mono tabular-nums sm:w-28`}
+                    />
+                  )}
+                </div>
+              </SettingsField>
+
+              <div className="space-y-1">
+                <SettingsToggle
+                  htmlFor="smart-queue"
+                  title="Smart queue"
+                  description="When you add several cards, an agent orders them and links the ones that depend on each other, so independent cards run in parallel and the rest wait for what they build on."
                 >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent position="popper">
-                  {BROWSER_OPTIONS.map((b) => (
-                    <SelectItem key={b.value} value={b.value} className="min-h-11 md:min-h-8">
-                      {b.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {browser && <p className="text-xs text-muted-foreground">{browser.hint}</p>}
-            </div>
-          </CardContent>
-          <CardFooter className="justify-end gap-2">
-            {dirty && (
-              <Button
-                type="button"
-                variant="ghost"
-                disabled={saving}
-                onClick={() => {
-                  setDraft(saved);
-                  setMaxAgents(String(saved?.maxConcurrentAgents ?? ""));
-                }}
-                className={FIELD}
-              >
-                Discard
-              </Button>
-            )}
-            <Button
-              type="submit"
-              disabled={!dirty || saving || !maxValid}
-              className={`${FIELD} flex-1 sm:flex-none`}
+                  <Switch
+                    id="smart-queue"
+                    checked={draft.smartQueue}
+                    onCheckedChange={(checked) => setDraft({ ...draft, smartQueue: checked })}
+                    disabled={saving}
+                  />
+                </SettingsToggle>
+
+                <SettingsToggle
+                  htmlFor="auto-retry"
+                  title="Retry failed runs automatically"
+                  description="A failed or interrupted run resumes its agent session after 15 s, 30 s, 1 min… and cards left working, queued or failed resume when the server restarts. A success or a manual run resets the count."
+                >
+                  <Switch
+                    id="auto-retry"
+                    checked={draft.autoRetry}
+                    onCheckedChange={(checked) => setDraft({ ...draft, autoRetry: checked })}
+                    disabled={saving}
+                  />
+                </SettingsToggle>
+              </div>
+
+              {draft.autoRetry && (
+                <SettingsField
+                  label="Retries per card"
+                  htmlFor="max-auto-retries"
+                  hint="Then the card stays failed until you run it (0–20)."
+                  className="animate-fade-in-soft sm:max-w-xs"
+                >
+                  <Input
+                    id="max-auto-retries"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    max={20}
+                    step={1}
+                    value={draft.maxAutoRetries}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        maxAutoRetries: Math.min(20, Math.max(0, Math.floor(Number(e.target.value) || 0))),
+                      })
+                    }
+                    disabled={saving}
+                    className={`${FIELD} font-mono tabular-nums`}
+                  />
+                </SettingsField>
+              )}
+            </SettingsGroup>
+
+            {/* Pinned above the bottom tab bar (phones) or the viewport edge while there is something to save. */}
+            <div
+              className={cn(
+                "flex items-center gap-2 rounded-b-xl border-t bg-card px-4 py-3 sm:px-5",
+                dirty &&
+                  "sticky bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-20 bg-card/95 shadow-[0_-10px_20px_-16px_oklch(0.25_0.03_272/0.35)] backdrop-blur-lg md:bottom-0",
+              )}
             >
-              {saving && <Loader2Icon className="animate-spin" />}
-              Save changes
-            </Button>
-          </CardFooter>
+              <p className="hidden min-w-0 flex-1 items-center gap-2 text-xs text-muted-foreground sm:flex" aria-live="polite">
+                {dirty ? (
+                  <>
+                    <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
+                    Unsaved changes
+                  </>
+                ) : (
+                  "All changes saved"
+                )}
+              </p>
+              {dirty && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={saving}
+                  onClick={() => saved && applySettings(saved)}
+                  className={cn(FIELD, "active:scale-[0.98]")}
+                >
+                  Discard
+                </Button>
+              )}
+              <Button
+                type="submit"
+                disabled={!dirty || saving || !maxValid}
+                className={cn(FIELD, "flex-1 active:scale-[0.98] sm:flex-none")}
+              >
+                {saving && <Loader2Icon className="animate-spin" />}
+                Save changes
+              </Button>
+            </div>
+          </SettingsPanel>
         </form>
       )}
-    </Card>
+    </SettingsSection>
   );
 }
 
-function SystemInfoCard() {
+function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex min-h-12 items-center justify-between gap-4 px-4 py-2.5 sm:px-5">
+      <dt className="shrink-0 text-muted-foreground">{label}</dt>
+      {children}
+    </div>
+  );
+}
+
+function SystemInfoSection() {
   const [info, setInfo] = useState<SystemInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -406,42 +564,45 @@ function SystemInfoCard() {
     api
       .system()
       .then(setInfo)
-      .catch((err) =>
-        setError(err instanceof Error && err.message ? err.message : "Could not load system info."),
-      );
+      .catch((err) => setError(errorText(err, "Could not load system info.")));
   }, []);
 
   return (
-    <Card>
-      <SectionHeader
-        icon={<ServerIcon />}
-        title="System"
-        description="What this server is running."
-      />
-      <CardContent className="space-y-4">
-        {error ? (
-          <p className="text-sm text-destructive">{error}</p>
-        ) : !info ? (
-          <div className="space-y-3" aria-busy="true">
-            <Skeleton className="h-5 w-full" />
-            <Skeleton className="h-5 w-full" />
-            <Skeleton className="h-5 w-full" />
-          </div>
-        ) : (
-          <>
-            <dl className="divide-y rounded-lg border text-sm">
-              <div className="flex items-center justify-between gap-4 px-3 py-2.5">
-                <dt className="text-muted-foreground">OMP UI version</dt>
-                <dd className="font-mono text-xs">{info.version}</dd>
+    <SettingsSection
+      id="system"
+      icon={<ServerIcon />}
+      title="System"
+      description="What this server is running."
+    >
+      {error ? (
+        <SettingsPanel className="flex gap-3 p-4 sm:p-5">
+          <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
+          <p className="min-w-0 text-destructive">{error}</p>
+        </SettingsPanel>
+      ) : !info ? (
+        <SettingsPanel>
+          <div aria-busy="true" className="divide-y">
+            {[24, 16, 32, 40].map((w, i) => (
+              <div key={i} className="flex min-h-12 items-center justify-between gap-4 px-4 sm:px-5">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-4" style={{ width: `${w}%` }} />
               </div>
-              <div className="flex items-center justify-between gap-4 px-3 py-2.5">
-                <dt className="text-muted-foreground">Database</dt>
+            ))}
+          </div>
+        </SettingsPanel>
+      ) : (
+        <div className="space-y-4">
+          <SettingsPanel>
+            <dl className="divide-y">
+              <InfoRow label="OMP UI version">
+                <dd className="font-mono text-xs tabular-nums">{info.version}</dd>
+              </InfoRow>
+              <InfoRow label="Database">
                 <dd>
                   <Badge variant="secondary">{info.db === "mongodb" ? "MongoDB" : "SQLite"}</Badge>
                 </dd>
-              </div>
-              <div className="flex items-center justify-between gap-4 px-3 py-2.5">
-                <dt className="text-muted-foreground">omp</dt>
+              </InfoRow>
+              <InfoRow label="omp">
                 <dd className="flex min-w-0 items-center gap-2">
                   {info.omp.installed ? (
                     <>
@@ -455,45 +616,44 @@ function SystemInfoCard() {
                     <Badge variant="destructive">Not found</Badge>
                   )}
                 </dd>
-              </div>
-              <div className="flex items-center justify-between gap-4 px-3 py-2.5">
-                <dt className="shrink-0 text-muted-foreground">Path</dt>
+              </InfoRow>
+              <InfoRow label="Path">
                 <dd className="min-w-0 truncate font-mono text-xs" title={info.omp.path}>
                   {info.omp.path}
                 </dd>
-              </div>
+              </InfoRow>
             </dl>
+          </SettingsPanel>
 
-            {!info.omp.installed && (
-              <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-200">
-                <TriangleAlertIcon />
-                <AlertTitle>omp is not installed on this server</AlertTitle>
-                <AlertDescription className="text-amber-900/85 dark:text-amber-200/85 [&_p:not(:last-child)]:mb-1">
-                  <p>
-                    Agents can't start until omp is available as{" "}
-                    <code className="font-mono break-all">{info.omp.path}</code>. Install it, or set the omp
-                    path above.
-                  </p>
-                  <a
-                    href="https://omp.sh/docs/quickstart"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-1 inline-flex min-h-11 items-center gap-1 font-medium underline underline-offset-4 md:min-h-0"
-                  >
-                    omp quickstart
-                    <ExternalLinkIcon className="size-3.5" />
-                  </a>
-                </AlertDescription>
-              </Alert>
-            )}
-          </>
-        )}
-      </CardContent>
-    </Card>
+          {!info.omp.installed && (
+            <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-200">
+              <TriangleAlertIcon />
+              <AlertTitle>omp is not installed on this server</AlertTitle>
+              <AlertDescription className="text-amber-900/85 dark:text-amber-200/85 [&_p:not(:last-child)]:mb-1">
+                <p>
+                  Agents can't start until omp is available as{" "}
+                  <code className="font-mono break-all">{info.omp.path}</code>. Install it, or set the omp path
+                  in Agent settings.
+                </p>
+                <a
+                  href="https://omp.sh/docs/quickstart"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1 inline-flex min-h-11 items-center gap-1 font-medium underline underline-offset-4 md:min-h-0"
+                >
+                  omp quickstart
+                  <ExternalLinkIcon className="size-3.5" />
+                </a>
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
+      )}
+    </SettingsSection>
   );
 }
 
-function SecurityCard() {
+function SecuritySection() {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -517,78 +677,78 @@ function SecurityCard() {
       setConfirm("");
       toast.success("Password changed — other devices were signed out");
     } catch (err) {
-      setError(err instanceof Error && err.message ? err.message : "Could not change the password.");
+      setError(errorText(err, "Could not change the password."));
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <Card>
-      <SectionHeader
-        icon={<KeyRoundIcon />}
-        title="Security"
-        description="Change the admin password. Every other signed-in device is signed out."
-      />
-      <form onSubmit={onSubmit} noValidate className="contents">
-        <CardContent className="space-y-4">
-          <input type="text" name="username" autoComplete="username" value="admin" readOnly hidden />
-          <div className="space-y-2">
-            <Label htmlFor="current-password">Current password</Label>
-            <PasswordInput
-              id="current-password"
-              value={current}
-              onChange={(e) => setCurrent(e.target.value)}
-              autoComplete="current-password"
-              disabled={saving}
-            />
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="new-password">New password</Label>
+    <SettingsSection
+      id="security"
+      icon={<KeyRoundIcon />}
+      title="Security"
+      description="Change the admin password. Every other signed-in device is signed out."
+    >
+      <form onSubmit={onSubmit} noValidate>
+        <SettingsPanel>
+          <SettingsGroup>
+            <input type="text" name="username" autoComplete="username" value="admin" readOnly hidden />
+            <SettingsField label="Current password" htmlFor="current-password" className="sm:max-w-sm">
               <PasswordInput
-                id="new-password"
-                value={next}
-                onChange={(e) => setNext(e.target.value)}
-                autoComplete="new-password"
+                id="current-password"
+                value={current}
+                onChange={(e) => setCurrent(e.target.value)}
+                autoComplete="current-password"
                 disabled={saving}
               />
+            </SettingsField>
+            <div className="grid gap-5 sm:grid-cols-2">
+              <SettingsField label="New password" htmlFor="new-password">
+                <PasswordInput
+                  id="new-password"
+                  value={next}
+                  onChange={(e) => setNext(e.target.value)}
+                  autoComplete="new-password"
+                  disabled={saving}
+                />
+              </SettingsField>
+              <SettingsField label="Confirm new password" htmlFor="confirm-password">
+                <PasswordInput
+                  id="confirm-password"
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                  autoComplete="new-password"
+                  disabled={saving}
+                />
+              </SettingsField>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="confirm-password">Confirm new password</Label>
-              <PasswordInput
-                id="confirm-password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                autoComplete="new-password"
-                disabled={saving}
-              />
-            </div>
+          </SettingsGroup>
+          <div className="flex flex-col gap-3 border-t px-4 py-3 sm:flex-row sm:items-center sm:px-5">
+            {error ? (
+              <p role="alert" className="flex min-w-0 flex-1 items-start gap-2 text-sm text-destructive">
+                <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" />
+                {error}
+              </p>
+            ) : (
+              <p className="min-w-0 flex-1 text-xs text-muted-foreground">At least {MIN_PASSWORD} characters.</p>
+            )}
+            <Button
+              type="submit"
+              disabled={saving || !current || !next || !confirm}
+              className={cn(FIELD, "w-full active:scale-[0.98] sm:w-auto")}
+            >
+              {saving && <Loader2Icon className="animate-spin" />}
+              Change password
+            </Button>
           </div>
-          {error ? (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          ) : (
-            <p className="text-xs text-muted-foreground">At least {MIN_PASSWORD} characters.</p>
-          )}
-        </CardContent>
-        <CardFooter className="justify-end">
-          <Button
-            type="submit"
-            disabled={saving || !current || !next || !confirm}
-            className={`${FIELD} flex-1 sm:flex-none`}
-          >
-            {saving && <Loader2Icon className="animate-spin" />}
-            Change password
-          </Button>
-        </CardFooter>
+        </SettingsPanel>
       </form>
-    </Card>
+    </SettingsSection>
   );
 }
 
-function ApiAccessCard() {
+function ApiAccessSection() {
   const [origin, setOrigin] = useState("");
   const [copied, setCopied] = useState(false);
 
@@ -611,66 +771,80 @@ function ApiAccessCard() {
   }
 
   return (
-    <Card>
-      <SectionHeader
-        icon={<SmartphoneIcon />}
-        title="Mobile & API access"
-        description="Connect a phone app or script to this server."
-      />
-      <CardContent className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="server-url">Server URL</Label>
-          <div className="flex gap-2">
-            <Input
-              id="server-url"
-              value={origin}
-              readOnly
-              onFocus={(e) => e.currentTarget.select()}
-              className={`${FIELD} min-w-0 flex-1 font-mono`}
-            />
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => void onCopy()}
-              disabled={!origin}
-              className={`${FIELD} shrink-0 px-3`}
-              aria-label="Copy server URL"
-            >
-              {copied ? <CheckIcon className="text-success" /> : <CopyIcon />}
-              <span className="hidden sm:inline">{copied ? "Copied" : "Copy"}</span>
-            </Button>
+    <SettingsSection
+      id="api"
+      icon={<SmartphoneIcon />}
+      title="Mobile & API access"
+      description="Connect a phone app or script to this server."
+    >
+      <SettingsPanel>
+        <SettingsGroup>
+          <SettingsField label="Server URL" htmlFor="server-url">
+            <div className="flex gap-2">
+              <Input
+                id="server-url"
+                value={origin}
+                readOnly
+                onFocus={(e) => e.currentTarget.select()}
+                className={`${FIELD} min-w-0 flex-1 font-mono`}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void onCopy()}
+                disabled={!origin}
+                className={`${FIELD} shrink-0 px-3 active:scale-[0.98]`}
+                aria-label="Copy server URL"
+              >
+                {copied ? <CheckIcon className="text-success" /> : <CopyIcon />}
+                <span className="hidden sm:inline">{copied ? "Copied" : "Copy"}</span>
+              </Button>
+            </div>
+          </SettingsField>
+          <div className="flex gap-2.5 rounded-lg bg-muted/60 p-3 text-sm text-muted-foreground">
+            <InfoIcon className="mt-0.5 size-4 shrink-0" />
+            <p className="min-w-0">
+              A mobile or API client signs in with this URL and the admin password:{" "}
+              <code className="rounded bg-background px-1 py-0.5 font-mono text-xs break-all text-foreground">
+                POST /api/v1/auth/login
+              </code>{" "}
+              returns a token to send as{" "}
+              <code className="rounded bg-background px-1 py-0.5 font-mono text-xs break-all text-foreground">
+                Authorization: Bearer &lt;token&gt;
+              </code>
+              . Full reference: <code className="font-mono text-xs text-foreground">docs/API.md</code> in the
+              OMP UI repository.
+            </p>
           </div>
-        </div>
-        <div className="flex gap-2.5 rounded-lg bg-muted/60 p-3 text-sm text-muted-foreground">
-          <InfoIcon className="mt-0.5 size-4 shrink-0" />
-          <p className="min-w-0">
-            A mobile or API client signs in with this URL and the admin password:{" "}
-            <code className="rounded bg-background px-1 py-0.5 font-mono text-xs break-all text-foreground">
-              POST /api/v1/auth/login
-            </code>{" "}
-            returns a token to send as{" "}
-            <code className="rounded bg-background px-1 py-0.5 font-mono text-xs break-all text-foreground">
-              Authorization: Bearer &lt;token&gt;
-            </code>
-            . Full reference: <code className="font-mono text-xs text-foreground">docs/API.md</code> in
-            the OMP UI repository.
-          </p>
-        </div>
-      </CardContent>
-    </Card>
+        </SettingsGroup>
+      </SettingsPanel>
+    </SettingsSection>
   );
 }
 
 export default function SettingsPage() {
+  useDocumentTitle("Settings");
   return (
     <div className="flex min-h-dvh flex-col">
       <AppHeader title="Settings" backHref="/" />
-      <main className="px-safe pb-safe mx-auto w-full max-w-2xl flex-1">
-        <div className="space-y-4 px-4 py-5 sm:px-6 sm:py-8">
-          <AgentSettingsCard />
-          <SystemInfoCard />
-          <SecurityCard />
-          <ApiAccessCard />
+      <main className="px-safe pb-safe flex-1">
+        <div className="mx-auto grid w-full max-w-[1400px] gap-6 px-4 py-6 sm:px-6 md:py-8 lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-10 lg:px-8 xl:grid-cols-[14rem_minmax(0,1fr)] xl:gap-14">
+          <SettingsNav items={SECTIONS} />
+          <div
+            className={cn(
+              "min-w-0 max-w-3xl space-y-10 md:space-y-12",
+              "[&>section+section]:border-t [&>section+section]:pt-10 md:[&>section+section]:pt-12",
+              "[&>section]:animate-card-in motion-reduce:[&>section]:animate-none",
+              "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8]",
+            )}
+          >
+            <AgentSettingsSection />
+            <OmpSettingsSection />
+            <MemorySettingsSection />
+            <SystemInfoSection />
+            <SecuritySection />
+            <ApiAccessSection />
+          </div>
         </div>
       </main>
     </div>

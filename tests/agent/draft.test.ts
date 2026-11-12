@@ -65,7 +65,7 @@ describe("chooseDraftModel", () => {
     for (const text of ["word ".repeat(150), "Revamp:\n- a\n- b\n- c\n1. d\n2) e"]) {
       const choice = chooseDraftModel({ text, roles, board, settings });
       expect(choice).toMatchObject({ model: "sonnet", thinking: null, tier: "thorough" });
-      expect(choice.maxTimeSeconds).toBeGreaterThan(quick.maxTimeSeconds);
+      expect(choice.timeoutSeconds).toBeGreaterThan(quick.timeoutSeconds);
     }
   });
 });
