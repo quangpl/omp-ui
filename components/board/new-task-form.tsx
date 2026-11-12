@@ -24,6 +24,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { useSkillSlash } from "@/components/board/skill-slash-menu";
 import { api } from "@/lib/api-client";
 import {
   BRIEF_FILE,
@@ -99,6 +100,20 @@ export function NewTaskForm({
   const id = useId();
   const [text, setText] = useState("");
   const [phase, setPhase] = useState<Phase>({ kind: "compose" });
+  const composeRef = useRef<HTMLTextAreaElement>(null);
+  const reviewRef = useRef<HTMLTextAreaElement>(null);
+  const setReviewDescription = (description: string) =>
+    setPhase((current) =>
+      current.kind === "review" ? { ...current, draft: { ...current.draft, description } } : current,
+    );
+  // "/" pickers for OMP skills and shortcuts, one per editable textarea.
+  const composeSlash = useSkillSlash(composeRef, text, setText, phase.kind === "compose");
+  const reviewSlash = useSkillSlash(
+    reviewRef,
+    phase.kind === "review" ? phase.draft.description : "",
+    setReviewDescription,
+    phase.kind === "review",
+  );
   /** The user's own choice; `null` follows `defaultStart`. */
   const [startChoice, setStartChoice] = useState<boolean | null>(null);
   const start = startChoice ?? defaultStart;
@@ -228,12 +243,18 @@ export function NewTaskForm({
           <Label htmlFor={`${id}-description`}>Description</Label>
           <Textarea
             id={`${id}-description`}
+            ref={reviewRef}
             value={draft.description}
             maxLength={DESCRIPTION_MAX}
             className="max-h-[38dvh] min-h-32 resize-none font-mono text-sm md:text-xs"
             onChange={(event) => update({ description: event.target.value })}
-            onKeyDown={(event) => submitKeys(event, () => void create(draft))}
+            onSelect={reviewSlash.onSelect}
+            onKeyDown={(event) => {
+              if (reviewSlash.onKeyDown(event)) return;
+              submitKeys(event, () => void create(draft));
+            }}
           />
+          {reviewSlash.menu}
           {attached && (
             <p className="text-xs text-muted-foreground">
               Your full text is attached to the card as <span className="font-medium text-foreground">{BRIEF_FILE}</span>{" "}
@@ -316,18 +337,25 @@ export function NewTaskForm({
         <Label htmlFor={`${id}-text`}>What should the agent do?</Label>
         <Textarea
           id={`${id}-text`}
+          ref={composeRef}
           autoFocus
           value={text}
           readOnly={writing !== null}
           placeholder="Write it your way, as long as you like: the goal, details, pasted errors or logs, links…"
           className="max-h-[45dvh] min-h-36 resize-none text-base md:text-sm"
           onChange={(event) => setText(event.target.value)}
-          onKeyDown={(event) => submitKeys(event, () => void write("create"))}
+          onSelect={composeSlash.onSelect}
+          onKeyDown={(event) => {
+            if (composeSlash.onKeyDown(event)) return;
+            submitKeys(event, () => void write("create"));
+          }}
         />
+        {composeSlash.menu}
         <p className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
           <span className="flex items-start gap-1.5">
             <Sparkles className="mt-px size-3.5 shrink-0" aria-hidden />
-            An agent reads your text and the project, then writes the title and brief.
+            An agent reads your text and the project, then writes the title and brief. Type{" "}
+            <Kbd>/</Kbd> to add an OMP skill or shortcut.
           </span>
           {words > 0 && <span className="shrink-0 tabular-nums">{words.toLocaleString()} words</span>}
         </p>

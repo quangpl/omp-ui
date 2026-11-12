@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Loader2, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { useSkillSlash } from "@/components/board/skill-slash-menu";
 import type { DraftProgress } from "@/lib/api-client";
 import { isPlainTitle } from "@/lib/card-draft";
 
@@ -29,6 +30,8 @@ export function InlineComposer({
   const [activity, setActivity] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /** "/" picker for OMP skills and shortcuts. */
+  const slash = useSkillSlash(inputRef, text, setText, open && !busy);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -86,7 +89,9 @@ export function InlineComposer({
         aria-label="New card text"
         className="max-h-48 min-h-16 resize-none bg-card shadow-xs"
         onChange={(event) => setText(event.target.value)}
+        onSelect={slash.onSelect}
         onKeyDown={(event) => {
+          if (slash.onKeyDown(event)) return;
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
             void submit();
@@ -100,6 +105,7 @@ export function InlineComposer({
           if (!text.trim() && !busy) close();
         }}
       />
+      {slash.menu}
       {activity !== null && (
         <p role="status" className="flex items-center gap-1.5 px-0.5 text-xs text-muted-foreground">
           <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden />

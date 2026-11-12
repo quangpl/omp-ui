@@ -7,6 +7,7 @@ import type {
   CardDraft,
   Comment,
   AiStats,
+  OmpSkill,
   Dashboard,
   DraftStreamEvent,
   FsBrowseResult,
@@ -186,6 +187,9 @@ export const api = {
       request<TokenResponse>("/auth/password", { method: "POST", json: { current, next } }),
   },
   system: () => request<SystemInfo>("/system"),
+  /** Installed omp skills for the "/" picker; `refresh` bypasses the server's 60s cache. */
+  skills: (refresh = false) =>
+    request<{ skills: OmpSkill[] }>(`/system/skills${refresh ? "?refresh=1" : ""}`),
   /** Home dashboard aggregate: projects, totals, cards needing attention, recent results, queue. */
   dashboard: () => request<Dashboard>("/dashboard"),
   settings: {
