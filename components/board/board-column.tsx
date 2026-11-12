@@ -29,7 +29,15 @@ export function StatusDot({ status, className }: { status: TaskStatus; className
   );
 }
 
-function SortableTaskCard({ task, onOpen }: { task: Task; onOpen: (taskId: string) => void }) {
+function SortableTaskCard({
+  task,
+  activity,
+  onOpen,
+}: {
+  task: Task;
+  activity: string | undefined;
+  onOpen: (taskId: string) => void;
+}) {
   const {
     attributes,
     listeners,
@@ -49,6 +57,7 @@ function SortableTaskCard({ task, onOpen }: { task: Task; onOpen: (taskId: strin
       <TaskCard
         task={task}
         placeholder={isDragging}
+        activity={activity}
         activatorRef={setActivatorNodeRef}
         dragAttributes={attributes}
         dragListeners={listeners}
@@ -64,11 +73,13 @@ function SortableTaskCard({ task, onOpen }: { task: Task; onOpen: (taskId: strin
 export function BoardColumn({
   status,
   tasks,
+  activity,
   onOpen,
   onCreate,
 }: {
   status: TaskStatus;
   tasks: Task[];
+  activity: Record<string, string>;
   onOpen: (taskId: string) => void;
   /** When set, shows the inline "Add a card" composer at the bottom. */
   onCreate?: (title: string) => Promise<boolean>;
@@ -104,7 +115,12 @@ export function BoardColumn({
         <SortableContext items={tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
           <div className="flex min-h-full flex-col gap-2 pt-0.5">
             {tasks.map((task) => (
-              <SortableTaskCard key={task.id} task={task} onOpen={onOpen} />
+              <SortableTaskCard
+                key={task.id}
+                task={task}
+                activity={activity[task.id]}
+                onOpen={onOpen}
+              />
             ))}
             {tasks.length === 0 && (
               <p className="rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">

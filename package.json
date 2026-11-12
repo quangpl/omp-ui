@@ -73,6 +73,9 @@
     "up": "node bin/omp-ui.mjs up",
     "cli": "node bin/omp-ui.mjs",
     "typecheck": "tsc --noEmit",
+    "pm2": "node bin/omp-ui.mjs pm2 start",
+    "pm2:stop": "node bin/omp-ui.mjs pm2 stop",
+    "pm2:logs": "node bin/omp-ui.mjs pm2 logs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "pnpm build && playwright test"

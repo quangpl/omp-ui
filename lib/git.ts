@@ -3,6 +3,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { childEnv } from "@/lib/child-env";
 import { HttpError } from "@/lib/server/http";
 import type { GitProvider, GitRepoActionResult, GitStatus } from "@/lib/types";
 import { getWorkspaceRoot } from "@/lib/workspace";
@@ -12,15 +13,14 @@ const NETWORK_TIMEOUT_MS = 2 * 60_000;
 const CLONE_TIMEOUT_MS = 10 * 60_000;
 const MAX_BUFFER = 16 * 1024 * 1024;
 
-const COMMAND_ENV: NodeJS.ProcessEnv = {
-  ...process.env,
+const COMMAND_ENV: NodeJS.ProcessEnv = childEnv({
   GIT_TERMINAL_PROMPT: "0",
   GCM_INTERACTIVE: "never",
   // Fail instead of asking for an SSH passphrase/host confirmation (unless the admin configured ssh).
   GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o BatchMode=yes",
   GH_PROMPT_DISABLED: "1",
   NO_PROMPT: "1",
-};
+});
 
 interface CommandResult {
   ok: boolean;
@@ -158,19 +158,28 @@ function commandExists(name: string): boolean {
   return false;
 }
 
-/** Remote URL without embedded credentials (safe to show in the UI). */
+/**
+ * Remote URL without secrets (safe to show in the UI). http(s) credentials are tokens or
+ * passwords (`https://user:token@host` or `https://<token>@host`), so the whole userinfo goes.
+ * The ssh login name (`ssh://git@host/…`, scp-style `git@host:…`) is not a secret and is kept;
+ * only an ssh password, if one was embedded, is removed.
+ */
 function redactRemote(remote: string): string {
+  let url: URL;
   try {
-    const url = new URL(remote);
-    if (url.username || url.password) {
-      url.username = "";
-      url.password = "";
-      return url.toString();
-    }
+    url = new URL(remote);
   } catch {
-    // scp-style (git@host:path) or local path: nothing to redact
+    return remote; // scp-style (git@host:path) or a local path: nothing secret to redact
   }
-  return remote;
+  if (url.protocol === "https:" || url.protocol === "http:") {
+    if (!url.username && !url.password) return remote;
+    url.username = "";
+    url.password = "";
+    return url.toString();
+  }
+  if (!url.password) return remote;
+  url.password = "";
+  return url.toString();
 }
 
 function webUrlFor(remote: string): string | null {

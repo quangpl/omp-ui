@@ -3,9 +3,11 @@
 //
 // Environment:
 //   FAKE_OMP_LOG          JSON-lines file; every process appends {pid, kind, ...} entries:
-//                         "argv" (argv + cwd at startup), "command" (each stdin command),
+//                         "argv" (argv, cwd, sorted envKeys and allowlisted env values at startup),
+//                         "command" (each stdin command),
 //                         "ui_response" (each extension_ui_response), "steer" (steered messages).
-//   FAKE_OMP_SCENARIO     Default prompt behaviour: success | error | crash | slow | confirm.
+//   FAKE_OMP_SCENARIO     Default prompt behaviour: success | error | crash | slow | confirm | stream.
+//                         "stream" emits 2 thinking_delta + 15 text_delta frames ~80ms apart, then succeeds.
 //                         A prompt containing "[fake:<scenario>]" overrides it for that prompt.
 //   FAKE_OMP_SESSION_DIR  Parent dir for the per-process session temp dir (default: os tmpdir).
 //   FAKE_OMP_STARTUP      normal (default) | silent (never sends ready) | exit (exits 2 before ready).
@@ -32,7 +34,25 @@ function flag(name) {
   return index === -1 ? undefined : argv[index + 1];
 }
 
-log("argv", { argv, cwd: process.cwd() });
+/** Environment variables whose values the "argv" entry records (credentials in, OMP UI secrets out). */
+const LOGGED_ENV = [
+  "HOME",
+  "SSH_AUTH_SOCK",
+  "ANTHROPIC_API_KEY",
+  "GH_TOKEN",
+  "ADMIN_PASSWORD",
+  "AUTH_SECRET",
+  "DATABASE_URL",
+];
+
+log("argv", {
+  argv,
+  cwd: process.cwd(),
+  envKeys: Object.keys(process.env).sort(),
+  env: Object.fromEntries(
+    LOGGED_ENV.filter((key) => key in process.env).map((key) => [key, process.env[key]]),
+  ),
+});
 
 const startup = process.env.FAKE_OMP_STARTUP || "normal";
 if (startup === "exit") {
@@ -125,13 +145,62 @@ function completeSuccessfully(text) {
   finishRun(assistant(text, "stop"));
 }
 
+const STREAM_THINKING = ["Planning the change. ", "Checking the tests first."];
+const STREAM_WORDS = [
+  "Streamed ", "summary: ", "I ", "updated ", "the ", "login ", "form, ", "added ", "validation, ",
+  "wrote ", "tests, ", "and ", "verified ", "everything ", "passes.",
+];
+const STREAM_DELAY_MS = 80;
+
+/** Slow token-by-token stream; stops early if the run is aborted meanwhile. */
+async function streamSuccessfully(current) {
+  const thinking = STREAM_THINKING.join("");
+  const text = STREAM_WORDS.join("");
+  const message = (content) => ({ ...assistant("", "stop"), content });
+  emit({ type: "message_start", message: message([]) });
+  for (const delta of STREAM_THINKING) {
+    if (run !== current) return;
+    emit({
+      type: "message_update",
+      message: message([]),
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta },
+    });
+    await new Promise((resolve) => setTimeout(resolve, STREAM_DELAY_MS));
+  }
+  for (const delta of STREAM_WORDS) {
+    if (run !== current) return;
+    emit({
+      type: "message_update",
+      message: message([]),
+      assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta },
+    });
+    await new Promise((resolve) => setTimeout(resolve, STREAM_DELAY_MS));
+  }
+  if (run !== current) return;
+  finishRun(
+    message([
+      { type: "thinking", thinking },
+      { type: "text", text },
+    ]),
+  );
+}
+
 function scenarioOf(message) {
   const match = /\[fake:([a-z_]+)\]/.exec(String(message ?? ""));
   return match ? match[1] : defaultScenario;
 }
 
+/**
+ * Resolves with the host's reply to UI request `id`. readline emits every line of one stdin
+ * chunk synchronously, so a reply can arrive before the scenario resumes and asks for it:
+ * already-received replies resolve immediately instead of waiting forever.
+ */
 function waitForUi(id) {
-  return new Promise((resolve) => uiWaiters.set(id, resolve));
+  const received = uiResponses.find((r) => r.id === id);
+  if (received) return Promise.resolve(received);
+  const { promise, resolve } = Promise.withResolvers();
+  uiWaiters.set(id, resolve);
+  return promise;
 }
 
 async function startPrompt(command) {
@@ -153,6 +222,9 @@ async function startPrompt(command) {
       break;
     case "slow":
       // Completes on steer, or ends aborted on abort.
+      break;
+    case "stream":
+      await streamSuccessfully(run);
       break;
     case "confirm": {
       emit({ type: "extension_ui_request", id: "ui-notify-1", method: "notify", message: "heads up" });

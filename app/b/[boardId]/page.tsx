@@ -6,6 +6,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Plus } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { BoardMenu } from "@/components/board/board-menu";
+import { ConnectionPill } from "@/components/board/connection-status";
 import { KanbanBoard } from "@/components/board/kanban-board";
 import { NewTaskDialog, type NewTaskInput } from "@/components/board/new-task-form";
 import { GitIndicator } from "@/components/board/ship-actions";
@@ -111,6 +112,7 @@ function BoardScreen() {
         backHref="/"
         actions={
           <>
+            <ConnectionPill status={controller.connection} />
             <GitIndicator statuses={git.statuses} />
             {/* Phones use the thumb-reachable floating button instead. */}
             <Button className="h-9 max-md:hidden" onClick={() => setNewOpen(true)}>
@@ -131,6 +133,7 @@ function BoardScreen() {
       <main className="flex min-h-0 flex-1 flex-col">
         <KanbanBoard
           columns={columns}
+          activity={controller.activity}
           isMobile={isMobile}
           onOpen={openTask}
           moveTask={controller.moveTask}

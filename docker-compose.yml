@@ -18,29 +18,83 @@ services:
     env_file:
       - path: .env
         required: false
+    # List form: a bare `- NAME` passes the variable through from the shell running
+    # `docker compose` (or ./.env) and leaves it unset when neither has it.
     environment:
-      PORT: "3000"
-      HOST: 0.0.0.0
-      DATA_DIR: /data
-      WORKSPACE_DIR: /workspace
-      OMP_PATH: omp
+      - PORT=3000
+      - HOST=0.0.0.0
+      - DATA_DIR=/data
+      - WORKSPACE_DIR=/workspace
+      - OMP_PATH=omp
       # SQLite by default; `omp-ui docker up --mongo|--postgres` sets COMPOSE_DATABASE_URL.
-      DATABASE_URL: ${COMPOSE_DATABASE_URL:-sqlite:/data/omp-ui.db}
-      # Git hosting tokens for "Create PR/MR" and HTTPS pushes (or sign in with gh/glab).
-      GH_TOKEN: ${GH_TOKEN:-}
-      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+      - DATABASE_URL=${COMPOSE_DATABASE_URL:-sqlite:/data/omp-ui.db}
+      # SSH agent forwarding (see the ssh-agent.sock mount); unset by the entrypoint when
+      # the host has no agent.
+      - SSH_AUTH_SOCK=/run/ssh-agent.sock
+      # Credentials inherited from the host environment (values are never written here).
+      # Git hosting: "Create PR/MR" and HTTPS pushes (or the gh/glab logins mounted below).
+      - GH_TOKEN
+      - GITHUB_TOKEN
+      - GITLAB_TOKEN
+      - GITLAB_HOST
+      # AI providers used by omp agents (or the omp/Claude sign-ins mounted below).
+      - ANTHROPIC_API_KEY
+      - ANTHROPIC_BASE_URL
+      - CLAUDE_CODE_OAUTH_TOKEN
+      - OPENAI_API_KEY
+      - OPENAI_BASE_URL
+      - GEMINI_API_KEY
+      - GOOGLE_API_KEY
+      # A path: it must exist inside the container too (e.g. under a mounted folder).
+      - GOOGLE_APPLICATION_CREDENTIALS
+      - OPENROUTER_API_KEY
+      - GROQ_API_KEY
+      - XAI_API_KEY
+      - MISTRAL_API_KEY
+      - DEEPSEEK_API_KEY
+      - CEREBRAS_API_KEY
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_SESSION_TOKEN
+      - AWS_REGION
+      - AWS_PROFILE
+      - AZURE_OPENAI_API_KEY
+      # Proxies
+      - HTTP_PROXY
+      - HTTPS_PROXY
+      - NO_PROXY
     volumes:
       - ./data:/data
-      # omp provider auth & config from the host (run `omp` once there to sign in)
-      - ${OMP_HOME:-~/.omp}:/home/omp/.omp
       # Your projects: the folder picker starts here and cloned repositories land here
       - ${WORKSPACE_DIR:-./workspace}:/workspace
-      # Git identity, SSH keys and GitHub CLI login from the host. Optional: delete the
-      # lines you do not want. `omp-ui docker up` creates missing ones; with plain
-      # `docker compose`, make sure ~/.gitconfig exists first (or Docker makes it a folder).
+      # ── Credentials from the host user (sign in once on the host, not in the container) ──
+      # Every host path below must exist before `docker compose up`, otherwise Docker
+      # creates it as a root-owned directory (a ~/.claude.json directory breaks Claude).
+      # `omp-ui docker up` creates the missing ones; with plain `docker compose`, run once:
+      #   mkdir -p ~/.omp ~/.claude ~/.config/git ~/.config/gh ~/.config/glab-cli ~/.aws
+      #   mkdir -p -m 700 ~/.ssh; touch ~/.gitconfig
+      #   [ -e ~/.claude.json ] || echo '{}' > ~/.claude.json
+      #   [ -e ~/.git-credentials ] || install -m 600 /dev/null ~/.git-credentials
+      # Delete the lines you do not want to share.
+      # omp provider sign-ins & config (read-write: OAuth tokens get refreshed)
+      - ${OMP_HOME:-~/.omp}:/home/omp/.omp
+      # Claude Code / Anthropic sign-in (read-write: OAuth tokens get refreshed)
+      - ~/.claude:/home/omp/.claude
+      - ~/.claude.json:/home/omp/.claude.json
+      # Git identity, credential helpers and saved HTTPS credentials
       - ~/.gitconfig:/home/omp/.gitconfig:ro
+      - ~/.config/git:/home/omp/.config/git:ro
+      - ~/.git-credentials:/home/omp/.git-credentials:ro
+      # SSH keys, plus the host's ssh-agent when SSH_AUTH_SOCK is set (start with
+      # `SSH_AUTH_SOCK= docker compose up -d` to skip it). Docker Desktop on macOS:
+      # `SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock docker compose up -d`.
       - ~/.ssh:/home/omp/.ssh:ro
+      - ${SSH_AUTH_SOCK:-/dev/null}:/run/ssh-agent.sock
+      # GitHub CLI and GitLab CLI sign-ins
       - ~/.config/gh:/home/omp/.config/gh
+      - ~/.config/glab-cli:/home/omp/.config/glab-cli
+      # AWS profiles (Bedrock)
+      - ~/.aws:/home/omp/.aws:ro
     depends_on:
       mongo:
         condition: service_started

@@ -54,7 +54,7 @@ export function DeleteBoardDialog({
           <AlertDialogMedia className="bg-destructive/10 text-destructive">
             <Trash2Icon />
           </AlertDialogMedia>
-          <AlertDialogTitle>Delete “{board?.name}”?</AlertDialogTitle>
+          <AlertDialogTitle className="[overflow-wrap:anywhere]">Delete “{board?.name}”?</AlertDialogTitle>
           <AlertDialogDescription>
             {cardCount > 0
               ? `Its ${cardCount} card${cardCount === 1 ? "" : "s"}, comments and run history will be removed. `

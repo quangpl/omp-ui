@@ -79,6 +79,22 @@ export interface BoardController {
   createTask: (input: { title: string; description?: string; start?: boolean }) => Promise<Task | null>;
   /** Listen to the board's live event stream (shared SSE connection). Returns an unsubscribe fn. */
   subscribe: (listener: BoardStreamListener) => () => void;
+  /** Latest one-line agent activity per task id ("▸ bash: npm test", "Writing…"); show while running. */
+  activity: Record<string, string>;
+  /** State of the live event stream. */
+  connection: ConnectionStatus;
+}
+
+export type ConnectionStatus = "connecting" | "live" | "reconnecting";
+
+/** One calm line describing what an agent is doing, from a run event / delta. */
+function activityLine(kind: string, text: string): string | null {
+  if (kind === "thinking") return "Thinking…";
+  if (kind === "text") return "Writing…";
+  const firstLine = text.split("\n").find((line) => line.trim())?.trim();
+  if (!firstLine) return null;
+  if (kind === "tool") return firstLine.startsWith("▸") ? firstLine : `▸ ${firstLine}`;
+  return firstLine;
 }
 
 export function useBoard(boardId: string): BoardController {
@@ -90,6 +106,8 @@ export function useBoard(boardId: string): BoardController {
   const [rawTasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [activity, setActivity] = useState<Record<string, string>>({});
+  const [connection, setConnection] = useState<ConnectionStatus>("connecting");
 
   const listenersRef = useRef(new Set<BoardStreamListener>());
   const pendingMovesRef = useRef(new Map<string, PendingMove>());
@@ -132,7 +150,14 @@ export function useBoard(boardId: string): BoardController {
         api.boards.tasks(boardId),
       ]);
       setBoard(nextBoard);
-      setTasks(nextTasks.map(withPending));
+      // A live update may have landed while this request was in flight: keep the newer copy.
+      setTasks((prev) => {
+        const held = new Map(prev.map((task) => [task.id, task]));
+        return nextTasks.map((task) => {
+          const current = held.get(task.id);
+          return current && current.updatedAt > task.updatedAt ? current : withPending(task);
+        });
+      });
       setError(null);
     } catch (err) {
       setError(
@@ -148,8 +173,16 @@ export function useBoard(boardId: string): BoardController {
     setBoard(null);
     setTasks([]);
     setError(null);
+    setActivity({});
+    setConnection("connecting");
     pendingMovesRef.current.clear();
     void reload();
+
+    const noteActivity = (taskId: string, line: string | null) => {
+      if (!line) return;
+      // Same line → same state object → no re-render (deltas arrive many times per second).
+      setActivity((prev) => (prev[taskId] === line ? prev : { ...prev, [taskId]: line }));
+    };
 
     const emit = (event: BoardStreamEvent) => {
       for (const listener of listenersRef.current) {
@@ -179,6 +212,12 @@ export function useBoard(boardId: string): BoardController {
               routerRef.current.replace("/");
             }
             break;
+          case "run.event":
+            noteActivity(event.event.taskId, activityLine(event.event.kind, event.event.text));
+            break;
+          case "run.delta":
+            noteActivity(event.taskId, activityLine(event.kind, event.text));
+            break;
         }
         emit(event);
       },
@@ -188,6 +227,7 @@ export function useBoard(boardId: string): BoardController {
           void reload();
           emit({ type: "stream.reconnected" });
         },
+        onStatus: setConnection,
       },
     );
   }, [boardId, reload, upsertTask, removeTask]);
@@ -294,6 +334,8 @@ export function useBoard(boardId: string): BoardController {
     moveToStatus,
     createTask,
     subscribe,
+    activity,
+    connection,
   };
 }
 

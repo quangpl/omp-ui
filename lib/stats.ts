@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AgentManager } from "@/lib/agent/types";
+import { childEnv } from "@/lib/child-env";
 import type { Repository } from "@/lib/db/types";
 import {
   TASK_STATUSES,
@@ -124,7 +125,7 @@ function runOmpJson(ompPath: string, args: string[]): Promise<OmpResult> {
   execFile(
     ompPath,
     args,
-    { timeout: OMP_TIMEOUT_MS, maxBuffer: OMP_MAX_BUFFER, windowsHide: true },
+    { timeout: OMP_TIMEOUT_MS, maxBuffer: OMP_MAX_BUFFER, env: childEnv(), windowsHide: true },
     (err, stdout, stderr) => {
       if (err) {
         const code = err.code;

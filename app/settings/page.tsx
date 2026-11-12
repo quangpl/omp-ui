@@ -159,7 +159,7 @@ function AgentSettingsCard() {
         </CardContent>
       ) : (
         <form onSubmit={onSubmit} noValidate className="contents">
-          <CardContent className="grid gap-5 sm:grid-cols-2">
+          <CardContent className="grid grid-cols-1 gap-5 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="max-agents">Max concurrent agents</Label>
               <Input
@@ -341,7 +341,7 @@ function SystemInfoCard() {
                 <AlertDescription className="text-amber-900/85 dark:text-amber-200/85 [&_p:not(:last-child)]:mb-1">
                   <p>
                     Agents can't start until omp is available as{" "}
-                    <code className="font-mono">{info.omp.path}</code>. Install it, or set the omp
+                    <code className="font-mono break-all">{info.omp.path}</code>. Install it, or set the omp
                     path above.
                   </p>
                   <a

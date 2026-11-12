@@ -31,7 +31,7 @@ export function BoardCard({
   const total = board.counts.todo + board.counts.in_progress + board.counts.done;
 
   return (
-    <article className="group/board relative flex flex-col gap-4 rounded-xl border bg-card p-4 text-card-foreground shadow-xs transition-[border-color,box-shadow] duration-150 hover:border-primary/35 hover:shadow-md has-[a:focus-visible]:border-ring has-[a:focus-visible]:ring-3 has-[a:focus-visible]:ring-ring/50">
+    <article className="group/board relative flex min-w-0 flex-col gap-4 rounded-xl border bg-card p-4 text-card-foreground shadow-xs transition-[border-color,box-shadow] duration-150 hover:border-primary/35 hover:shadow-md has-[a:focus-visible]:border-ring has-[a:focus-visible]:ring-3 has-[a:focus-visible]:ring-ring/50">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-base leading-snug font-semibold tracking-tight">

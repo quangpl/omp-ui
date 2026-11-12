@@ -160,6 +160,31 @@ function keepOpenWhileEditing(event: KeyboardEvent) {
   }
 }
 
+/** A copy received over SSE (`value: null` = deleted) and when it arrived (`performance.now()`). */
+interface LiveCopy<T> {
+  at: number;
+  value: T | null;
+}
+
+/** Fetched list, with any SSE copies that arrived after the fetch started applied on top. */
+function reconcile<T extends { id: string }>(
+  fetched: T[],
+  live: Map<string, LiveCopy<T>>,
+  since: number,
+): T[] {
+  let result = fetched;
+  for (const [id, copy] of live) {
+    if (copy.at <= since) continue;
+    result = copy.value ? upsertById(result, copy.value) : result.filter((item) => item.id !== id);
+  }
+  return result;
+}
+
+/** `incoming` unless `held` is strictly newer (out-of-order snapshots never win). */
+function newerTask(held: Task | undefined, incoming: Task): Task {
+  return held && held.updatedAt > incoming.updatedAt ? held : incoming;
+}
+
 function upsertById<T extends { id: string }>(list: T[], item: T): T[] {
   const index = list.findIndex((entry) => entry.id === item.id);
   if (index === -1) return [...list, item];
@@ -195,10 +220,20 @@ function TaskDetailBody({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
+  // Copies received over SSE, with receive time. SSE is authoritative: an API response or fetch
+  // that started before a live copy arrived must not overwrite it (e.g. a stale `resolved: false`).
+  const liveCommentsRef = useRef(new Map<string, LiveCopy<Comment>>());
+  const liveRunsRef = useRef(new Map<string, LiveCopy<Run>>());
+
   const load = useCallback(async () => {
+    const since = performance.now();
     try {
       const data = await api.tasks.get(taskId);
-      setDetail(data);
+      setDetail((prev) => ({
+        task: newerTask(prev?.task, data.task),
+        comments: reconcile(data.comments, liveCommentsRef.current, since),
+        runs: reconcile(data.runs, liveRunsRef.current, since),
+      }));
       upsertTask(data.task);
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 404) {
@@ -223,7 +258,7 @@ function TaskDetailBody({
             break;
           case "task.updated":
             if (event.task.id === taskId) {
-              setDetail((prev) => (prev ? { ...prev, task: event.task } : prev));
+              setDetail((prev) => (prev ? { ...prev, task: newerTask(prev.task, event.task) } : prev));
             }
             break;
           case "task.deleted":
@@ -235,23 +270,27 @@ function TaskDetailBody({
           case "comment.added":
           case "comment.updated":
             if (event.comment.taskId === taskId) {
+              const comment = event.comment;
+              liveCommentsRef.current.set(comment.id, { at: performance.now(), value: comment });
               setDetail((prev) =>
-                prev ? { ...prev, comments: upsertById(prev.comments, event.comment) } : prev,
+                prev ? { ...prev, comments: upsertById(prev.comments, comment) } : prev,
               );
             }
             break;
           case "comment.deleted":
             if (event.taskId === taskId) {
+              const { commentId } = event;
+              liveCommentsRef.current.set(commentId, { at: performance.now(), value: null });
               setDetail((prev) =>
-                prev
-                  ? { ...prev, comments: prev.comments.filter((c) => c.id !== event.commentId) }
-                  : prev,
+                prev ? { ...prev, comments: prev.comments.filter((c) => c.id !== commentId) } : prev,
               );
             }
             break;
           case "run.updated":
             if (event.run.taskId === taskId) {
-              setDetail((prev) => (prev ? { ...prev, runs: upsertById(prev.runs, event.run) } : prev));
+              const run = event.run;
+              liveRunsRef.current.set(run.id, { at: performance.now(), value: run });
+              setDetail((prev) => (prev ? { ...prev, runs: upsertById(prev.runs, run) } : prev));
             }
             break;
         }
@@ -259,7 +298,14 @@ function TaskDetailBody({
     [subscribe, taskId, load],
   );
 
-  const task = boardTask ?? detail?.task;
+  /** Apply a comment returned by an API call started at `since`, unless SSE already delivered a newer copy. */
+  const applyCommentResponse = (comment: Comment, since: number) => {
+    const live = liveCommentsRef.current.get(comment.id);
+    if (live && live.at > since) return;
+    setDetail((prev) => (prev ? { ...prev, comments: upsertById(prev.comments, comment) } : prev));
+  };
+
+  const task = boardTask && detail ? newerTask(detail.task, boardTask) : (boardTask ?? detail?.task);
 
   if (!task) {
     return (
@@ -309,9 +355,9 @@ function TaskDetailBody({
   };
 
   const send = async (body: string) => {
+    const since = performance.now();
     try {
-      const comment = await api.tasks.comment(task.id, body);
-      setDetail((prev) => (prev ? { ...prev, comments: upsertById(prev.comments, comment) } : prev));
+      applyCommentResponse(await api.tasks.comment(task.id, body), since);
       return true;
     } catch (err) {
       toast.error("Couldn't send feedback", { description: errorMessage(err) });
@@ -320,9 +366,9 @@ function TaskDetailBody({
   };
 
   const setResolved = async (comment: Comment, resolved: boolean) => {
+    const since = performance.now();
     try {
-      const updated = await api.comments.setResolved(comment.id, resolved);
-      setDetail((prev) => (prev ? { ...prev, comments: upsertById(prev.comments, updated) } : prev));
+      applyCommentResponse(await api.comments.setResolved(comment.id, resolved), since);
     } catch (err) {
       toast.error("Couldn't update feedback", { description: errorMessage(err) });
     }
@@ -449,9 +495,8 @@ function TaskDetailBody({
             task={task}
             statuses={gitStatuses}
             onShipped={(comment) => {
-              setDetail((prev) =>
-                prev ? { ...prev, comments: upsertById(prev.comments, comment) } : prev,
-              );
+              // Brand-new comment: the SSE copy, if it already arrived, wins.
+              applyCommentResponse(comment, Number.NEGATIVE_INFINITY);
               onGitChanged();
             }}
           />

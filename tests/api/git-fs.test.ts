@@ -1,0 +1,589 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import path from "node:path";
+
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { api, env, freshEnv, setupAdmin, teardown, tempDir, waitFor } from "./helpers";
+
+import * as boardGitRoute from "@/app/api/v1/boards/[id]/git/route";
+import * as boardTasksRoute from "@/app/api/v1/boards/[id]/tasks/route";
+import * as boardsRoute from "@/app/api/v1/boards/route";
+import * as browseRoute from "@/app/api/v1/fs/browse/route";
+import * as cloneRoute from "@/app/api/v1/git/clone/route";
+import * as taskPrRoute from "@/app/api/v1/tasks/[id]/git/pr/route";
+import * as taskPushRoute from "@/app/api/v1/tasks/[id]/git/push/route";
+import * as taskRoute from "@/app/api/v1/tasks/[id]/route";
+import * as taskRunRoute from "@/app/api/v1/tasks/[id]/run/route";
+import * as taskStopRoute from "@/app/api/v1/tasks/[id]/stop/route";
+import type { Board, Comment, FsBrowseResult, GitActionResult, GitStatus, Task } from "@/lib/types";
+
+interface Repo {
+  work: string;
+  bare: string;
+}
+
+const MISSING_ID = "00000000-0000-0000-0000-000000000000";
+const SHA = /^[0-9a-f]{40}$/;
+const GIT_TIMEOUT = 60_000;
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync(
+    "git",
+    ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", ...args],
+    { cwd, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
+  ).trim();
+}
+
+/** Work tree `projects/<name>` on `main`, with one commit pushed to a bare `remotes/<name>.git` origin. */
+function makeRepo(name: string): Repo {
+  const bare = path.join(tempDir("remotes"), `${name}.git`);
+  git(env().root, "init", "--bare", "-b", "main", bare);
+  const work = tempDir(path.join("projects", name));
+  git(work, "init", "-b", "main");
+  writeFileSync(path.join(work, "README.md"), `# ${name}\n`);
+  git(work, "add", "-A");
+  git(work, "commit", "-m", "Initial commit");
+  git(work, "remote", "add", "origin", bare);
+  git(work, "push", "-u", "origin", "main");
+  git(work, "remote", "set-head", "origin", "main");
+  return { work, bare };
+}
+
+/** `<subject>|<author name> <author email>` of the newest commit on `ref` in a bare repo. */
+function remoteHead(bare: string, ref: string): { sha: string; subject: string; author: string } {
+  const [sha, subject, author] = git(bare, "--git-dir", bare, "log", "-1", "--format=%H%x09%s%x09%an <%ae>", ref).split("\t");
+  return { sha, subject, author };
+}
+
+async function createBoard(input: Record<string, unknown>): Promise<Board> {
+  const res = await api<Board>(boardsRoute, "POST", "/boards", { body: input });
+  expect(res.status, JSON.stringify(res.body)).toBe(201);
+  return res.body;
+}
+
+async function createTask(boardId: string, title: string): Promise<Task> {
+  const res = await api<Task>(boardTasksRoute, "POST", `/boards/${boardId}/tasks`, {
+    body: { title },
+    params: { id: boardId },
+  });
+  expect(res.status).toBe(201);
+  return res.body;
+}
+
+async function gitAction(action: "push" | "pr", taskId: string, body: Record<string, unknown> = {}) {
+  return api<GitActionResult & { error?: string }>(
+    action === "push" ? taskPushRoute : taskPrRoute,
+    "POST",
+    `/tasks/${taskId}/git/${action}`,
+    { body, params: { id: taskId } },
+  );
+}
+
+async function boardGit(boardId: string) {
+  return api<GitStatus[] & { error?: string }>(boardGitRoute, "GET", `/boards/${boardId}/git`, {
+    params: { id: boardId },
+  });
+}
+
+async function taskComments(taskId: string): Promise<Comment[]> {
+  const res = await api<{ comments: Comment[] }>(taskRoute, "GET", `/tasks/${taskId}`, { params: { id: taskId } });
+  return res.body.comments;
+}
+
+afterAll(teardown);
+
+// ---------------------------------------------------------------------------------------------
+
+describe("git status and quick actions", () => {
+  let app: Repo;
+  let lib: Repo;
+  let notes: string;
+  let board: Board;
+  let task: Task;
+
+  beforeAll(async () => {
+    await freshEnv();
+    await setupAdmin();
+    app = makeRepo("app");
+    lib = makeRepo("lib");
+    notes = tempDir(path.join("projects", "notes"));
+    board = await createBoard({ name: "Repos", workdir: app.work, extraFolders: [lib.work, notes], autoRun: false });
+    task = await createTask(board.id, "Add greeting feature");
+  });
+
+  it("GET /boards/:id/git reports one status per project folder, workdir first", async () => {
+    writeFileSync(path.join(app.work, "greeting.txt"), "hello\n");
+    writeFileSync(path.join(app.work, "README.md"), "# app\n\nchanged\n");
+    // An unpushed local commit in the extra repo.
+    writeFileSync(path.join(lib.work, "lib.txt"), "lib\n");
+    git(lib.work, "add", "-A");
+    git(lib.work, "commit", "-m", "Local lib change");
+
+    const res = await boardGit(board.id);
+    expect(res.status).toBe(200);
+    expect(res.body.map((s) => s.folder)).toEqual([app.work, lib.work, notes]);
+
+    expect(res.body[0]).toEqual({
+      folder: app.work,
+      isRepo: true,
+      branch: "main",
+      defaultBranch: "main",
+      remoteUrl: app.bare,
+      webUrl: null,
+      provider: "other",
+      dirty: true,
+      changedFiles: 2,
+      ahead: 0,
+      behind: 0,
+      prCliAvailable: false,
+    });
+    expect(res.body[1]).toMatchObject({ isRepo: true, branch: "main", dirty: false, changedFiles: 0, ahead: 1, behind: 0 });
+    expect(res.body[2]).toMatchObject({
+      folder: notes,
+      isRepo: false,
+      branch: null,
+      defaultBranch: null,
+      remoteUrl: null,
+      dirty: false,
+      changedFiles: 0,
+    });
+
+    const missing = await boardGit(MISSING_ID);
+    expect(missing.status).toBe(404);
+  });
+
+  it("validates the folders, message and task of a push", async () => {
+    const outside = tempDir("outside");
+    const cases: [Record<string, unknown>, string][] = [
+      [{ folders: app.work }, "folders must be a list of folder paths."],
+      [{ folders: [app.work, 3] }, "folders must be a list of folder paths."],
+      [{ folders: [outside] }, `This folder is not part of the project: ${outside}`],
+      [{ folders: [] }, "Choose at least one folder."],
+      [{ folders: [notes] }, "This project folder is not a git repository, so there is nothing to push."],
+      [{ message: "m".repeat(5001) }, "message must be at most 5000 characters."],
+      [{ message: 42 }, "message must be text."],
+    ];
+    for (const [body, error] of cases) {
+      const res = await gitAction("push", task.id, body);
+      expect(res.status, JSON.stringify(body).slice(0, 80)).toBe(400);
+      expect(res.body.error).toBe(error);
+    }
+    const prTitle = await gitAction("pr", task.id, { title: "t".repeat(201) });
+    expect(prTitle.status).toBe(400);
+    expect(prTitle.body.error).toBe("title must be at most 200 characters.");
+
+    expect((await gitAction("push", MISSING_ID)).status).toBe(404);
+    expect((await gitAction("pr", MISSING_ID)).status).toBe(404);
+    // Nothing was committed by the rejected requests.
+    expect((await boardGit(board.id)).body[0].changedFiles).toBe(2);
+  });
+
+  it(
+    "Push to main commits and pushes every repo folder, then posts an agent comment",
+    async () => {
+      const appBefore = remoteHead(app.bare, "main").sha;
+      const localLibCommit = git(lib.work, "rev-parse", "HEAD");
+
+      const res = await gitAction("push", task.id, { message: "Add greeting" });
+      expect(res.status).toBe(200);
+      expect(res.body.action).toBe("push");
+      const [appResult, libResult, notesResult] = res.body.results;
+      expect(res.body.results.map((r) => r.folder)).toEqual([app.work, lib.work, notes]);
+
+      // A local remote has no web page to link to.
+      expect(appResult).toMatchObject({ branch: "main", error: null, skipped: false, url: null });
+      expect(appResult.commit).toMatch(SHA);
+      expect(typeof appResult.output).toBe("string");
+      const pushed = remoteHead(app.bare, "main");
+      expect(pushed.sha).toBe(appResult.commit);
+      expect(pushed.sha).not.toBe(appBefore);
+      expect(pushed.subject).toBe("Add greeting");
+      // No git identity configured on the "server": the documented fallback is used.
+      expect(pushed.author).toBe("OMP UI <omp-ui@localhost>");
+      expect(git(app.work, "status", "--porcelain")).toBe("");
+
+      // Clean tree but unpushed commit: pushed without a new commit.
+      expect(libResult).toMatchObject({ branch: "main", commit: null, error: null, skipped: false });
+      expect(remoteHead(lib.bare, "main").sha).toBe(localLibCommit);
+
+      expect(notesResult.skipped).toBe(true);
+      expect(notesResult.error).toBeNull();
+
+      const comment = res.body.comment;
+      expect(comment).toMatchObject({ taskId: task.id, author: "agent", resolved: true });
+      expect(comment.body).toContain("Push to main");
+      expect(comment.body).toContain("Pushed to main in app/");
+      expect(comment.body).toContain("Pushed to main in lib/");
+      expect((await taskComments(task.id)).map((c) => c.id)).toContain(comment.id);
+
+      const status = await boardGit(board.id);
+      expect(status.body[0]).toMatchObject({ dirty: false, ahead: 0 });
+      expect(status.body[1]).toMatchObject({ dirty: false, ahead: 0 });
+    },
+    GIT_TIMEOUT,
+  );
+
+  it(
+    "Push to main skips folders with nothing to push and uses the task title as the default message",
+    async () => {
+      const nothing = await gitAction("push", task.id);
+      expect(nothing.status).toBe(200);
+      expect(nothing.body.results.every((r) => r.skipped)).toBe(true);
+      expect(nothing.body.results.every((r) => r.commit === null && r.error === null)).toBe(true);
+      expect(nothing.body.comment.body).toContain("Nothing to push");
+
+      writeFileSync(path.join(app.work, "more.txt"), "more\n");
+      const only = await gitAction("push", task.id, { folders: [`${app.work}/`] });
+      expect(only.status).toBe(200);
+      expect(only.body.results).toHaveLength(1);
+      expect(only.body.results[0].folder).toBe(app.work);
+      expect(remoteHead(app.bare, "main")).toMatchObject({
+        sha: only.body.results[0].commit,
+        subject: "Add greeting feature",
+      });
+    },
+    GIT_TIMEOUT,
+  );
+
+  it(
+    "Create PR pushes a new omp/... branch (no PR CLI for this host) and leaves main untouched",
+    async () => {
+      const mainBefore = remoteHead(app.bare, "main").sha;
+      writeFileSync(path.join(app.work, "pr.txt"), "pull request change\n");
+
+      const res = await gitAction("pr", task.id, { title: "Greeting PR" });
+      expect(res.status).toBe(200);
+      expect(res.body.action).toBe("pr");
+      const [appResult, libResult, notesResult] = res.body.results;
+
+      expect(appResult.error).toBeNull();
+      expect(appResult.skipped).toBe(false);
+      expect(appResult.branch).toMatch(/^omp\/add-greeting-feature-[0-9a-f]{6}$/);
+      expect(appResult.commit).toMatch(SHA);
+      expect(appResult.url).toBeNull();
+      const branch = appResult.branch as string;
+
+      const remoteBranch = remoteHead(app.bare, `refs/heads/${branch}`);
+      expect(remoteBranch.sha).toBe(appResult.commit);
+      expect(remoteBranch.subject).toBe("Greeting PR");
+      expect(remoteHead(app.bare, "main").sha).toBe(mainBefore);
+      // The folder stays on the new branch.
+      expect(git(app.work, "rev-parse", "--abbrev-ref", "HEAD")).toBe(branch);
+
+      expect(libResult.skipped).toBe(true);
+      expect(notesResult.skipped).toBe(true);
+      expect(res.body.comment.author).toBe("agent");
+      expect(res.body.comment.body).toContain("Create PR");
+      expect(res.body.comment.body).toContain(`Pushed branch ${branch} in app/`);
+
+      const nothing = await gitAction("pr", task.id, { folders: [lib.work] });
+      expect(nothing.status).toBe(200);
+      expect(nothing.body.results).toEqual([expect.objectContaining({ folder: lib.work, skipped: true })]);
+      expect(nothing.body.comment.body).toContain("Nothing to put in a pull request");
+    },
+    GIT_TIMEOUT,
+  );
+
+  it(
+    "answers 409 while the task's agent is running",
+    async () => {
+      const busy = await createTask(board.id, "Busy agent [fake:slow]");
+      const started = await api<Task>(taskRunRoute, "POST", `/tasks/${busy.id}/run`, { params: { id: busy.id } });
+      expect(started.status).toBe(200);
+      await waitFor(async () => {
+        const res = await api<{ task: Task }>(taskRoute, "GET", `/tasks/${busy.id}`, { params: { id: busy.id } });
+        return res.body.task.agentState === "running";
+      }, 20_000);
+      writeFileSync(path.join(lib.work, "busy.txt"), "agent at work\n");
+      const libBefore = remoteHead(lib.bare, "main").sha;
+
+      for (const action of ["push", "pr"] as const) {
+        const res = await gitAction(action, busy.id);
+        expect(res.status, action).toBe(409);
+        expect(res.body).toEqual({ error: "Wait for the agent to finish first." });
+      }
+      expect(remoteHead(lib.bare, "main").sha).toBe(libBefore);
+
+      const stopped = await api<Task>(taskStopRoute, "POST", `/tasks/${busy.id}/stop`, { params: { id: busy.id } });
+      expect(stopped.body.agentState).toBe("idle");
+      const after = await gitAction("push", busy.id, { folders: [lib.work], message: "After the agent" });
+      expect(after.status).toBe(200);
+      expect(remoteHead(lib.bare, "main").subject).toBe("After the agent");
+    },
+    GIT_TIMEOUT,
+  );
+
+  it("answers 400 when no project folder is a git repository", async () => {
+    const plain = await createBoard({ name: "Plain", workdir: tempDir("plain-project"), autoRun: false });
+    const plainTask = await createTask(plain.id, "No repo here");
+    for (const action of ["push", "pr"] as const) {
+      const res = await gitAction(action, plainTask.id);
+      expect(res.status, action).toBe(400);
+      expect(res.body.error).toBe("This project folder is not a git repository, so there is nothing to push.");
+    }
+    const status = await boardGit(plain.id);
+    expect(status.body).toEqual([expect.objectContaining({ isRepo: false })]);
+  });
+
+  it(
+    "explains a rejected push when the remote has newer commits",
+    async () => {
+      const repo = makeRepo("diverged");
+      const other = path.join(env().root, "other-clone");
+      git(env().root, "clone", repo.bare, other);
+      writeFileSync(path.join(other, "theirs.txt"), "theirs\n");
+      git(other, "add", "-A");
+      git(other, "commit", "-m", "Someone else's change");
+      git(other, "push", "origin", "main");
+      const theirs = remoteHead(repo.bare, "main").sha;
+
+      const divergedBoard = await createBoard({ name: "Diverged", workdir: repo.work, autoRun: false });
+      const divergedTask = await createTask(divergedBoard.id, "Conflicting change");
+      writeFileSync(path.join(repo.work, "mine.txt"), "mine\n");
+
+      const res = await gitAction("push", divergedTask.id);
+      expect(res.status).toBe(200);
+      const [result] = res.body.results;
+      expect(result.skipped).toBe(false);
+      expect(result.error).toBe("The remote branch has newer commits. Pull them first, or use “Create PR” instead.");
+      expect(result.commit).toMatch(SHA);
+      expect(remoteHead(repo.bare, "main").sha).toBe(theirs);
+      expect(res.body.comment.body).toContain("Couldn't push diverged/");
+    },
+    GIT_TIMEOUT,
+  );
+
+  it(
+    "Create PR without the gh CLI still pushes the branch and links GitHub's compare page",
+    async () => {
+      const repo = makeRepo("widgets");
+      // Looks like GitHub to the server, but pushes go to the local bare repo (no network).
+      git(repo.work, "remote", "set-url", "origin", "ssh://git@github.invalid/acme/widgets.git");
+      git(repo.work, "remote", "set-url", "--push", "origin", repo.bare);
+      const ghBoard = await createBoard({ name: "Widgets", workdir: repo.work, autoRun: false });
+      const ghTask = await createTask(ghBoard.id, "Widget polish");
+      writeFileSync(path.join(repo.work, "widget.txt"), "shiny\n");
+
+      // PATH without gh/glab; git itself is still reachable.
+      const bin = tempDir("bin-without-gh");
+      const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+      if (!existsSync(path.join(bin, "git"))) symlinkSync(realGit, path.join(bin, "git"));
+      const originalPath = process.env.PATH;
+      process.env.PATH = bin;
+      try {
+        const status = await boardGit(ghBoard.id);
+        expect(status.body[0]).toMatchObject({
+          provider: "github",
+          // The ssh login name is not a secret: it stays in the displayed remote.
+          remoteUrl: "ssh://git@github.invalid/acme/widgets.git",
+          webUrl: "https://github.invalid/acme/widgets",
+          prCliAvailable: false,
+        });
+
+        const res = await gitAction("pr", ghTask.id);
+        expect(res.status).toBe(200);
+        const [result] = res.body.results;
+        expect(result.error).toBeNull();
+        const branch = result.branch as string;
+        expect(branch).toMatch(/^omp\/widget-polish-[0-9a-f]{6}$/);
+        expect(result.url).toBe(`https://github.invalid/acme/widgets/compare/main...${branch}?expand=1`);
+        expect(remoteHead(repo.bare, `refs/heads/${branch}`)).toMatchObject({
+          sha: result.commit,
+          subject: "Widget polish",
+        });
+        expect(res.body.comment.body).toContain(result.url);
+      } finally {
+        process.env.PATH = originalPath;
+      }
+    },
+    GIT_TIMEOUT,
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("folder browser", () => {
+  let base: string;
+
+  beforeAll(async () => {
+    await freshEnv();
+    await setupAdmin();
+    base = tempDir("browse");
+    for (const dir of ["alpha", "Beta", "gamma/.git", ".hidden", "my folder"]) {
+      mkdirSync(path.join(base, dir), { recursive: true });
+    }
+    writeFileSync(path.join(base, "file.txt"), "not a folder\n");
+    symlinkSync(path.join(base, "alpha"), path.join(base, "link-to-alpha"));
+    symlinkSync(path.join(base, "missing-target"), path.join(base, "broken-link"));
+  });
+
+  async function browse(query = "") {
+    return api<FsBrowseResult & { error?: string }>(browseRoute, "GET", `/fs/browse${query}`);
+  }
+
+  it("defaults to WORKSPACE_DIR and creates it", async () => {
+    const { workspaceDir } = env();
+    expect(existsSync(workspaceDir)).toBe(false);
+    const res = await browse();
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      path: workspaceDir,
+      parent: path.dirname(workspaceDir),
+      workspaceRoot: workspaceDir,
+      entries: [],
+    });
+    expect(existsSync(workspaceDir)).toBe(true);
+  });
+
+  it("lists only visible sub-folders, sorted by name, marking git repositories", async () => {
+    const res = await browse(`?path=${encodeURIComponent(base)}`);
+    expect(res.status).toBe(200);
+    expect(res.body.path).toBe(base);
+    expect(res.body.parent).toBe(path.dirname(base));
+    expect(res.body.workspaceRoot).toBe(env().workspaceDir);
+    expect(res.body.entries).toEqual([
+      { name: "alpha", path: path.join(base, "alpha"), isGitRepo: false },
+      { name: "Beta", path: path.join(base, "Beta"), isGitRepo: false },
+      { name: "gamma", path: path.join(base, "gamma"), isGitRepo: true },
+      { name: "link-to-alpha", path: path.join(base, "link-to-alpha"), isGitRepo: false },
+      { name: "my folder", path: path.join(base, "my folder"), isGitRepo: false },
+    ]);
+  });
+
+  it("normalizes the path and reports no parent at the filesystem root", async () => {
+    const res = await browse(`?path=${encodeURIComponent(`${base}/alpha/../`)}`);
+    expect(res.status).toBe(200);
+    expect(res.body.path).toBe(base);
+
+    const root = await browse("?path=%2F");
+    expect(root.status).toBe(200);
+    expect(root.body.path).toBe("/");
+    expect(root.body.parent).toBeNull();
+  });
+
+  it("rejects relative, nonexistent and non-folder paths with 400", async () => {
+    const relative = await browse("?path=projects");
+    expect(relative.status).toBe(400);
+    expect(relative.body.error).toContain('full folder path starting with "/"');
+
+    const ghost = path.join(base, "ghost");
+    const missing = await browse(`?path=${encodeURIComponent(ghost)}`);
+    expect(missing.status).toBe(400);
+    expect(missing.body.error).toContain(ghost);
+
+    const file = path.join(base, "file.txt");
+    const notDir = await browse(`?path=${encodeURIComponent(file)}`);
+    expect(notDir.status).toBe(400);
+    expect(notDir.body.error).toContain(file);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("git clone", () => {
+  let source: Repo;
+
+  beforeAll(async () => {
+    await freshEnv();
+    await setupAdmin();
+    source = makeRepo("library");
+    git(source.work, "push", "origin", "main:feature");
+  });
+
+  async function clone(body: Record<string, unknown>) {
+    return api<{ path: string; output: string; error?: string }>(cloneRoute, "POST", "/git/clone", { body });
+  }
+
+  it(
+    "clones a local bare repository into WORKSPACE_DIR/<repo name>",
+    async () => {
+      const res = await clone({ url: source.bare });
+      expect(res.status).toBe(201);
+      const target = path.join(env().workspaceDir, "library");
+      expect(res.body.path).toBe(target);
+      expect(typeof res.body.output).toBe("string");
+      expect(existsSync(path.join(target, "README.md"))).toBe(true);
+      expect(git(target, "remote", "get-url", "origin")).toBe(source.bare);
+      expect(git(target, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+
+      const listed = await api<FsBrowseResult>(browseRoute, "GET", "/fs/browse");
+      expect(listed.body.entries).toEqual([{ name: "library", path: target, isGitRepo: true }]);
+    },
+    GIT_TIMEOUT,
+  );
+
+  it("answers 409 when the target folder already exists", async () => {
+    const res = await clone({ url: source.bare });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain('"library" already exists');
+  });
+
+  it(
+    "uses a sanitized custom folder name and an optional branch",
+    async () => {
+      const named = await clone({ url: source.bare, name: "My Copy!" });
+      expect(named.status).toBe(201);
+      expect(named.body.path).toBe(path.join(env().workspaceDir, "My-Copy"));
+
+      const branched = await clone({ url: source.bare, name: "feature-copy", branch: "feature" });
+      expect(branched.status).toBe(201);
+      expect(git(branched.body.path, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature");
+    },
+    GIT_TIMEOUT,
+  );
+
+  it("rejects addresses that are not git repository URLs", async () => {
+    const missing = await clone({});
+    expect(missing.status).toBe(400);
+    expect(missing.body.error).toBe("Please enter the repository address to clone.");
+    expect((await clone({ url: "   " })).status).toBe(400);
+    expect((await clone({ url: 42 })).status).toBe(400);
+
+    for (const url of [
+      "not a url",
+      "relative/repo.git",
+      path.join(env().root, "remotes", "library"),
+      "http://example.com/repo.git",
+      "-uhttps://example.com/repo.git",
+      "file:///tmp/repo.git",
+    ]) {
+      const res = await clone({ url });
+      expect(res.status, url).toBe(400);
+      expect(res.body.error, url).toMatch(/^That doesn't look like a git repository address/);
+    }
+  });
+
+  it("rejects invalid branch and folder names", async () => {
+    const branch = await clone({ url: source.bare, name: "x1", branch: "bad branch" });
+    expect(branch.status).toBe(400);
+    expect(branch.body.error).toBe('"bad branch" is not a valid branch name.');
+    expect((await clone({ url: source.bare, name: "x2", branch: "-oops" })).status).toBe(400);
+
+    const name = await clone({ url: source.bare, name: "!!!" });
+    expect(name.status).toBe(400);
+    expect(name.body.error).toBe("Please choose a folder name for the cloned repository.");
+
+    const nameType = await clone({ url: source.bare, name: 5 });
+    expect(nameType.status).toBe(400);
+    expect(nameType.body.error).toBe("name must be text.");
+    expect(existsSync(path.join(env().workspaceDir, "x1"))).toBe(false);
+  });
+
+  it(
+    "answers 400 with a plain reason when the clone fails, leaving no folder behind",
+    async () => {
+      const ghost = path.join(env().root, "remotes", "ghost.git");
+      const res = await clone({ url: ghost });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/^Clone failed: /);
+      expect(existsSync(path.join(env().workspaceDir, "ghost"))).toBe(false);
+
+      const missingBranch = await clone({ url: source.bare, name: "no-branch", branch: "does-not-exist" });
+      expect(missingBranch.status).toBe(400);
+      expect(missingBranch.body.error).toMatch(/^Clone failed: /);
+      expect(existsSync(path.join(env().workspaceDir, "no-branch"))).toBe(false);
+    },
+    GIT_TIMEOUT,
+  );
+});
