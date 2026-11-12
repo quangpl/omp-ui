@@ -828,7 +828,7 @@ export default function SettingsPage() {
     <div className="flex min-h-dvh flex-col">
       <AppHeader title="Settings" backHref="/" />
       <main className="px-safe pb-safe flex-1">
-        <div className="mx-auto grid w-full max-w-[1400px] gap-6 px-4 py-6 sm:px-6 md:py-8 lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-10 lg:px-8 xl:grid-cols-[14rem_minmax(0,1fr)] xl:gap-14">
+        <div className="mx-auto grid w-full max-w-[1400px] grid-cols-1 gap-6 px-4 py-6 sm:px-6 md:py-8 lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-10 lg:px-8 xl:grid-cols-[14rem_minmax(0,1fr)] xl:gap-14">
           <SettingsNav items={SECTIONS} />
           <div
             className={cn(
