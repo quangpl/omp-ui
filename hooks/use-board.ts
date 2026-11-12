@@ -52,6 +52,47 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong";
 }
 
+export interface NewCardInput {
+  title: string;
+  description?: string;
+  /** Create in "In progress" and make sure its agent starts. */
+  start?: boolean;
+}
+
+/**
+ * Create a card at the end of To do (In progress when `start`), then run its agent when the
+ * board won't start it on its own. Toasts and resolves `null` when the card couldn't be created.
+ */
+export async function createCard(
+  board: Pick<Board, "id" | "autoRun">,
+  input: NewCardInput,
+  options: { position?: number; onCreated?: (task: Task) => void } = {},
+): Promise<Task | null> {
+  let task: Task;
+  try {
+    task = await api.tasks.create(board.id, {
+      title: input.title,
+      description: input.description || undefined,
+      status: input.start ? "in_progress" : "todo",
+      position: options.position,
+    });
+    options.onCreated?.(task);
+  } catch (err) {
+    toast.error("Couldn't create card", { description: message(err) });
+    return null;
+  }
+  // Boards without autoRun don't start agents on their own; "start now" means run it.
+  if (input.start && !board.autoRun && task.agentState === "idle") {
+    try {
+      task = await api.tasks.run(task.id);
+      options.onCreated?.(task);
+    } catch (err) {
+      toast.error("Card created, but the agent didn't start", { description: message(err) });
+    }
+  }
+  return task;
+}
+
 interface PendingMove {
   status: TaskStatus;
   position: number;
@@ -76,7 +117,12 @@ export interface BoardController {
   /** Move a card to the bottom of another column. */
   moveToStatus: (taskId: string, status: TaskStatus) => Promise<void>;
   /** Create a card; toasts and resolves `null` on failure. */
-  createTask: (input: { title: string; description?: string; start?: boolean }) => Promise<Task | null>;
+  createTask: (input: NewCardInput) => Promise<Task | null>;
+  /** Start / stop a card's agent; toasts on failure. */
+  runAgent: (taskId: string) => Promise<void>;
+  stopAgent: (taskId: string) => Promise<void>;
+  /** Delete a card; toasts on success and failure. */
+  deleteTask: (taskId: string) => Promise<void>;
   /** Listen to the board's live event stream (shared SSE connection). Returns an unsubscribe fn. */
   subscribe: (listener: BoardStreamListener) => () => void;
   /** Latest one-line agent activity per task id ("▸ bash: npm test", "Writing…"); show while running. */
@@ -290,33 +336,50 @@ export function useBoard(boardId: string): BoardController {
 
   /** Create a card at the bottom of To do, or In progress when `start` is set (and start its agent). */
   const createTask = useCallback(
-    async (input: { title: string; description?: string; start?: boolean }): Promise<Task | null> => {
+    (input: NewCardInput): Promise<Task | null> => {
       const status: TaskStatus = input.start ? "in_progress" : "todo";
-      let task: Task;
-      try {
-        task = await api.tasks.create(boardId, {
-          title: input.title,
-          description: input.description || undefined,
-          status,
-          position: endPosition(status),
-        });
-        upsertTask(task);
-      } catch (err) {
-        toast.error("Couldn't create card", { description: message(err) });
-        return null;
-      }
-      // Boards without autoRun don't start agents on their own; "start now" means run it.
-      if (input.start && !boardRef.current?.autoRun && task.agentState === "idle") {
-        try {
-          task = await api.tasks.run(task.id);
-          upsertTask(task);
-        } catch (err) {
-          toast.error("Card created, but the agent didn't start", { description: message(err) });
-        }
-      }
-      return task;
+      return createCard(
+        { id: boardId, autoRun: boardRef.current?.autoRun ?? false },
+        input,
+        { position: endPosition(status), onCreated: upsertTask },
+      );
     },
     [boardId, endPosition, upsertTask],
+  );
+
+  const runAgent = useCallback(
+    async (taskId: string) => {
+      try {
+        upsertTask(await api.tasks.run(taskId));
+      } catch (err) {
+        toast.error("Couldn't start the agent", { description: message(err) });
+      }
+    },
+    [upsertTask],
+  );
+
+  const stopAgent = useCallback(
+    async (taskId: string) => {
+      try {
+        upsertTask(await api.tasks.stop(taskId));
+      } catch (err) {
+        toast.error("Couldn't stop the agent", { description: message(err) });
+      }
+    },
+    [upsertTask],
+  );
+
+  const deleteTask = useCallback(
+    async (taskId: string) => {
+      try {
+        await api.tasks.remove(taskId);
+        removeTask(taskId);
+        toast.success("Card deleted");
+      } catch (err) {
+        toast.error("Couldn't delete card", { description: message(err) });
+      }
+    },
+    [removeTask],
   );
 
   return {
@@ -333,6 +396,9 @@ export function useBoard(boardId: string): BoardController {
     moveTask,
     moveToStatus,
     createTask,
+    runAgent,
+    stopAgent,
+    deleteTask,
     subscribe,
     activity,
     connection,

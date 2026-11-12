@@ -6,6 +6,7 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/utils";
 import { STATUS_LABELS, type Task, type TaskStatus } from "@/lib/types";
+import { type BoardMenuActions, CardContextMenu } from "@/components/board/card-context-menu";
 import { InlineComposer } from "@/components/board/inline-composer";
 import { TaskCard } from "@/components/board/task-card";
 
@@ -32,11 +33,11 @@ export function StatusDot({ status, className }: { status: TaskStatus; className
 function SortableTaskCard({
   task,
   activity,
-  onOpen,
+  menuActions,
 }: {
   task: Task;
   activity: string | undefined;
-  onOpen: (taskId: string) => void;
+  menuActions: BoardMenuActions;
 }) {
   const {
     attributes,
@@ -49,23 +50,25 @@ function SortableTaskCard({
   } = useSortable({ id: task.id, data: { type: "task", status: task.status } });
 
   return (
-    <div
-      ref={setNodeRef}
-      style={{ transform: CSS.Translate.toString(transform), transition }}
-      className="touch-manipulation"
-    >
-      <TaskCard
-        task={task}
-        placeholder={isDragging}
-        activity={activity}
-        activatorRef={setActivatorNodeRef}
-        dragAttributes={attributes}
-        dragListeners={listeners}
-        onOpen={() => {
-          if (!isDragging) onOpen(task.id);
-        }}
-      />
-    </div>
+    <CardContextMenu task={task} actions={menuActions}>
+      <div
+        ref={setNodeRef}
+        style={{ transform: CSS.Translate.toString(transform), transition }}
+        className="touch-manipulation rounded-lg data-[state=open]:*:ring-2 data-[state=open]:*:ring-ring/50"
+      >
+        <TaskCard
+          task={task}
+          placeholder={isDragging}
+          activity={activity}
+          activatorRef={setActivatorNodeRef}
+          dragAttributes={attributes}
+          dragListeners={listeners}
+          onOpen={() => {
+            if (!isDragging) menuActions.openCard(task.id);
+          }}
+        />
+      </div>
+    </CardContextMenu>
   );
 }
 
@@ -74,13 +77,14 @@ export function BoardColumn({
   status,
   tasks,
   activity,
-  onOpen,
+  menuActions,
   onCreate,
 }: {
   status: TaskStatus;
   tasks: Task[];
   activity: Record<string, string>;
-  onOpen: (taskId: string) => void;
+  /** Card clicks and right-click menu actions. */
+  menuActions: BoardMenuActions;
   /** When set, shows the inline "Add a card" composer at the bottom. */
   onCreate?: (title: string) => Promise<boolean>;
 }) {
@@ -119,7 +123,7 @@ export function BoardColumn({
                 key={task.id}
                 task={task}
                 activity={activity[task.id]}
-                onOpen={onOpen}
+                menuActions={menuActions}
               />
             ))}
             {tasks.length === 0 && (
@@ -131,7 +135,8 @@ export function BoardColumn({
         </SortableContext>
       </div>
       {onCreate && (
-        <div className="border-t border-border/60 p-2">
+        // The composer's textarea keeps the browser's own menu (paste, spellcheck…).
+        <div className="border-t border-border/60 p-2" onContextMenu={(event) => event.stopPropagation()}>
           <InlineComposer
             onSubmit={onCreate}
             onAdded={() =>

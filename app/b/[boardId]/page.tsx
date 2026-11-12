@@ -1,21 +1,25 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Plus } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { BoardMenu } from "@/components/board/board-menu";
+import type { BoardMenuActions } from "@/components/board/card-context-menu";
 import { ConnectionPill } from "@/components/board/connection-status";
 import { KanbanBoard } from "@/components/board/kanban-board";
 import { NewTaskDialog, type NewTaskInput } from "@/components/board/new-task-form";
 import { GitIndicator } from "@/components/board/ship-actions";
-import { TaskDetail } from "@/components/board/task-detail";
+import { DeleteCardDialog, TaskDetail } from "@/components/board/task-detail";
+import { useNewCardTarget } from "@/components/new-card";
 import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useBoard, useGitStatus } from "@/hooks/use-board";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { TASK_STATUSES, type Board, type TaskStatus } from "@/lib/types";
+import { TASK_STATUSES, type Board, type Task, type TaskStatus } from "@/lib/types";
 
 export default function BoardPage() {
   return (
@@ -41,7 +45,10 @@ function BoardScreen() {
   const controller = useBoard(boardId);
   const { board, columns, tasks, loading, error, subscribe } = controller;
   const git = useGitStatus(boardId, subscribe);
-  const [newOpen, setNewOpen] = useState(false);
+  /** Open "New card" form; `start` presets "Start agent now". */
+  const [newCard, setNewCard] = useState<{ start: boolean } | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [deleting, setDeleting] = useState<Task | null>(null);
   const [mobileColumn, setMobileColumn] = useState<TaskStatus>("todo");
 
   // Detail open state lives in `?task=<id>`; opening pushes a history entry so Back closes it.
@@ -84,6 +91,33 @@ function BoardScreen() {
     return task !== null;
   };
 
+  // `N` / `Shift+N` and every "New card…" menu item land here while this board is open.
+  useNewCardTarget(boardId, ({ start }) => setNewCard({ start: Boolean(start) }));
+
+  const { createTask, moveToStatus, runAgent, stopAgent, reload } = controller;
+  const refreshGit = git.refresh;
+  const menuActions = useMemo<BoardMenuActions>(
+    () => ({
+      boardId,
+      openCard: openTask,
+      moveToStatus,
+      runAgent,
+      stopAgent,
+      duplicate: async (task) => {
+        const copy = await createTask({ title: `${task.title} (copy)`, description: task.description });
+        if (copy) setMobileColumn(copy.status);
+      },
+      requestDelete: setDeleting,
+      newCard: (start) => setNewCard({ start }),
+      refresh: () => {
+        void reload();
+        void refreshGit();
+      },
+      openSettings: () => setSettingsOpen(true),
+    }),
+    [boardId, openTask, moveToStatus, runAgent, stopAgent, createTask, reload, refreshGit],
+  );
+
   if (!board) {
     if (loading) return <BoardSkeleton />;
     return (
@@ -115,17 +149,23 @@ function BoardScreen() {
             <ConnectionPill status={controller.connection} />
             <GitIndicator boardId={boardId} statuses={git.statuses} onChanged={() => void git.refresh()} />
             {/* Phones use the thumb-reachable floating button instead. */}
-            <Button className="h-9 max-md:hidden" onClick={() => setNewOpen(true)}>
-              <Plus />
-              Add card
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button className="h-9 max-md:hidden" onClick={() => setNewCard({ start: false })}>
+                  <Plus />
+                  Add card
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                New card <Kbd>N</Kbd>
+              </TooltipContent>
+            </Tooltip>
             <BoardMenu
               board={board}
               onUpdated={controller.setBoard}
-              onRefresh={() => {
-                void controller.reload();
-                void git.refresh();
-              }}
+              onRefresh={menuActions.refresh}
+              settingsOpen={settingsOpen}
+              onSettingsOpenChange={setSettingsOpen}
             />
           </>
         }
@@ -135,17 +175,32 @@ function BoardScreen() {
           columns={columns}
           activity={controller.activity}
           isMobile={isMobile}
-          onOpen={openTask}
+          menuActions={menuActions}
           moveTask={controller.moveTask}
           moveToStatus={controller.moveToStatus}
           onQuickCreate={async (title) => (await controller.createTask({ title })) !== null}
-          onAdd={() => setNewOpen(true)}
+          onAdd={() => setNewCard({ start: false })}
           mobileColumn={mobileColumn}
           onMobileColumnChange={setMobileColumn}
         />
       </main>
 
-      <NewTaskDialog open={newOpen} onOpenChange={setNewOpen} isMobile={isMobile} onCreate={create} />
+      <NewTaskDialog
+        open={newCard !== null}
+        onOpenChange={(open) => !open && setNewCard(null)}
+        isMobile={isMobile}
+        defaultStart={newCard?.start}
+        onCreate={create}
+      />
+
+      <DeleteCardDialog
+        title={deleting?.title ?? ""}
+        open={deleting !== null}
+        onOpenChange={(open) => !open && setDeleting(null)}
+        onConfirm={async () => {
+          if (deleting) await controller.deleteTask(deleting.id);
+        }}
+      />
 
       <TaskDetail
         taskId={selectedTaskId}

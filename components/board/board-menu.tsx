@@ -32,13 +32,17 @@ export function BoardMenu({
   board,
   onUpdated,
   onRefresh,
+  settingsOpen,
+  onSettingsOpenChange: setSettingsOpen,
 }: {
   board: Board;
   onUpdated: (board: Board) => void;
   onRefresh: () => void;
+  /** Settings dialog state; owned by the page so the board's right-click menu can open it too. */
+  settingsOpen: boolean;
+  onSettingsOpenChange: (open: boolean) => void;
 }) {
   const router = useRouter();
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
