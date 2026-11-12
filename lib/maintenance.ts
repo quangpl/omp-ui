@@ -23,6 +23,7 @@ import { getSystemStats } from "@/lib/stats";
 import type {
   CleanupId,
   CleanupItem,
+  CleanupTargetInfo,
   MaintenanceAction,
   MaintenanceRecommendation,
   MaintenanceReport,
@@ -30,6 +31,7 @@ import type {
   MaintenanceStepResult,
   ProcessInfo,
   ProcessTag,
+  ScheduledCleanupId,
   StorageUsage,
   Task,
 } from "@/lib/types";
@@ -785,6 +787,14 @@ const TARGETS: Target[] = [
     "review",
   ),
 ];
+
+/** Label, description and risk of the given cleanup targets, in the given order (Settings → Cleanup). */
+export function cleanupTargetInfo(ids: readonly ScheduledCleanupId[]): CleanupTargetInfo[] {
+  return ids.map((id) => {
+    const { label, description, risk } = TARGETS.find((t) => t.id === id)!;
+    return { id, label, description, risk };
+  });
+}
 
 function memo<T>(load: () => Promise<T>): () => Promise<T> {
   let promise: Promise<T> | null = null;

@@ -1,5 +1,13 @@
 import type { Repository } from "@/lib/db/types";
-import { BROWSER_MODES, DEFAULT_SETTINGS, type AppSettings, type ApprovalMode } from "@/lib/types";
+import {
+  BROWSER_MODES,
+  CLEANUP_SCHEDULES,
+  DEFAULT_SETTINGS,
+  SCHEDULED_CLEANUP_IDS,
+  type AppSettings,
+  type ApprovalMode,
+  type ScheduledCleanupId,
+} from "@/lib/types";
 
 const KEY = "app_settings";
 const APPROVAL_MODES: ApprovalMode[] = ["yolo", "write", "always-ask"];
@@ -56,5 +64,15 @@ function sanitize(s: AppSettings): AppSettings {
     maxAutoRetries: Number.isFinite(Number(s.maxAutoRetries))
       ? Math.min(20, Math.max(0, Math.floor(Number(s.maxAutoRetries))))
       : DEFAULT_SETTINGS.maxAutoRetries,
+    cleanupSchedule: CLEANUP_SCHEDULES.includes(s.cleanupSchedule) ? s.cleanupSchedule : DEFAULT_SETTINGS.cleanupSchedule,
+    // Known ids only, each once, in the canonical order.
+    cleanupTargets: Array.isArray(s.cleanupTargets)
+      ? SCHEDULED_CLEANUP_IDS.filter((id) => (s.cleanupTargets as unknown[]).includes(id))
+      : [...DEFAULT_SETTINGS.cleanupTargets],
   };
+}
+
+/** Whether `value` names a cleanup the schedule may run. */
+export function isScheduledCleanupId(value: unknown): value is ScheduledCleanupId {
+  return (SCHEDULED_CLEANUP_IDS as readonly unknown[]).includes(value);
 }

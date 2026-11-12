@@ -6,6 +6,7 @@ import type {
   BoardWithCounts,
   BoardPushResult,
   Comment,
+  CleanupStatus,
   AiStats,
   OmpSkill,
   OmpConfigSnapshot,
@@ -24,6 +25,7 @@ import type {
   RestartStatus,
   Run,
   RunEvent,
+  ScheduledCleanupId,
   ServerEvent,
   SystemStats,
   SharedFiles,
@@ -201,6 +203,13 @@ export const api = {
     get: () => request<AppSettings>("/settings"),
     update: (patch: Partial<AppSettings>) =>
       request<AppSettings>("/settings", { method: "PATCH", json: patch }),
+  },
+  /** Scheduled cleanup of AgentMan data (Settings → Cleanup); schedule and targets save via `settings.update`. */
+  cleanup: {
+    status: () => request<CleanupStatus>("/settings/cleanup"),
+    /** Clean up now (default: the saved targets); 409 while a cleanup is running. */
+    run: (ids?: ScheduledCleanupId[]) =>
+      request<CleanupStatus>("/settings/cleanup", { method: "POST", json: ids ? { ids } : {} }),
   },
   /** omp's user config.yml (Settings → OMP); changes apply to the next agent run. */
   ompConfig: {
