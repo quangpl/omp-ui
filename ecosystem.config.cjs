@@ -21,10 +21,13 @@ module.exports = {
       interpreter: "node",
       // Single process: agents and their state live in-process.
       exec_mode: "fork",
+      // pm2 restarts the CLI if it dies; inside it, bin/supervisor.mjs restarts a server that
+      // crashes or stops answering /api/v1/health, which pm2 cannot see.
       autorestart: true,
-      max_restarts: 10,
+      max_restarts: 50,
       min_uptime: "30s",
-      restart_delay: 3000,
+      // 1 s, then doubling up to 15 s while it keeps failing; reset once it stays up.
+      exp_backoff_restart_delay: 1000,
       // The CLI forwards SIGTERM to the server and waits for its graceful drain.
       kill_signal: "SIGTERM",
       kill_timeout: 15000,

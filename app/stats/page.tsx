@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { api } from "@/lib/api-client";
 import {
   STATUS_LABELS,
@@ -689,6 +690,7 @@ function SystemTiles({ stats }: { stats: SystemStats }) {
 // ---------------------------------------------------------------------------------------------
 
 export default function StatsPage() {
+  useDocumentTitle("Stats");
   return (
     <div className="flex min-h-dvh flex-col">
       <AppHeader title="Stats" />

@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { STATUS_LABELS, type Task, type TaskStatus } from "@/lib/types";
 import { type BoardMenuActions, CardContextMenu } from "@/components/board/card-context-menu";
 import { InlineComposer, type QuickCreate } from "@/components/board/inline-composer";
+import { useNewCard } from "@/components/new-card";
 import {
   type QuickActionHandlers,
   type QuickActionId,
@@ -27,7 +28,7 @@ const STATUS_DOT: Record<TaskStatus, string> = {
 };
 
 export const EMPTY_COLUMN_TEXT: Record<TaskStatus, string> = {
-  todo: "No cards yet.",
+  todo: "No cards yet. Add one below — an agent picks it up.",
   in_progress: "Nothing in progress. Start a card to run its agent.",
   done: "Finished cards land here.",
 };
@@ -192,6 +193,7 @@ export function BoardColumn({
   /** When set, shows the inline "Add a card" composer at the bottom. */
   onCreate?: QuickCreate;
 }) {
+  const openNewCard = useNewCard();
   // Cards only reorder within their own column: while a card is dragged, every other column
   // (its body and its cards) stops being a drop target.
   const { active } = useDndContext();
@@ -242,11 +244,23 @@ export function BoardColumn({
                 menuActions={menuActions}
               />
             ))}
-            {tasks.length === 0 && (
-              <p className="rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
-                {EMPTY_COLUMN_TEXT[status]}
-              </p>
-            )}
+            {tasks.length === 0 &&
+              (status === "todo" ? (
+                <button
+                  type="button"
+                  onClick={() => openNewCard()}
+                  className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent/40 hover:text-foreground"
+                >
+                  <span>{EMPTY_COLUMN_TEXT.todo}</span>
+                  <span className="inline-flex items-center gap-1.5 font-medium">
+                    Add a card <Kbd>N</Kbd>
+                  </span>
+                </button>
+              ) : (
+                <p className="rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
+                  {EMPTY_COLUMN_TEXT[status]}
+                </p>
+              ))}
           </div>
         </SortableContext>
       </div>

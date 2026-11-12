@@ -7,6 +7,7 @@ import {
   ChevronLeftIcon,
   KeyboardIcon,
   LogOutIcon,
+  RotateCwIcon,
   SearchIcon,
   SettingsIcon,
   UserRoundIcon,
@@ -15,6 +16,7 @@ import { isTopLevelPath, TOP_TABS } from "@/components/bottom-tabs";
 import { openCommandPalette } from "@/components/command-palette";
 import { openKeyboardHelp } from "@/components/keyboard-help";
 import { QueueButton } from "@/components/queue-panel";
+import { openRestartServer } from "@/components/restart-server";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import {
@@ -184,6 +186,20 @@ export function AppHeader({
             </TooltipContent>
           </Tooltip>
           <QueueButton />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-11 rounded-full max-sm:hidden md:size-9"
+                aria-label="Restart server"
+                onClick={openRestartServer}
+              >
+                <RotateCwIcon className="size-4.5 md:size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Restart server (rebuild with the latest changes)</TooltipContent>
+          </Tooltip>
           <ThemeToggle />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -220,6 +236,13 @@ export function AppHeader({
               >
                 <KeyboardIcon />
                 Keyboard shortcuts
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={openRestartServer}
+                className="min-h-11 gap-2.5 px-2.5 md:min-h-8"
+              >
+                <RotateCwIcon />
+                Restart server
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem

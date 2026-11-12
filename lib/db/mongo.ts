@@ -72,6 +72,9 @@ interface TaskDoc {
   createdByTaskId?: string | null;
   /** Missing on documents created before "pushed" cards. */
   pushedAt?: string | null;
+  /** Missing on documents created before automatic retries. */
+  autoRetries?: number;
+  retryAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -152,6 +155,8 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     blockedBy: parseFolderList(d.blockedBy),
     createdByTaskId: d.createdByTaskId ?? null,
     pushedAt: d.pushedAt ?? null,
+    autoRetries: d.autoRetries ?? 0,
+    retryAt: d.retryAt ?? null,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
     commentCount: stats?.total ?? 0,
@@ -219,6 +224,8 @@ const TASK_PATCH_KEYS = [
   "lastRunId",
   "blockedBy",
   "pushedAt",
+  "autoRetries",
+  "retryAt",
 ] as const satisfies readonly (keyof UpdateTaskInput)[];
 const RUN_PATCH_KEYS = ["status", "summary", "error", "endedAt"] as const satisfies readonly (keyof UpdateRunInput)[];
 
@@ -444,6 +451,8 @@ export class MongoRepository implements Repository {
       blockedBy: input.blockedBy ?? [],
       createdByTaskId: input.createdByTaskId ?? null,
       pushedAt: null,
+      autoRetries: 0,
+      retryAt: null,
       createdAt: now,
       updatedAt: now,
     };

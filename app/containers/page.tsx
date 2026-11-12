@@ -33,6 +33,7 @@ import {
 } from "@/components/containers/shared";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api-client";
 import type {
@@ -107,6 +108,7 @@ function usePolling(load: () => Promise<void>, intervalMs: number, enabled: bool
 }
 
 export default function ContainersPage() {
+  useDocumentTitle("Containers");
   const [overview, setOverview] = useState<DockerOverview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

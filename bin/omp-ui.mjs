@@ -18,6 +18,13 @@ import { parseArgs } from "node:util";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ENV_FILE = path.join(ROOT, ".env");
 const STANDALONE_SERVER = path.join(ROOT, "dist", "standalone", "server.js");
+/** Restarts the server when it crashes or stops answering /api/v1/health (see the file). */
+const SUPERVISOR = path.join(ROOT, "bin", "supervisor.mjs");
+/** The server process: the supervisor running server.js. The pid file holds the supervisor's pid. */
+const SERVER_ARGS = [SUPERVISOR, process.execPath, STANDALONE_SERVER];
+const DIST_DIR = path.join(ROOT, "dist");
+/** The previous build while a new one is being made (restored if the build fails). */
+const PREV_DIST_DIR = path.join(ROOT, "dist.prev");
 const VITE_BIN = path.join(ROOT, "node_modules", "vite", "bin", "vite.js");
 const MIN_NODE = 24;
 const NODE_MAJOR = Number(process.versions.node.split(".")[0]);
@@ -884,13 +891,43 @@ async function buildApp() {
   requireNode();
   await ensureDeps();
   log.step("Building OMP UI");
-  await runOrFail("Build", process.execPath, [VITE_BIN, "build"], { shell: false });
-  if (!fs.existsSync(STANDALONE_SERVER)) {
-    throw new CliError("Build finished but dist/standalone/server.js is missing.", {
-      hint: 'next.config.ts must set output: "standalone".',
-    });
+  // vite empties dist/ while building: set the current build aside so a failed build can put it back.
+  fs.rmSync(PREV_DIST_DIR, { recursive: true, force: true });
+  const hadBuild = fs.existsSync(STANDALONE_SERVER);
+  if (hadBuild) fs.renameSync(DIST_DIR, PREV_DIST_DIR);
+  try {
+    await runOrFail("Build", process.execPath, [VITE_BIN, "build"], { shell: false });
+    if (!fs.existsSync(STANDALONE_SERVER)) {
+      throw new CliError("Build finished but dist/standalone/server.js is missing.", {
+        hint: 'next.config.ts must set output: "standalone".',
+      });
+    }
+  } catch (err) {
+    if (hadBuild) {
+      fs.rmSync(DIST_DIR, { recursive: true, force: true });
+      fs.renameSync(PREV_DIST_DIR, DIST_DIR);
+      log.info("Previous build restored");
+    }
+    throw err;
   }
+  fs.rmSync(PREV_DIST_DIR, { recursive: true, force: true });
   log.ok("Build complete");
+}
+
+/**
+ * Build before (re)starting. When the build fails, buildApp has restored the previous build: start
+ * that one instead of leaving the server down; the exit code still reports the failure. The
+ * server's restart button (lib/server/restart.ts) looks for this warning in its log.
+ */
+async function buildOrKeepPrevious() {
+  try {
+    await buildApp();
+  } catch (err) {
+    if (!(err instanceof CliError) || !fs.existsSync(STANDALONE_SERVER)) throw err;
+    log.error(err.message);
+    log.warn("Build failed — starting the previous build");
+    process.exitCode = 1;
+  }
 }
 
 /** Environment of the server process: the full inherited environment plus .env (see loadConfig). */
@@ -955,7 +992,7 @@ async function startServer(cfg, { foreground = false } = {}) {
   fs.mkdirSync(cfg.dataDir, { recursive: true });
 
   if (foreground) {
-    const child = spawn(process.execPath, [STANDALONE_SERVER], { cwd: ROOT, env: serverEnv(cfg), stdio: "inherit" });
+    const child = spawn(process.execPath, SERVER_ARGS, { cwd: ROOT, env: serverEnv(cfg), stdio: "inherit" });
     fs.writeFileSync(paths.pid, `${child.pid}\n${underPm2 ? "pm2" : "fg"}\n`);
     log.info(`Serving at ${c.cyan(localUrl(cfg))} ${c.dim(underPm2 ? "(supervised by pm2)" : "(Ctrl+C to stop)")}`);
     const forward = (sig) => () => {
@@ -975,7 +1012,7 @@ async function startServer(cfg, { foreground = false } = {}) {
   rotateLog(paths.log);
   const fd = fs.openSync(paths.log, "a");
   fs.writeSync(fd, `\n=== omp-ui start ${new Date().toISOString()} · port ${cfg.port} ===\n`);
-  const child = spawn(process.execPath, [STANDALONE_SERVER], {
+  const child = spawn(process.execPath, SERVER_ARGS, {
     cwd: ROOT,
     env: serverEnv(cfg),
     detached: true,
@@ -995,7 +1032,9 @@ async function startServer(cfg, { foreground = false } = {}) {
     const tail = tailLines(paths.log, 25);
     if (tail) console.error(`\n${c.dim(tail)}`);
     throw new CliError(
-      alive ? "Server started but /api/v1/health did not respond in time." : "Server exited during startup.",
+      alive
+        ? "Server started but /api/v1/health did not respond in time (its supervisor keeps restarting it)."
+        : "Server exited during startup.",
       { hint: `Full log: ${rel(paths.log)}  (omp-ui logs)` },
     );
   }
@@ -1464,7 +1503,7 @@ const COMMANDS = {
           log.info(state === "stale" ? "Sources changed — rebuilding" : "Rebuilding");
           await stopServer(cfg, { allowPm2 });
         }
-        await buildApp();
+        await buildOrKeepPrevious();
       } else if (runningBefore && prevPort !== null && cfg.port !== prevPort) {
         log.info(`Port changed — restarting on ${cfg.port}`);
         await stopServer(loadConfig({ PORT: prevPort }), { allowPm2 });
@@ -1556,7 +1595,7 @@ const COMMANDS = {
       const state = values.rebuild ? "forced" : buildState();
       if (state !== "fresh") {
         log.info(state === "stale" ? "Sources changed — rebuilding" : state === "missing" ? "No build found — building" : "Rebuilding");
-        await buildApp();
+        await buildOrKeepPrevious();
       }
       const cfg = loadConfig();
       if (cfg.port !== before.port && tunnelInfo(before)) {
@@ -1783,16 +1822,23 @@ const COMMANDS = {
     positionals: true,
     options: {
       lines: { type: "string", short: "n", arg: "<lines>", desc: "Lines of history (logs, default 100)" },
+      rebuild: { type: "boolean", desc: "Stop, force a fresh production build, then start (restart)" },
     },
     description:
       "Uses pm2 if installed, otherwise `npx -y pm2`. Config: ecosystem.config.cjs.\nLogs: data/pm2-out.log and data/pm2-error.log. Without an action: status.",
-    examples: ["omp-ui pm2 start", "omp-ui pm2 logs", "omp-ui pm2 save && omp-ui pm2 startup"],
+    examples: ["omp-ui pm2 start", "omp-ui pm2 restart --rebuild", "omp-ui pm2 logs", "omp-ui pm2 save && omp-ui pm2 startup"],
     async run(values, positionals) {
       const [action = "status", ...rest] = positionals;
       switch (action) {
         case "start":
           return pm2Start();
         case "restart":
+          if (values.rebuild) {
+            // Stop first: building over dist/ breaks the running server's lazily loaded chunks.
+            await pm2(["stop", PM2_APP]);
+            await buildOrKeepPrevious();
+          }
+          // On a stopped app pm2 restart starts it; `up --foreground` then finds the build fresh.
           await pm2(["restart", PM2_APP]);
           return pm2WaitAndReport();
         case "stop":

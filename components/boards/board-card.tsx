@@ -7,12 +7,16 @@ import {
   ExternalLinkIcon,
   FolderIcon,
   MoreHorizontalIcon,
+  GitBranchIcon,
   PanelsTopLeftIcon,
   PencilIcon,
   PlusIcon,
+  SparklesIcon,
   Trash2Icon,
+  TriangleAlertIcon,
   ZapIcon,
 } from "lucide-react";
+import { formatDateTime, formatRelative } from "@/components/board/format";
 import { useNewCard } from "@/components/new-card";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,7 +34,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { STATUS_LABELS, TASK_STATUSES, type BoardWithCounts, type TaskStatus } from "@/lib/types";
+import {
+  STATUS_LABELS,
+  TASK_STATUSES,
+  type BoardWithCounts,
+  type DashboardBoard,
+  type TaskStatus,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const DOT_CLASS: Record<TaskStatus, string> = {
@@ -39,14 +49,20 @@ const DOT_CLASS: Record<TaskStatus, string> = {
   done: "bg-success",
 };
 
+const TAG_CLASS = "inline-flex h-5 items-center gap-1 rounded-md border px-1.5 text-[11px] font-medium text-muted-foreground";
+
 export function BoardCard({
   board,
   onEdit,
   onDelete,
+  now,
   className,
   style,
 }: {
-  board: BoardWithCounts;
+  /** Dashboard boards add last activity and the "needs you" count. */
+  board: BoardWithCounts & Partial<Pick<DashboardBoard, "lastActivityAt" | "attentionCount">>;
+  /** Reference time for "active 5 minutes ago". */
+  now?: number;
   onEdit: (board: BoardWithCounts) => void;
   onDelete: (board: BoardWithCounts) => void;
   className?: string;
@@ -92,36 +108,63 @@ export function BoardCard({
               </p>
             </div>
 
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="relative z-10 -mt-2 -mr-2 size-11 rounded-full text-muted-foreground md:size-9"
-                  aria-label={`Project options for ${board.name}`}
-                >
-                  <MoreHorizontalIcon className="size-5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-44">
-                <DropdownMenuItem
-                  onSelect={() => onEdit(board)}
-                  className="min-h-11 gap-2.5 px-2.5 md:min-h-8"
-                >
-                  <PencilIcon />
-                  Edit
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  variant="destructive"
-                  onSelect={() => onDelete(board)}
-                  className="min-h-11 gap-2.5 px-2.5 md:min-h-8"
-                >
-                  <Trash2Icon />
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <div className="relative z-10 -mt-2 -mr-2 flex shrink-0">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-11 rounded-full text-muted-foreground md:size-9 md:opacity-0 md:transition-opacity md:group-hover/board:opacity-100 md:focus-visible:opacity-100"
+                onClick={() => openNewCard({ boardId: board.id })}
+                aria-label={`New card in ${board.name}`}
+                title="New card"
+              >
+                <PlusIcon className="size-5 md:size-4" />
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-11 rounded-full text-muted-foreground md:size-9"
+                    aria-label={`Project options for ${board.name}`}
+                  >
+                    <MoreHorizontalIcon className="size-5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  <DropdownMenuItem
+                    onSelect={() => openNewCard({ boardId: board.id })}
+                    className="min-h-11 gap-2.5 px-2.5 md:min-h-8"
+                  >
+                    <PlusIcon />
+                    New card
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => openNewCard({ boardId: board.id, start: true })}
+                    className="min-h-11 gap-2.5 px-2.5 md:min-h-8"
+                  >
+                    <ZapIcon />
+                    New card &amp; start agent
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={() => onEdit(board)}
+                    className="min-h-11 gap-2.5 px-2.5 md:min-h-8"
+                  >
+                    <PencilIcon />
+                    Edit
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onSelect={() => onDelete(board)}
+                    className="min-h-11 gap-2.5 px-2.5 md:min-h-8"
+                  >
+                    <Trash2Icon />
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
 
           <div className="mt-auto flex flex-wrap items-center gap-1.5">
@@ -148,6 +191,59 @@ export function BoardCard({
               total === 0 && <span className="ml-auto text-xs text-muted-foreground">No cards yet</span>
             )}
           </div>
+
+          {total > 0 && (
+            <div
+              className="-mt-1.5 flex h-1 gap-px overflow-hidden rounded-full bg-muted"
+              role="img"
+              aria-label={`${board.counts.done} of ${total} cards done`}
+            >
+              {TASK_STATUSES.map(
+                (status) =>
+                  board.counts[status] > 0 && (
+                    <span
+                      key={status}
+                      className={cn("h-full transition-[flex-grow] duration-500", DOT_CLASS[status])}
+                      style={{ flexGrow: board.counts[status] }}
+                    />
+                  ),
+              )}
+            </div>
+          )}
+
+          {(board.attentionCount || board.lastActivityAt || board.model || board.autoRun || board.worktrees) && (
+            <div className="-mt-1 flex min-w-0 flex-wrap items-center gap-1.5 border-t pt-3 text-xs text-muted-foreground">
+              {board.attentionCount ? (
+                <span className="inline-flex h-5 items-center gap-1 rounded-md bg-destructive/10 px-1.5 text-[11px] font-medium text-destructive">
+                  <TriangleAlertIcon className="size-3" aria-hidden="true" />
+                  {board.attentionCount} need{board.attentionCount === 1 ? "s" : ""} you
+                </span>
+              ) : null}
+              {board.autoRun && (
+                <span className={TAG_CLASS} title="Moving a card to In progress starts its agent">
+                  <ZapIcon className="size-3" aria-hidden="true" />
+                  Auto-run
+                </span>
+              )}
+              {board.worktrees && (
+                <span className={TAG_CLASS} title="Each card works in its own git worktree">
+                  <GitBranchIcon className="size-3" aria-hidden="true" />
+                  Worktrees
+                </span>
+              )}
+              {board.model && (
+                <span className={cn(TAG_CLASS, "max-w-36")} title={`Model: ${board.model}`}>
+                  <SparklesIcon className="size-3 shrink-0" aria-hidden="true" />
+                  <span className="truncate">{board.model}</span>
+                </span>
+              )}
+              {board.lastActivityAt && (
+                <span className="ml-auto shrink-0" title={formatDateTime(board.lastActivityAt)}>
+                  Active {formatRelative(board.lastActivityAt, now)}
+                </span>
+              )}
+            </div>
+          )}
         </article>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-60">

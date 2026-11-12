@@ -255,13 +255,18 @@ export async function searchImages(registry: Registry, query: string): Promise<H
   const data = (await fetchJson(
     `https://hub.docker.com/v2/search/repositories/?query=${q}&page_size=30`,
   )) as DockerHubSearch;
-  return (data.results ?? []).map((r) => ({
+  const results: HubRepository[] = (data.results ?? []).map((r) => ({
     name: r.repo_name,
     description: r.short_description ?? "",
     stars: r.star_count ?? 0,
     pulls: r.pull_count ?? 0,
     official: Boolean(r.is_official),
   }));
+  // Hub's relevance order can put a namespaced fork above the official image: an exact name
+  // match, then official images go first (stable sort keeps Hub's order otherwise).
+  const term = query.trim().toLowerCase();
+  const rank = (r: HubRepository) => (r.name === term ? 0 : r.official ? 1 : 2);
+  return results.sort((a, b) => rank(a) - rank(b));
 }
 
 const REPO_RE = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)?$/;

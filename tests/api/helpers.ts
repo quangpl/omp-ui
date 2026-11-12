@@ -80,10 +80,12 @@ const MANAGED_ENV = [
   "FAKE_OMP_SCENARIO",
   "FAKE_OMP_STARTUP",
   "FAKE_OMP_PROTOCOLS",
+  "FAKE_OMP_SKILLS",
+  "FAKE_OMP_DRAFT",
 ];
 
 // Process-wide singletons the app keeps on globalThis (lib/db, lib/agent/manager, lib/auth,
-// lib/stats, app/api/v1/system).
+// lib/stats, app/api/v1/system, lib/omp-skills, lib/agent/draft).
 const g = globalThis as unknown as {
   __ompUiRepo?: Promise<Repository>;
   __ompUiAgentManager?: Promise<AgentManager>;
@@ -93,6 +95,8 @@ const g = globalThis as unknown as {
   __ompUiAiStats?: unknown;
   __ompUiAiStatsInFlight?: unknown;
   __ompUiOmpInfo?: unknown;
+  __ompUiSkills?: unknown;
+  __ompUiDrafts?: number;
 };
 
 let current: TestEnv | null = null;
@@ -131,6 +135,8 @@ export async function stopServer(): Promise<void> {
   g.__ompUiAiStats = undefined;
   g.__ompUiAiStatsInFlight = undefined;
   g.__ompUiOmpInfo = undefined;
+  g.__ompUiSkills = undefined;
+  g.__ompUiDrafts = undefined;
 }
 
 function applyEnv(overrides: Record<string, string | undefined>): void {
@@ -310,6 +316,8 @@ export interface FakeOmpLogEntry {
   cwd?: string;
   command?: { type: string; id?: string; message?: string; [key: string]: unknown };
   message?: string;
+  /** Print mode: the prompt read from stdin. */
+  prompt?: string;
 }
 
 /** Entries the fake omp appended to FAKE_OMP_LOG in this suite. */

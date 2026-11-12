@@ -1,4 +1,4 @@
-// One-shot omp helper agents (the card writer, the advisor): `omp -p --mode json` with read-only
+// One-shot omp helper agents (the advisor, the queue planner): `omp -p --mode json` with read-only
 // tools in the project, streaming tool activity, resolving with the final assistant text.
 import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
@@ -31,12 +31,9 @@ export interface PrintRunOptions {
   writing?: string;
 }
 
-/** `omp -p --mode json` arguments for a read-only helper run. */
-export function printArgs(options: Pick<PrintRunOptions, "cwd" | "addDirs" | "model" | "thinking" | "maxTimeSeconds">): string[] {
+/** omp arguments for a read-only helper run, after the mode flags (`-p --mode json` or `--mode rpc`). */
+export function readOnlyArgs(options: Pick<PrintRunOptions, "cwd" | "addDirs" | "model" | "thinking" | "maxTimeSeconds">): string[] {
   const args = [
-    "-p",
-    "--mode",
-    "json",
     "--no-session",
     "--no-title",
     "--no-lsp",
@@ -62,7 +59,7 @@ export function runOmpPrint(options: PrintRunOptions): Promise<string> {
   const Label = label.charAt(0).toUpperCase() + label.slice(1);
   const killAfterMs = (maxTimeSeconds + 30) * 1000;
   const { promise, resolve, reject } = Promise.withResolvers<string>();
-  const child = spawn(command, printArgs(options), { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(command, ["-p", "--mode", "json", ...readOnlyArgs(options)], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
   let reply = "";
   let failure: string | null = null;
   let stderr = "";
@@ -191,7 +188,7 @@ export async function isDirectory(folder: string): Promise<boolean> {
 }
 
 /** "Finding the new-card form" (omp's intent), else "grep: createCard". */
-function describeTool(frame: Json): string {
+export function describeTool(frame: Json): string {
   const name = typeof frame.toolName === "string" ? frame.toolName : "tool";
   const args = isObject(frame.args) ? frame.args : {};
   const filled = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
@@ -201,7 +198,8 @@ function describeTool(frame: Json): string {
   return clip(target ? `${name}: ${target.trim()}` : name, ACTIVITY_MAX);
 }
 
-function textOf(content: unknown): string {
+/** The text blocks of an assistant message's `content`, joined and trimmed. */
+export function textOf(content: unknown): string {
   if (!Array.isArray(content)) return "";
   return content
     .map((block) => (isObject(block) && block.type === "text" && typeof block.text === "string" ? block.text : ""))

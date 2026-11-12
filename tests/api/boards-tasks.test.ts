@@ -940,6 +940,7 @@ describe("settings, health and system", () => {
       approvalMode: "yolo",
       defaultModel: "",
       autoModel: true,
+      smartQueue: true,
       browser: "headless",
     });
   });
@@ -956,6 +957,7 @@ describe("settings, health and system", () => {
       [{ ompPath: 7 }, "ompPath must be a non-empty string"],
       [{ defaultModel: "m".repeat(201) }, "defaultModel must be a string of at most 200 characters"],
       [{ autoModel: "yes" }, "autoModel must be a boolean"],
+      [{ smartQueue: 1 }, "smartQueue must be a boolean"],
       [{ maxConcurrentAgents: 3, approvalMode: "nope" }, "approvalMode must be one of: yolo, write, always-ask"],
     ];
     for (const [body, error] of cases) {
@@ -977,11 +979,12 @@ describe("settings, health and system", () => {
       approvalMode: "write",
       defaultModel: "sonnet",
       autoModel: true,
+      smartQueue: true,
       browser: "headless",
     });
 
     const partial = await api<AppSettings>(settingsRoute, "PATCH", "/settings", {
-      body: { maxConcurrentAgents: 1, approvalMode: "always-ask", defaultModel: "", autoModel: false, browser: "off" },
+      body: { maxConcurrentAgents: 1, approvalMode: "always-ask", defaultModel: "", autoModel: false, smartQueue: false, browser: "off" },
     });
     expect(partial.body).toEqual({
       maxConcurrentAgents: 1,
@@ -989,6 +992,7 @@ describe("settings, health and system", () => {
       approvalMode: "always-ask",
       defaultModel: "",
       autoModel: false,
+      smartQueue: false,
       browser: "off",
     });
     expect((await api<AppSettings>(settingsRoute, "GET", "/settings")).body).toEqual(partial.body);
@@ -996,7 +1000,7 @@ describe("settings, health and system", () => {
 
     // Restore for the other tests in this suite.
     await api(settingsRoute, "PATCH", "/settings", {
-      body: { maxConcurrentAgents: 2, approvalMode: "yolo", ompPath: FAKE_OMP, autoModel: true, browser: "headless" },
+      body: { maxConcurrentAgents: 2, approvalMode: "yolo", ompPath: FAKE_OMP, autoModel: true, smartQueue: true, browser: "headless" },
     });
   });
 

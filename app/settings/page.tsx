@@ -134,6 +134,9 @@ function AgentSettingsCard() {
       saved.approvalMode !== draft.approvalMode ||
       saved.defaultModel !== draft.defaultModel ||
       saved.autoModel !== draft.autoModel ||
+      saved.smartQueue !== draft.smartQueue ||
+      saved.autoRetry !== draft.autoRetry ||
+      saved.maxAutoRetries !== draft.maxAutoRetries ||
       saved.browser !== draft.browser);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -147,6 +150,9 @@ function AgentSettingsCard() {
         approvalMode: draft.approvalMode,
         defaultModel: draft.defaultModel.trim(),
         autoModel: draft.autoModel,
+        smartQueue: draft.smartQueue,
+        autoRetry: draft.autoRetry,
+        maxAutoRetries: draft.maxAutoRetries,
         browser: draft.browser,
       });
       setSaved(next);
@@ -280,6 +286,63 @@ function AgentSettingsCard() {
                 disabled={saving}
               />
             </label>
+
+            <label htmlFor="smart-queue" className="flex min-h-12 cursor-pointer items-center gap-4 sm:col-span-2">
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">Smart queue</span>
+                <span className="block text-xs text-muted-foreground">
+                  When you add several cards, an agent orders them and links the ones that depend on each other, so
+                  independent cards run in parallel and the rest wait for what they build on.
+                </span>
+              </span>
+              <Switch
+                id="smart-queue"
+                checked={draft.smartQueue}
+                onCheckedChange={(checked) => setDraft({ ...draft, smartQueue: checked })}
+                disabled={saving}
+              />
+            </label>
+
+            <label htmlFor="auto-retry" className="flex min-h-12 cursor-pointer items-center gap-4 sm:col-span-2">
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">Retry failed runs automatically</span>
+                <span className="block text-xs text-muted-foreground">
+                  A failed or interrupted run resumes its agent session after 15 s, 30 s, 1 min… and cards left
+                  working, queued or failed resume when the server restarts. A success or a manual run resets the
+                  count.
+                </span>
+              </span>
+              <Switch
+                id="auto-retry"
+                checked={draft.autoRetry}
+                onCheckedChange={(checked) => setDraft({ ...draft, autoRetry: checked })}
+                disabled={saving}
+              />
+            </label>
+
+            {draft.autoRetry && (
+              <div className="space-y-2">
+                <Label htmlFor="max-auto-retries">Retries per card</Label>
+                <Input
+                  id="max-auto-retries"
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  max={20}
+                  step={1}
+                  value={draft.maxAutoRetries}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      maxAutoRetries: Math.min(20, Math.max(0, Math.floor(Number(e.target.value) || 0))),
+                    })
+                  }
+                  disabled={saving}
+                  className={FIELD}
+                />
+                <p className="text-xs text-muted-foreground">Then the card stays failed until you run it (0–20).</p>
+              </div>
+            )}
 
             <div className="space-y-2 sm:col-span-2">
               <Label htmlFor="browser-mode">Browser control</Label>

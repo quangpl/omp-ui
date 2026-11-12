@@ -26,7 +26,7 @@ To use **Docker** instead (omp is included in the image, and your sign-ins are s
 ## How it works
 
 1. **Create a project.** Pick its folder, or clone a Git repository. A project can include extra folders too, for example a separate frontend and backend repo.
-2. **Add a card and press *Start*.** An omp agent starts working on it in your project folders, and the card moves to **In progress** by itself. You can watch it work live.
+2. **Add a card and press *Start*.** Write the card in your own words, as long as you like (pasted logs, specs, links): an agent turns it into a clear title and brief. Then an omp agent starts working on it in your project folders, and the card moves to **In progress** by itself. You can watch it work live.
 3. **Comment to give feedback.** The agent picks up your comments, marks them resolved, and moves the card to **Done** when it finishes. Comment on a Done card and the agent reopens it and continues where it left off.
 
 Then ship the result with one tap: **Create PR/MR** or **Push to main**.
@@ -44,6 +44,7 @@ Then ship the result with one tap: **Create PR/MR** or **Push to main**.
 
 - The columns are **To do**, **In progress** and **Done**.
 - On a project with **Auto-run** on (the default), a new card skips To do: it lands in In progress and its agent starts. Turn off **Start agent now** in the form to park it in To do instead. Duplicates always go to To do.
+- The **card writer**: a read-only omp agent reads your text and the project and writes the title and a Markdown brief (goal, context with the real files involved, requirements, acceptance criteria, notes). It keeps every concrete detail (names, paths, errors, code), turns on parallel subagents for large work, adds **Run after** links to open cards your text says it builds on, and points the agent to installed OMP skills that fit. **Create card** creates it right away; **Review first** lets you edit the title, brief, parallel subagents and Run after before creating. If the agent fails or you stop it, your text is used as typed (first line → title). Short requests use the `smol` model role (fast); long ones (150+ words or 5+ list items) use the default model. To keep it quick, it is told to write the card once it has made 8 lookups (16 for long requests), so a draft usually takes well under a minute; writing "orchestrate" in your text always turns on parallel subagents. Text of 2,000+ characters is also saved word for word on the card as `brief.md`. In a column's **Add a card** box, one short line (up to 100 characters) is used as the title as typed; longer text goes through the card writer.
 - Each project runs `omp --cwd <primary folder>`, plus `--add-dir <folder>` for every extra folder.
 - An agent's prompt is the card's title and description plus any unresolved comments.
 - For a large card (4+ list items or comments, 300+ words, or asks like "across the codebase", "every page", "in parallel"), the prompt also includes omp's `orchestrate` keyword, so omp splits the work across parallel subagents.
@@ -51,10 +52,12 @@ Then ship the result with one tap: **Create PR/MR** or **Push to main**.
 - The card's **Agent log** shows how a run works: counts of tool calls, subagents, messages and errors; an **Agents** section with one card per subagent (live status, current tool, tokens and cost; expand for its assignment, recent tool calls, output, and final report or error), sorted so working and failed agents come first; and a timeline where long runs of tool calls fold into one expandable line.
 - A comment on a running card is sent straight into the live session.
 - When a run succeeds, the agent's final message is posted as a comment, the feedback it handled is resolved, and the card moves to Done.
-- If a run fails, the card stays in In progress with the error. Comment, or press **Retry**, to try again.
+- If a run fails, the card stays in In progress with the error and is retried automatically in the same omp session (after 15 s, 30 s, 1 min, 2 min, 4 min; the card shows **Retrying**). After 5 retries in a row it stays failed: comment, or press **Retry**, to try again. Change or turn this off in **Settings → Retry failed runs automatically**.
 - **Stop** leaves the card where it is (press **Resume** to continue the same session); **Revert to To do** stops the agent and parks the card in To do.
 - Up to `MAX_AGENTS` agents run at the same time. The others wait in a queue; the queue button in the header shows it, and you can move a card up or make it run next.
-- If the server restarts, cards that were waiting in the queue go back in it and run. A card whose agent was already working is not run again (it may have changed files or pushed): it shows **Interrupted by server restart**, and **Resume** continues the same omp session.
+- **Smart queue.** When you add several cards to a project, a read-only planner agent orders its queued cards (prerequisites and quick unblockers first) and adds **Run after** links between cards that build on each other, so independent cards run in parallel and the rest wait. New cards are held for about 1.5 s so cards added together are planned at once; if the planner fails, they run in the order you added them. Turn it off in **Settings → Smart queue**.
+- If the server restarts, cards that were waiting in the queue go back in it and run, and cards whose agent was working or that had failed resume their omp session automatically (this uses one of the card's retries, so a card that keeps taking the server down stops after 5). With automatic retries off, an interrupted card shows **Interrupted by server restart** and **Resume** continues it.
+- **Self-healing server.** `omp-ui start`/`up`, pm2 and Docker run the server under `bin/supervisor.mjs`: it restarts the server when it crashes (backing off up to 30 s) and force-restarts it when `/api/v1/health` fails 3 checks in a row (15 s apart; tune with `OMP_UI_HEALTH_*`, see `.env.example`).
 
 </details>
 
@@ -65,6 +68,7 @@ Then ship the result with one tap: **Create PR/MR** or **Push to main**.
 - **Files.** Upload files to a card for its agent to read; the agent saves reports, exports and screenshots there for you. **Shared files** in the board menu are shared with every card's agent on the project.
 - **Browser control.** In **Settings → Browser control**, choose whether agents can use a browser: off, headless (default), a visible window on the server, or your own Chrome through `omp browser-relay`. Screenshots land in the card's files.
 - **Agent-to-agent.** Every agent can list and read the project's cards, hand a separate piece of work to a new card (its own agent starts on it), send a message to another card's agent, and wait for cards to finish. A waiting agent lends its slot to the queue. Cards created by an agent show a bot icon and link back; messages from another agent are marked as such in the card's activity.
+- **Visualize.** The **Visualize** tab shows your agents as a crew of robot workers, live. **The floor** has one desk per agent slot: each running card's worker (its own name and colour) shows what it is doing right now (running a command, editing, searching, briefing helpers…), how long it has been on the run, and its subagents as little helpers. Waiting cards stand in **The line** (a lock means they wait for other cards), failed or stalled ones are under **Need a hand**, and shipped cards go on the **Trophy wall**. Every Done card is worth 100 XP toward the crew's level, and badges unlock as you go.
 
 ## Shipping changes
 

@@ -15,6 +15,7 @@ import {
 import { BOARD_TOOLS, BOARD_TOOL_NAMES, runBoardTool, type BoardToolHost } from "@/lib/agent/board-tools";
 import { chooseModel, readModelRoles } from "@/lib/agent/model-select";
 import { buildPrompt, buildSteerMessage } from "@/lib/agent/prompt";
+import { planQueue, type PlanCard, type QueuePlan } from "@/lib/agent/queue-planner";
 import { OmpRpcProcess, describeExit, type RpcExitInfo, type RpcFrame } from "@/lib/agent/rpc";
 import {
   describeTaskCall,
@@ -58,6 +59,11 @@ const DELTA_THROTTLE_MS = 120;
 const MAX_THINKING_DELTA = 4_000;
 /** Live `run.agent` progress: at most one per subagent per window (status changes are persisted). */
 const SUBAGENT_LIVE_THROTTLE_MS = 300;
+/** Smart queue: a board's plan waits this long after its latest queued card, so a burst is planned together. */
+const PLAN_DEBOUNCE_MS = 1_500;
+/** Automatic retries of a failed run: 15 s, 30 s, 1 min, 2 min, 4 min, … at most 10 min apart. */
+const RETRY_BASE_MS = 15_000;
+const RETRY_MAX_MS = 10 * 60_000;
 
 type DeltaKind = "text" | "thinking";
 
@@ -116,6 +122,16 @@ interface ActiveRun {
   chain: Promise<void>;
 }
 
+/** Smart-queue plan of one board: pending (debounce timer) or in flight (planner running). */
+interface BoardPlan {
+  timer: NodeJS.Timeout | undefined;
+  controller: AbortController | null;
+  /** Queued cards the in-flight plan orders; a card that leaves the queue drops out (queued anew, it waits for the next plan). */
+  sent: Set<string>;
+  /** Cards of `sent` the user moved meanwhile: the plan keeps them where the user put them. */
+  pinned: Set<string>;
+}
+
 type Json = Record<string, unknown>;
 
 class OmpAgentManager implements AgentManager {
@@ -130,6 +146,16 @@ class OmpAgentManager implements AgentManager {
   private lent = 0;
   /** Last published `queue.updated` (deduplicates). */
   private lastQueue = "";
+  /** Queued cards that take part in the smart queue (not created by an agent) → their board. */
+  private readonly plannable = new Map<string, string>();
+  /** Plannable queued cards not ordered by a plan yet; held while their board's plan is pending. */
+  private readonly unplanned = new Set<string>();
+  /** Boards with a pending or in-flight plan. */
+  private readonly plans = new Map<string, BoardPlan>();
+  /** The planner's one-line reason per queued card. */
+  private readonly planNotes = new Map<string, string>();
+  /** Failed cards waiting for their automatic retry → its timer. */
+  private readonly retryTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(private readonly repo: Repository) {}
 
@@ -140,19 +166,24 @@ class OmpAgentManager implements AgentManager {
   async queueSnapshot(): Promise<QueueSnapshot> {
     const settings = await getAppSettings(this.repo);
     const boardNames = new Map<string, string>();
+    const boardName = async (boardId: string): Promise<string> => {
+      if (!boardNames.has(boardId)) {
+        boardNames.set(boardId, (await this.repo.getBoard(boardId))?.name ?? "");
+      }
+      return boardNames.get(boardId) ?? "";
+    };
     const entry = async (taskId: string, state: QueueEntry["state"]): Promise<QueueEntry | null> => {
       const task = await this.repo.getTask(taskId);
       if (!task) return null;
-      if (!boardNames.has(task.boardId)) {
-        boardNames.set(task.boardId, (await this.repo.getBoard(task.boardId))?.name ?? "");
-      }
       return {
         taskId,
         boardId: task.boardId,
-        boardName: boardNames.get(task.boardId) ?? "",
+        boardName: await boardName(task.boardId),
         title: task.title,
         state,
         waitingFor: state === "queued" ? await this.pendingBlockers(task) : [],
+        planning: state === "queued" && this.isHeld(taskId),
+        planNote: this.planNotes.get(taskId) ?? null,
       };
     };
     const isEntry = (e: QueueEntry | null): e is QueueEntry => e !== null;
@@ -160,12 +191,23 @@ class OmpAgentManager implements AgentManager {
     const queued = (
       await Promise.all([...this.claiming, ...this.queue].map((id) => entry(id, "queued")))
     ).filter(isEntry);
-    return { limit: settings.maxConcurrentAgents, running, queued };
+    const planning = await Promise.all(
+      [...this.plans.keys()].map(async (boardId) => ({ boardId, boardName: await boardName(boardId) })),
+    );
+    return { limit: settings.maxConcurrentAgents, running, queued, planning };
   }
 
   moveInQueue(taskId: string, position: number): boolean {
     if (!this.removeFromQueue(taskId)) return false;
     this.queue.splice(Math.max(0, Math.min(this.queue.length, Math.floor(position))), 0, taskId);
+    // The user's explicit choice: the card no longer waits for its board's plan, and a plan in
+    // flight keeps it where the user put it.
+    const boardId = this.plannable.get(taskId);
+    if (boardId !== undefined) {
+      const state = this.plans.get(boardId);
+      if (state?.sent.has(taskId)) state.pinned.add(taskId);
+      if (this.unplanned.delete(taskId)) this.dropIdlePlan(boardId);
+    }
     void this.pump();
     return true;
   }
@@ -174,24 +216,34 @@ class OmpAgentManager implements AgentManager {
     void this.pump();
   }
 
-  async start(taskId: string): Promise<Task> {
+  /** A person (or another card's agent) runs the card: it gets a fresh automatic-retry budget. */
+  start(taskId: string): Promise<Task> {
+    return this.queueRun(taskId, false);
+  }
+
+  /** `auto`: an automatic retry or a restart resume, which keeps counting the card's retries. */
+  private async queueRun(taskId: string, auto: boolean): Promise<Task> {
     if (this.isTracked(taskId)) {
       const task = await this.repo.getTask(taskId);
       if (!task) throw new Error("Task not found");
       return task;
     }
+    this.cancelRetry(taskId);
     this.claiming.add(taskId);
     let task: Task | null;
+    let smart = false;
     try {
       const current = await this.repo.getTask(taskId);
       if (!current) throw new Error("Task not found");
-      const patch: UpdateTaskInput = { agentState: "queued", agentError: null, question: null };
+      const patch: UpdateTaskInput = { agentState: "queued", agentError: null, question: null, retryAt: null };
+      if (!auto) patch.autoRetries = 0;
       if (current.status !== "in_progress") {
         patch.status = "in_progress";
         patch.position = await this.topPosition(current.boardId, "in_progress", taskId);
       }
       task = await this.repo.updateTask(taskId, patch);
       if (!task) throw new Error("Task not found");
+      smart = task.createdByTaskId === null && (await getAppSettings(this.repo)).smartQueue;
     } catch (err) {
       this.claiming.delete(taskId);
       throw err;
@@ -203,14 +255,24 @@ class OmpAgentManager implements AgentManager {
       return idle ?? task;
     }
     this.queue.push(taskId);
+    // Cards an agent created (board_create_card) are coordinated by their creator: never planned.
+    if (task.createdByTaskId === null) {
+      this.plannable.set(taskId, task.boardId);
+      if (smart) {
+        this.unplanned.add(taskId);
+        this.schedulePlan(task.boardId);
+      }
+    }
     publish({ type: "task.updated", task });
     void this.pump();
     return task;
   }
 
   async stop(taskId: string): Promise<Task | null> {
+    this.cancelRetry(taskId);
     const wasClaiming = this.claiming.delete(taskId);
     if (this.removeFromQueue(taskId) || wasClaiming) {
+      this.leftQueue(taskId);
       this.publishQueue();
       return this.setIdle(taskId);
     }
@@ -251,7 +313,7 @@ class OmpAgentManager implements AgentManager {
     }
 
     const task = await this.repo.getTask(taskId);
-    if (task && (task.agentState !== "idle" || task.agentError !== null)) {
+    if (task && (task.agentState !== "idle" || task.agentError !== null || task.retryAt !== null)) {
       return this.setIdle(taskId);
     }
     return task;
@@ -270,6 +332,12 @@ class OmpAgentManager implements AgentManager {
         return;
       }
       if (busy) await this.stop(task.id);
+      else if (task.retryAt !== null || this.retryTimers.has(task.id)) {
+        // A failed card leaving In progress is not retried anymore.
+        this.cancelRetry(task.id);
+        const updated = await this.repo.updateTask(task.id, { retryAt: null });
+        if (updated) publish({ type: "task.updated", task: updated });
+      }
     } catch (err) {
       await this.recordTaskError(task.id, err);
     }
@@ -298,8 +366,9 @@ class OmpAgentManager implements AgentManager {
   }
 
   async onTaskDeleted(taskId: string): Promise<void> {
+    this.cancelRetry(taskId);
     this.claiming.delete(taskId);
-    this.removeFromQueue(taskId);
+    if (this.removeFromQueue(taskId)) this.leftQueue(taskId);
     const run = this.active.get(taskId);
     if (!run) {
       void this.pump();
@@ -311,6 +380,125 @@ class OmpAgentManager implements AgentManager {
     this.active.delete(taskId);
     if (run.proc) terminate(run.proc);
     void this.pump();
+  }
+
+  /**
+   * Boot recovery: the omp processes died with the previous server. Queued cards are queued
+   * again; interrupted runs resume their omp session and failed In progress cards are retried,
+   * each while its automatic-retry budget lasts (a restart that keeps killing a card's run, e.g.
+   * an agent restarting this server, stops once the budget is used up).
+   */
+  async recover(): Promise<void> {
+    const settings = await getAppSettings(this.repo);
+    // Oldest first (listTasksByAgentState orders by updatedAt).
+    for (const task of await this.repo.listTasksByAgentState(["running", "queued", "error"])) {
+      try {
+        await this.recoverTask(task, settings);
+      } catch (err) {
+        console.error(`[agent] could not resume task ${task.id} after the restart:`, err);
+        await this.recordTaskError(task.id, err);
+      }
+    }
+  }
+
+  private async recoverTask(task: Task, settings: AppSettings): Promise<void> {
+    if (task.agentState === "queued") {
+      // It had not started: nothing to redo, and no retry is used.
+      await this.queueRun(task.id, true);
+      return;
+    }
+    const retrying = settings.autoRetry && task.status === "in_progress";
+    if (task.agentState === "error" && task.retryAt !== null && retrying) {
+      // Scheduled (and counted) before the restart.
+      this.scheduleRetry(task.id, task.retryAt);
+      return;
+    }
+    const interrupted = task.agentState === "running";
+    const plan = planRetry(task, settings);
+    if (plan && plan !== "exhausted") {
+      await this.repo.updateTask(task.id, { autoRetries: plan.attempt });
+      await this.addAgentComment(
+        task,
+        `${interrupted ? "The server restarted while the agent was working" : "The server restarted"}: resuming automatically (retry ${plan.attempt} of ${plan.max}).`,
+      );
+      await this.queueRun(task.id, true);
+      return;
+    }
+    if (!interrupted && task.retryAt === null) return;
+    const updated = await this.repo.updateTask(task.id, {
+      retryAt: null,
+      ...(interrupted
+        ? {
+            agentState: "error" as const,
+            agentError: `Interrupted by server restart${plan === "exhausted" ? " (automatic retries used up)" : ""}`,
+          }
+        : {}),
+    });
+    if (updated) publish({ type: "task.updated", task: updated });
+  }
+
+  // --- Automatic retries -----------------------------------------------------------------
+
+  private cancelRetry(taskId: string): void {
+    clearTimeout(this.retryTimers.get(taskId));
+    this.retryTimers.delete(taskId);
+  }
+
+  /** Runs the card's automatic retry at `at` (ISO time; a past time runs it now). */
+  private scheduleRetry(taskId: string, at: string): void {
+    this.cancelRetry(taskId);
+    const delay = Math.max(0, (Date.parse(at) || 0) - Date.now());
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(taskId);
+      void this.runRetry(taskId);
+    }, delay);
+    timer.unref();
+    this.retryTimers.set(taskId, timer);
+  }
+
+  private async runRetry(taskId: string): Promise<void> {
+    try {
+      const task = await this.repo.getTask(taskId);
+      // Run, stopped or moved out of In progress meanwhile: nothing to retry.
+      if (!task || task.retryAt === null || task.agentState !== "error" || task.status !== "in_progress") return;
+      await this.queueRun(taskId, true);
+    } catch (err) {
+      await this.recordTaskError(taskId, err);
+    }
+  }
+
+  /**
+   * Records a failed card (agentState "error") with its next automatic retry, if it has one left.
+   * Returns the retry time (the caller schedules it once the run is released) and a note for the
+   * failure comment.
+   */
+  private async recordFailure(
+    taskId: string,
+    message: string,
+    canRetry: boolean,
+  ): Promise<{ task: Task | null; retryAt: string | null; note: string }> {
+    const current = await this.repo.getTask(taskId);
+    const plan = current && canRetry ? planRetry(current, await getAppSettings(this.repo)) : null;
+    const retry = plan === "exhausted" ? null : plan;
+    const retryAt = retry ? new Date(Date.now() + retry.delayMs).toISOString() : null;
+    const task = await this.repo.updateTask(taskId, {
+      agentState: "error",
+      agentError: message,
+      retryAt,
+      ...(retry ? { autoRetries: retry.attempt } : {}),
+    });
+    if (task) publish({ type: "task.updated", task });
+    const note = retry
+      ? `Retrying automatically in ${formatDelay(retry.delayMs)} (retry ${retry.attempt} of ${retry.max}).`
+      : plan === "exhausted"
+        ? "Automatic retries are used up; press Run to try again."
+        : "";
+    return { task, retryAt, note };
+  }
+
+  private async addAgentComment(task: Task, body: string): Promise<void> {
+    const comment = await this.repo.addComment({ taskId: task.id, author: "agent", body, resolved: true });
+    publish({ type: "comment.added", comment, boardId: task.boardId });
   }
 
   // --- Queue -----------------------------------------------------------------------------
@@ -336,10 +524,141 @@ class OmpAgentManager implements AgentManager {
     return pending;
   }
 
+  /** Forgets the smart-queue state of a card that left the queue (launched, stopped, deleted). */
+  private leftQueue(taskId: string): void {
+    const boardId = this.plannable.get(taskId);
+    this.plannable.delete(taskId);
+    this.unplanned.delete(taskId);
+    this.planNotes.delete(taskId);
+    if (boardId === undefined) return;
+    const state = this.plans.get(boardId);
+    state?.sent.delete(taskId);
+    state?.pinned.delete(taskId);
+    this.dropIdlePlan(boardId);
+  }
+
+  /** The card waits for its board's pending or in-flight plan before it may launch. */
+  private isHeld(taskId: string): boolean {
+    const boardId = this.plannable.get(taskId);
+    return boardId !== undefined && this.unplanned.has(taskId) && this.plans.has(boardId);
+  }
+
+  private hasUnplanned(boardId: string): boolean {
+    for (const id of this.unplanned) if (this.plannable.get(id) === boardId) return true;
+    return false;
+  }
+
+  /** (Re)starts the board's plan debounce; a plan in flight re-schedules itself when it ends. */
+  private schedulePlan(boardId: string): void {
+    let state = this.plans.get(boardId);
+    if (!state) {
+      state = { timer: undefined, controller: null, sent: new Set(), pinned: new Set() };
+      this.plans.set(boardId, state);
+    }
+    if (state.controller) return;
+    this.debouncePlan(boardId, state);
+  }
+
+  private debouncePlan(boardId: string, state: BoardPlan): void {
+    clearTimeout(state.timer);
+    state.timer = setTimeout(() => void this.runPlan(boardId, state), PLAN_DEBOUNCE_MS);
+  }
+
+  /**
+   * Ends the board's plan once nothing needs it: aborts it when none of the board's cards is
+   * queued anymore, and drops a pending debounce when no card waits for it.
+   */
+  private dropIdlePlan(boardId: string): void {
+    const state = this.plans.get(boardId);
+    if (!state) return;
+    const queued = [...this.plannable.values()].includes(boardId);
+    if (queued && (state.controller || this.hasUnplanned(boardId))) return;
+    clearTimeout(state.timer);
+    state.controller?.abort();
+    this.plans.delete(boardId);
+  }
+
+  /**
+   * Has the planner order the board's plannable queued cards and infer their prerequisites, then
+   * releases the held ones. A failed plan keeps the queue order; nothing stays held.
+   */
+  private async runPlan(boardId: string, state: BoardPlan): Promise<void> {
+    state.timer = undefined;
+    const controller = new AbortController();
+    state.controller = controller;
+    const sent = state.sent;
+    for (const id of this.queue) if (this.plannable.get(id) === boardId) sent.add(id);
+    try {
+      const settings = await getAppSettings(this.repo);
+      const board = await this.repo.getBoard(boardId);
+      if (!board || !settings.smartQueue || sent.size < 2 || !this.hasUnplanned(boardId)) return;
+      // Queued cards that launched meanwhile count as running: possible prerequisites only.
+      const queued: PlanCard[] = [];
+      const running: PlanCard[] = [];
+      for (const id of [...sent, ...this.active.keys()]) {
+        const task = await this.repo.getTask(id);
+        if (task?.boardId !== boardId) continue;
+        const card = { id: task.id, title: task.title, description: task.description, blockedBy: task.blockedBy };
+        (this.active.has(id) ? running : queued).push(card);
+      }
+      this.publishQueue();
+      const plan = await planQueue({ board, queued, running, settings, signal: controller.signal });
+      if (controller.signal.aborted) return;
+      await this.applyPlan(plan, state);
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        console.error(`[agent] queue planner failed for board ${boardId}; keeping the queue order:`, err);
+      }
+    } finally {
+      if (this.plans.get(boardId) === state) {
+        // Only cards still in `sent`: one stopped and queued anew meanwhile waits for the next plan.
+        for (const id of sent) this.unplanned.delete(id);
+        sent.clear();
+        state.pinned.clear();
+        state.controller = null;
+        // Cards queued while the planner ran get a plan of their own.
+        if (this.hasUnplanned(boardId)) this.debouncePlan(boardId, state);
+        else this.plans.delete(boardId);
+      }
+      this.publishQueue();
+      void this.pump();
+    }
+  }
+
+  /**
+   * Persists the inferred prerequisites (before the held cards are released, so none launches
+   * early), then refills the queue slots of the planned cards in the plan's order; cards the user
+   * moved meanwhile keep their place.
+   */
+  private async applyPlan(plan: QueuePlan, state: BoardPlan): Promise<void> {
+    for (const [taskId, deps] of Object.entries(plan.dependencies)) {
+      if (!state.sent.has(taskId)) continue;
+      const task = await this.repo.getTask(taskId);
+      if (!task) continue;
+      const added = [...new Set(deps)].filter((id) => id !== taskId && !task.blockedBy.includes(id));
+      if (added.length === 0) continue;
+      const updated = await this.repo.updateTask(taskId, { blockedBy: [...task.blockedBy, ...added] });
+      if (updated) publish({ type: "task.updated", task: updated });
+    }
+    const queued = new Set([...state.sent].filter((id) => !state.pinned.has(id) && this.queue.includes(id)));
+    const order = [...new Set([...plan.order, ...state.sent])].filter((id) => queued.has(id));
+    let next = 0;
+    for (let i = 0; i < this.queue.length; i++) {
+      if (queued.has(this.queue[i]!)) this.queue[i] = order[next++]!;
+    }
+    for (const id of state.sent) {
+      const reason = plan.reasons[id];
+      if (reason) this.planNotes.set(id, reason);
+      else this.planNotes.delete(id);
+    }
+  }
+
   private publishQueue(): void {
     const running = [...this.active.keys()];
     const queued = [...this.claiming, ...this.queue];
-    const key = JSON.stringify([running, queued]);
+    // Planning state is part of the key: the UI re-reads the snapshot when a plan starts or ends.
+    const held = queued.filter((id) => this.isHeld(id));
+    const key = JSON.stringify([running, queued, [...this.plans.keys()], held]);
     if (key === this.lastQueue) return;
     this.lastQueue = key;
     publish({ type: "queue.updated", running, queued });
@@ -357,12 +676,18 @@ class OmpAgentManager implements AgentManager {
         if (this.queue.length === 0) break;
         // Re-read every time a slot frees so settings changes apply without a restart.
         const settings = await getAppSettings(this.repo);
-        // Start order, skipping cards that wait for unfinished cards (Task.blockedBy).
+        // Start order, skipping cards that wait for unfinished cards (Task.blockedBy) or for their
+        // board's smart-queue plan.
         for (const taskId of [...this.queue]) {
           if (this.active.size - this.lent >= settings.maxConcurrentAgents) break;
           const task = await this.repo.getTask(taskId);
           if (task && (await this.pendingBlockers(task)).length > 0) continue;
-          if (this.removeFromQueue(taskId)) this.launch(taskId, settings);
+          // Checked after the reads: the card may have been stopped and queued anew meanwhile.
+          if (this.isHeld(taskId)) continue;
+          if (this.removeFromQueue(taskId)) {
+            this.leftQueue(taskId);
+            this.launch(taskId, settings);
+          }
         }
       } while (this.pumpAgain);
     } catch (err) {
@@ -1011,6 +1336,7 @@ class OmpAgentManager implements AgentManager {
     }
     run.finished = true;
     const repo = this.repo;
+    let retryAt: string | null = null;
     try {
       let summary = "";
       if (run.proc && !run.proc.exited) {
@@ -1081,13 +1407,16 @@ class OmpAgentManager implements AgentManager {
         agentState: "idle",
         agentError: null,
         question,
+        autoRetries: 0,
+        retryAt: null,
       });
       if (task) publish({ type: "task.updated", task });
     } catch (err) {
       console.error(`[agent] failed to record the result for task ${run.taskId}:`, err);
-      await this.writeTaskError(run.taskId, `Failed to record the agent result: ${errorMessage(err, run.ompPath)}`);
+      retryAt = await this.writeTaskError(run.taskId, `Failed to record the agent result: ${errorMessage(err, run.ompPath)}`);
     } finally {
       this.release(run);
+      if (retryAt) this.scheduleRetry(run.taskId, retryAt);
     }
   }
 
@@ -1095,6 +1424,7 @@ class OmpAgentManager implements AgentManager {
     if (run.finished) return;
     run.finished = true;
     const repo = this.repo;
+    let retryAt: string | null = null;
     try {
       if (run.runId) {
         const updated = await repo.updateRun(run.runId, {
@@ -1106,21 +1436,18 @@ class OmpAgentManager implements AgentManager {
         await this.settleSubagents(run);
         await this.event(run, "error", message);
       }
-      const task = await repo.updateTask(run.taskId, { agentState: "error", agentError: message });
-      if (task) {
-        publish({ type: "task.updated", task });
-        const comment = await repo.addComment({
-          taskId: run.taskId,
-          author: "agent",
-          body: `Agent failed: ${message}`,
-          resolved: true,
-        });
-        publish({ type: "comment.added", comment, boardId: task.boardId });
+      // Feedback that arrived meanwhile starts a fresh run once this one is released.
+      const failure = await this.recordFailure(run.taskId, message, !run.restartAfter);
+      retryAt = failure.retryAt;
+      if (failure.task) {
+        await this.addAgentComment(failure.task, `Agent failed: ${message}${failure.note ? `\n\n${failure.note}` : ""}`);
       }
     } catch (err) {
       console.error(`[agent] failed to record the failure of task ${run.taskId}:`, err);
     } finally {
       this.release(run);
+      // After the release: a retry due right away must not find the run still active.
+      if (retryAt) this.scheduleRetry(run.taskId, retryAt);
     }
   }
 
@@ -1197,7 +1524,7 @@ class OmpAgentManager implements AgentManager {
   }
 
   private async setIdle(taskId: string): Promise<Task | null> {
-    const task = await this.repo.updateTask(taskId, { agentState: "idle", agentError: null });
+    const task = await this.repo.updateTask(taskId, { agentState: "idle", agentError: null, retryAt: null });
     if (task) publish({ type: "task.updated", task });
     return task;
   }
@@ -1206,16 +1533,18 @@ class OmpAgentManager implements AgentManager {
   private async recordTaskError(taskId: string, err: unknown): Promise<void> {
     const message = errorMessage(err, "omp");
     console.error(`[agent] task ${taskId}: ${message}`);
-    if (!this.isTracked(taskId)) await this.writeTaskError(taskId, message);
+    if (this.isTracked(taskId)) return;
+    const retryAt = await this.writeTaskError(taskId, message);
+    if (retryAt) this.scheduleRetry(taskId, retryAt);
   }
 
-  /** Never throws. */
-  private async writeTaskError(taskId: string, message: string): Promise<void> {
+  /** Never throws. Returns when the card's automatic retry is due, which the caller schedules. */
+  private async writeTaskError(taskId: string, message: string): Promise<string | null> {
     try {
-      const task = await this.repo.updateTask(taskId, { agentState: "error", agentError: message });
-      if (task) publish({ type: "task.updated", task });
+      return (await this.recordFailure(taskId, message, true)).retryAt;
     } catch (err) {
       console.error(`[agent] failed to record the error for task ${taskId}:`, err);
+      return null;
     }
   }
 
@@ -1324,6 +1653,33 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+interface RetryPlan {
+  /** Retries used once this one starts (1-based). */
+  attempt: number;
+  max: number;
+  delayMs: number;
+}
+
+/**
+ * The card's next automatic retry; "exhausted" when its budget is used up, null when it is not
+ * retried at all (retries off, or the card is not In progress anymore).
+ */
+function planRetry(task: Task, settings: AppSettings): RetryPlan | "exhausted" | null {
+  if (!settings.autoRetry || settings.maxAutoRetries === 0 || task.status !== "in_progress") return null;
+  if (task.autoRetries >= settings.maxAutoRetries) return "exhausted";
+  const attempt = task.autoRetries + 1;
+  // OMP_UI_RETRY_BASE_MS: first backoff step (default 15 s), doubling per retry.
+  const base = Number(process.env.OMP_UI_RETRY_BASE_MS) || RETRY_BASE_MS;
+  return { attempt, max: settings.maxAutoRetries, delayMs: Math.min(RETRY_MAX_MS, base * 2 ** (attempt - 1)) };
+}
+
+function formatDelay(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return s % 60 === 0 ? `${m} min` : `${m} min ${s % 60}s`;
+}
+
 /** Per-run omp config overlay (`--config`): browser control for this card. JSON is valid YAML. */
 async function writeRunConfig(taskId: string, settings: AppSettings, taskFiles: string): Promise<string> {
   const dir = path.join(dataDir(), "runtime");
@@ -1362,28 +1718,9 @@ const g = globalThis as unknown as { __ompUiAgentManager?: Promise<AgentManager>
 
 async function createAgentManager(): Promise<AgentManager> {
   const repo = await getRepo();
-  // Child processes died with the previous server. A card whose run had started is not run again:
-  // what it already did (edits, commits, pushes) is unknown, so it ends interrupted and Run resumes
-  // its omp session. A card that was only waiting in the queue has done nothing yet, so it goes back
-  // in the queue, oldest first (listTasksByAgentState orders by updatedAt).
   await repo.abortRunningRuns("Server restarted");
-  const stale = await repo.listTasksByAgentState(["running", "queued"]);
   const manager = new OmpAgentManager(repo);
-  for (const task of stale) {
-    if (task.agentState === "queued") {
-      try {
-        await manager.start(task.id);
-        continue;
-      } catch (err) {
-        console.error(`[agent] could not re-queue task ${task.id} after restart:`, err);
-      }
-    }
-    const updated = await repo.updateTask(task.id, {
-      agentState: "error",
-      agentError: "Interrupted by server restart",
-    });
-    if (updated) publish({ type: "task.updated", task: updated });
-  }
+  await manager.recover();
   return manager;
 }
 

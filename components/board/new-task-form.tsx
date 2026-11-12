@@ -354,8 +354,10 @@ export function NewTaskForm({
         <p className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
           <span className="flex items-start gap-1.5">
             <Sparkles className="mt-px size-3.5 shrink-0" aria-hidden />
-            An agent reads your text and the project, then writes the title and brief. Type{" "}
-            <Kbd>/</Kbd> to add an OMP skill or shortcut.
+            <span>
+              An agent reads your text and the project, then writes the title and brief. Type <Kbd>/</Kbd> to add an
+              OMP skill or shortcut.
+            </span>
           </span>
           {words > 0 && <span className="shrink-0 tabular-nums">{words.toLocaleString()} words</span>}
         </p>

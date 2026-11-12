@@ -73,6 +73,14 @@ export interface Task {
    * Cards with it set show a struck-through title.
    */
   pushedAt: string | null;
+  /**
+   * Automatic retries used since the card's last successful run or manual start (Run, feedback).
+   * A run that fails, or is interrupted by a server restart, is retried while this is below
+   * `AppSettings.maxAutoRetries`.
+   */
+  autoRetries: number;
+  /** When the next automatic retry of a failed run starts; null when none is scheduled. */
+  retryAt: string | null;
   createdAt: string;
   updatedAt: string;
   /** Derived: total comments. */
@@ -196,6 +204,13 @@ export interface AppSettings {
   smartQueue: boolean;
   /** What a card's agent may do with a web browser (omp's `browser` tool). */
   browser: BrowserMode;
+  /**
+   * Retry failed runs automatically (resuming the omp session) with exponential backoff, and
+   * resume interrupted and failed In progress cards when the server restarts.
+   */
+  autoRetry: boolean;
+  /** Automatic retries per card before it stays failed (0-20); a success or a manual run resets the count. */
+  maxAutoRetries: number;
 }
 
 /**
@@ -214,6 +229,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoModel: true,
   smartQueue: true,
   browser: "headless",
+  autoRetry: true,
+  maxAutoRetries: 5,
 };
 
 /** An installed omp skill (from `omp skill list`): pickable with "/" when composing a card. */
@@ -471,6 +488,23 @@ export interface GitActionResult {
   results: GitRepoActionResult[];
   /** The agent comment posted on the task describing the result (links included). */
   comment: Comment;
+}
+
+/** GET /system/restart — can the "Restart server" button restart this server, and the last restart. */
+export interface RestartStatus {
+  /** Whether the button can restart this server; `reason` says why not. */
+  available: boolean;
+  /** "cli": started by `omp-ui up`/`start`; "pm2": supervised by pm2. */
+  mode: "cli" | "pm2" | null;
+  reason: string | null;
+  /** Agents that a restart would interrupt. */
+  running: number;
+  /** Tail of the last restart's output (`DATA_DIR/restart.log`), or null when there was none. */
+  log: string | null;
+  /** The last restart's build failed, so the previous build was started instead. */
+  buildFailed: boolean;
+  /** A restart was requested and its CLI process is still running. */
+  restarting: boolean;
 }
 
 /** GET /stats/system — host + app statistics. Byte counts are bytes; times are seconds. */

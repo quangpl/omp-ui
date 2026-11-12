@@ -34,6 +34,8 @@ const ENV_KEYS = [
   "FAKE_OMP_SCENARIO",
   "FAKE_OMP_SESSION_DIR",
   "FAKE_OMP_MODEL_ROLES",
+  "FAKE_OMP_PLAN",
+  "OMP_UI_RETRY_BASE_MS",
 ] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
 
@@ -160,6 +162,17 @@ function publishedAgentStates(taskId: string): string[] {
   return states;
 }
 
+/** "print" entries of the smart-queue planner. */
+function plannerEntries(): LogEntry[] {
+  return readLog().filter((e) => e.kind === "print" && e.prompt?.startsWith("You are the queue planner"));
+}
+
+/** Task ids ordered by when their (latest) run started. */
+async function runStartOrder(ids: string[]): Promise<string[]> {
+  const starts = await Promise.all(ids.map(async (id) => [id, (await latestRun(id)).startedAt] as const));
+  return starts.sort((x, y) => x[1].localeCompare(y[1])).map(([id]) => id);
+}
+
 // --- setup -----------------------------------------------------------------------------------
 
 beforeAll(() => {
@@ -183,11 +196,15 @@ beforeEach(async () => {
   delete process.env.MAX_AGENTS;
   delete process.env.OMP_EXTRA_ARGS;
   delete process.env.FAKE_OMP_MODEL_ROLES;
+  delete process.env.FAKE_OMP_PLAN;
+  process.env.OMP_UI_RETRY_BASE_MS = "50";
   globals.__ompUiRepo = undefined;
   globals.__ompUiAgentManager = undefined;
 
   repo = await getRepo();
   board = await repo.createBoard({ name: "Test board", workdir, model: "fake/model-1" });
+  // Automatic retries have their own tests; everywhere else a failed run stays failed.
+  await updateAppSettings(repo, { autoRetry: false });
   events = [];
   unsubscribe = subscribe((event) => events.push(event));
 });
@@ -911,8 +928,196 @@ describe("AgentManager collaboration, dependencies and workspaces", () => {
   });
 });
 
+describe("AgentManager smart queue", () => {
+  it("plans a burst of queued cards once: prerequisites first, inferred dependencies persisted", async () => {
+    await updateAppSettings(repo, { maxConcurrentAgents: 1 });
+    const a = await createTask("Build the settings page", "Uses the settings API.");
+    const b = await createTask("Fix the footer typo");
+    const c = await createTask("Add the settings API", "[fake:slow]");
+    process.env.FAKE_OMP_PLAN = JSON.stringify({
+      order: [c.id, a.id, b.id],
+      cards: [
+        { id: c.id, waitFor: [], reason: "The settings page needs this API." },
+        { id: a.id, waitFor: [c.id], reason: "Waits for the settings API." },
+      ],
+    });
+    const manager = await getAgentManager();
+    for (const task of [a, b, c]) await manager.start(task.id);
+
+    // Held while the plan is pending: nothing launches before the planner answered.
+    const pending = await manager.queueSnapshot();
+    expect(pending.planning).toEqual([{ boardId: board.id, boardName: board.name }]);
+    expect(pending.queued.map((e) => [e.taskId, e.planning])).toEqual([
+      [a.id, true],
+      [b.id, true],
+      [c.id, true],
+    ]);
+    expect(argvEntries()).toHaveLength(0);
+
+    await waitPromptReceived();
+    expect(await repo.listRuns(c.id)).toHaveLength(1);
+    expect(await repo.listRuns(a.id)).toHaveLength(0);
+    expect((await getTask(a.id)).blockedBy).toEqual([c.id]);
+    const planned = await manager.queueSnapshot();
+    expect(planned.planning).toEqual([]);
+    expect(planned.queued).toEqual([
+      expect.objectContaining({ taskId: a.id, planning: false, waitingFor: [c.id], planNote: "Waits for the settings API." }),
+      expect.objectContaining({ taskId: b.id, planning: false, waitingFor: [], planNote: null }),
+    ]);
+
+    // Finish C (the slow scenario completes after a steer); A and B follow in plan order.
+    const comment = await repo.addComment({ taskId: c.id, author: "user", body: "wrap up" });
+    await manager.onComment(await getTask(c.id), comment);
+    await waitDone(c.id);
+    await waitDone(a.id);
+    await waitDone(b.id);
+    expect(await runStartOrder([a.id, b.id, c.id])).toEqual([c.id, a.id, b.id]);
+    const [planner] = plannerEntries();
+    expect(plannerEntries()).toHaveLength(1);
+    for (const task of [a, b, c]) expect(planner?.prompt).toContain(task.id);
+  });
+
+  it("runs the cards in queue order when the planner fails", async () => {
+    await updateAppSettings(repo, { maxConcurrentAgents: 1 });
+    process.env.FAKE_OMP_PLAN = "fail";
+    const tasks = [await createTask("First"), await createTask("Second"), await createTask("Third")];
+    const manager = await getAgentManager();
+    for (const task of tasks) await manager.start(task.id);
+
+    for (const task of tasks) await waitDone(task.id);
+    const ids = tasks.map((t) => t.id);
+    expect(await runStartOrder(ids)).toEqual(ids);
+    expect(plannerEntries()).toHaveLength(1);
+    expect((await manager.queueSnapshot()).planning).toEqual([]);
+  });
+
+  it("never holds or plans cards when the smart queue is off", async () => {
+    await updateAppSettings(repo, { smartQueue: false });
+    const tasks = [await createTask("First"), await createTask("Second")];
+    const manager = await getAgentManager();
+    for (const task of tasks) await manager.start(task.id);
+
+    expect((await manager.queueSnapshot()).planning).toEqual([]);
+    for (const task of tasks) await waitDone(task.id);
+    expect(readLog().filter((e) => e.kind === "print")).toEqual([]);
+  });
+});
+
+describe("AgentManager automatic retries", () => {
+  beforeEach(async () => {
+    await updateAppSettings(repo, { autoRetry: true, maxAutoRetries: 2 });
+  });
+
+  it("retries a failed run in its omp session and resets the count once it succeeds", async () => {
+    const task = await createTask("Flaky", "[fake:error]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+
+    const failed = await waitTask(task.id, (t) => t.agentState === "error", "the first failure");
+    expect(failed).toMatchObject({ status: "in_progress", autoRetries: 1, agentError: "Fake model error: rate limited" });
+    expect(failed.retryAt).not.toBeNull();
+    const firstSession = failed.sessionFile;
+    expect(firstSession).toBeTruthy();
+    // The cause goes away (as a rate limit would): the retry succeeds.
+    await repo.updateTask(task.id, { description: "Now it works" });
+
+    const done = await waitDone(task.id);
+    expect(done).toMatchObject({ autoRetries: 0, retryAt: null, agentError: null });
+    const argv = argvEntries();
+    expect(argv).toHaveLength(2);
+    expect(flagValues(argv[1]!.argv, "--resume")).toEqual([firstSession]);
+    const bodies = agentComments(await repo.listComments(task.id)).map((c) => c.body);
+    expect(bodies[0]).toMatch(/^Agent failed: Fake model error: rate limited\n\nRetrying automatically in 0s \(retry 1 of 2\)\.$/);
+  });
+
+  it("stops retrying once the budget is used up; a manual run gets a fresh budget", async () => {
+    const task = await createTask("Broken", "[fake:error]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+
+    const exhausted = await waitTask(
+      task.id,
+      (t) => t.agentState === "error" && t.autoRetries === 2 && t.retryAt === null,
+      "the retries to be used up",
+    );
+    expect(exhausted.status).toBe("in_progress");
+    await waitIdleManager(manager);
+    expect(argvEntries()).toHaveLength(3);
+    const bodies = agentComments(await repo.listComments(task.id)).map((c) => c.body);
+    expect(bodies.at(-1)).toContain("Automatic retries are used up; press Run to try again.");
+
+    await manager.start(task.id);
+    expect((await getTask(task.id)).autoRetries).toBe(0);
+    await waitTask(task.id, (t) => t.agentState === "error" && t.autoRetries === 1, "the fresh budget's first retry");
+    await waitTask(task.id, (t) => t.autoRetries === 2 && t.retryAt === null, "the fresh budget to be used up");
+    await waitIdleManager(manager);
+    expect(argvEntries()).toHaveLength(6);
+  });
+
+  it("does not retry a card that was stopped or moved out of In progress", async () => {
+    process.env.OMP_UI_RETRY_BASE_MS = "300";
+    const stopped = await createTask("Stopped", "[fake:error]");
+    const moved = await createTask("Moved", "[fake:error]");
+    const manager = await getAgentManager();
+    await manager.start(stopped.id);
+    await manager.start(moved.id);
+    await waitTask(stopped.id, (t) => t.retryAt !== null, "the stopped card's retry to be scheduled");
+    const pending = await waitTask(moved.id, (t) => t.retryAt !== null, "the moved card's retry to be scheduled");
+
+    expect(await manager.stop(stopped.id)).toMatchObject({ agentState: "idle", retryAt: null });
+    const todo = await repo.updateTask(moved.id, { status: "todo" });
+    await manager.onTaskMoved(todo!, pending.status);
+    expect((await getTask(moved.id)).retryAt).toBeNull();
+
+    await sleep(600);
+    expect(argvEntries()).toHaveLength(2);
+    expect(manager.stats()).toEqual({ running: [], queued: [] });
+  });
+});
+
 describe("AgentManager boot recovery", () => {
-  it("interrupts runs left running by a previous server and re-queues cards that were waiting", async () => {
+  it("resumes interrupted, queued and failed In progress cards while their retry budget lasts", async () => {
+    await updateAppSettings(repo, { autoRetry: true, maxAutoRetries: 2 });
+    const running = await createTask("Was running", "", "in_progress");
+    await repo.updateTask(running.id, { agentState: "running" });
+    const queued = await createTask("Was queued", "", "in_progress");
+    await repo.updateTask(queued.id, { agentState: "queued" });
+    const failed = await createTask("Had failed", "", "in_progress");
+    await repo.updateTask(failed.id, { agentState: "error", agentError: "boom" });
+    const exhausted = await createTask("Out of retries", "", "in_progress");
+    await repo.updateTask(exhausted.id, { agentState: "error", agentError: "boom", autoRetries: 2 });
+    const parked = await createTask("Failed, then moved to To do", "", "todo");
+    await repo.updateTask(parked.id, { agentState: "error", agentError: "boom" });
+    const run = await repo.createRun({ taskId: running.id, prompt: "old" });
+
+    await getAgentManager();
+
+    expect(await repo.getRun(run.id)).toMatchObject({ status: "aborted" });
+    expect(await waitDone(running.id)).toMatchObject({ autoRetries: 0 });
+    await waitDone(queued.id);
+    await waitDone(failed.id);
+    const resumed = agentComments(await repo.listComments(running.id)).map((c) => c.body);
+    expect(resumed[0]).toBe("The server restarted while the agent was working: resuming automatically (retry 1 of 2).");
+    expect(await getTask(exhausted.id)).toMatchObject({ agentState: "error", agentError: "boom", autoRetries: 2 });
+    expect(await getTask(parked.id)).toMatchObject({ agentState: "error", status: "todo" });
+    expect(argvEntries()).toHaveLength(3);
+  });
+
+  it("reschedules a retry that was pending when the server stopped", async () => {
+    await updateAppSettings(repo, { autoRetry: true, maxAutoRetries: 2 });
+    const task = await createTask("Retry pending", "", "in_progress");
+    const retryAt = new Date(Date.now() + 300).toISOString();
+    await repo.updateTask(task.id, { agentState: "error", agentError: "boom", autoRetries: 1, retryAt });
+
+    await getAgentManager();
+
+    expect(await getTask(task.id)).toMatchObject({ agentState: "error", autoRetries: 1, retryAt });
+    await waitDone(task.id);
+    expect(argvEntries()).toHaveLength(1);
+    expect(agentComments(await repo.listComments(task.id))).toHaveLength(1);
+  });
+
+  it("with automatic retries off, interrupts started runs and re-queues cards that were waiting", async () => {
     const task = await createTask("Was running", "", "in_progress");
     await repo.updateTask(task.id, { agentState: "running" });
     const queued = await createTask("Was queued", "", "in_progress");
@@ -921,7 +1126,6 @@ describe("AgentManager boot recovery", () => {
 
     await getAgentManager();
 
-    // A started run is never repeated: its side effects are unknown.
     expect(await getTask(task.id)).toMatchObject({ agentState: "error", agentError: "Interrupted by server restart" });
     expect(await repo.getRun(run.id)).toMatchObject({ status: "aborted" });
     // A card that only waited has done nothing yet: it runs as if the server never stopped.

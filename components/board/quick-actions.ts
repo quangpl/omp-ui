@@ -36,8 +36,14 @@ const ACTIONS: Record<QuickActionId, QuickAction> = {
 };
 
 /** Available quick actions for a card, most useful first (index 0 is the primary action). */
-export function quickActionsFor(task: Pick<Task, "status" | "agentState">): QuickAction[] {
+export function quickActionsFor(
+  task: Pick<Task, "status" | "agentState"> & Partial<Pick<Task, "retryAt">>,
+): QuickAction[] {
   const active = task.agentState === "running" || task.agentState === "queued";
+  // A failed card waiting for its automatic retry: retry now, or stop (cancels the retry).
+  if (task.agentState === "error" && task.retryAt && task.status !== "todo") {
+    return [ACTIONS.retry, ACTIONS.stop, ACTIONS.revert];
+  }
   const primary = active
     ? ACTIONS.stop
     : task.agentState === "error"
@@ -72,7 +78,7 @@ export function runQuickAction(id: QuickActionId, taskId: string, handlers: Quic
  * Returns null when the key isn't a quick-action shortcut for this card.
  */
 export function quickActionForKey(
-  task: Pick<Task, "status" | "agentState">,
+  task: Pick<Task, "status" | "agentState"> & Partial<Pick<Task, "retryAt">>,
   event: Pick<KeyboardEvent, "key" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey">,
 ): QuickAction | null {
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return null;

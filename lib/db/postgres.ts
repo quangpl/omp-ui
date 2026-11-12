@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   blocked_by TEXT NOT NULL DEFAULT '[]',
   created_by_task_id TEXT,
   pushed_at TEXT,
+  auto_retries INTEGER NOT NULL DEFAULT 0,
+  retry_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -82,6 +84,8 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS blocked_by TEXT NOT NULL DEFAULT '[]'
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by_task_id TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pushed_at TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS auto_retries INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS retry_at TEXT;
 CREATE INDEX IF NOT EXISTS idx_tasks_board_status_position ON tasks (board_id, status, position);
 CREATE INDEX IF NOT EXISTS idx_tasks_agent_state ON tasks (agent_state);
 
@@ -159,6 +163,8 @@ interface TaskRow {
   blocked_by: string;
   created_by_task_id: string | null;
   pushed_at: string | null;
+  auto_retries: number;
+  retry_at: string | null;
   created_at: string;
   updated_at: string;
   comment_count: number;
@@ -228,6 +234,8 @@ function toTask(r: TaskRow): Task {
     blockedBy: parseFolderList(r.blocked_by),
     createdByTaskId: r.created_by_task_id,
     pushedAt: r.pushed_at,
+    autoRetries: Number(r.auto_retries),
+    retryAt: r.retry_at,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     commentCount: Number(r.comment_count),
@@ -490,6 +498,8 @@ export class PostgresRepository implements Repository {
       ["last_run_id", patch.lastRunId],
       ["blocked_by", patch.blockedBy === undefined ? undefined : JSON.stringify(patch.blockedBy)],
       ["pushed_at", patch.pushedAt],
+      ["auto_retries", patch.autoRetries],
+      ["retry_at", patch.retryAt],
       ["updated_at", nowIso()],
     ]);
     const res = await this.query(`UPDATE tasks SET ${sql} WHERE id = $${params.length + 1}`, [

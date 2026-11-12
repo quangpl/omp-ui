@@ -6,6 +6,26 @@ export const dynamic = "force-dynamic";
 
 const PING_INTERVAL_MS = 20_000;
 
+const g = globalThis as unknown as { __ompUiEventStreams?: Set<() => void> };
+
+/**
+ * Close functions of the open streams. On SIGTERM/SIGINT they are all closed, so the server's
+ * graceful shutdown (it waits for open responses) does not hang until `omp-ui stop` kills it.
+ */
+function openStreams(): Set<() => void> {
+  if (g.__ompUiEventStreams) return g.__ompUiEventStreams;
+  const streams = new Set<() => void>();
+  g.__ompUiEventStreams = streams;
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.once(signal, () => {
+      for (const close of streams) close();
+      // As in lib/agent/rpc.ts: keep Node's default exit when nobody else handles the signal.
+      if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+    });
+  }
+  return streams;
+}
+
 /** Board an event belongs to; null for global events (sent on every stream). */
 function eventBoardId(event: ServerEvent): string | null {
   switch (event.type) {
@@ -50,6 +70,7 @@ export const GET = withApi(({ req }) => {
       cleanup = () => {
         if (closed) return;
         closed = true;
+        openStreams().delete(cleanup);
         clearInterval(ping);
         unsubscribe();
         req.signal.removeEventListener("abort", onAbort);
@@ -61,6 +82,7 @@ export const GET = withApi(({ req }) => {
       };
 
       send("retry: 3000\n: connected\n\n");
+      openStreams().add(cleanup);
       if (req.signal.aborted) cleanup();
       else req.signal.addEventListener("abort", onAbort);
     },
@@ -74,7 +96,8 @@ export const GET = withApi(({ req }) => {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache, no-transform",
       "x-accel-buffering": "no",
-      connection: "keep-alive",
+      // Not reused once the stream ends, so a closed stream never holds the server's shutdown.
+      connection: "close",
     },
   });
 });

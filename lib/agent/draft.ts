@@ -1,25 +1,56 @@
 // The card writer: an omp agent that turns whatever the user typed into a card (title + brief)
-// that gets the best result from the agent that will run it. It runs `omp -p --mode json` in the
+// that gets the best result from the agent that will run it. It runs `omp --mode rpc` in the
 // project with read-only tools, so the brief names the real files involved, and it decides
-// whether the work needs parallel subagents and which open cards it must wait for.
+// whether the work needs parallel subagents and which open cards it must wait for. RPC mode lets
+// the host steer it to answer once it has spent its lookup budget, which keeps drafts fast.
 import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { readModelRoles } from "@/lib/agent/model-select";
-import { existingFolders, extractJsonObject, isDirectory, runOmpPrint } from "@/lib/agent/omp-print";
+import { readModelRoles, type ModelRoles } from "@/lib/agent/model-select";
+import {
+  describeTool,
+  existingFolders,
+  extractJsonObject,
+  isDirectory,
+  readOnlyArgs,
+  textOf,
+} from "@/lib/agent/omp-print";
+import { OmpRpcProcess, describeExit } from "@/lib/agent/rpc";
 import { DESCRIPTION_MAX, TITLE_MAX, clip } from "@/lib/card-draft";
 import { childEnv } from "@/lib/child-env";
 import { dataDir } from "@/lib/files";
-import { STATUS_LABELS, type AppSettings, type Board, type CardDraft, type Task } from "@/lib/types";
+import { listOmpSkills } from "@/lib/omp-skills";
+import {
+  STATUS_LABELS,
+  type AppSettings,
+  type Board,
+  type CardDraft,
+  type OmpSkill,
+  type Task,
+} from "@/lib/types";
 
-/** omp stops the session itself after this long (`--max-time`). */
-const MAX_TIME_SECONDS = 120;
+/** omp stops the session itself after this long (`--max-time`): quick and thorough drafts. */
+const QUICK_MAX_TIME_SECONDS = 120;
+const THOROUGH_MAX_TIME_SECONDS = 240;
+/** A request this long, or with this many list items, gets the thorough card writer. */
+const THOROUGH_MIN_WORDS = 150;
+const THOROUGH_MIN_LIST_ITEMS = 5;
+/** Parallel tool calls per lookup turn (two turns at most): the card writer points the way, the run digs. */
+const LOOKUPS_PER_TURN = 5;
+/** Tool calls after which the card writer is steered to answer with what it found. */
+const LOOKUP_BUDGET: Record<DraftTier, number> = { quick: 8, thorough: 16 };
+const ANSWER_NOW = "That is enough looking around. Reply now with only the card JSON object, using what you found so far.";
+/** omp must report `ready` within this long. */
+const READY_TIMEOUT_MS = 30_000;
 /** Longer requests are handed over as a file the agent reads instead of inline. */
 const INLINE_MAX = 60_000;
 /** Open cards offered as "Run after" candidates (newest first). */
 const MAX_OPEN_CARDS = 40;
 /** Drafts running at once across the server. */
 const MAX_CONCURRENT_DRAFTS = 4;
+/** Installed skills listed for the card writer to suggest, and how much of each description. */
+const MAX_PROMPT_SKILLS = 60;
+const SKILL_DESCRIPTION_MAX = 160;
 
 export interface DraftOptions {
   /** What the user typed. */
@@ -62,10 +93,13 @@ export async function draftCard(options: DraftOptions): Promise<DraftResult> {
   const extras = await existingFolders(board.extraFolders ?? [], workdir);
 
   const env = childEnv();
-  const roles = await readModelRoles(settings.ompPath, workdir, env);
-  // The fast `smol` role when configured; otherwise the usual model, thinking briefly.
-  const model = roles?.smol ? "@smol" : board.model?.trim() || settings.defaultModel.trim() || null;
-  const thinking = roles?.smol ? null : "low";
+  const [roles, skills] = await Promise.all([
+    readModelRoles(settings.ompPath, workdir, env),
+    listOmpSkills(settings.ompPath),
+  ]);
+  const { model, thinking, tier, maxTimeSeconds } = chooseDraftModel({ text, roles, board, settings });
+  // Asked for in so many words: omp's own keyword always means parallel subagents.
+  const askedForParallel = text.search(MAGIC_KEYWORD) !== -1;
   signal.throwIfAborted();
 
   const openCards = tasks
@@ -81,28 +115,154 @@ export async function draftCard(options: DraftOptions): Promise<DraftResult> {
     await writeFile(requestFile, text);
   }
 
-  const prompt = buildDraftPrompt({ text, board: { ...board, extraFolders: extras }, openCards, requestFile });
-  onActivity(`Card agent started${model ? ` (${model})` : ""}`);
+  const prompt = buildDraftPrompt({
+    text,
+    board: { ...board, extraFolders: extras },
+    openCards,
+    requestFile,
+    skills,
+  });
+  onActivity(`Card agent started (${model ?? "omp default"}${tier === "thorough" ? ", long request" : ""})`);
   try {
-    const reply = await runOmpPrint({
+    const reply = await runCardWriter({
       command: settings.ompPath,
+      args: [
+        "--mode",
+        "rpc",
+        ...readOnlyArgs({ cwd: workdir, addDirs: requestDir ? [...extras, requestDir] : extras, model, thinking, maxTimeSeconds }),
+      ],
       cwd: workdir,
-      addDirs: requestDir ? [...extras, requestDir] : extras,
-      model,
-      thinking,
-      maxTimeSeconds: MAX_TIME_SECONDS,
       env,
       prompt,
       signal,
-      label: "card agent",
+      lookupBudget: LOOKUP_BUDGET[tier],
+      maxTimeSeconds,
       onActivity,
-      writing: "Writing the card…",
     });
-    return { draft: parseDraftReply(reply, new Map(openCards.map((t) => [t.id, t.title]))), model };
+    const draft = parseDraftReply(reply, new Map(openCards.map((t) => [t.id, t.title])));
+    return { draft: askedForParallel ? { ...draft, orchestrate: true } : draft, model };
   } finally {
     if (requestDir) await rm(requestDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
+
+/**
+ * Run the card writer and resolve with its final assistant text. After `lookupBudget` tool calls
+ * it is steered to answer with what it found. Aborting `signal` or running past `--max-time` (plus
+ * 30s) kills omp and rejects.
+ */
+async function runCardWriter(options: {
+  command: string;
+  args: string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  prompt: string;
+  signal: AbortSignal;
+  lookupBudget: number;
+  maxTimeSeconds: number;
+  onActivity: (text: string) => void;
+}): Promise<string> {
+  const { command, signal, onActivity } = options;
+  signal.throwIfAborted();
+  const proc = new OmpRpcProcess({ command, args: options.args, cwd: options.cwd, env: options.env, autoConfirm: false });
+  const ended = Promise.withResolvers<void>();
+  let reply = "";
+  let failure: string | null = null;
+  let lookups = 0;
+  let timedOut = false;
+  proc.on("frame", (frame) => {
+    if (frame.type === "tool_execution_start") {
+      onActivity(describeTool(frame));
+      lookups += 1;
+      if (lookups === options.lookupBudget) {
+        onActivity("Enough looking around: writing the card…");
+        proc.send({ type: "steer", message: ANSWER_NOW }).catch(() => undefined);
+      }
+    } else if (frame.type === "message_update") {
+      const event = frame.assistantMessageEvent;
+      if (isObject(event) && event.type === "text_start") onActivity("Writing the card…");
+    } else if (frame.type === "message_end" && isObject(frame.message) && frame.message.role === "assistant") {
+      const message = frame.message;
+      if (message.stopReason === "error" || message.stopReason === "aborted") {
+        failure = typeof message.errorMessage === "string" ? message.errorMessage : "The model request failed.";
+      } else if (textOf(message.content)) {
+        reply = textOf(message.content);
+        failure = null;
+      }
+    } else if (frame.type === "agent_end" && frame.isTerminal !== false) {
+      ended.resolve();
+    }
+  });
+  proc.on("exit", () => ended.resolve());
+  // Killing omp settles everything below: readiness and the prompt reject, `ended` resolves.
+  const onAbort = () => proc.kill("SIGTERM");
+  signal.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    proc.kill("SIGTERM");
+  }, (options.maxTimeSeconds + 30) * 1000);
+  try {
+    await proc.waitReady(READY_TIMEOUT_MS);
+    const response = await proc.send({ type: "prompt", message: options.prompt });
+    if (isObject(response.data) && response.data.agentInvoked === false) throw new Error("The card agent did not start.");
+    await ended.promise;
+  } catch (err) {
+    if (!signal.aborted && !timedOut) {
+      const code = isObject(err) ? err.code : undefined;
+      throw code === "ENOENT" ? new Error(`omp not found at ${command}. Install it from https://omp.sh or set OMP_PATH.`) : err;
+    }
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+    if (!proc.exited) void proc.close();
+  }
+  signal.throwIfAborted();
+  if (timedOut) throw new Error(`The card agent took longer than ${options.maxTimeSeconds + 30}s.`);
+  if (reply) return reply;
+  if (failure) throw new Error(`The card agent failed: ${failure}`);
+  const exit = proc.exited ? describeExit(await proc.waitExit()) : "it ended without a reply";
+  throw new Error(`The card agent stopped without an answer (${exit}).`);
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** `quick`: short requests, fast model; `thorough`: long or list-heavy ones, the usual model. */
+export type DraftTier = "quick" | "thorough";
+
+/** A markdown list item at the start of a line: `- x`, `* x`, `1. x`, `2) x`, `- [ ] x`. */
+const LIST_ITEM = /^[ \t]*(?:[-*]|\d+[.)])[ \t]+\S/gm;
+
+/**
+ * Model and time budget for the card writer. Short requests get a quick draft (the fast `smol`
+ * role when configured, else the usual model thinking briefly); long or list-heavy requests get
+ * the usual model with its own thinking and more time, since their brief carries more detail.
+ */
+export function chooseDraftModel(input: {
+  text: string;
+  roles: ModelRoles | null;
+  board: Pick<Board, "model">;
+  settings: Pick<AppSettings, "defaultModel">;
+}): { model: string | null; thinking: "low" | null; tier: DraftTier; maxTimeSeconds: number } {
+  const { text, roles, board, settings } = input;
+  const fallback = board.model?.trim() || settings.defaultModel.trim() || null;
+  const words = text.split(/\s+/).filter(Boolean).length;
+  const listItems = text.match(LIST_ITEM)?.length ?? 0;
+  if (words >= THOROUGH_MIN_WORDS || listItems >= THOROUGH_MIN_LIST_ITEMS) {
+    return { model: fallback, thinking: null, tier: "thorough", maxTimeSeconds: THOROUGH_MAX_TIME_SECONDS };
+  }
+  const smol = typeof roles?.smol === "string" && roles.smol.trim() !== "";
+  return smol
+    ? { model: "@smol", thinking: null, tier: "quick", maxTimeSeconds: QUICK_MAX_TIME_SECONDS }
+    : { model: fallback, thinking: "low", tier: "quick", maxTimeSeconds: QUICK_MAX_TIME_SECONDS };
+}
+
+/**
+ * omp's magic keyword for parallel subagents: anywhere in the prompt it would switch the card
+ * writer itself into that mode, so text we quote from elsewhere (skill descriptions) loses it.
+ */
+const MAGIC_KEYWORD = /(?<![\p{L}\p{N}_./\\-])orchestrate(?![\p{L}\p{N}_/\\-])(?!\.[\p{L}\p{N}_-])(?!\()/gu;
 
 /** The card writer's instructions plus the user's request. */
 export function buildDraftPrompt(input: {
@@ -111,8 +271,11 @@ export function buildDraftPrompt(input: {
   openCards: Pick<Task, "id" | "title" | "status">[];
   /** Set when the request is too long to inline: the file holding it. */
   requestFile: string | null;
+  /** Installed omp skills the card writer may point the agent to. */
+  skills: Pick<OmpSkill, "name" | "description">[];
 }): string {
   const { text, board, openCards, requestFile } = input;
+  const skills = input.skills.slice(0, MAX_PROMPT_SKILLS);
   const extras = board.extraFolders.filter((f) => f !== board.workdir);
   const lines = [
     `You are the card writer for the "${board.name}" project board. Every card on this board is a task that an autonomous omp coding agent carries out on its own (it can read and change the code, run commands, use a browser and delegate to parallel subagents). The user typed the request below in their own words. Turn it into the card that gets the best result from that agent.`,
@@ -125,7 +288,9 @@ export function buildDraftPrompt(input: {
       `The request is long (${text.length} characters), so it is saved in ${requestFile}. Read all of it (page through the file) before you write the card.`,
     );
   } else {
-    lines.push("<request>", text.trim(), "</request>");
+    // The user's own keyword would switch the card writer itself into orchestration; the host
+    // already turns it into `orchestrate: true`.
+    lines.push("<request>", text.trim().replace(MAGIC_KEYWORD, "parallelize"), "</request>");
   }
   if (openCards.length > 0) {
     lines.push(
@@ -134,11 +299,21 @@ export function buildDraftPrompt(input: {
       ...openCards.map((t) => `- ${t.id} — ${STATUS_LABELS[t.status]} — ${clip(t.title.replace(/\s+/g, " ").trim(), 140)}`),
     );
   }
+  if (skills.length > 0) {
+    lines.push(
+      "",
+      "Installed OMP skills (name: what it is for):",
+      ...skills.map((s) => {
+        const description = clip(s.description.replace(/\s+/g, " ").trim(), SKILL_DESCRIPTION_MAX);
+        return `- ${s.name}: ${description.replace(MAGIC_KEYWORD, "coordinate")}`;
+      }),
+    );
+  }
   lines.push(
     "",
     "How to work:",
     "1. Work out what the user wants done and why.",
-    "2. Make the brief concrete: with a few quick glob/grep/read lookups, find the files, components, routes, commands or tests involved. Skim, don't read whole large files; stop once you know where the work happens. If the request links a URL, you may read it.",
+    `2. Make the brief concrete, fast. You get at most two turns of project lookups, each with up to ${LOOKUPS_PER_TURN} tool calls made at once in parallel: first turn, glob/grep for every part of the request together; second turn (only if needed), read the few most relevant files together. Then write the card.${requestFile ? " Reading the request file does not count." : ""} Find where the work happens (the main files, components, routes, commands or tests), not every detail: the agent that runs the card investigates further. Skim; don't read whole large files or confirm line numbers. If the request links a URL, you may read it in the first turn.`,
     "3. Do NOT carry out the task, change files or run commands. Your only output is the card.",
     "",
     "The card:",
@@ -151,11 +326,16 @@ export function buildDraftPrompt(input: {
     "  ## Notes — assumptions you made where the request is ambiguous, and what is out of scope.",
     "  Keep every concrete detail of the request word for word: names, numbers, paths, URLs, error messages, code and logs (code and logs in fenced code blocks). Fix typos without changing the meaning. Never invent requirements the user did not ask for, and never drop one they did.",
     "  When the request references OMP skills (`skill://<name>` tokens), keep each token verbatim in the description and add a line telling the agent to read those skills before starting the work.",
-    "- orchestrate: true when the work splits into several independent parts that parallel subagents could do at the same time (several features, many pages or files, a codebase-wide change), or when the user asks for orchestration or parallel work; false for one focused change. Express it only through this field: never write the word orchestrate in the title or description.",
-    `- waitFor: ids of open cards listed above that must be finished before this one can start — only when the request says it builds on them or comes after them. Otherwise [].`,
+    ...(skills.length > 0
+      ? [
+          "  When installed OMP skills listed above clearly fit the work, add `skill://<name>` for at most 3 of them to the description, with a line telling the agent to read them first. Only use names from that list; never invent a skill name.",
+        ]
+      : []),
+    "- parallel: true when the work splits into several independent parts that parallel subagents could do at the same time (several features, many pages or files, a codebase-wide change), or when the user asks for parallel work or subagents; false for one focused change. Express it only through this field: never ask for parallel subagents in the title or description.",
+    "- waitFor: ids of open cards listed above that must be finished before this one can start: when the request says it builds on, depends on, or comes after one of them, even when it names that card loosely (\"after the dark mode card\" means the open card about dark mode). Otherwise [].",
     "",
     "Reply with only this JSON object — no other text, no code fence:",
-    '{"title": "…", "description": "…", "orchestrate": false, "waitFor": []}',
+    '{"title": "…", "description": "…", "parallel": false, "waitFor": []}',
   );
   return lines.join("\n");
 }
@@ -175,5 +355,7 @@ export function parseDraftReply(reply: string, openCards: ReadonlyMap<string, st
   const waitFor = [...new Set(ids)]
     .filter((id): id is string => typeof id === "string" && openCards.has(id))
     .map((id) => ({ id, title: openCards.get(id) ?? id }));
-  return { title, description, orchestrate: data.orchestrate === true, waitFor };
+  // `parallel` is the field the prompt asks for; `orchestrate` is its older name.
+  const orchestrate = data.parallel === true || data.orchestrate === true;
+  return { title, description, orchestrate, waitFor };
 }

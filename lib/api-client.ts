@@ -15,6 +15,7 @@ import type {
   GitBranches,
   GitStatus,
   QueueSnapshot,
+  RestartStatus,
   Run,
   RunEvent,
   ServerEvent,
@@ -187,6 +188,12 @@ export const api = {
       request<TokenResponse>("/auth/password", { method: "POST", json: { current, next } }),
   },
   system: () => request<SystemInfo>("/system"),
+  restart: {
+    status: () => request<RestartStatus>("/system/restart"),
+    /** Stop, rebuild and start the server (202); it goes down for the build. */
+    start: () =>
+      request<{ ok: true; mode: "cli" | "pm2"; interrupted: number }>("/system/restart", { method: "POST" }),
+  },
   /** Installed omp skills for the "/" picker; `refresh` bypasses the server's 60s cache. */
   skills: (refresh = false) =>
     request<{ skills: OmpSkill[] }>(`/system/skills${refresh ? "?refresh=1" : ""}`),

@@ -36,6 +36,11 @@ function sanitize(s: AppSettings): AppSettings {
     approvalMode: APPROVAL_MODES.includes(s.approvalMode) ? s.approvalMode : "yolo",
     defaultModel: String(s.defaultModel ?? "").trim(),
     autoModel: typeof s.autoModel === "boolean" ? s.autoModel : DEFAULT_SETTINGS.autoModel,
+    smartQueue: typeof s.smartQueue === "boolean" ? s.smartQueue : DEFAULT_SETTINGS.smartQueue,
     browser: BROWSER_MODES.includes(s.browser) ? s.browser : DEFAULT_SETTINGS.browser,
+    autoRetry: typeof s.autoRetry === "boolean" ? s.autoRetry : DEFAULT_SETTINGS.autoRetry,
+    maxAutoRetries: Number.isFinite(Number(s.maxAutoRetries))
+      ? Math.min(20, Math.max(0, Math.floor(Number(s.maxAutoRetries))))
+      : DEFAULT_SETTINGS.maxAutoRetries,
   };
 }
