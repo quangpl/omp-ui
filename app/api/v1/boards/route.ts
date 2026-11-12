@@ -1,0 +1,30 @@
+import type { CreateBoardInput } from "@/lib/db/types";
+import { publish } from "@/lib/events";
+import { json, readJson, withApi } from "@/lib/server/http";
+import {
+  parseBoardName,
+  parseBoolean,
+  parseExtraFolders,
+  parseModel,
+  parseWorkdir,
+} from "@/lib/server/validate";
+
+export const dynamic = "force-dynamic";
+
+export const GET = withApi(async ({ repo }) => json(await repo.listBoards()));
+
+export const POST = withApi(async ({ req, repo }) => {
+  const body = await readJson(req);
+  const input: CreateBoardInput = {
+    name: parseBoardName(body.name),
+    workdir: parseWorkdir(body.workdir),
+  };
+  if (body.extraFolders !== undefined) {
+    input.extraFolders = parseExtraFolders(body.extraFolders, input.workdir);
+  }
+  if (body.model !== undefined) input.model = parseModel(body.model);
+  if (body.autoRun !== undefined) input.autoRun = parseBoolean(body.autoRun, "autoRun");
+  const board = await repo.createBoard(input);
+  publish({ type: "board.updated", board });
+  return json(board, { status: 201 });
+});

@@ -1,3 +1,5 @@
+export type DbDriver = "sqlite" | "mongodb" | "postgres";
+
 import type {
   Board,
   BoardWithCounts,
@@ -15,10 +17,14 @@ import type {
 export interface CreateBoardInput {
   name: string;
   workdir: string;
+  /** Default []. */
+  extraFolders?: string[];
   model?: string | null;
   autoRun?: boolean;
 }
-export type UpdateBoardInput = Partial<Pick<Board, "name" | "workdir" | "model" | "autoRun">>;
+export type UpdateBoardInput = Partial<
+  Pick<Board, "name" | "workdir" | "extraFolders" | "model" | "autoRun">
+>;
 
 export interface CreateTaskInput {
   boardId: string;
@@ -64,13 +70,14 @@ export interface AppendRunEventInput {
 }
 
 /**
- * Storage abstraction. Implemented by SqliteRepository (node:sqlite) and MongoRepository.
+ * Storage abstraction. Implemented by SqliteRepository (node:sqlite, default), MongoRepository
+ * and PostgresRepository (pg).
  * Every method returns fully-populated domain objects (including Task.commentCount /
  * Task.openCommentCount). Getters return null for unknown ids; mutators on unknown ids
  * return null (update) or false (delete) instead of throwing.
  */
 export interface Repository {
-  readonly driver: "sqlite" | "mongodb";
+  readonly driver: DbDriver;
   /** Create tables/collections/indexes. Idempotent. */
   init(): Promise<void>;
   close(): Promise<void>;

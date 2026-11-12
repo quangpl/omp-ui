@@ -1,0 +1,31 @@
+#!/bin/sh
+# OMP UI launcher: forwards everything to the Node CLI in bin/omp-ui.mjs.
+#   ./omp-ui up        set up, install, build and start (one command)
+#   ./omp-ui --help    all commands
+set -e
+
+# Resolve the real location of this script (works through symlinks, e.g. ~/.local/bin/omp-ui).
+self=$0
+while [ -h "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+dir=$(cd "$(dirname "$self")" && pwd)
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "omp-ui: Node.js 24+ is required, but 'node' was not found on PATH." >&2
+  echo "  Install it from https://nodejs.org/en/download  (or: nvm install 24 / fnm install 24)" >&2
+  exit 127
+fi
+
+major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+if [ "$major" -lt 24 ] 2>/dev/null; then
+  echo "omp-ui: Node.js 24+ is required (found $(node --version 2>/dev/null || echo unknown))." >&2
+  echo "  Upgrade: https://nodejs.org/en/download  (or: nvm install 24 && nvm use 24)" >&2
+  exit 1
+fi
+
+exec node "$dir/bin/omp-ui.mjs" "$@"

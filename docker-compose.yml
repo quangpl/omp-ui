@@ -1,0 +1,86 @@
+# OMP UI with Docker Compose.
+#   docker compose up -d                          # SQLite in ./data
+#   omp-ui docker up --postgres | --mongo         # bundled database (saved to .env)
+#   docker compose --profile public up -d         # + free cloudflared quick tunnel
+#
+# Compose reads ./.env (created by `omp-ui init`) for both variable interpolation
+# and the container environment. Container paths below always win over the
+# host-oriented values in .env (PORT/HOST/DATA_DIR/WORKSPACE_DIR/OMP_PATH).
+name: omp-ui
+
+services:
+  omp-ui:
+    build: .
+    image: omp-ui:latest
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: "3000"
+      HOST: 0.0.0.0
+      DATA_DIR: /data
+      WORKSPACE_DIR: /workspace
+      OMP_PATH: omp
+      # SQLite by default; `omp-ui docker up --mongo|--postgres` sets COMPOSE_DATABASE_URL.
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-sqlite:/data/omp-ui.db}
+      # Git hosting tokens for "Create PR/MR" and HTTPS pushes (or sign in with gh/glab).
+      GH_TOKEN: ${GH_TOKEN:-}
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+    volumes:
+      - ./data:/data
+      # omp provider auth & config from the host (run `omp` once there to sign in)
+      - ${OMP_HOME:-~/.omp}:/home/omp/.omp
+      # Your projects: the folder picker starts here and cloned repositories land here
+      - ${WORKSPACE_DIR:-./workspace}:/workspace
+      # Git identity, SSH keys and GitHub CLI login from the host. Optional: delete the
+      # lines you do not want. `omp-ui docker up` creates missing ones; with plain
+      # `docker compose`, make sure ~/.gitconfig exists first (or Docker makes it a folder).
+      - ~/.gitconfig:/home/omp/.gitconfig:ro
+      - ~/.ssh:/home/omp/.ssh:ro
+      - ~/.config/gh:/home/omp/.config/gh
+    depends_on:
+      mongo:
+        condition: service_started
+        required: false
+      postgres:
+        condition: service_healthy
+        required: false
+
+  mongo:
+    # CPUs without AVX (MongoDB 5+ needs it): set MONGO_IMAGE=mongo:4.4
+    image: ${MONGO_IMAGE:-mongo:7}
+    profiles: [mongo]
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+
+  postgres:
+    image: postgres:17-alpine
+    profiles: [postgres]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: omp_ui
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-omp_ui}
+      POSTGRES_DB: omp_ui
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omp_ui -d omp_ui"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: [public]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://omp-ui:3000
+    depends_on:
+      - omp-ui
+
+volumes:
+  mongo-data:
+  pg-data:
