@@ -226,7 +226,7 @@ export interface BoardController {
   reorderTask: (taskId: string, position: number) => Promise<void>;
   /** Quick action: send a card back to the bottom of To do (the server stops its agent). */
   revertToTodo: (taskId: string) => Promise<void>;
-  /** Create a card; toasts and resolves `null` on failure. */
+  /** Create a card; toasts and resolves `null` on failure, calls `onCardAdded` on success. */
   createTask: (input: NewCardInput) => Promise<Task | null>;
   /**
    * Inline "Add a card": a short line is the title as typed, longer text goes through the card
@@ -264,10 +264,17 @@ function activityLine(kind: string, text: string): string | null {
   return firstLine;
 }
 
-export function useBoard(boardId: string): BoardController {
+export interface UseBoardOptions {
+  /** Every card this controller creates (dialog, inline composer, "Add as typed", duplicate). */
+  onCardAdded?: (task: Task) => void;
+}
+
+export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardController {
   const router = useRouter();
   const routerRef = useRef(router);
   routerRef.current = router;
+  const onCardAddedRef = useRef(options.onCardAdded);
+  onCardAddedRef.current = options.onCardAdded;
 
   const [board, setBoard] = useState<Board | null>(null);
   const [rawTasks, setTasks] = useState<Task[]>([]);
@@ -502,14 +509,16 @@ export function useBoard(boardId: string): BoardController {
 
   /** Create a card at the bottom of In progress (agent starts) or To do; see `NewCardInput.start`. */
   const createTask = useCallback(
-    (input: NewCardInput): Promise<Task | null> => {
+    async (input: NewCardInput): Promise<Task | null> => {
       const autoRun = boardRef.current?.autoRun ?? false;
       const start = input.start ?? autoRun;
-      return createCard(
+      const task = await createCard(
         { id: boardId, autoRun },
         { ...input, start },
         { position: endPosition(start ? "in_progress" : "todo"), onCreated: upsertTask },
       );
+      if (task) onCardAddedRef.current?.(task);
+      return task;
     },
     [boardId, endPosition, upsertTask],
   );

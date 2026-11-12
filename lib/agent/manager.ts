@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -13,6 +12,7 @@ import {
   type QuestionTriage,
 } from "@/lib/agent/advisor";
 import { BOARD_TOOLS, BOARD_TOOL_NAMES, runBoardTool, type BoardToolHost } from "@/lib/agent/board-tools";
+import { CONCURRENCY_SAMPLE_MS, resolveConcurrency } from "@/lib/agent/concurrency";
 import { chooseModel, readModelRoles } from "@/lib/agent/model-select";
 import { buildPrompt, buildSteerMessage } from "@/lib/agent/prompt";
 import { planQueue, type PlanCard, type QueuePlan } from "@/lib/agent/queue-planner";
@@ -33,6 +33,7 @@ import type { Repository, UpdateTaskInput } from "@/lib/db/types";
 import { publish } from "@/lib/events";
 import { dataDir, ensureFilesFolder } from "@/lib/files";
 import { extractQuestion } from "@/lib/question";
+import { agentmemoryEnabled, memoryProjectName, tagMemorySession } from "@/lib/server/agentmemory";
 import { getAppSettings } from "@/lib/settings";
 import { ensureWorkspace } from "@/lib/workspaces";
 import type {
@@ -157,6 +158,11 @@ class OmpAgentManager implements AgentManager {
   /** Failed cards waiting for their automatic retry → its timer. */
   private readonly retryTimers = new Map<string, NodeJS.Timeout>();
 
+  /** Agents allowed at once, as of the latest pump (part of the `queue.updated` dedupe key). */
+  private limit = 0;
+  /** Re-samples the machine (an automatic limit) while cards wait in the queue. */
+  private sampler: NodeJS.Timeout | undefined;
+
   constructor(private readonly repo: Repository) {}
 
   stats(): { running: string[]; queued: string[] } {
@@ -194,7 +200,8 @@ class OmpAgentManager implements AgentManager {
     const planning = await Promise.all(
       [...this.plans.keys()].map(async (boardId) => ({ boardId, boardName: await boardName(boardId) })),
     );
-    return { limit: settings.maxConcurrentAgents, running, queued, planning };
+    const concurrency = resolveConcurrency(settings.maxConcurrentAgents, this.active.size);
+    return { limit: concurrency.limit, concurrency, running, queued, planning };
   }
 
   moveInQueue(taskId: string, position: number): boolean {
@@ -516,12 +523,11 @@ class OmpAgentManager implements AgentManager {
 
   /** Blockers of the card (Task.blockedBy) that exist and are not Done yet. */
   private async pendingBlockers(task: Task): Promise<string[]> {
-    const pending: string[] = [];
-    for (const id of task.blockedBy) {
-      const blocker = await this.repo.getTask(id);
-      if (blocker && blocker.status !== "done") pending.push(id);
-    }
-    return pending;
+    const blockers = await Promise.all(task.blockedBy.map((id) => this.repo.getTask(id)));
+    return task.blockedBy.filter((_, index) => {
+      const blocker = blockers[index];
+      return blocker && blocker.status !== "done";
+    });
   }
 
   /** Forgets the smart-queue state of a card that left the queue (launched, stopped, deleted). */
@@ -658,7 +664,8 @@ class OmpAgentManager implements AgentManager {
     const queued = [...this.claiming, ...this.queue];
     // Planning state is part of the key: the UI re-reads the snapshot when a plan starts or ends.
     const held = queued.filter((id) => this.isHeld(id));
-    const key = JSON.stringify([running, queued, [...this.plans.keys()], held]);
+    // So is the limit: an automatic one changes with the machine's free resources.
+    const key = JSON.stringify([running, queued, [...this.plans.keys()], held, this.limit]);
     if (key === this.lastQueue) return;
     this.lastQueue = key;
     publish({ type: "queue.updated", running, queued });
@@ -674,14 +681,23 @@ class OmpAgentManager implements AgentManager {
       do {
         this.pumpAgain = false;
         if (this.queue.length === 0) break;
-        // Re-read every time a slot frees so settings changes apply without a restart.
+        // Re-read every time a slot frees so settings changes apply without a restart, and
+        // re-sample the machine so an automatic limit follows its free cores and memory.
         const settings = await getAppSettings(this.repo);
+        this.limit = resolveConcurrency(settings.maxConcurrentAgents, this.active.size).limit;
+        if (this.active.size - this.lent >= this.limit) continue;
         // Start order, skipping cards that wait for unfinished cards (Task.blockedBy) or for their
-        // board's smart-queue plan.
-        for (const taskId of [...this.queue]) {
-          if (this.active.size - this.lent >= settings.maxConcurrentAgents) break;
-          const task = await this.repo.getTask(taskId);
-          if (task && (await this.pendingBlockers(task)).length > 0) continue;
+        // board's smart-queue plan. The queued cards' blockers are read in parallel.
+        const candidates = [...this.queue];
+        const blocked = await Promise.all(
+          candidates.map(async (taskId) => {
+            const task = await this.repo.getTask(taskId);
+            return task !== null && (await this.pendingBlockers(task)).length > 0;
+          }),
+        );
+        for (const [index, taskId] of candidates.entries()) {
+          if (this.active.size - this.lent >= this.limit) break;
+          if (blocked[index]) continue;
           // Checked after the reads: the card may have been stopped and queued anew meanwhile.
           if (this.isHeld(taskId)) continue;
           if (this.removeFromQueue(taskId)) {
@@ -696,6 +712,14 @@ class OmpAgentManager implements AgentManager {
       this.pumpRetry = setTimeout(() => void this.pump(), PUMP_RETRY_MS);
     } finally {
       this.pumping = false;
+      // While cards wait, re-sample the machine periodically: freed resources start more of them.
+      if (this.queue.length > 0) {
+        this.sampler ??= setInterval(() => void this.pump(), CONCURRENCY_SAMPLE_MS);
+        this.sampler.unref();
+      } else if (this.sampler) {
+        clearInterval(this.sampler);
+        this.sampler = undefined;
+      }
       this.publishQueue();
     }
   }
@@ -795,34 +819,34 @@ class OmpAgentManager implements AgentManager {
     run.boardId = task.boardId;
     if (run.finished) return;
 
-    // Dedicated workspace: the card's own worktrees stand in for the project folders.
+    // Independent startup reads and folder setup run in parallel. Dedicated workspace: the
+    // card's own worktrees stand in for the project folders.
+    const sessionFile = task.sessionFile;
+    const [workspace, taskFiles, boardFiles, comments, resumeFile] = await Promise.all([
+      board.worktrees ? ensureWorkspace(board, task) : null,
+      ensureFilesFolder("tasks", task.id),
+      ensureFilesFolder("boards", board.id),
+      repo.listComments(task.id),
+      sessionFile ? stat(sessionFile).then(() => sessionFile, () => null) : null,
+    ]);
     let workdir = board.workdir;
     let projectExtras = board.extraFolders ?? [];
     let workspaceBranch: string | null = null;
     let workspaceNotes: string[] = [];
-    if (board.worktrees) {
-      const { workspace, notes } = await ensureWorkspace(board, task);
-      [workdir, ...projectExtras] = workspace.folders.map((f) => f.path);
-      workspaceBranch = workspace.folders.find((f) => f.isolated)?.branch ?? null;
-      workspaceNotes = notes;
+    if (workspace) {
+      [workdir, ...projectExtras] = workspace.workspace.folders.map((f) => f.path);
+      workspaceBranch = workspace.workspace.folders.find((f) => f.isolated)?.branch ?? null;
+      workspaceNotes = workspace.notes;
     }
-    const [taskFiles, boardFiles] = await Promise.all([
-      ensureFilesFolder("tasks", task.id),
-      ensureFilesFolder("boards", board.id),
-    ]);
     if (run.finished) return;
 
-    const feedback = (await repo.listComments(task.id)).filter(
-      (c) => c.author === "user" && !c.resolved,
-    );
-    const senders: Record<string, string> = {};
-    for (const id of new Set(feedback.map((c) => c.fromTaskId).filter((id): id is string => !!id))) {
-      senders[id] = (await repo.getTask(id))?.title ?? id;
-    }
-    const resumeFile = task.sessionFile && existsSync(task.sessionFile) ? task.sessionFile : null;
-    const folders = await Promise.all(
-      projectExtras.map(async (folder) => ({ folder, ok: await isDirectory(folder) })),
-    );
+    const feedback = comments.filter((c) => c.author === "user" && !c.resolved);
+    const senderIds = [...new Set(feedback.map((c) => c.fromTaskId).filter((id): id is string => !!id))];
+    const [senderTitles, folders] = await Promise.all([
+      Promise.all(senderIds.map(async (id) => (await repo.getTask(id))?.title ?? id)),
+      Promise.all(projectExtras.map(async (folder) => ({ folder, ok: await isDirectory(folder) }))),
+    ]);
+    const senders: Record<string, string> = Object.fromEntries(senderIds.map((id, index) => [id, senderTitles[index]!]));
     const extraFolders = folders.filter((f) => f.ok).map((f) => f.folder);
     const missingFolders = folders.filter((f) => !f.ok).map((f) => f.folder);
     // The prompt lists only folders the agent can actually reach.
@@ -850,19 +874,25 @@ class OmpAgentManager implements AgentManager {
     if (running) publish({ type: "task.updated", task: running });
     if (run.finished) return;
 
-    if (!(await isDirectory(workdir))) {
-      throw new Error(`Board directory not found: ${workdir}`);
-    }
-
     // Roles are read per run: the user may reconfigure omp, and project `.omp` configs differ.
     const autoSelect = !board.model?.trim() && settings.autoModel;
+    const [workdirFound, roles, configFile, memoryProject] = await Promise.all([
+      isDirectory(workdir),
+      autoSelect ? readModelRoles(settings.ompPath, workdir, childEnv()) : null,
+      writeRunConfig(task.id, settings, taskFiles),
+      // Cards in worktrees remember under the board's project, like omp sessions in its folder.
+      memoryProjectName(board.workdir),
+    ]);
+    if (!workdirFound) {
+      throw new Error(`Board directory not found: ${workdir}`);
+    }
     const choice = chooseModel({
       board,
       settings,
       task,
       feedback,
       isResume: resumeFile !== null,
-      roles: autoSelect ? await readModelRoles(settings.ompPath, workdir, childEnv()) : null,
+      roles,
     });
     if (run.finished) return;
     const { model, thinking } = choice;
@@ -875,7 +905,7 @@ class OmpAgentManager implements AgentManager {
       "--approval-mode",
       settings.approvalMode,
       "--config",
-      await writeRunConfig(task.id, settings, taskFiles),
+      configFile,
     ];
     for (const folder of [...extraFolders, taskFiles, boardFiles]) args.push("--add-dir", folder);
     if (model) args.push("--model", model);
@@ -907,7 +937,7 @@ class OmpAgentManager implements AgentManager {
       command: settings.ompPath,
       args,
       cwd: workdir,
-      env: childEnv(),
+      env: childEnv({ AGENTMEMORY_PROJECT_NAME: memoryProject }),
       autoConfirm: settings.approvalMode === "yolo",
     });
     run.proc = proc;
@@ -930,9 +960,14 @@ class OmpAgentManager implements AgentManager {
     try {
       const state = await proc.send({ type: "get_state" });
       const sessionFile = isObject(state.data) ? asString(state.data.sessionFile) : undefined;
+      const sessionId = isObject(state.data) ? asString(state.data.sessionId) : undefined;
       if (sessionFile && sessionFile !== task.sessionFile) {
         const updated = await repo.updateTask(task.id, { sessionFile });
         if (updated) publish({ type: "task.updated", task: updated });
+      }
+      // Name the card's agentmemory session after the card (best effort, not awaited).
+      if (sessionId && agentmemoryEnabled()) {
+        void tagMemorySession({ sessionId, project: memoryProject, cwd: workdir, title: `${task.title} (card ${task.id})` });
       }
     } catch (err) {
       if (run.finished) return;
@@ -1309,7 +1344,7 @@ class OmpAgentManager implements AgentManager {
     if (!run.advisor) return null;
     await this.event(run, "status", "Advisor is reviewing the agent's questions");
     try {
-      // The run has already ended: nothing cancels the triage (omp's --max-time bounds it).
+      // The run has already ended: nothing cancels the triage (the advisor's timeout bounds it).
       const triage = await triageQuestions({ ...run.advisor, signal: new AbortController().signal }, { question, summary });
       await this.event(
         run,

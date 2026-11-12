@@ -4,8 +4,10 @@
 // value is validated before it reaches an argument list (no leading "-", strict name patterns).
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { childEnv } from "@/lib/child-env";
+import { fetchComposeUrl, getTemplateCompose } from "@/lib/docker-catalog";
 import type {
   ComposeAction,
   ComposeDeploySpec,
@@ -22,8 +24,10 @@ import type {
   DockerPort,
   DockerVolume,
   EnvVar,
+  PortMapping,
   PruneKind,
   RunContainerSpec,
+  RunningSummary,
 } from "@/lib/docker-types";
 import { dataDir } from "@/lib/files";
 import { HttpError } from "@/lib/server/http";
@@ -596,15 +600,7 @@ export async function getDockerOverview(): Promise<DockerOverview> {
   if (!ps.ok) return { ...empty, error: ps.error };
 
   const containers = jsonLines<RawContainer>(ps.stdout).map(toContainer);
-  let rawProjects: RawComposeProject[] = [];
-  if (ls.ok) {
-    try {
-      const parsed = JSON.parse(ls.stdout || "[]");
-      if (Array.isArray(parsed)) rawProjects = parsed as RawComposeProject[];
-    } catch {
-      // Older compose without JSON output: no project list.
-    }
-  }
+  const rawProjects = ls.ok ? composeLsJson(ls.stdout) : [];
 
   return {
     available: true,
@@ -736,15 +732,20 @@ export async function prune(kind: PruneKind): Promise<string> {
 // ---------------------------------------------------------------------------------------------
 // Compose
 
-async function listComposeProjects(): Promise<RawComposeProject[]> {
-  const result = await docker(["compose", "ls", "-a", "--format", "json"]);
-  if (!result.ok) throw new HttpError(502, result.error ?? "docker compose ls failed");
+/** `docker compose ls --format json` output; older compose without JSON output lists nothing. */
+function composeLsJson(stdout: string): RawComposeProject[] {
   try {
-    const parsed = JSON.parse(result.stdout || "[]");
+    const parsed = JSON.parse(stdout || "[]");
     return Array.isArray(parsed) ? (parsed as RawComposeProject[]) : [];
   } catch {
     return [];
   }
+}
+
+async function listComposeProjects(): Promise<RawComposeProject[]> {
+  const result = await docker(["compose", "ls", "-a", "--format", "json"]);
+  if (!result.ok) throw new HttpError(502, result.error ?? "docker compose ls failed");
+  return composeLsJson(result.stdout);
 }
 
 /** `-p <name> -f <file>…` for a project: OMP UI's own folder first, else what compose recorded. */
@@ -905,9 +906,310 @@ export function pullImage(image: string, send: (event: DockerJobEvent) => void):
   return runDockerJob(["pull", image], send, { successMessage: () => `Pulled ${image}` });
 }
 
-export function runContainer(args: string[], send: (event: DockerJobEvent) => void): Promise<void> {
+export function runContainer(
+  args: string[],
+  send: (event: DockerJobEvent) => void,
+  successMessage = "Container started",
+): Promise<void> {
   return runDockerJob(args, send, {
-    successMessage: () => "Container started",
+    successMessage: () => successMessage,
     id: (stdout) => stdout.split("\n").at(-1)?.trim().slice(0, 12) ?? "",
   });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Running summary (header badge) and fast start
+
+/** Running containers and compose projects only: two cheap docker calls, no version probe. */
+export async function getRunningSummary(): Promise<RunningSummary> {
+  const [ps, ls] = await Promise.all([
+    docker(["ps", "--no-trunc", "--format", CONTAINER_FORMAT], { timeout: 10_000 }),
+    docker(["compose", "ls", "--format", "json"], { timeout: 10_000 }),
+  ]);
+  if (!ps.ok) return { available: false, error: ps.error, containers: [], composeProjects: [] };
+  const containers = jsonLines<RawContainer>(ps.stdout).map(toContainer);
+  const projects = ls.ok ? composeLsJson(ls.stdout) : [];
+  return {
+    available: true,
+    error: null,
+    containers,
+    composeProjects: buildComposeProjects(projects, containers).filter((p) => p.running > 0),
+  };
+}
+
+const MAX_QUICK_PORTS = 8;
+const PORT_SEARCH_LIMIT = 200;
+
+/** "redis", then "redis-2", … — container and project names alike. */
+function withFreeSuffix(base: string, taken: Set<string>): string {
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+
+/**
+ * Nothing on this machine listens on `port`. EACCES (privileged port, unprivileged server) counts
+ * as free: docker binds the port, not us.
+ */
+function portFree(port: number): Promise<boolean> {
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  const server = net.createServer();
+  server.unref();
+  server.once("error", (err: NodeJS.ErrnoException) => resolve(err.code !== "EADDRINUSE"));
+  server.once("listening", () => server.close(() => resolve(true)));
+  server.listen({ port, host: "0.0.0.0", exclusive: true });
+  return promise;
+}
+
+/** Host ports published by running containers (docker-proxy may be off, so probing alone misses them). */
+async function publishedHostPorts(): Promise<Set<number>> {
+  const result = await docker(["ps", "--format", "{{.Ports}}"]);
+  const used = new Set<number>();
+  if (!result.ok) return used;
+  for (const line of result.stdout.split("\n")) {
+    for (const port of parsePorts(line)) if (port.hostPort) used.add(port.hostPort);
+  }
+  return used;
+}
+
+/** First port from `preferred` up that is neither published nor listened on; claims it in `used`. */
+async function pickHostPort(preferred: number, used: Set<number>): Promise<number> {
+  for (let port = preferred; port <= 65535 && port < preferred + PORT_SEARCH_LIMIT; port++) {
+    if (used.has(port) || !(await portFree(port))) continue;
+    used.add(port);
+    return port;
+  }
+  throw new HttpError(409, `No free host port between ${preferred} and ${preferred + PORT_SEARCH_LIMIT}`);
+}
+
+/** Ports the image EXPOSEs, or null when the image is not on this host yet. */
+async function exposedPorts(image: string): Promise<{ container: number; protocol: "tcp" | "udp" }[] | null> {
+  const result = await docker(["image", "inspect", "--format", "{{json .Config.ExposedPorts}}", image]);
+  if (!result.ok) return null;
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(result.stdout.trim() || "null");
+  } catch {
+    // Treated as "exposes nothing".
+  }
+  return Object.keys((parsed as Record<string, unknown> | null) ?? {})
+    .flatMap((key) => {
+      const match = /^(\d+)\/(tcp|udp)$/.exec(key);
+      return match ? [{ container: Number(match[1]), protocol: match[2] as "tcp" | "udp" }] : [];
+    })
+    .sort((a, b) => a.container - b.container)
+    .slice(0, MAX_QUICK_PORTS);
+}
+
+/** Below 1024 the same port often needs root or clashes with a system service: 80 → 8080. */
+function defaultHostPort(container: number): number {
+  return container < 1024 ? 8000 + container : container;
+}
+
+export interface QuickRunPlan {
+  input: Record<string, unknown>;
+  image: string;
+  name: string | null;
+  /** null = publish what the image EXPOSEs. */
+  ports: { container: number; host: number; protocol: "tcp" | "udp" }[] | null;
+}
+
+/** Validate a POST /docker/quick-run body (`QuickRunSpec`) before anything starts. */
+export function parseQuickRun(input: Record<string, unknown>): QuickRunPlan {
+  const image = parseImageRef(input.image);
+  // Name, env, volumes, restart, network and command follow the plain run rules.
+  buildRunArgs({ ...input, ports: [] });
+  const name = typeof input.name === "string" && input.name.trim() ? input.name.trim() : null;
+  if (input.ports !== undefined && !Array.isArray(input.ports)) throw new HttpError(400, "ports must be a list");
+  let ports: QuickRunPlan["ports"] = input.autoPorts === true ? null : [];
+  if (Array.isArray(input.ports)) {
+    ports = input.ports.slice(0, MAX_QUICK_PORTS).map((value) => {
+      const p = (value ?? {}) as Record<string, unknown>;
+      const container = Number(p.container);
+      if (!Number.isInteger(container) || container < 1 || container > 65535) {
+        throw new HttpError(400, `Invalid container port: ${String(p.container)}`);
+      }
+      const host = p.host === undefined || p.host === null || p.host === "" ? null : Number(p.host);
+      if (host !== null && (!Number.isInteger(host) || host < 1 || host > 65535)) {
+        throw new HttpError(400, `Invalid host port: ${String(p.host)}`);
+      }
+      return {
+        container,
+        host: host ?? defaultHostPort(container),
+        protocol: p.protocol === "udp" ? ("udp" as const) : ("tcp" as const),
+      };
+    });
+  }
+  return { input, image, name, ports };
+}
+
+/**
+ * `docker run -d` with smart defaults: pull first (streamed) so EXPOSEd ports are known, map each
+ * to a free host port, pick an unused name. The `done` event carries the container id.
+ */
+export async function quickRun(plan: QuickRunPlan, send: (event: DockerJobEvent) => void): Promise<void> {
+  const { image } = plan;
+  let exposed = await exposedPorts(image);
+  if (exposed === null) {
+    send({ type: "log", line: `$ docker pull ${image}` });
+    let pulled = false;
+    await runDockerJob(["pull", image], (event) => {
+      if (event.type === "log") send(event);
+      else if (event.ok) pulled = true;
+      else send(event);
+    });
+    if (!pulled) return;
+    exposed = (await exposedPorts(image)) ?? [];
+  }
+  const wanted =
+    plan.ports ??
+    exposed.map((p) => ({ ...p, host: defaultHostPort(p.container) }));
+  if (plan.ports === null && wanted.length === 0) {
+    send({ type: "log", line: "The image exposes no ports; nothing is published." });
+  }
+
+  const [used, names] = await Promise.all([
+    publishedHostPorts(),
+    docker(["ps", "-a", "--format", "{{.Names}}"]).then(
+      (result) => new Set(result.stdout.split("\n").map((line) => line.trim()).filter(Boolean)),
+    ),
+  ]);
+  const ports: PortMapping[] = [];
+  for (const p of wanted) {
+    const host = await pickHostPort(p.host, used);
+    send({
+      type: "log",
+      line:
+        host === p.host
+          ? `Publishing port ${host} → ${p.container}/${p.protocol}`
+          : `Port ${p.host} is taken; publishing ${host} → ${p.container}/${p.protocol}`,
+    });
+    ports.push({ host: String(host), container: p.container, protocol: p.protocol });
+  }
+
+  const base =
+    (image.split("@")[0].split("/").pop() ?? "")
+      .split(":")[0]
+      .toLowerCase()
+      .replace(/[^a-z0-9_.-]+/g, "-")
+      .replace(/^[^a-z0-9]+/, "") || "app";
+  const name = withFreeSuffix(plan.name ?? base, names);
+  const { args } = buildRunArgs({ ...plan.input, image, name, ports });
+  // Not the full argument list: env values may be secrets.
+  send({
+    type: "log",
+    line: `$ docker run -d --name ${name}${ports.map((p) => ` -p ${p.host}:${p.container}/${p.protocol}`).join("")} ${image}`,
+  });
+  await runContainer(
+    args,
+    send,
+    ports.length ? `${name} is running on port ${ports.map((p) => p.host).join(", ")}` : `${name} is running`,
+  );
+}
+
+const SHORT_PORT_RE =
+  /^(\s*-\s*)(["']?)((?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:]+\]):)?(\d{1,5}):(\d{1,5})((?:\/(?:tcp|udp))?)\2(\s*(?:#.*)?)$/;
+const LONG_PORT_RE = /^(\s*published:\s*)(["']?)(\d{1,5})\2(\s*(?:#.*)?)$/;
+
+/**
+ * Move host ports of a compose file that are already in use to the next free ones. Only plain
+ * `ports:` entries ("5432:5432", "127.0.0.1:80:80/tcp", `published: 8080`) are touched; ranges
+ * and variables are left as written.
+ */
+export async function remapComposePorts(
+  yaml: string,
+  used: Set<number>,
+): Promise<{ yaml: string; changes: string[] }> {
+  const lines = yaml.split("\n");
+  const changes: string[] = [];
+  let portsIndent = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const indent = line.search(/\S/);
+    if (indent === -1 || line.trimStart().startsWith("#")) continue;
+    const header = /^(\s*)ports:\s*(?:#.*)?$/.exec(line);
+    if (header) {
+      portsIndent = header[1].length;
+      continue;
+    }
+    if (portsIndent < 0) continue;
+    // A list may sit at the key's own indent ("ports:\n- 80:80"); anything else at or above it ends the block.
+    if (indent < portsIndent || (indent === portsIndent && !line.trimStart().startsWith("-"))) {
+      portsIndent = -1;
+      continue;
+    }
+    const short = SHORT_PORT_RE.exec(line);
+    const long = short ? null : LONG_PORT_RE.exec(line);
+    const hostText = short?.[4] ?? long?.[3];
+    if (!hostText) continue;
+    const host = Number(hostText);
+    const next = await pickHostPort(host, used);
+    if (next === host) continue;
+    lines[i] = short
+      ? `${short[1]}${short[2]}${short[3] ?? ""}${next}:${short[5]}${short[6]}${short[2]}${short[7]}`
+      : `${long?.[1]}${long?.[2]}${next}${long?.[2]}${long?.[4]}`;
+    changes.push(`Port ${host} is taken; using ${next} instead`);
+  }
+  return { yaml: lines.join("\n"), changes };
+}
+
+export interface QuickComposePlan {
+  name: string | null;
+  template: string | null;
+  yaml: string | null;
+  url: string | null;
+  env: EnvVar[];
+}
+
+/** Validate a POST /docker/quick-compose body (`QuickComposeSpec`). */
+export function parseQuickCompose(input: Record<string, unknown>): QuickComposePlan {
+  const text = (key: string) => {
+    const value = input[key];
+    return typeof value === "string" && value.trim() ? value : null;
+  };
+  const template = text("template")?.trim() ?? null;
+  const yaml = text("yaml");
+  const url = text("url")?.trim() ?? null;
+  if ([template, yaml, url].filter(Boolean).length !== 1) {
+    throw new HttpError(400, "Send exactly one of template, yaml or url");
+  }
+  if (yaml && yaml.length > 512 * 1024) throw new HttpError(400, "Compose file is too large");
+  if (url && url.length > 2048) throw new HttpError(400, "URL is too long");
+  const name = input.name === undefined || input.name === null || input.name === "" ? null : parseProjectName(input.name);
+  return { name, template, yaml, url, env: parseEnv(input.env) };
+}
+
+/**
+ * One-click compose: resolve the file (template, pasted YAML or URL), pick a free project name,
+ * move busy host ports, then deploy like POST /docker/compose. `done.id` is the project name.
+ */
+export async function quickCompose(plan: QuickComposePlan, send: (event: DockerJobEvent) => void): Promise<void> {
+  let yaml = plan.yaml ?? "";
+  if (plan.template) {
+    send({ type: "log", line: "Loading the template…" });
+    yaml = await getTemplateCompose(plan.template);
+  } else if (plan.url) {
+    send({ type: "log", line: `Downloading ${plan.url}…` });
+    const fetched = await fetchComposeUrl(plan.url);
+    yaml = fetched.yaml;
+    send({ type: "log", line: `Got ${fetched.url}` });
+  }
+  if (!yaml.trim()) throw new HttpError(400, "The compose file is empty");
+
+  const known = await listComposeProjects().catch(() => [] as RawComposeProject[]);
+  const taken = new Set([...managedProjects(), ...known.map((p) => p.Name)]);
+  const base =
+    (plan.name ?? plan.template ?? "stack")
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/^[^a-z0-9]+|-+$/g, "")
+      .slice(0, 40) || "stack";
+  const name = withFreeSuffix(base, taken);
+
+  const remapped = await remapComposePorts(yaml, await publishedHostPorts());
+  for (const line of remapped.changes) send({ type: "log", line });
+  await deployCompose({ name, yaml: remapped.yaml, env: plan.env }, (event) =>
+    send(event.type === "done" ? { ...event, id: name } : event),
+  );
 }

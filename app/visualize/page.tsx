@@ -7,6 +7,7 @@ import {
   BookOpenIcon,
   BrainIcon,
   Building2Icon,
+  ChevronDownIcon,
   CodeIcon,
   CrownIcon,
   FactoryIcon,
@@ -83,6 +84,16 @@ const REFRESH_DEBOUNCE_MS = 250;
 const CLOCK_TICK_MS = 30_000;
 const POP_MS = 2_800;
 const MAX_HELPERS_SHOWN = 6;
+
+/**
+ * Page grid: on xl the floor (crew, desks, trophies) is the flexible main column and the
+ * line / help desk / worksites form a sticky right panel; below xl everything stacks, with the
+ * panel between the desks and the trophy wall.
+ */
+const LAYOUT_GRID =
+  "grid gap-8 xl:grid-cols-[minmax(0,1fr)_minmax(320px,380px)] xl:grid-rows-[auto_auto_1fr] xl:gap-x-8";
+const ASIDE_CLASS =
+  "grid min-w-0 content-start gap-8 lg:grid-cols-2 xl:col-start-2 xl:row-span-3 xl:row-start-1 xl:sticky xl:top-20 xl:max-h-[calc(100dvh-6rem)] xl:grid-cols-1 xl:self-start xl:overflow-y-auto xl:overscroll-contain xl:pr-1 xl:pb-2";
 
 const DOT_CLASS: Record<TaskStatus, string> = {
   todo: "bg-muted-foreground/50",
@@ -304,16 +315,15 @@ function HqBanner({ dashboard, pops }: { dashboard: Dashboard; pops: Pop[] }) {
   return (
     <section
       aria-label="Crew headquarters"
-      className="relative overflow-hidden rounded-2xl bg-card p-4 ring-1 ring-foreground/10 sm:p-5"
+      className="@container relative overflow-hidden rounded-2xl bg-card p-4 ring-1 ring-foreground/10 sm:p-5"
     >
       {/* soft floor-plan backdrop */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_1px_1px,color-mix(in_oklch,var(--color-foreground)_9%,transparent)_1px,transparent_0)] [background-size:18px_18px] [mask-image:linear-gradient(to_bottom,black,transparent_85%)]"
       />
-      <div aria-hidden className="pointer-events-none absolute -top-24 -left-16 size-64 rounded-full bg-primary/10 blur-3xl" />
 
-      <div className="relative grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] lg:items-center">
+      <div className="relative grid gap-5 @3xl:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] @3xl:items-center">
         <div className="flex items-center gap-4">
           <div className="relative shrink-0">
             <div
@@ -354,7 +364,7 @@ function HqBanner({ dashboard, pops }: { dashboard: Dashboard; pops: Pop[] }) {
                 aria-valuenow={crew.xp}
               >
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-primary to-chart-4 transition-[width] duration-700"
+                  className="h-full rounded-full bg-primary transition-[width] duration-700"
                   style={{ width: `${crew.progress * 100}%` }}
                 />
               </div>
@@ -367,7 +377,7 @@ function HqBanner({ dashboard, pops }: { dashboard: Dashboard; pops: Pop[] }) {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 @lg:grid-cols-4">
           <StatChip
             icon={<HardHatIcon />}
             label="On shift"
@@ -493,7 +503,7 @@ function Desk({ entry, worker, index }: { entry: QueueEntry; worker: LiveWorker;
       <Link
         href={cardHref(entry.boardId, entry.taskId)}
         aria-label={`${name} is working on ${entry.title} in ${entry.boardName}`}
-        className="card-lift group flex h-full flex-col gap-3 rounded-xl bg-card p-3 ring-1 ring-primary/25 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="card-lift group flex h-full flex-col gap-3 rounded-xl bg-card p-3 ring-1 ring-primary/25 outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.99] motion-reduce:active:scale-100"
       >
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -506,7 +516,7 @@ function Desk({ entry, worker, index }: { entry: QueueEntry; worker: LiveWorker;
           {worker.startedAt && <ShiftClock startedAt={worker.startedAt} />}
         </div>
 
-        <div className="relative rounded-lg bg-gradient-to-b from-primary/[0.07] to-muted/40 px-3 pt-3">
+        <div className="relative rounded-lg bg-muted/50 px-3 pt-3">
           <SpeechBubble activity={worker.activity ?? CLOCKING_IN} />
           <div className="relative mt-2 flex h-20 items-end justify-center">
             <WorkerAvatar hue={hue} mood="working" className="relative z-0 mb-2 size-16" />
@@ -538,16 +548,18 @@ function Desk({ entry, worker, index }: { entry: QueueEntry; worker: LiveWorker;
 function OpenDesk({ index, lineBlocked }: { index: number; lineBlocked: boolean }) {
   return (
     <li
-      className="animate-card-in flex min-h-56 flex-col items-center justify-center gap-2 rounded-xl border border-dashed p-4 text-center"
+      className="animate-card-in flex items-center gap-3 rounded-xl border border-dashed p-4 @lg:min-h-56 @lg:flex-col @lg:justify-center @lg:gap-2 @lg:text-center"
       style={{ "--stagger": index } as React.CSSProperties}
     >
-      <ArmchairIcon className="size-8 text-muted-foreground/50" />
-      <p className="text-sm font-medium text-muted-foreground">Desk {index + 1} is open</p>
-      <p className="text-xs text-muted-foreground">
-        {lineBlocked
-          ? "Free — the cards in line wait for others to finish first"
-          : "Start a card and a worker sits down here"}
-      </p>
+      <ArmchairIcon className="size-7 shrink-0 text-muted-foreground/50 @lg:size-8" />
+      <div className="min-w-0 space-y-0.5 @lg:space-y-2">
+        <p className="text-sm font-medium text-muted-foreground">Desk {index + 1} is open</p>
+        <p className="text-xs text-muted-foreground">
+          {lineBlocked
+            ? "Free — the cards in line wait for others to finish first"
+            : "Start a card and a worker sits down here"}
+        </p>
+      </div>
     </li>
   );
 }
@@ -556,7 +568,7 @@ function FloorSection({ dashboard, live }: { dashboard: Dashboard; live: Record<
   const { running, queued, limit } = dashboard.queue;
   const openDesks = Math.max(0, limit - running.length);
   return (
-    <section aria-labelledby="viz-floor">
+    <section aria-labelledby="viz-floor" className="@container min-w-0">
       <SectionTitle
         id="viz-floor"
         icon={<FactoryIcon />}
@@ -565,8 +577,8 @@ function FloorSection({ dashboard, live }: { dashboard: Dashboard; live: Record<
       />
       <ul
         className={cn(
-          "grid gap-3 sm:grid-cols-2 lg:grid-cols-3",
-          running.length + openDesks >= 4 && "xl:grid-cols-4",
+          "grid gap-3 @lg:grid-cols-2 @3xl:grid-cols-3",
+          running.length + openDesks >= 4 && "@6xl:grid-cols-4",
         )}
       >
         {running.map((entry, i) => (
@@ -600,7 +612,7 @@ function RowLink({
     <li>
       <Link
         href={href}
-        className="flex min-h-12 items-center gap-3 rounded-lg px-2.5 py-2 transition-colors outline-none hover:bg-muted focus-visible:bg-muted"
+        className="flex min-h-12 items-center gap-3 rounded-lg px-2.5 py-2 transition-[background-color,scale] outline-none hover:bg-muted focus-visible:bg-muted active:scale-[0.99] motion-reduce:active:scale-100"
       >
         {avatar}
         <div className="min-w-0 flex-1">
@@ -613,16 +625,61 @@ function RowLink({
   );
 }
 
+/** Side-panel section: always open on lg+, collapsible below so phones can skim the stack. */
+function PanelSection({
+  id,
+  icon,
+  title,
+  description,
+  children,
+}: {
+  id: string;
+  icon: React.ReactNode;
+  title: string;
+  description: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(true);
+  const bodyId = `${id}-body`;
+  return (
+    <section aria-labelledby={id} className="min-w-0">
+      <SectionTitle
+        id={id}
+        icon={icon}
+        title={title}
+        description={description}
+        trailing={
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-11 shrink-0 text-muted-foreground lg:hidden"
+            aria-expanded={open}
+            aria-controls={bodyId}
+            aria-label={open ? `Collapse ${title}` : `Expand ${title}`}
+            onClick={() => setOpen((value) => !value)}
+          >
+            <ChevronDownIcon
+              className={cn("transition-transform duration-200 motion-reduce:transition-none", !open && "-rotate-90")}
+            />
+          </Button>
+        }
+      />
+      <div id={bodyId} className={cn("animate-fade-in-soft", !open && "hidden lg:block")}>
+        {children}
+      </div>
+    </section>
+  );
+}
+
 function LineSection({ queue }: { queue: Dashboard["queue"] }) {
   const { queued, planning } = queue;
   return (
-    <section aria-labelledby="viz-line">
-      <SectionTitle
-        id="viz-line"
-        icon={<TicketIcon />}
-        title="The line"
-        description={queued.length > 0 ? `${queued.length} waiting for a desk, in start order` : "Nobody waiting"}
-      />
+    <PanelSection
+      id="viz-line"
+      icon={<TicketIcon />}
+      title="The line"
+      description={queued.length > 0 ? `${queued.length} waiting for a desk, in start order` : "Nobody waiting"}
+    >
       {queued.length === 0 ? (
         <EmptyNote>No one in line — every started card has a desk.</EmptyNote>
       ) : (
@@ -663,21 +720,20 @@ function LineSection({ queue }: { queue: Dashboard["queue"] }) {
           </ol>
         </Card>
       )}
-    </section>
+    </PanelSection>
   );
 }
 
 function HelpDeskSection({ cards, total }: { cards: Dashboard["attention"]; total: number }) {
   return (
-    <section aria-labelledby="viz-help">
-      <SectionTitle
-        id="viz-help"
-        icon={<LifeBuoyIcon />}
-        title="Need a hand"
-        description={
-          total > cards.length ? `Showing ${cards.length} of ${total} workers` : "Failed or stalled — open to retry or resume"
-        }
-      />
+    <PanelSection
+      id="viz-help"
+      icon={<LifeBuoyIcon />}
+      title="Need a hand"
+      description={
+        total > cards.length ? `Showing ${cards.length} of ${total} workers` : "Failed or stalled — open to retry or resume"
+      }
+    >
       <Card size="sm" className="gap-0 px-1">
         <ul>
           {cards.map((card) => {
@@ -702,27 +758,27 @@ function HelpDeskSection({ cards, total }: { cards: Dashboard["attention"]; tota
           })}
         </ul>
       </Card>
-    </section>
+    </PanelSection>
   );
 }
 
 function TrophySection({ cards, now }: { cards: DashboardCard[]; now: number }) {
   return (
-    <section aria-labelledby="viz-trophies">
+    <section aria-labelledby="viz-trophies" className="@container min-w-0">
       <SectionTitle
         id="viz-trophies"
         icon={<TrophyIcon />}
         title="Trophy wall"
         description="Latest cards your workers shipped"
       />
-      <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+      <ul className="grid gap-2 @lg:grid-cols-2 @4xl:grid-cols-3">
         {cards.map((card, i) => {
           const { name, hue } = workerIdentity(card.id);
           return (
             <li key={card.id} className="animate-card-in" style={{ "--stagger": i } as React.CSSProperties}>
               <Link
                 href={cardHref(card.boardId, card.id)}
-                className="card-lift flex h-full items-center gap-3 rounded-xl bg-card p-3 ring-1 ring-foreground/10 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="card-lift flex h-full items-center gap-3 rounded-xl bg-card p-3 ring-1 ring-foreground/10 outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.99] motion-reduce:active:scale-100"
               >
                 <span className="relative shrink-0">
                   <WorkerAvatar hue={hue} mood="happy" animated={false} className="size-10" />
@@ -748,11 +804,11 @@ function Worksite({ board, crew, now }: { board: DashboardBoard; crew: QueueEntr
   const total = TASK_STATUSES.reduce((sum, s) => sum + board.counts[s], 0);
   const pct = total === 0 ? 0 : Math.round((board.counts.done / total) * 100);
   return (
-    <Card size="sm" className="gap-2.5 px-3">
+    <li className="grid gap-2.5 px-3 py-3 first:pt-1 last:pb-1">
       <div className="flex flex-wrap items-center gap-2">
         <Link
           href={`/b/${board.id}`}
-          className="min-w-0 flex-1 truncate font-medium underline-offset-4 hover:underline"
+          className="-my-2 min-w-0 flex-1 truncate py-2 font-medium underline-offset-4 outline-none hover:underline focus-visible:underline"
         >
           {board.name}
         </Link>
@@ -768,7 +824,7 @@ function Worksite({ board, crew, now }: { board: DashboardBoard; crew: QueueEntr
         <div className="min-w-0 flex-1">
           <DistributionBar counts={board.counts} label={board.name} />
         </div>
-        <span className="w-24 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
+        <span className="w-20 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
           <span className="font-semibold text-foreground">{pct}%</span> shipped
         </span>
       </div>
@@ -794,45 +850,53 @@ function Worksite({ board, crew, now }: { board: DashboardBoard; crew: QueueEntr
           </span>
         )}
       </div>
-    </Card>
+    </li>
   );
 }
 
 function WorksitesSection({ dashboard, now }: { dashboard: Dashboard; now: number }) {
   return (
-    <section aria-labelledby="viz-sites">
-      <SectionTitle
-        id="viz-sites"
-        icon={<Building2Icon />}
-        title="Worksites"
-        description="Your projects, most recently active first"
-      />
-      <div className="grid gap-3">
-        {dashboard.boards.map((board) => (
-          <Worksite
-            key={board.id}
-            board={board}
-            crew={dashboard.queue.running.filter((entry) => entry.boardId === board.id)}
-            now={now}
-          />
-        ))}
-      </div>
-    </section>
+    <PanelSection
+      id="viz-sites"
+      icon={<Building2Icon />}
+      title="Worksites"
+      description="Your projects, most recently active first"
+    >
+      <Card size="sm" className="gap-0">
+        <ul className="divide-y">
+          {dashboard.boards.map((board) => (
+            <Worksite
+              key={board.id}
+              board={board}
+              crew={dashboard.queue.running.filter((entry) => entry.boardId === board.id)}
+              now={now}
+            />
+          ))}
+        </ul>
+      </Card>
+    </PanelSection>
   );
 }
 
 function LoadingSkeleton() {
   return (
-    <div className="grid gap-8" aria-busy="true" aria-label="Loading the floor">
-      <Skeleton className="h-44 w-full rounded-2xl" />
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {Array.from({ length: 3 }, (_, i) => (
-          <Skeleton key={i} className="h-56 w-full rounded-xl" />
-        ))}
+    <div className={LAYOUT_GRID} aria-busy="true" aria-label="Loading the floor">
+      <Skeleton className="h-60 w-full rounded-2xl md:h-44 xl:col-start-1 xl:row-start-1" />
+      <div className="@container grid gap-3 xl:col-start-1 xl:row-start-2">
+        <Skeleton className="h-12 w-56 rounded-lg" />
+        <div className="grid gap-3 @lg:grid-cols-2 @3xl:grid-cols-3">
+          {Array.from({ length: 3 }, (_, i) => (
+            <Skeleton key={i} className="h-56 w-full rounded-xl" />
+          ))}
+        </div>
       </div>
-      <div className="grid gap-3 lg:grid-cols-2">
-        <Skeleton className="h-32 w-full rounded-xl" />
-        <Skeleton className="h-32 w-full rounded-xl" />
+      <div className={ASIDE_CLASS}>
+        {Array.from({ length: 2 }, (_, i) => (
+          <div key={i} className="grid gap-3">
+            <Skeleton className="h-12 w-48 rounded-lg" />
+            <Skeleton className="h-40 w-full rounded-xl" />
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -865,6 +929,8 @@ export default function VisualizePage() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [pops, setPops] = useState<Pop[]>([]);
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const now = useNow(CLOCK_TICK_MS);
   const { live, onEvent } = useLiveFloor(dashboard?.queue.running.map((entry) => entry.taskId) ?? []);
   const seen = useRef<{ finished: Set<string>; level: number } | null>(null);
@@ -873,6 +939,7 @@ export default function VisualizePage() {
   const load = useCallback(async () => {
     try {
       setDashboard(await api.dashboard());
+      setUpdatedAt(Date.now());
       setLoadError(null);
     } catch (err) {
       setLoadError(err instanceof Error && err.message ? err.message : "Could not load the overview.");
@@ -918,40 +985,92 @@ export default function VisualizePage() {
 
   const attentionTotal = dashboard?.boards.reduce((sum, b) => sum + b.attentionCount, 0) ?? 0;
 
+  async function refresh() {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }
+
   return (
     <div className="flex min-h-dvh flex-col">
-      <AppHeader title="Visualize" subtitle="Your agents at work, live" />
-      <main className="px-safe pb-safe mx-auto w-full max-w-6xl flex-1">
-        <div className="px-4 py-5 sm:px-6 sm:py-8">
-          {loadError && dashboard === null ? (
-            <div className="mx-auto flex max-w-sm flex-col items-center gap-4 py-16 text-center">
+      <AppHeader
+        title="Visualize"
+        subtitle="Your agents at work, live"
+        actions={
+          <div className="flex items-center gap-2">
+            {updatedAt !== null && (
+              <span className="hidden items-center gap-1.5 text-xs text-muted-foreground tabular-nums sm:flex">
+                <span className="relative flex size-2" aria-hidden>
+                  <span className="absolute inset-0 animate-ping rounded-full bg-success/60 motion-reduce:animate-none" />
+                  <span className="relative size-2 rounded-full bg-success" />
+                </span>
+                Live · updated {formatRelative(new Date(updatedAt).toISOString(), now)}
+              </span>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-11 active:scale-[0.96] md:size-9"
+              aria-label="Refresh"
+              title="Refresh"
+              disabled={refreshing || dashboard === null}
+              onClick={() => void refresh()}
+            >
+              <RefreshCwIcon className={cn(refreshing && "animate-spin motion-reduce:animate-none")} />
+            </Button>
+          </div>
+        }
+      />
+      <main className="px-safe pb-safe mx-auto w-full max-w-[1400px] flex-1 px-4 py-6 sm:px-6 md:py-8 lg:px-8">
+        {loadError && dashboard === null ? (
+          <div className="mx-auto flex max-w-sm flex-col items-center gap-4 py-16 text-center">
+            <WorkerAvatar hue={25} mood="error" className="size-16" />
+            <div className="space-y-1">
+              <p className="font-medium">Couldn't load the floor</p>
               <p className="text-sm text-muted-foreground">{loadError}</p>
-              <Button variant="outline" onClick={() => void load()} className="h-11 md:h-9">
-                <RefreshCwIcon />
-                Try again
-              </Button>
             </div>
-          ) : dashboard === null ? (
-            <LoadingSkeleton />
-          ) : dashboard.boards.length === 0 ? (
-            <NoProjects />
-          ) : (
-            <div className="grid gap-8">
-              <HqBanner dashboard={dashboard} pops={pops} />
-              <FloorSection dashboard={dashboard} live={live} />
-              <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] lg:items-start">
-                <div className="grid gap-8">
-                  <LineSection queue={dashboard.queue} />
-                  {dashboard.attention.length > 0 && (
-                    <HelpDeskSection cards={dashboard.attention} total={attentionTotal} />
-                  )}
-                </div>
-                <WorksitesSection dashboard={dashboard} now={now} />
+            <Button variant="outline" onClick={() => void load()} className="h-11 active:scale-[0.98] md:h-9">
+              <RefreshCwIcon />
+              Try again
+            </Button>
+          </div>
+        ) : dashboard === null ? (
+          <LoadingSkeleton />
+        ) : dashboard.boards.length === 0 ? (
+          <NoProjects />
+        ) : (
+          <div className="grid gap-6">
+            {loadError && (
+              <p
+                role="alert"
+                className="animate-fade-in-soft flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+              >
+                <TriangleAlertIcon className="size-4 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">Couldn't refresh: {loadError}</span>
+              </p>
+            )}
+            <div className={LAYOUT_GRID}>
+              <div className="min-w-0 xl:col-start-1 xl:row-start-1">
+                <HqBanner dashboard={dashboard} pops={pops} />
               </div>
-              {dashboard.finished.length > 0 && <TrophySection cards={dashboard.finished} now={now} />}
+              <div className="min-w-0 xl:col-start-1 xl:row-start-2">
+                <FloorSection dashboard={dashboard} live={live} />
+              </div>
+              <aside aria-label="Line, help desk and worksites" className={ASIDE_CLASS}>
+                {dashboard.attention.length > 0 && (
+                  <HelpDeskSection cards={dashboard.attention} total={attentionTotal} />
+                )}
+                <LineSection queue={dashboard.queue} />
+                <WorksitesSection dashboard={dashboard} now={now} />
+              </aside>
+              {dashboard.finished.length > 0 && (
+                <div className="min-w-0 xl:col-start-1 xl:row-start-3">
+                  <TrophySection cards={dashboard.finished} now={now} />
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </main>
     </div>
   );

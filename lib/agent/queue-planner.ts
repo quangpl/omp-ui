@@ -1,15 +1,15 @@
 // The queue planner: an omp agent that orders a project's queued cards (prerequisites and quick
 // unblockers first) and infers which of them must run after another, so independent cards run in
-// parallel and dependent ones wait. It runs `omp -p --mode json` in the project with read-only
-// tools, so it can look at the files each card touches.
+// parallel and dependent ones wait. It runs on a warm `omp --mode rpc` helper worker in the
+// project with read-only tools, so it can look at the files each card touches.
 import { readModelRoles } from "@/lib/agent/model-select";
-import { existingFolders, extractJsonObject, isDirectory, runOmpPrint } from "@/lib/agent/omp-print";
+import { existingFolders, extractJsonObject, isDirectory, runOmpHelper } from "@/lib/agent/omp-helper";
 import { clip } from "@/lib/card-draft";
 import { childEnv } from "@/lib/child-env";
 import type { AppSettings, Board } from "@/lib/types";
 
-/** omp stops the session itself after this long (`--max-time`). */
-const MAX_TIME_SECONDS = 90;
+/** The planner is cancelled after this long. */
+const TIMEOUT_SECONDS = 120;
 /** Description characters shown per running card. */
 const RUNNING_DESCRIPTION_MAX = 600;
 /** Description characters shown per queued card. */
@@ -54,24 +54,26 @@ export interface PlanQueueOptions {
 export async function planQueue(options: PlanQueueOptions): Promise<QueuePlan> {
   const { board, queued, running, settings, signal } = options;
   const workdir = board.workdir;
-  if (!(await isDirectory(workdir))) throw new Error(`Project folder not found: ${workdir}`);
-  const extras = await existingFolders(board.extraFolders ?? [], workdir);
-
   const env = childEnv();
-  const roles = await readModelRoles(settings.ompPath, workdir, env);
+  const [found, extras, roles] = await Promise.all([
+    isDirectory(workdir),
+    existingFolders(board.extraFolders ?? [], workdir),
+    readModelRoles(settings.ompPath, workdir, env),
+  ]);
+  if (!found) throw new Error(`Project folder not found: ${workdir}`);
   // The fast `smol` role when configured; otherwise the usual model, thinking briefly.
   const model = roles?.smol ? "@smol" : board.model?.trim() || settings.defaultModel.trim() || null;
   const thinking = roles?.smol ? null : "low";
   signal.throwIfAborted();
 
   const prompt = buildPlanPrompt({ board: { ...board, extraFolders: extras }, queued, running });
-  const reply = await runOmpPrint({
+  const reply = await runOmpHelper({
     command: settings.ompPath,
     cwd: workdir,
     addDirs: extras,
     model,
     thinking,
-    maxTimeSeconds: MAX_TIME_SECONDS,
+    timeoutSeconds: TIMEOUT_SECONDS,
     env,
     prompt,
     signal,

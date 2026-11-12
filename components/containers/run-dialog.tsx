@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
-import { ChevronDownIcon, Loader2Icon, PlayIcon, PlusIcon, RefreshCwIcon, TagIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, Loader2Icon, PlayIcon, PlusIcon, RefreshCwIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import {
   appendJobLine,
@@ -11,6 +11,7 @@ import {
   randomSecret,
   type RunForm,
 } from "@/components/containers/shared";
+import { TagPicker } from "@/components/containers/tag-picker";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -20,19 +21,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api-client";
-import type { DockerNetwork, HubTag, RestartPolicy, RunContainerSpec } from "@/lib/docker-types";
+import type { DockerNetwork, RestartPolicy, RunContainerSpec } from "@/lib/docker-types";
 import { cn } from "@/lib/utils";
 
 const RESTART_LABELS: Record<RestartPolicy, string> = {
@@ -41,76 +35,6 @@ const RESTART_LABELS: Record<RestartPolicy, string> = {
   "on-failure": "On failure",
   no: "Never",
 };
-
-/** "postgres:17" → "postgres"; keeps registry ports ("localhost:5000/app:1" → "localhost:5000/app"). */
-function repositoryOf(image: string): string {
-  const noDigest = image.split("@")[0];
-  const slash = noDigest.lastIndexOf("/");
-  const colon = noDigest.lastIndexOf(":");
-  return colon > slash ? noDigest.slice(0, colon) : noDigest;
-}
-
-/** Only Docker Hub and Quay expose a public tag list. */
-function tagsSupported(repo: string): boolean {
-  const first = repo.split("/")[0];
-  const hasRegistry = repo.includes("/") && (first.includes(".") || first.includes(":") || first === "localhost");
-  return !hasRegistry || first === "quay.io" || first === "docker.io";
-}
-
-function TagPicker({ image, onPick, disabled }: { image: string; onPick: (tag: string) => void; disabled: boolean }) {
-  const repo = repositoryOf(image.trim()).replace(/^docker\.io\//, "");
-  const [tags, setTags] = useState<HubTag[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loadedFor, setLoadedFor] = useState("");
-
-  const load = async () => {
-    if (!repo || loadedFor === repo) return;
-    setLoadedFor(repo);
-    setTags(null);
-    setError(null);
-    try {
-      setTags(await api.docker.tags(repo));
-    } catch (err) {
-      setError(errorMessage(err, "Could not load tags"));
-    }
-  };
-
-  if (!repo || !tagsSupported(repo)) return null;
-  return (
-    <DropdownMenu onOpenChange={(open) => open && void load()}>
-      <DropdownMenuTrigger asChild>
-        <Button type="button" variant="outline" className="h-11 shrink-0 gap-1.5 md:h-9" disabled={disabled}>
-          <TagIcon />
-          Tags
-          <ChevronDownIcon className="opacity-60" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="max-h-80 w-64 overflow-y-auto">
-        <DropdownMenuLabel className="truncate text-xs font-normal text-muted-foreground">{repo}</DropdownMenuLabel>
-        {error ? (
-          <p className="px-2 py-1.5 text-xs text-destructive">{error}</p>
-        ) : !tags ? (
-          <p className="flex items-center gap-2 px-2 py-1.5 text-xs text-muted-foreground">
-            <Loader2Icon className="size-3.5 animate-spin" /> Loading tags…
-          </p>
-        ) : tags.length === 0 ? (
-          <p className="px-2 py-1.5 text-xs text-muted-foreground">No tags found</p>
-        ) : (
-          tags.map((tag) => (
-            <DropdownMenuItem key={tag.name} onSelect={() => onPick(`${repo}:${tag.name}`)} className="gap-2">
-              <span className="min-w-0 flex-1 truncate font-mono text-xs">{tag.name}</span>
-              {tag.updatedAt && (
-                <span className="shrink-0 text-[0.65rem] text-muted-foreground">
-                  {new Date(tag.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-                </span>
-              )}
-            </DropdownMenuItem>
-          ))
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
 
 function RowRemove({ onClick, disabled, label }: { onClick: () => void; disabled: boolean; label: string }) {
   return (

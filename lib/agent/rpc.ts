@@ -246,6 +246,21 @@ export class OmpRpcProcess extends EventEmitter<RpcEvents> {
     this.signal(signal);
   }
 
+  /**
+   * Whether the process (and its pipes) keeps the host's event loop alive. Idle pooled workers
+   * are unref'd so they never hold the server, a CLI or a test runner open on their own.
+   */
+  setRef(ref: boolean): void {
+    const handles = [this.child, this.child.stdin, this.child.stdout, this.child.stderr] as unknown as {
+      ref?: () => void;
+      unref?: () => void;
+    }[];
+    for (const handle of handles) {
+      if (ref) handle.ref?.();
+      else handle.unref?.();
+    }
+  }
+
   private signal(signal: NodeJS.Signals): void {
     if (this.exitInfo || this.child.pid === undefined) return;
     try {

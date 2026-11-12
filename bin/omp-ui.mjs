@@ -12,6 +12,7 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { agentmemoryMode, ensureAgentmemory } from "./agentmemory.mjs";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -807,11 +808,12 @@ async function initProject(values, { fromUp = false } = {}) {
     values.workspace ?? (wizard ? await ask("Projects folder", defaultWorkspace) : defaultWorkspace),
   );
 
-  const defaultMaxAgents = existing.MAX_AGENTS || "2";
-  const maxAgentsRaw = values["max-agents"] ?? (wizard ? await ask("Max concurrent agents", defaultMaxAgents) : defaultMaxAgents);
-  const maxAgents = Number(maxAgentsRaw);
-  if (!Number.isInteger(maxAgents) || maxAgents < 1 || maxAgents > 16) {
-    throw new CliError(`Invalid max agents "${maxAgentsRaw}" (expected 1-16).`);
+  const defaultMaxAgents = existing.MAX_AGENTS || "auto";
+  const maxAgentsRaw = values["max-agents"] ?? (wizard ? await ask("Max concurrent agents (auto or 1-16)", defaultMaxAgents) : defaultMaxAgents);
+  const maxAgentsAuto = String(maxAgentsRaw).trim().toLowerCase() === "auto";
+  const maxAgents = maxAgentsAuto ? "auto" : Number(maxAgentsRaw);
+  if (!maxAgentsAuto && (!Number.isInteger(maxAgents) || maxAgents < 1 || maxAgents > 16)) {
+    throw new CliError(`Invalid max agents "${maxAgentsRaw}" (expected auto or 1-16).`);
   }
 
   const managed = {
@@ -1040,6 +1042,31 @@ async function startServer(cfg, { foreground = false } = {}) {
   }
   log.ok(`Server is up ${c.dim(`(v${health.version} · ${health.db})`)}`);
   return { pid: child.pid, health };
+}
+
+/** Start the agentmemory server before OMP UI (AGENTMEMORY_ENABLED, see bin/agentmemory.mjs); never fatal. */
+async function ensureMemory(cfg) {
+  const result = await ensureAgentmemory({ env: cfg.env, waitMs: 60_000 });
+  const url = c.dim(`(${result.url})`);
+  switch (result.state) {
+    case "running":
+      return log.info(`Memory server is running ${url}`);
+    case "started":
+      return log.ok(`Started the memory server ${url}`);
+    case "starting":
+      return log.info(`Memory server is still starting ${url} — the supervisor keeps checking`);
+    case "remote-down":
+      return log.warn(`Memory server at ${result.url} is not answering (AGENTMEMORY_URL)`);
+    case "failed":
+      return log.warn(`Could not start the memory server${result.detail ? `: ${result.detail}` : ""}`);
+    case "missing":
+      if (agentmemoryMode(cfg.env) === "true") {
+        log.warn("AGENTMEMORY_ENABLED=true but agentmemory is not installed — run: npx -y @agentmemory/agentmemory@latest");
+      }
+      return;
+    default:
+      return;
+  }
 }
 
 async function stopServer(cfg, { allowPm2 = false } = {}) {
@@ -1514,6 +1541,7 @@ const COMMANDS = {
         await pm2Start();
         return;
       }
+      await ensureMemory(cfg);
       if (values.foreground) {
         await startServer(cfg, { foreground: true });
         return;
@@ -1537,7 +1565,7 @@ const COMMANDS = {
       "mongo-url": { type: "string", arg: "<url>", desc: "Alias of --db-url for MongoDB" },
       "data-dir": { type: "string", arg: "<dir>", desc: "Data directory (default ./data)" },
       "omp-path": { type: "string", arg: "<path>", desc: "omp executable (default: omp on PATH)" },
-      "max-agents": { type: "string", arg: "<n>", desc: "Max concurrent agents (default 2)" },
+      "max-agents": { type: "string", arg: "<n|auto>", desc: "Max concurrent agents (default auto: from CPU cores and free memory)" },
       workspace: { type: "string", arg: "<dir>", desc: "Projects folder (default ~/omp-workspace)" },
       yes: { type: "boolean", short: "y", desc: "Accept defaults for anything not given" },
       force: { type: "boolean", desc: "Redo setup on an existing .env (unchanged values are kept)" },

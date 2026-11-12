@@ -183,8 +183,11 @@ export interface RunEvent {
 export type ApprovalMode = "yolo" | "write" | "always-ask";
 
 export interface AppSettings {
-  /** Max omp processes running at once; extra runs wait in "queued". */
-  maxConcurrentAgents: number;
+  /**
+   * Max omp processes running at once; extra runs wait in "queued". `"auto"` (default) derives
+   * the limit from the machine's cores and free memory (see QueueSnapshot.concurrency).
+   */
+  maxConcurrentAgents: number | "auto";
   /** omp executable path or name on PATH. */
   ompPath: string;
   /** Passed as `--approval-mode`. Headless runs cannot answer prompts, so "yolo" is default. */
@@ -222,7 +225,7 @@ export const BROWSER_MODES = ["off", "headless", "visible", "relay"] as const;
 export type BrowserMode = (typeof BROWSER_MODES)[number];
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  maxConcurrentAgents: 2,
+  maxConcurrentAgents: "auto",
   ompPath: "omp",
   approvalMode: "yolo",
   defaultModel: "",
@@ -347,9 +350,26 @@ export interface QueueEntry {
   planNote: string | null;
 }
 
-export interface QueueSnapshot {
-  /** Max agents running at once. */
+/** The agent limit in effect and where it comes from (GET /queue). */
+export interface ConcurrencyInfo {
+  /** `auto`: derived from the machine; `manual`: the number set in Settings or MAX_AGENTS. */
+  mode: "auto" | "manual";
+  /** Agents allowed to run at once right now. */
   limit: number;
+  /** What bounds an automatic limit (logical cores, free memory, or the hard cap); null when manual. */
+  boundBy: "cpu" | "memory" | "max" | null;
+  /** Logical cores available to the server. */
+  cpus: number;
+  freeMemoryBytes: number;
+  totalMemoryBytes: number;
+  /** One line for the UI, e.g. "Auto: 12 parallel (16 cores, 28 GB free)". */
+  reason: string;
+}
+
+export interface QueueSnapshot {
+  /** Max agents running at once (the effective limit, `concurrency.limit`). */
+  limit: number;
+  concurrency: ConcurrencyInfo;
   running: QueueEntry[];
   /** Start order. */
   queued: QueueEntry[];
@@ -383,6 +403,80 @@ export interface DashboardBoard extends BoardWithCounts {
   lastActivityAt: string;
   /** Cards on this board that need the user (see AttentionReason). */
   attentionCount: number;
+  /** Cards on this board waiting on the user by the home page's broader rules (NeedsYouReason). */
+  needsYouCount: number;
+  /** Agent runs that ended in the last 30 days (stopped runs are not counted). */
+  runs30d: { succeeded: number; failed: number };
+  /** Git status per project folder (workdir first); cached for a few seconds on the server. */
+  git: GitStatus[];
+}
+
+/**
+ * Why a card waits on the user on the home page, most urgent first: the agent asked a
+ * `question`; it `failed`; it failed and an automatic retry is scheduled (`retrying`); unresolved
+ * `feedback` comments with no agent working; `stalled` (see AttentionReason); or it is Done but
+ * its changes were not pushed yet (`unpushed`, only for projects that can push, recent cards).
+ */
+export type NeedsYouReason = "question" | "failed" | "retrying" | "feedback" | "stalled" | "unpushed";
+
+export interface NeedsYouCard extends DashboardCard {
+  /** Every reason that applies, most urgent first. */
+  reasons: NeedsYouReason[];
+  /** The agent's question (truncated); null unless `reasons` includes "question". */
+  question: string | null;
+  retryAt: string | null;
+  pushedAt: string | null;
+}
+
+/** A running or queued agent on the home page (one per QueueSnapshot entry). */
+export interface DashboardLiveAgent {
+  taskId: string;
+  /** When the current run started; null while queued. */
+  startedAt: string | null;
+  /** Model the run uses, when known (board/settings model or the auto-selected one). */
+  model: string | null;
+  /** Latest thing the agent did (tool call, status or first line of its text). */
+  activity: string | null;
+  activityAt: string | null;
+}
+
+/** Agent runs and shipped cards in a time window. */
+export interface DashboardStatsWindow {
+  /** Runs that ended in the window (succeeded, failed or stopped). */
+  runs: number;
+  succeeded: number;
+  failed: number;
+  /** Mean wall time of succeeded + failed runs; null when there were none. */
+  avgDurationMs: number | null;
+  /** Cards pushed to the default branch (Task.pushedAt). */
+  shipped: number;
+  /** Cards created. */
+  created: number;
+}
+
+export interface DashboardStats {
+  /** Last 24 hours. */
+  day: DashboardStatsWindow;
+  /** Last 7 × 24 hours. */
+  week: DashboardStatsWindow;
+  /** The same 7 days as rolling 24-hour buckets, oldest first. */
+  daily: Pick<DashboardStatsWindow, "runs" | "succeeded" | "failed" | "shipped">[];
+}
+
+export type DashboardActivityKind = "created" | "succeeded" | "failed" | "stopped" | "pushed";
+
+/** One entry of the home page's recent activity feed. */
+export interface DashboardActivity {
+  kind: DashboardActivityKind;
+  at: string;
+  taskId: string;
+  boardId: string;
+  boardName: string;
+  title: string;
+  /** Run wall time for succeeded/failed/stopped. */
+  durationMs: number | null;
+  /** First line of the error for failed runs; "by an agent" style notes otherwise. */
+  detail: string | null;
 }
 
 /** GET /dashboard — everything the home page shows, in one request. */
@@ -399,9 +493,27 @@ export interface Dashboard {
   attention: (DashboardCard & { reason: AttentionReason })[];
   /** Done cards an agent worked on, most recently finished first (at most 6). */
   finished: DashboardCard[];
+  /** Cards waiting on the user, most urgent first (at most 50; the full count is `needsYouTotal`). */
+  needsYou: NeedsYouCard[];
+  needsYouTotal: number;
   queue: QueueSnapshot;
+  /** Run details for every running and queued entry of `queue`. */
+  live: DashboardLiveAgent[];
+  stats: DashboardStats;
+  /** Newest first, at most 12. */
+  activity: DashboardActivity[];
   /** Getting-started progress beyond "has a project". */
-  setup: { hasCard: boolean; hasRun: boolean; hasDone: boolean };
+  setup: {
+    hasCard: boolean;
+    hasRun: boolean;
+    hasDone: boolean;
+    /** A card was pushed to the default branch at least once. */
+    hasPush: boolean;
+    /** The settings were saved at least once. */
+    settingsSaved: boolean;
+    /** The docker CLI reaches a daemon (cached for a few minutes). */
+    dockerAvailable: boolean;
+  };
 }
 
 /** GET /fs/browse — server-side folder picker. */
@@ -488,6 +600,11 @@ export interface GitActionResult {
   results: GitRepoActionResult[];
   /** The agent comment posted on the task describing the result (links included). */
   comment: Comment;
+}
+
+/** POST /boards/:id/git/push — header quick push of every project repo to its default branch. */
+export interface BoardPushResult {
+  results: GitRepoActionResult[];
 }
 
 /** GET /system/restart — can the "Restart server" button restart this server, and the last restart. */
@@ -587,4 +704,112 @@ export interface AiStats {
     } | null;
     byModel: AiModelUsage[];
   };
+}
+
+/** A value omp's config.yml holds for one editable key; null = not set (omp's default applies). */
+export type OmpConfigValue = string | number | boolean | null;
+
+export type OmpConfigFieldType = "model" | "enum" | "boolean" | "number" | "string";
+
+/** One editable key of omp's user config (GET /omp-config `schema`). */
+export interface OmpConfigField {
+  /** Dotted omp setting key, e.g. "defaultThinkingLevel"; model roles are "modelRoles.<role>". */
+  key: string;
+  label: string;
+  type: OmpConfigFieldType;
+  group: "models" | "behavior" | "tools";
+  help: string;
+  /** `enum` choices, in omp's order. */
+  options?: { value: string; label: string }[];
+  /** `number` bounds (integers). */
+  min?: number;
+  max?: number;
+  placeholder?: string;
+}
+
+/** GET/PUT /omp-config: omp's user-level config.yml. */
+export interface OmpConfigSnapshot {
+  /** Absolute path of the config file (it may not exist yet). */
+  path: string;
+  /** Where the previous version is kept on every save. */
+  backupPath: string;
+  format: "yaml";
+  exists: boolean;
+  /** Content hash of `raw`; send it back on PUT to refuse saving over a newer file. */
+  version: string;
+  raw: string;
+  /** Schema key → value set in the file (null when unset). */
+  values: Record<string, OmpConfigValue>;
+  /** Schema key → value omp uses when the file leaves it unset. */
+  defaults: Record<string, OmpConfigValue>;
+  schema: OmpConfigField[];
+}
+
+/** PUT /omp-config: structured `values` (null unsets a key) or a whole `raw` file. */
+export type OmpConfigUpdate =
+  | { values: Record<string, OmpConfigValue>; version?: string }
+  | { raw: string; version?: string };
+
+/** One chat model of `omp models --json`. */
+export interface OmpModel {
+  /** "provider/model-id": what omp's model settings take (optionally with ":<thinking>"). */
+  selector: string;
+  name: string;
+  provider: string;
+  /** Thinking levels the model supports; empty when it does not reason. */
+  thinking: string[];
+}
+
+/** `AGENTMEMORY_ENABLED`: auto (default) starts the memory server when agentmemory is installed. */
+export type MemoryEnabledMode = "auto" | "true" | "false";
+
+/** GET /memory: the local agentmemory server (https://github.com/rohitg00/agentmemory) and its OMP hook-up. */
+export interface MemoryStatus {
+  enabled: MemoryEnabledMode;
+  /** The `agentmemory` CLI was found (global install on PATH, or the npx cache). */
+  installed: boolean;
+  /** How the CLI was found. */
+  installSource: "path" | "npx" | null;
+  /** Server version when it answers, else the CLI's. */
+  version: string | null;
+  /** REST API base (`AGENTMEMORY_URL`, default http://127.0.0.1:3111). */
+  url: string;
+  /** Live viewer; binds to loopback on the server host by default. */
+  viewerUrl: string;
+  /** The REST API answered at all (even with an error). */
+  reachable: boolean;
+  /** `/agentmemory/health` reports ok/healthy/degraded. */
+  healthy: boolean;
+  /** A start through OMP UI is still running. */
+  starting: boolean;
+  /** Why the server is not healthy (unreachable, unauthorized, …). */
+  error: string | null;
+  /** Overall status of `/agentmemory/status` (ok|info|warn|error) and its one-line headline. */
+  level: string | null;
+  headline: string | null;
+  /** Problems `/agentmemory/status` lists, each with its fix. */
+  problems: { level: string; message: string; fix?: string }[];
+  /** "bm25" (keyless) or the embedding provider ("local", "openai", …). */
+  embeddings: string;
+  /** Whether `embeddings` comes from the running server or from ~/.agentmemory/.env. */
+  embeddingsSource: "server" | "config";
+  /** LLM provider for summaries/consolidation ("noop" when keyless); null when the server is down. */
+  llm: string | null;
+  stats: MemoryStats | null;
+  omp: {
+    /** omp's agent dir (`omp config path`); null when omp is missing. */
+    agentDir: string | null;
+    /** `agentmemory connect omp` installed the extension and listed it in config.yml `extensions`. */
+    connected: boolean;
+    /** The connector also wired the MCP toolset (`--with-mcp`). */
+    mcp: boolean;
+    error: string | null;
+  };
+}
+
+export interface MemoryStats {
+  memories: number | null;
+  sessions: number | null;
+  observations: number | null;
+  lessons: number | null;
 }

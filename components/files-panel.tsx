@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckIcon,
   CopyIcon,
@@ -11,6 +11,7 @@ import {
   UploadIcon,
 } from "lucide-react";
 import { toast } from "sonner";
+import { AttachmentViewer, formatSize, isPlainClick, openAttachment, type Attachment } from "@/components/attachment-viewer";
 import { errorMessage, formatDateTime, formatRelative } from "@/components/board/format";
 import {
   AlertDialog,
@@ -30,19 +31,6 @@ import type { ServerEvent, SharedFile, SharedFiles } from "@/lib/types";
 import { cn, copyText } from "@/lib/utils";
 
 const IMAGE_FILE = /\.(png|jpe?g|gif|webp)$/i;
-const SIZE_UNITS = ["KB", "MB", "GB", "TB"];
-
-/** "512 B", "1.2 KB", "34 MB"… */
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < SIZE_UNITS.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${SIZE_UNITS[unit]}`;
-}
 
 /**
  * Files shared on a card (`scope` "tasks") or on a whole project (`scope` "boards"): list,
@@ -71,6 +59,16 @@ export function FilesPanel({
   const dragDepthRef = useRef(0);
   /** Latest list request; older responses are dropped. */
   const requestRef = useRef(0);
+  /** The listed files as viewer attachments (←/→ steps through them in list order). */
+  const attachments = useMemo<Attachment[]>(
+    () =>
+      (data?.files ?? []).map((file) => ({
+        url: `${api.files.url(scope, id, file.name)}?v=${encodeURIComponent(file.modifiedAt)}`,
+        name: file.name,
+        size: file.size,
+      })),
+    [data, scope, id],
+  );
 
   const load = useCallback(async () => {
     const request = ++requestRef.current;
@@ -235,19 +233,25 @@ export function FilesPanel({
         </p>
       ) : (
         <ul className="divide-y rounded-lg border">
-          {data.files.map((file) => {
-            const href = api.files.url(scope, id, file.name);
+          {data.files.map((file, index) => {
+            const href = attachments[index].url;
             return (
               <li key={file.name} className="flex min-h-14 items-center gap-3 py-1.5 pr-1 pl-2">
                 <a
-                  href={`${href}?v=${encodeURIComponent(file.modifiedAt)}`}
+                  href={href}
                   target="_blank"
                   rel="noreferrer"
+                  title={`Preview ${file.name}`}
+                  onClick={(event) => {
+                    if (!isPlainClick(event)) return;
+                    event.preventDefault();
+                    openAttachment({ ...attachments[index], list: attachments, index });
+                  }}
                   className="flex min-w-0 flex-1 items-center gap-3 rounded-md outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                 >
                   {IMAGE_FILE.test(file.name) ? (
                     <img
-                      src={`${href}?v=${encodeURIComponent(file.modifiedAt)}`}
+                      src={href}
                       alt=""
                       loading="lazy"
                       className="size-10 shrink-0 rounded-md border bg-muted object-cover"
@@ -346,6 +350,7 @@ export function FilesPanel({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <AttachmentViewer />
     </div>
   );
 }

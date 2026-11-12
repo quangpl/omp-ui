@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2Icon } from "lucide-react";
+import { ActivityIcon, CircleAlertIcon, Loader2Icon, PlayIcon, SmartphoneIcon } from "lucide-react";
 import { LogoMark } from "@/components/app-header";
 import { PasswordInput } from "@/components/password-input";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -10,8 +10,27 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { api } from "@/lib/api-client";
+import { cn } from "@/lib/utils";
 
 type Mode = "loading" | "setup" | "login";
+
+const CAPABILITIES = [
+  {
+    icon: PlayIcon,
+    title: "Write a card, press Start",
+    body: "An omp agent turns your words into a brief and does the work in your project folders.",
+  },
+  {
+    icon: ActivityIcon,
+    title: "Watch every run live",
+    body: "Follow tool calls and progress as they happen, and comment to steer the agent.",
+  },
+  {
+    icon: SmartphoneIcon,
+    title: "Self-hosted, phone-ready",
+    body: "Runs on your computer or server and works from any device on your network.",
+  },
+] as const;
 
 const MIN_PASSWORD = 8;
 
@@ -90,20 +109,65 @@ export default function LoginPage() {
   const isSetup = mode === "setup";
 
   return (
-    <main className="pt-safe pb-safe px-safe relative flex min-h-dvh flex-col">
-      <div className="flex justify-end p-2">
-        <ThemeToggle />
-      </div>
+    <main className="pt-safe pb-safe px-safe grid min-h-dvh md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+      {/* Brand panel: md+ only, so phones get the form first. */}
+      <aside
+        aria-label="About OMP UI"
+        className={cn(
+          "relative hidden overflow-hidden border-r bg-muted/40 md:flex md:flex-col md:justify-between md:gap-10 md:p-10 lg:p-14",
+          // Subtle dotted floor-plan texture, faded toward the bottom.
+          "before:pointer-events-none before:absolute before:inset-0 before:bg-[radial-gradient(circle_at_1px_1px,color-mix(in_oklch,var(--color-foreground)_10%,transparent)_1px,transparent_0)] before:[background-size:20px_20px] before:[mask-image:linear-gradient(to_bottom,black,transparent_80%)]",
+        )}
+      >
+        <div className="relative flex items-center gap-2.5">
+          <LogoMark className="size-8" />
+          <span className="text-base font-semibold tracking-tight">OMP UI</span>
+        </div>
 
-      <div className="flex flex-1 flex-col items-center justify-center px-4 pb-16">
-        <div className="w-full max-w-sm">
-          <div className="mb-8 flex flex-col items-center gap-3 text-center">
-            <LogoMark className="size-12" />
-            <div>
-              <h1 className="text-xl font-semibold tracking-tight">
+        <div className="relative max-w-md space-y-10">
+          <p className="text-3xl leading-tight font-semibold tracking-tight text-balance lg:text-4xl">
+            A self-hosted kanban board where coding agents do the work.
+          </p>
+          <ul className="space-y-6">
+            {CAPABILITIES.map(({ icon: Icon, title, body }, i) => (
+              <li
+                key={title}
+                className="animate-card-in flex gap-4"
+                style={{ "--stagger": i + 1 } as React.CSSProperties}
+              >
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-background text-primary ring-1 ring-foreground/10">
+                  <Icon className="size-4" aria-hidden />
+                </span>
+                <div className="min-w-0 space-y-1">
+                  <p className="text-sm font-medium">{title}</p>
+                  <p className="text-sm leading-relaxed text-muted-foreground">{body}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <p className="relative text-xs text-muted-foreground">
+          Powered by <span className="font-mono">omp</span> coding agents.
+        </p>
+      </aside>
+
+      <div className="flex min-w-0 flex-col">
+        <div className="flex items-center justify-between gap-2 p-2 pl-4 md:justify-end">
+          <div className="flex items-center gap-2 md:hidden">
+            <LogoMark className="size-7" />
+            <span className="text-sm font-semibold tracking-tight">OMP UI</span>
+          </div>
+          <ThemeToggle />
+        </div>
+
+        <div className="flex flex-1 flex-col justify-center px-4 pt-6 pb-16 sm:px-6 md:items-center md:px-10">
+          <div className="animate-card-in mx-auto w-full max-w-sm">
+            <div className="mb-8 space-y-2">
+              <h1 className="text-2xl font-semibold tracking-tight">
                 {isSetup ? "Welcome to OMP UI" : "Sign in to OMP UI"}
               </h1>
-              <p className="mt-1 text-sm text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 {mode === "loading"
                   ? "Checking your session…"
                   : isSetup
@@ -111,17 +175,17 @@ export default function LoginPage() {
                     : "Enter the admin password to continue."}
               </p>
             </div>
-          </div>
 
-          <div className="rounded-2xl border bg-card p-5 shadow-sm sm:p-6">
             {mode === "loading" ? (
-              <div className="space-y-4" aria-hidden="true">
-                <Skeleton className="h-4 w-24" />
-                <Skeleton className="h-11 w-full md:h-9" />
-                <Skeleton className="h-11 w-full md:h-9" />
+              <div className="space-y-5" aria-hidden="true">
+                <div className="space-y-2">
+                  <Skeleton className="h-4 w-20" />
+                  <Skeleton className="h-11 w-full md:h-9" />
+                </div>
+                <Skeleton className="h-11 w-full md:h-10" />
               </div>
             ) : (
-              <form onSubmit={onSubmit} noValidate className="space-y-4">
+              <form onSubmit={onSubmit} noValidate aria-busy={submitting || undefined} className="space-y-5">
                 {/* Helps password managers associate the credential with this server. */}
                 <input
                   type="text"
@@ -167,22 +231,29 @@ export default function LoginPage() {
                 )}
 
                 {error && (
-                  <p id="auth-error" role="alert" className="text-sm text-destructive">
-                    {error}
-                  </p>
+                  <div className="animate-fade-in-soft flex items-start gap-2 text-sm text-destructive">
+                    <CircleAlertIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
+                    <p id="auth-error" role="alert">
+                      {error}
+                    </p>
+                  </div>
                 )}
 
-                <Button type="submit" className="h-11 w-full text-base md:h-10 md:text-sm" disabled={submitting}>
+                <Button
+                  type="submit"
+                  className="h-11 w-full text-base active:scale-[0.98] md:h-10 md:text-sm"
+                  disabled={submitting}
+                >
                   {submitting && <Loader2Icon className="animate-spin" />}
                   {isSetup ? "Set password and continue" : "Sign in"}
                 </Button>
               </form>
             )}
-          </div>
 
-          <p className="mt-6 text-center text-xs text-muted-foreground">
-            Forgot it? Restart the server with <code className="font-mono">ADMIN_PASSWORD</code> set.
-          </p>
+            <p className="mt-8 border-t pt-4 text-xs leading-relaxed text-muted-foreground">
+              Forgot it? Restart the server with <code className="font-mono">ADMIN_PASSWORD</code> set.
+            </p>
+          </div>
         </div>
       </div>
     </main>

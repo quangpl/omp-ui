@@ -157,6 +157,36 @@ export interface ComposeFile {
 }
 
 /**
+ * POST /docker/quick-run body: `docker run -d` with smart defaults. The image is pulled first when
+ * missing; busy host ports move to the next free one and a taken name gets a "-2" suffix.
+ */
+export interface QuickRunSpec extends Omit<RunContainerSpec, "ports"> {
+  /** Publish every port the image EXPOSEs (ignored when `ports` is given). */
+  autoPorts?: boolean;
+  /** Container ports with a preferred host port (default: same port, 8000+port below 1024). */
+  ports?: { container: number; host?: number; protocol?: "tcp" | "udp" }[];
+}
+
+/** POST /docker/quick-compose body: exactly one of `template`, `yaml` or `url`. */
+export interface QuickComposeSpec {
+  /** Preferred project name; a taken one gets a "-2" suffix. */
+  name?: string;
+  template?: string;
+  yaml?: string;
+  /** Raw compose file URL; GitHub/GitLab/Gist page links are turned into raw links. */
+  url?: string;
+  env?: EnvVar[];
+}
+
+/** GET /docker/running: running containers and compose projects (header badge and popover). */
+export interface RunningSummary {
+  available: boolean;
+  error: string | null;
+  containers: DockerContainer[];
+  composeProjects: ComposeProject[];
+}
+
+/**
  * NDJSON events of long docker jobs (pull, run, compose up/down/pull): output lines while the
  * command works, then one `done`.
  */
@@ -164,7 +194,7 @@ export type DockerJobEvent =
   | { type: "log"; line: string }
   | { type: "done"; ok: boolean; message: string; id?: string };
 
-/** GET /docker/hub/search */
+/** GET /docker/registry/search */
 export interface HubRepository {
   /** Pullable name: "postgres" for official images, else "owner/name". */
   name: string;
@@ -172,6 +202,8 @@ export interface HubRepository {
   stars: number;
   pulls: number;
   official: boolean;
+  /** Docker Hub "Verified Publisher" image. */
+  verified?: boolean;
 }
 
 /** GET /docker/hub/tags */

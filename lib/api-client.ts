@@ -4,10 +4,15 @@ import type {
   AppSettings,
   Board,
   BoardWithCounts,
+  BoardPushResult,
   CardDraft,
   Comment,
   AiStats,
   OmpSkill,
+  OmpConfigSnapshot,
+  OmpConfigUpdate,
+  OmpModel,
+  MemoryStatus,
   Dashboard,
   DraftStreamEvent,
   FsBrowseResult,
@@ -36,9 +41,23 @@ import type {
   HubRepository,
   HubTag,
   PruneKind,
+  QuickComposeSpec,
+  QuickRunSpec,
   RunContainerSpec,
+  RunningSummary,
   TemplateCatalog,
 } from "@/lib/docker-types";
+import type { DiffSummary, TaskDiff } from "@/lib/diff-types";
+import type {
+  MemoryDetail,
+  MemoryForgetResult,
+  MemoryLayer,
+  MemoryListResponse,
+  MemorySearchResponse,
+  MemorySessionDetail,
+  MemorySessionsResponse,
+  MemoryStoreStats,
+} from "@/lib/memory-types";
 
 /** Thrown for non-2xx responses. `status` 401 means the session expired. */
 export class ApiRequestError extends Error {
@@ -176,6 +195,23 @@ async function dockerJob(
   }
 }
 
+/** Filters shared by the memory list and search. `range`: 24h | 7d | 30d | 90d | all. */
+export type MemoryFilters = {
+  project?: string | null;
+  type?: string | null;
+  range?: string | null;
+};
+
+/** `?a=1&b=2` from defined, non-empty values ("" when none). */
+function memoryQuery(params: Record<string, string | number | null | undefined>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined && value !== "") query.set(key, String(value));
+  }
+  const qs = query.toString();
+  return qs ? `?${qs}` : "";
+}
+
 export const api = {
   auth: {
     status: () => request<{ configured: boolean; authenticated: boolean }>("/auth/status"),
@@ -203,6 +239,43 @@ export const api = {
     get: () => request<AppSettings>("/settings"),
     update: (patch: Partial<AppSettings>) =>
       request<AppSettings>("/settings", { method: "PATCH", json: patch }),
+  },
+  /** omp's user config.yml (Settings → OMP); changes apply to the next agent run. */
+  ompConfig: {
+    get: () => request<OmpConfigSnapshot>("/omp-config"),
+    update: (update: OmpConfigUpdate) =>
+      request<OmpConfigSnapshot>("/omp-config", { method: "PUT", json: update }),
+    /** Chat models omp can use; `refresh` bypasses the server's 5 min cache. */
+    models: (refresh = false) =>
+      request<{ models: OmpModel[] }>(`/omp-config/models${refresh ? "?refresh=1" : ""}`),
+  },
+  /** The local agentmemory server (Settings → Memory). */
+  memory: {
+    /** `refresh` re-probes the agentmemory CLI instead of the server's 1 min cache. */
+    status: (refresh = false) => request<MemoryStatus>(`/memory${refresh ? "?refresh=1" : ""}`),
+    /** Start the server; answers within a minute with `starting: true` while it still boots. */
+    start: () => request<MemoryStatus>("/memory/start", { method: "POST" }),
+    /** `agentmemory connect omp --with-mcp`; restart omp sessions to load it. */
+    connectOmp: () => request<MemoryStatus>("/memory/connect-omp", { method: "POST" }),
+    // Browsing (the /memory page). A down server answers 503 `MemoryUnavailable`.
+    /** Long-term memories, newest first; `q` ranks by relevance. */
+    list: (filters: MemoryFilters & { q?: string; cursor?: string | null; limit?: number } = {}) =>
+      request<MemoryListResponse>(`/memory/memories${memoryQuery(filters)}`),
+    /** Hybrid search across memories and session observations. */
+    search: (q: string, filters: MemoryFilters & { layer?: "all" | "memory" | "observation"; limit?: number } = {}) =>
+      request<MemorySearchResponse>(`/memory/search${memoryQuery({ ...filters, q })}`),
+    get: (id: string, opts: { layer?: MemoryLayer; sessionId?: string | null } = {}) =>
+      request<MemoryDetail>(`/memory/memories/${encodeURIComponent(id)}${memoryQuery(opts)}`),
+    /** Permanently delete a memory, or an observation (`layer: "observation"` + its `sessionId`). */
+    forget: (id: string, opts: { layer?: MemoryLayer; sessionId?: string | null } = {}) =>
+      request<MemoryForgetResult>(`/memory/memories/${encodeURIComponent(id)}${memoryQuery(opts)}`, {
+        method: "DELETE",
+      }),
+    sessions: (filters: { project?: string | null; status?: string | null; q?: string; cursor?: string | null; limit?: number } = {}) =>
+      request<MemorySessionsResponse>(`/memory/sessions${memoryQuery(filters)}`),
+    session: (id: string, opts: { cursor?: string | null; limit?: number } = {}) =>
+      request<MemorySessionDetail>(`/memory/sessions/${encodeURIComponent(id)}${memoryQuery(opts)}`),
+    stats: () => request<MemoryStoreStats>("/memory/stats"),
   },
   boards: {
     list: () => request<BoardWithCounts[]>("/boards"),
@@ -272,6 +345,14 @@ export const api = {
       request<TaskWorkspace>(`/tasks/${id}/workspace`, { method: "DELETE" }),
     /** Git status of the folders the card ships from: its worktrees, else the project folders. */
     git: (id: string) => request<GitStatus[]>(`/tasks/${id}/git`),
+    /** The card's code changes (uncommitted plus commits ahead of the base branch), per repo. */
+    diff: (id: string, init?: { signal?: AbortSignal }) => request<TaskDiff>(`/tasks/${id}/diff`, init),
+    /** One/two-sentence summary of the changes; `pending` while the summary agent writes it. `regenerate` drops the cached one. */
+    diffSummary: (id: string, options: { regenerate?: boolean; signal?: AbortSignal } = {}) =>
+      request<DiffSummary>(`/tasks/${id}/diff/summary`, {
+        method: options.regenerate ? "POST" : "GET",
+        signal: options.signal,
+      }),
   },
   /** Files shared on a card (`scope` "tasks") or on a whole board (`scope` "boards"). */
   files: {
@@ -329,6 +410,9 @@ export const api = {
     /** Check out an existing branch in one project folder; returns its fresh status. */
     switchBranch: (boardId: string, input: { folder: string; branch: string }) =>
       request<GitStatus>(`/boards/${boardId}/git/branches`, { method: "POST", json: input }),
+    /** Header quick push: commit every project repo's changes and push to its default branch. */
+    pushBoard: (boardId: string) =>
+      request<BoardPushResult>(`/boards/${boardId}/git/push`, { method: "POST", json: {} }),
     /** Commit the task's changes and push straight to the default branch (all changed folders). */
     push: (taskId: string, input: { message?: string; folders?: string[] } = {}) =>
       request<GitActionResult>(`/tasks/${taskId}/git/push`, { method: "POST", json: input }),
@@ -378,6 +462,16 @@ export const api = {
     search: (q: string, registry: "dockerhub" | "quay" = "dockerhub") =>
       request<HubRepository[]>(`/docker/registry/search?q=${encodeURIComponent(q)}&registry=${registry}`),
     tags: (repo: string) => request<HubTag[]>(`/docker/registry/tags?repo=${encodeURIComponent(repo)}`),
+    /** Running containers + compose projects (cheap; the header badge polls it). */
+    running: () => request<RunningSummary>("/docker/running"),
+    /** `docker run -d` with smart defaults (free ports, unused name); `id` is the container id. */
+    quickRun: (spec: QuickRunSpec, onLine?: (line: string) => void) =>
+      dockerJob("/docker/quick-run", { method: "POST", json: spec }, onLine),
+    /** One-click compose up from a template, YAML or URL; `id` is the project name. */
+    quickCompose: (spec: QuickComposeSpec, onLine?: (line: string) => void) =>
+      dockerJob("/docker/quick-compose", { method: "POST", json: spec }, onLine),
+    composeFromUrl: (url: string) =>
+      request<{ yaml: string; url: string }>(`/docker/compose-url?url=${encodeURIComponent(url)}`),
   },
 };
 

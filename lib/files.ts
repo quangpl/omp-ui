@@ -164,6 +164,12 @@ const INLINE_TYPES: Record<string, string> = {
   ".gif": "image/gif",
   ".webp": "image/webp",
   ".pdf": "application/pdf",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
   ".txt": "text/plain; charset=utf-8",
   ".md": "text/plain; charset=utf-8",
   ".log": "text/plain; charset=utf-8",
@@ -172,7 +178,7 @@ const INLINE_TYPES: Record<string, string> = {
 };
 
 /**
- * Serve a file. Images, PDFs and plain text open inline; everything else (HTML, SVG, scripts)
+ * Serve a file. Images, video, audio, PDFs and plain text open inline; everything else (HTML, SVG, scripts)
  * is always a download so uploaded content never runs on this origin.
  */
 export async function fileResponse(

@@ -5,12 +5,13 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Plus } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
+import { toastCardAdded } from "@/components/board/card-added-toast";
 import { BoardMenu } from "@/components/board/board-menu";
 import type { BoardMenuActions } from "@/components/board/card-context-menu";
 import { ConnectionPill } from "@/components/board/connection-status";
-import { KanbanBoard } from "@/components/board/kanban-board";
+import { BoardBodySkeleton, KanbanBoard } from "@/components/board/kanban-board";
 import { NewTaskDialog, type NewTaskInput } from "@/components/board/new-task-form";
-import { GitIndicator } from "@/components/board/ship-actions";
+import { GitIndicator, canShip, shipLabels, shipTask } from "@/components/board/ship-actions";
 import { DeleteCardDialog, TaskDetail } from "@/components/board/task-detail";
 import { useNewCardTarget } from "@/components/new-card";
 import { Button } from "@/components/ui/button";
@@ -44,7 +45,13 @@ function BoardScreen() {
   const selectedTaskId = searchParams.get("task");
   const isMobile = useIsMobile();
 
-  const controller = useBoard(boardId);
+  const controller = useBoard(boardId, {
+    // Every way of adding a card on this board ends here: confirm it and show where it landed.
+    onCardAdded: (task) => {
+      setMobileColumn(task.status);
+      toastCardAdded(task, { onOpen: () => openTask(task.id) });
+    },
+  });
   const { board, columns, tasks, loading, error, subscribe } = controller;
   useDocumentTitle(board?.name);
   const git = useGitStatus(boardId, subscribe);
@@ -122,17 +129,16 @@ function BoardScreen() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selectedTaskId, columns, switchTask]);
 
-  const create = async (input: NewTaskInput) => {
-    const task = await controller.createTask(input);
-    if (task) setMobileColumn(task.status);
-    return task !== null;
-  };
+  const create = async (input: NewTaskInput) => (await controller.createTask(input)) !== null;
 
   // `N` / `Shift+N` and every "New card…" menu item land here while this board is open.
   useNewCardTarget(boardId, ({ start }) => setNewCard({ start }));
 
   const { createTask, revertToTodo, runAgent, stopAgent, reload } = controller;
   const refreshGit = git.refresh;
+  // Primitives, so menuActions (and every card) only change when shipping becomes (un)available.
+  const canPush = canShip(git.statuses);
+  const { prNoun, pushTarget } = shipLabels(git.statuses ?? []);
   const menuActions = useMemo<BoardMenuActions>(
     () => ({
       boardId,
@@ -140,14 +146,15 @@ function BoardScreen() {
       revertToTodo,
       runAgent,
       stopAgent,
+      // The server's task.updated event strikes the card's title through once it's pushed.
+      pushToMain: canPush
+        ? async (taskId) => {
+            await shipTask("push", taskId, { prNoun, pushTarget });
+          }
+        : null,
       duplicate: async (task) => {
         // A copy waits in To do even on auto-run boards: re-running a finished card is opt-in.
-        const copy = await createTask({
-          title: `${task.title} (copy)`,
-          description: task.description,
-          start: false,
-        });
-        if (copy) setMobileColumn(copy.status);
+        await createTask({ title: `${task.title} (copy)`, description: task.description, start: false });
       },
       requestDelete: setDeleting,
       newCard: (start) => setNewCard({ start }),
@@ -157,7 +164,7 @@ function BoardScreen() {
       },
       openSettings: () => setSettingsOpen(true),
     }),
-    [boardId, openTask, revertToTodo, runAgent, stopAgent, createTask, reload, refreshGit],
+    [boardId, openTask, revertToTodo, runAgent, stopAgent, canPush, prNoun, pushTarget, createTask, reload, refreshGit],
   );
 
   if (!board) {
@@ -188,14 +195,22 @@ function BoardScreen() {
         backHref="/"
         actions={
           <>
-            <ConnectionPill status={controller.connection} />
-            <GitIndicator boardId={boardId} statuses={git.statuses} onChanged={() => void git.refresh()} />
-            {/* Phones use the thumb-reachable floating button instead. */}
+            {/* Status group. Below lg (tablets, or a laptop with the sidebar open) it compacts:
+                the live pill keeps its dot and the git button drops the branch name. */}
+            <div className="flex min-w-0 items-center max-lg:[&_.font-mono]:hidden max-lg:[&_[role=status]>span:last-child]:sr-only">
+              <ConnectionPill status={controller.connection} />
+              <GitIndicator boardId={boardId} statuses={git.statuses} onChanged={() => void git.refresh()} />
+            </div>
+            <span aria-hidden className="mx-1 hidden h-5 w-px bg-border md:block" />
+            {/* Phones use the thumb-reachable floating button instead; tablets get the icon only. */}
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button className="h-9 max-md:hidden" onClick={() => setNewCard({})}>
+                <Button
+                  className="h-9 gap-1.5 transition-transform active:scale-[0.97] max-md:hidden max-lg:w-9 max-lg:px-0 motion-reduce:active:scale-100"
+                  onClick={() => setNewCard({})}
+                >
                   <Plus />
-                  Add card
+                  <span className="max-lg:sr-only">Add card</span>
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
@@ -265,7 +280,8 @@ function BoardScreen() {
 
 function BoardSkeleton() {
   return (
-    <div className="flex h-dvh animate-fade-in-soft flex-col overflow-hidden">
+    <div aria-busy="true" className="flex h-dvh animate-fade-in-soft flex-col overflow-hidden">
+      <span className="sr-only">Loading project…</span>
       <div className="pt-safe border-b">
         <div className="flex h-14 items-center gap-3 px-3 sm:px-4">
           <Skeleton className="size-9 rounded-full" />
@@ -273,27 +289,11 @@ function BoardSkeleton() {
             <Skeleton className="h-4 w-40" />
             <Skeleton className="h-3 w-56 max-w-full" />
           </div>
+          <Skeleton className="hidden h-7 w-16 rounded-full md:block" />
+          <Skeleton className="hidden h-9 w-28 lg:block" />
         </div>
       </div>
-      <div className="grid grid-cols-3 gap-1 border-b px-2 py-2 md:hidden">
-        {TASK_STATUSES.map((status) => (
-          <Skeleton key={status} className="h-7" />
-        ))}
-      </div>
-      <div className="flex flex-col gap-2.5 p-3 md:hidden">
-        {[0, 1, 2].map((i) => (
-          <Skeleton key={i} className="h-24 w-full rounded-lg" />
-        ))}
-      </div>
-      <div className="hidden min-h-0 flex-1 grid-cols-3 gap-3 p-3 md:grid lg:gap-4 lg:p-4">
-        {TASK_STATUSES.map((status) => (
-          <div key={status} className="flex flex-col gap-2 rounded-xl border bg-muted/40 p-3">
-            <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-20 w-full rounded-lg" />
-            <Skeleton className="h-16 w-full rounded-lg" />
-          </div>
-        ))}
-      </div>
+      <BoardBodySkeleton />
     </div>
   );
 }

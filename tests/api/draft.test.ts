@@ -49,17 +49,26 @@ async function events(res: Response): Promise<DraftStreamEvent[]> {
     .map((line) => JSON.parse(line) as DraftStreamEvent);
 }
 
-/** Card writer processes, oldest first: their argv and the prompt they were sent. */
+/**
+ * Card writer calls, oldest first: their worker's argv, the prompt and the steers it got. Workers
+ * are pooled, so one pid may serve several calls; a call's steers are those before its worker's
+ * next prompt.
+ */
 function cardWriterRuns(): { pid: number; argv: string[]; prompt: string; steers: string[] }[] {
   const log = readOmpLog();
-  return log
-    .filter((e) => e.kind === "command" && e.command?.type === "prompt" && String(e.command.message).startsWith("You are the card writer"))
-    .map((e) => ({
-      pid: e.pid,
-      argv: log.find((a) => a.kind === "argv" && a.pid === e.pid)?.argv ?? [],
-      prompt: String(e.command?.message),
-      steers: log.filter((s) => s.kind === "steer" && s.pid === e.pid).map((s) => s.message ?? ""),
-    }));
+  return log.flatMap((e, index) => {
+    if (e.kind !== "helper" || !String(e.prompt).startsWith("You are the card writer")) return [];
+    const next = log.findIndex((n, i) => i > index && n.kind === "helper" && n.pid === e.pid);
+    const calls = log.slice(index + 1, next === -1 ? undefined : next);
+    return [
+      {
+        pid: e.pid,
+        argv: e.argv ?? [],
+        prompt: String(e.prompt),
+        steers: calls.filter((s) => s.kind === "steer" && s.pid === e.pid).map((s) => s.message ?? ""),
+      },
+    ];
+  });
 }
 
 describe("POST /boards/:id/tasks/draft", () => {

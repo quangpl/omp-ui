@@ -1,16 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
+  AlignLeft,
   ArrowUp,
   CircleHelp,
   Ellipsis,
+  FileDiff,
+  LoaderCircle,
   MessageSquare,
   Paperclip,
   Rocket,
   Terminal,
   Trash2,
   TriangleAlert,
+  Upload,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -61,10 +65,11 @@ import type { BoardStreamListener } from "@/hooks/use-board";
 import { AgentLog } from "@/components/board/agent-log";
 import { StatusDot } from "@/components/board/board-column";
 import { CommentThread } from "@/components/board/comment-thread";
-import { DetailSection } from "@/components/board/detail-section";
+import { DETAIL_HEADING_CLASS, DetailSection } from "@/components/board/detail-section";
 import { errorMessage, formatDateTime, formatRelative } from "@/components/board/format";
+import { CodeChanges, useTaskDiff } from "@/components/board/code-changes";
 import { quickActionForKey, quickActionsFor, type QuickActionId } from "@/components/board/quick-actions";
-import { ShipActions, useTaskGitStatus } from "@/components/board/ship-actions";
+import { ShipActions, canShip, shipLabels, shipTask, useTaskGitStatus } from "@/components/board/ship-actions";
 import { AgentStateBadge } from "@/components/board/task-card";
 import { CreatedByNote, DelegatedCards, DependenciesSection } from "@/components/board/task-relations";
 import { WorkspaceSection } from "@/components/board/task-workspace";
@@ -100,6 +105,8 @@ export interface TaskDetailProps {
 /** Card details: a right-hand sheet on desktop, a near full-height drawer on phones. */
 export function TaskDetail(props: TaskDetailProps) {
   const { taskId, isMobile, onClose } = props;
+  // The Changes tab widens the desktop sheet so diffs and their file list fit side by side.
+  const [wide, setWide] = useState(false);
   // Keep rendering the last card while the panel animates closed.
   const [shownId, setShownId] = useState(taskId);
   useEffect(() => {
@@ -112,7 +119,7 @@ export function TaskDetail(props: TaskDetailProps) {
   };
   const visibleId = taskId ?? shownId;
   const content = visibleId ? (
-    <TaskDetailBody key={visibleId} {...props} taskId={visibleId} />
+    <TaskDetailBody key={visibleId} {...props} taskId={visibleId} onWideChange={setWide} />
   ) : null;
   const title = props.boardTask?.title ?? "Card";
 
@@ -120,14 +127,14 @@ export function TaskDetail(props: TaskDetailProps) {
     return (
       <Drawer open={open} onOpenChange={onOpenChange}>
         <DrawerContent
-          className="h-[95dvh] outline-none data-[vaul-drawer-direction=bottom]:max-h-[95dvh]"
+          className="h-[calc(100dvh-1rem-env(safe-area-inset-top))] outline-none data-[vaul-drawer-direction=bottom]:mt-0 data-[vaul-drawer-direction=bottom]:max-h-[calc(100dvh-1rem-env(safe-area-inset-top))] data-[vaul-drawer-direction=bottom]:rounded-t-2xl"
           onOpenAutoFocus={focusPanel}
           onEscapeKeyDown={keepOpenWhileEditing}
         >
           <DrawerTitle className="sr-only">{title}</DrawerTitle>
           <DrawerDescription className="sr-only">Card details, feedback and agent log</DrawerDescription>
           <DrawerClose asChild>
-            <Button variant="ghost" size="icon" className="absolute top-2 right-2 z-20 size-11">
+            <Button variant="ghost" size="icon" className="absolute top-2.5 right-2 z-20 size-11 rounded-full">
               <X />
               <span className="sr-only">Close</span>
             </Button>
@@ -141,7 +148,10 @@ export function TaskDetail(props: TaskDetailProps) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
-        className="w-full gap-0 p-0 outline-none data-[side=right]:sm:max-w-xl"
+        className={cn(
+          "w-full gap-0 p-0 outline-none data-[side=right]:sm:max-w-xl",
+          wide ? "data-[side=right]:lg:max-w-5xl" : "data-[side=right]:xl:max-w-2xl",
+        )}
         onOpenAutoFocus={focusPanel}
         onEscapeKeyDown={keepOpenWhileEditing}
       >
@@ -210,6 +220,10 @@ interface DetailState {
   runs: Run[];
 }
 
+/** Panel tabs in order; ] / [ step through them. */
+const DETAIL_TABS = ["activity", "log", "changes"] as const;
+type DetailTab = (typeof DETAIL_TABS)[number];
+
 function TaskDetailBody({
   taskId,
   boardTask,
@@ -217,15 +231,17 @@ function TaskDetailBody({
   tasks,
   onOpenTask,
   onClose,
+  isMobile,
   subscribe,
   upsertTask,
   removeTask,
   revertToTodo,
   gitStatuses,
   onGitChanged,
-}: TaskDetailProps & { taskId: string }) {
+  onWideChange,
+}: TaskDetailProps & { taskId: string; onWideChange: (wide: boolean) => void }) {
   const [detail, setDetail] = useState<DetailState | null>(null);
-  const [tab, setTab] = useState<"activity" | "log">("activity");
+  const [tab, setTab] = useState<DetailTab>("activity");
   const [agentBusy, setAgentBusy] = useState(false);
   const [shipRequested, setShipRequested] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -334,19 +350,36 @@ function TaskDetailBody({
     board.worktrees && (task?.status === "done" || shipRequested),
     task?.agentState,
   );
+  const diffState = useTaskDiff(
+    taskId,
+    task?.agentState,
+    tab === "changes" && (task?.agentState === "running" || task?.agentState === "queued"),
+  );
+  useEffect(() => onWideChange(tab === "changes"), [tab, onWideChange]);
 
   if (!task) {
     return (
-      <div className="flex flex-col gap-4 p-4 pr-14">
-        <Skeleton className="h-7 w-3/4" />
-        <div className="flex gap-2">
-          <Skeleton className="h-9 w-36" />
-          <Skeleton className="h-9 w-28" />
+      <div className="flex min-h-0 flex-1 flex-col" aria-busy>
+        <div className={cn("flex shrink-0 flex-col gap-3 border-b pr-14", isMobile ? "px-4 pt-2 pb-3" : "px-5 pt-5 pb-4")}>
+          <Skeleton className="h-7 w-3/4" />
+          <div className="flex gap-2">
+            <Skeleton className="h-6 w-24 rounded-full" />
+            <Skeleton className="h-6 w-20 rounded-full" />
+          </div>
+          {!isMobile && (
+            <div className="flex gap-2">
+              <Skeleton className="h-9 w-28" />
+              <Skeleton className="h-9 w-36" />
+            </div>
+          )}
         </div>
-        <Skeleton className="h-24 w-full" />
-        <Skeleton className="h-9 w-full" />
-        <Skeleton className="h-16 w-2/3 self-end" />
-        <Skeleton className="h-20 w-5/6" />
+        <div className="flex flex-col gap-5 px-4 py-5 md:px-5">
+          <Skeleton className="h-20 w-full rounded-xl" />
+          <Skeleton className="h-24 w-full" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-16 w-2/3 self-end" />
+          <Skeleton className="h-20 w-5/6" />
+        </div>
       </div>
     );
   }
@@ -382,26 +415,46 @@ function TaskDetailBody({
     }
   };
 
+  // Same rule as the board: Push to main needs a project folder that is a git repo with a remote.
+  const canPush = canShip(gitStatuses);
+
+  const pushToMain = async () => {
+    const outcome = await shipTask("push", task.id, shipLabels(gitStatuses ?? []));
+    if (!outcome) return;
+    // Brand-new comment: the SSE copy, if it already arrived, wins. task.updated strikes the title.
+    applyCommentResponse(outcome.comment, Number.NEGATIVE_INFINITY);
+    if (board.worktrees) workspaceGit.refresh();
+    onGitChanged();
+  };
+
   const runQuickAction = async (id: QuickActionId) => {
-    if (id !== "revert") return toggleAgent(id !== "stop");
+    if (id !== "revert" && id !== "push") return toggleAgent(id !== "stop");
     setAgentBusy(true);
     try {
-      await revertToTodo(task.id);
+      await (id === "push" ? pushToMain() : revertToTodo(task.id));
     } finally {
       setAgentBusy(false);
     }
   };
 
-  const quickActions = quickActionsFor(task);
+  const quickActions = quickActionsFor(task, { canPush });
   quickKeyRef.current = (event) => {
-    if (event.defaultPrevented || event.repeat || event.isComposing || agentBusy) return;
+    if (event.defaultPrevented || event.repeat || event.isComposing) return;
     // Only keys pressed inside this panel (not in menus or confirm dialogs portaled above it).
     const panel = scrollRef.current?.closest("[role='dialog']");
     const target = event.target;
     if (!(target instanceof HTMLElement) || !(target === document.body || panel?.contains(target))) return;
     // Typing in a field never triggers single-key actions.
     if (target.isContentEditable || target.closest("input, textarea, select, [contenteditable]")) return;
-    const action = quickActionForKey(task, event);
+    // ] / [: next / previous tab.
+    if ((event.key === "]" || event.key === "[") && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      const index = DETAIL_TABS.indexOf(tab);
+      setTab(DETAIL_TABS[(index + (event.key === "]" ? 1 : -1) + DETAIL_TABS.length) % DETAIL_TABS.length]);
+      return;
+    }
+    if (agentBusy) return;
+    const action = quickActionForKey(task, event, { canPush });
     if (!action) return;
     event.preventDefault();
     void runQuickAction(action.id);
@@ -459,195 +512,333 @@ function TaskDetailBody({
     }
   };
 
-  return (
-    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-      <div className="flex flex-col gap-3 px-4 pt-3 pb-4 md:pt-4">
-        <div className="pr-12">
-          <TitleEditor task={task} onSave={(title) => save({ title })} />
-          <p className="mt-0.5 px-1.5 text-xs text-muted-foreground">
-            Created <span title={formatDateTime(task.createdAt)}>{formatRelative(task.createdAt)}</span>
-          </p>
-          <CreatedByNote task={task} cards={tasks} onOpenCard={onOpenTask} />
-        </div>
+  const latestRun = runs.reduce<Run | null>(
+    (latest, run) => (!latest || run.startedAt > latest.startedAt ? run : latest),
+    null,
+  );
 
-        <div className="flex flex-wrap items-center gap-2">
-          <span
-            role="status"
-            aria-label="Status"
-            title="Status follows the agent. Use the quick actions to change it."
-            className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-sm"
-          >
-            <StatusDot status={task.status} />
-            {STATUS_LABELS[task.status]}
-          </span>
-          <AgentStateBadge state={task.agentState} retryAt={task.retryAt} />
-          <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
-            {quickActions.map((action, index) => {
-              const Icon = action.icon;
-              return (
-                <Tooltip key={action.id}>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant={index > 0 ? "ghost" : action.id === "stop" ? "outline" : "default"}
-                      className="h-11 px-4 md:h-9"
-                      disabled={agentBusy}
-                      onClick={() => void runQuickAction(action.id)}
-                    >
-                      <Icon className={action.filled ? "fill-current" : undefined} />
-                      {action.label}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {action.hint} <Kbd>{action.shortcut}</Kbd>
-                  </TooltipContent>
-                </Tooltip>
-              );
-            })}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-11 md:size-9" aria-label="More card actions">
-                  <Ellipsis />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-48">
-                <DropdownMenuItem
-                  className="max-md:min-h-11"
-                  disabled={shipVisible}
-                  onSelect={() => setShipRequested(true)}
-                >
-                  <Rocket />
-                  Ship changes…
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  variant="destructive"
-                  className="max-md:min-h-11"
-                  onSelect={() => setDeleteOpen(true)}
-                >
-                  <Trash2 />
-                  Delete card
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
-
-        {task.agentState === "error" && (
-          <Alert variant="destructive">
-            <TriangleAlert />
-            <AlertTitle>
-              {task.retryAt ? `Agent failed — retrying automatically (retry ${task.autoRetries})` : "Agent failed"}
-            </AlertTitle>
-            <AlertDescription className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words">
-              {task.agentError || "The last run ended with an error."}
-              {task.retryAt && (
-                <span className="mt-1 block text-muted-foreground" title={formatDateTime(task.retryAt)}>
-                  Next attempt{" "}
-                  {Date.parse(task.retryAt) - Date.now() < 45_000 ? "in a few seconds" : formatRelative(task.retryAt)}
-                  ; Stop cancels it.
-                </span>
-              )}
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {task.question && (
-          <QuestionPanel question={task.question} onAnswer={answerQuestion} onDismiss={dismissQuestion} />
-        )}
-
-        {shipVisible && (
-          <ShipActions
-            task={task}
-            statuses={board.worktrees ? workspaceGit.statuses : gitStatuses}
-            fromWorkspace={board.worktrees}
-            onShipped={(comment) => {
-              // Brand-new comment: the SSE copy, if it already arrived, wins.
-              applyCommentResponse(comment, Number.NEGATIVE_INFINITY);
-              if (board.worktrees) workspaceGit.refresh();
-              onGitChanged();
-            }}
-          />
-        )}
-
-        <DescriptionEditor task={task} onSave={(description) => save({ description })} />
-
-        <DependenciesSection
-          task={task}
-          cards={tasks}
-          onOpenCard={onOpenTask}
-          onChange={(blockedBy) => save({ blockedBy })}
-        />
-        <DelegatedCards task={task} cards={tasks} onOpenCard={onOpenTask} />
-        {board.worktrees && <WorkspaceSection task={task} onRemoved={workspaceGit.refresh} />}
-        <DetailSection icon={Paperclip} title="Files">
-          <p className="text-xs text-muted-foreground">
-            The agent can read these files and saves its outputs and screenshots here.
-          </p>
-          <FilesPanel
-            scope="tasks"
-            id={task.id}
-            emptyHint="No files yet. Add files for the agent, or let it save its results here."
-          />
-        </DetailSection>
-      </div>
-
-      <Tabs value={tab} onValueChange={(value) => setTab(value as "activity" | "log")} className="gap-0">
-        <div className="sticky top-0 z-10 border-b bg-popover px-4 pb-2">
-          <TabsList className="w-full group-data-horizontal/tabs:h-11 md:group-data-horizontal/tabs:h-9">
-            <TabsTrigger value="activity">
-              <MessageSquare />
-              Activity
-              {comments.length > 0 && (
-                <span className="text-xs text-muted-foreground tabular-nums">{comments.length}</span>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="log">
-              <Terminal />
-              Agent log
-              {active && (
-                <span aria-label="Agent active" className="size-1.5 animate-pulse rounded-full bg-sky-500" />
-              )}
-            </TabsTrigger>
-          </TabsList>
-        </div>
-        <TabsContent value="activity">
-          {detail ? (
-            <CommentThread
-              task={task}
-              comments={comments}
-              cards={tasks}
-              onOpenCard={onOpenTask}
-              onSend={send}
-              onSetResolved={setResolved}
-            />
-          ) : (
-            <ThreadSkeleton />
-          )}
-        </TabsContent>
-        <TabsContent value="log" forceMount className="data-[state=inactive]:hidden">
-          {detail ? (
-            <AgentLog runs={runs} subscribe={subscribe} scrollRef={scrollRef} visible={tab === "log"} />
-          ) : (
-            <ThreadSkeleton />
-          )}
-        </TabsContent>
-      </Tabs>
-
-      <footer className="flex items-center justify-between gap-3 border-t px-4 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
-        <span className="text-xs text-muted-foreground">
-          Updated {formatRelative(task.updatedAt)}
-        </span>
-        <Button variant="destructive" className="h-11 md:h-8" onClick={() => setDeleteOpen(true)}>
+  const moreMenu = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant={isMobile ? "outline" : "ghost"}
+          size="icon"
+          className={cn("shrink-0", isMobile ? "size-12" : "size-9")}
+          aria-label="More card actions"
+        >
+          <Ellipsis />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" side={isMobile ? "top" : "bottom"} className="w-52">
+        <DropdownMenuItem className="max-md:min-h-11" disabled={shipVisible} onSelect={() => setShipRequested(true)}>
+          <Rocket />
+          Ship changes…
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" className="max-md:min-h-11" onSelect={() => setDeleteOpen(true)}>
           <Trash2 />
           Delete card
-        </Button>
-        <DeleteCardDialog
-          title={task.title}
-          open={deleteOpen}
-          onOpenChange={setDeleteOpen}
-          onConfirm={remove}
-        />
-      </footer>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
+  const actionIcon = (action: (typeof quickActions)[number], index: number) => {
+    if (agentBusy && index === 0) return <LoaderCircle className="animate-spin" />;
+    const Icon = action.icon;
+    return <Icon className={action.filled ? "fill-current" : undefined} />;
+  };
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <header className={cn("shrink-0 border-b", isMobile ? "px-4 pt-1.5 pb-3" : "px-5 pt-4 pb-3.5")}>
+        <div className={isMobile ? "pr-11" : "pr-8"}>
+          <TitleEditor task={task} onSave={(title) => save({ title })} />
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1.5 px-1.5">
+            <span
+              role="status"
+              aria-label="Status"
+              title="Status follows the agent. Use the quick actions to change it."
+              className="inline-flex h-6 items-center gap-1.5 rounded-full border bg-background px-2.5 text-xs font-medium"
+            >
+              <StatusDot status={task.status} />
+              {STATUS_LABELS[task.status]}
+            </span>
+            <AgentStateBadge state={task.agentState} retryAt={task.retryAt} />
+            {task.pushedAt && (
+              <span
+                title={`Pushed to main ${formatDateTime(task.pushedAt)}`}
+                className="inline-flex h-6 items-center gap-1 rounded-full bg-emerald-500/10 px-2 text-xs font-medium text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-300"
+              >
+                <Upload className="size-3" />
+                Pushed
+              </span>
+            )}
+          </div>
+          {task.createdByTaskId && (
+            <div className="mt-2">
+              <CreatedByNote task={task} cards={tasks} onOpenCard={onOpenTask} />
+            </div>
+          )}
+        </div>
+        {!isMobile && (
+          <div className="mt-3.5 flex flex-wrap items-center gap-1.5 px-0.5">
+            {quickActions.map((action, index) => (
+              <Tooltip key={action.id}>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant={index === 0 && action.id !== "stop" ? "default" : "outline"}
+                    className="h-9 px-3.5 transition-transform active:scale-[0.97]"
+                    disabled={agentBusy}
+                    onClick={() => void runQuickAction(action.id)}
+                  >
+                    {actionIcon(action, index)}
+                    {action.label}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {action.hint} <Kbd>{action.shortcut}</Kbd>
+                </TooltipContent>
+              </Tooltip>
+            ))}
+            <div className="ml-auto">{moreMenu}</div>
+          </div>
+        )}
+      </header>
+
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
+        <div className="flex min-w-0 flex-col gap-6 px-4 pt-4 pb-6 md:px-5 md:pt-5">
+          {task.agentState === "error" && (
+            <Alert variant="destructive">
+              <TriangleAlert />
+              <AlertTitle>
+                {task.retryAt ? `Agent failed — retrying automatically (retry ${task.autoRetries})` : "Agent failed"}
+              </AlertTitle>
+              <AlertDescription className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words">
+                {task.agentError || "The last run ended with an error."}
+                {task.retryAt && (
+                  <span className="mt-1 block text-muted-foreground" title={formatDateTime(task.retryAt)}>
+                    Next attempt{" "}
+                    {Date.parse(task.retryAt) - Date.now() < 45_000 ? "in a few seconds" : formatRelative(task.retryAt)}
+                    ; Stop cancels it.
+                  </span>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {task.question && (
+            <QuestionPanel question={task.question} onAnswer={answerQuestion} onDismiss={dismissQuestion} />
+          )}
+
+          {shipVisible && (
+            <ShipActions
+              task={task}
+              statuses={board.worktrees ? workspaceGit.statuses : gitStatuses}
+              fromWorkspace={board.worktrees}
+              onShipped={(comment) => {
+                // Brand-new comment: the SSE copy, if it already arrived, wins.
+                applyCommentResponse(comment, Number.NEGATIVE_INFINITY);
+                if (board.worktrees) workspaceGit.refresh();
+                onGitChanged();
+              }}
+            />
+          )}
+
+          <dl className="grid grid-cols-1 gap-x-6 gap-y-2 rounded-xl border bg-muted/30 px-3.5 py-3 text-sm md:grid-cols-2 md:gap-y-3 md:p-4">
+            <MetaItem label="Created">
+              <time dateTime={task.createdAt} title={formatDateTime(task.createdAt)}>
+                {formatRelative(task.createdAt)}
+              </time>
+            </MetaItem>
+            <MetaItem label="Updated">
+              <time dateTime={task.updatedAt} title={formatDateTime(task.updatedAt)}>
+                {formatRelative(task.updatedAt)}
+              </time>
+            </MetaItem>
+            <MetaItem label="Agent runs">
+              {latestRun ? (
+                <span className="tabular-nums">
+                  {runs.length}
+                  <span className="text-muted-foreground" title={formatDateTime(latestRun.startedAt)}>
+                    {" "}
+                    · last {formatRelative(latestRun.startedAt)}
+                  </span>
+                </span>
+              ) : (
+                <span className="text-muted-foreground">{detail ? "None yet" : "…"}</span>
+              )}
+            </MetaItem>
+            <MetaItem label="Pushed to main">
+              {task.pushedAt ? (
+                <time dateTime={task.pushedAt} title={formatDateTime(task.pushedAt)}>
+                  {formatRelative(task.pushedAt)}
+                </time>
+              ) : (
+                <span className="text-muted-foreground">Not yet</span>
+              )}
+            </MetaItem>
+          </dl>
+
+          <DescriptionEditor task={task} onSave={(description) => save({ description })} />
+
+          <DependenciesSection
+            task={task}
+            cards={tasks}
+            onOpenCard={onOpenTask}
+            onChange={(blockedBy) => save({ blockedBy })}
+          />
+          <DelegatedCards task={task} cards={tasks} onOpenCard={onOpenTask} />
+          {board.worktrees && <WorkspaceSection task={task} onRemoved={workspaceGit.refresh} />}
+          <DetailSection icon={Paperclip} title="Files">
+            <p className="text-xs text-muted-foreground">
+              The agent can read these files and saves its outputs and screenshots here.
+            </p>
+            <FilesPanel
+              scope="tasks"
+              id={task.id}
+              emptyHint="No files yet. Add files for the agent, or let it save its results here."
+            />
+          </DetailSection>
+        </div>
+
+        <Tabs value={tab} onValueChange={(value) => setTab(value as DetailTab)} className="gap-0">
+          <div className="sticky top-0 z-10 border-y bg-popover/95 backdrop-blur supports-backdrop-filter:bg-popover/85">
+            <div className="overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <TabsList
+                variant="line"
+                className="w-max min-w-full justify-start gap-1 px-2 group-data-horizontal/tabs:h-12 md:px-3 md:group-data-horizontal/tabs:h-11"
+              >
+                <TabsTrigger value="activity" className={TAB_TRIGGER_CLASS}>
+                  <MessageSquare />
+                  Activity
+                  {comments.length > 0 && <TabCount>{comments.length}</TabCount>}
+                </TabsTrigger>
+                <TabsTrigger value="log" className={TAB_TRIGGER_CLASS}>
+                  <Terminal />
+                  Agent log
+                  {active ? (
+                    <span
+                      aria-label="Agent active"
+                      className="size-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse"
+                    />
+                  ) : (
+                    runs.length > 0 && <TabCount>{runs.length}</TabCount>
+                  )}
+                </TabsTrigger>
+                <TabsTrigger value="changes" className={TAB_TRIGGER_CLASS}>
+                  <FileDiff />
+                  Changes
+                  {diffState.diff && diffState.diff.stats.files > 0 && (
+                    <TabCount>{diffState.diff.stats.files}</TabCount>
+                  )}
+                </TabsTrigger>
+                <span className="ml-auto hidden items-center gap-1 pr-1 text-[11px] text-muted-foreground lg:flex" aria-hidden>
+                  <Kbd>[</Kbd>
+                  <Kbd>]</Kbd>
+                  switch tabs
+                </span>
+              </TabsList>
+            </div>
+          </div>
+          <TabsContent value="activity" className="min-w-0">
+            {detail ? (
+              <CommentThread
+                task={task}
+                comments={comments}
+                cards={tasks}
+                onOpenCard={onOpenTask}
+                onSend={send}
+                onSetResolved={setResolved}
+                runs={runs}
+              />
+            ) : (
+              <ThreadSkeleton />
+            )}
+          </TabsContent>
+          <TabsContent value="log" forceMount className="min-w-0 data-[state=inactive]:hidden">
+            {detail ? (
+              <AgentLog runs={runs} subscribe={subscribe} scrollRef={scrollRef} visible={tab === "log"} />
+            ) : (
+              <ThreadSkeleton />
+            )}
+          </TabsContent>
+          <TabsContent value="changes" forceMount className="min-w-0 data-[state=inactive]:hidden">
+            <CodeChanges taskId={task.id} active={active} visible={tab === "changes"} state={diffState} />
+          </TabsContent>
+        </Tabs>
+
+        <footer className="flex flex-wrap items-center justify-between gap-3 border-t bg-muted/20 px-4 py-4 md:px-5">
+          <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+            Deleting removes the card with its feedback and agent logs.
+          </p>
+          <Button variant="destructive" className="h-11 max-md:w-full md:h-8" onClick={() => setDeleteOpen(true)}>
+            <Trash2 />
+            Delete card
+          </Button>
+          <DeleteCardDialog
+            title={task.title}
+            open={deleteOpen}
+            onOpenChange={setDeleteOpen}
+            onConfirm={remove}
+          />
+        </footer>
+      </div>
+
+      {isMobile && (
+        <div className="flex shrink-0 items-center gap-2 border-t bg-popover/95 px-3 pt-2.5 pb-[calc(0.625rem+env(safe-area-inset-bottom))] backdrop-blur supports-backdrop-filter:bg-popover/85">
+          {quickActions.map((action, index) =>
+            index === 0 ? (
+              <Button
+                key={action.id}
+                variant={action.id === "stop" ? "outline" : "default"}
+                className="h-12 min-w-0 flex-1 text-[15px] transition-transform active:scale-[0.98]"
+                disabled={agentBusy}
+                onClick={() => void runQuickAction(action.id)}
+              >
+                {actionIcon(action, index)}
+                <span className="truncate">{action.label}</span>
+              </Button>
+            ) : (
+              <Button
+                key={action.id}
+                variant="outline"
+                size="icon"
+                aria-label={action.label}
+                title={action.hint}
+                className="size-12 shrink-0 transition-transform active:scale-95"
+                disabled={agentBusy}
+                onClick={() => void runQuickAction(action.id)}
+              >
+                {actionIcon(action, index)}
+              </Button>
+            ),
+          )}
+          {moreMenu}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const TAB_TRIGGER_CLASS =
+  "flex-none gap-1.5 px-3 group-data-horizontal/tabs:after:bottom-[-3px] max-md:min-w-11";
+
+/** Count pill in a tab label. */
+function TabCount({ children }: { children: number }) {
+  return (
+    <span className="min-w-5 rounded-full bg-muted px-1.5 py-px text-center text-[11px] font-medium text-muted-foreground tabular-nums">
+      {children}
+    </span>
+  );
+}
+
+/** One label/value row of the card's details grid. */
+function MetaItem({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex min-w-0 items-baseline justify-between gap-3 md:flex-col md:items-start md:justify-start md:gap-0.5">
+      <dt className="shrink-0 text-xs text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 truncate text-right font-medium md:text-left">{children}</dd>
     </div>
   );
 }
@@ -688,7 +879,7 @@ function QuestionPanel({
   return (
     <section
       aria-label="Agent question"
-      className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3"
+      className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 md:p-4"
     >
       <div className="flex items-center gap-2">
         <CircleHelp aria-hidden className="size-4 shrink-0 text-amber-700 dark:text-amber-300" />
@@ -700,7 +891,7 @@ function QuestionPanel({
           disabled={busy}
           onClick={() => void onDismiss()}
           title="Hide the question without answering"
-          className="h-8 px-2 text-xs text-muted-foreground"
+          className="h-8 px-2 text-xs text-muted-foreground max-md:h-11 max-md:px-3"
         >
           Dismiss
         </Button>
@@ -772,7 +963,7 @@ function TitleEditor({ task, onSave }: { task: Task; onSave: (title: string) => 
       aria-label={task.pushedAt ? "Card title (pushed to main)" : "Card title"}
       title={task.pushedAt ? `Pushed to main ${new Date(task.pushedAt).toLocaleString()}` : undefined}
       className={cn(
-        "min-h-0 resize-none border-transparent bg-transparent px-1.5 py-1 text-lg leading-snug font-semibold shadow-none hover:border-input md:text-lg dark:bg-transparent",
+        "max-h-32 min-h-0 resize-none overflow-y-auto border-transparent bg-transparent px-1.5 py-1 text-lg leading-snug font-semibold tracking-tight shadow-none hover:border-input md:text-xl dark:bg-transparent",
         task.pushedAt && "line-through decoration-2",
       )}
       onFocus={() => {
@@ -828,15 +1019,16 @@ function DescriptionEditor({
   };
 
   return (
-    <div className="flex flex-col gap-2">
-      <label htmlFor={`description-${task.id}`} className="px-0.5 text-xs font-medium text-muted-foreground">
+    <div className="flex min-w-0 flex-col gap-2">
+      <label htmlFor={`description-${task.id}`} className={cn(DETAIL_HEADING_CLASS, "min-h-9")}>
+        <AlignLeft aria-hidden />
         Description
       </label>
       <Textarea
         id={`description-${task.id}`}
         value={draft}
         placeholder="Add more detail for the agent: context, acceptance criteria, files to look at…"
-        className="max-h-[50dvh] min-h-20 resize-none"
+        className="max-h-[50dvh] min-h-24 resize-none leading-relaxed"
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && dirty) {
@@ -850,10 +1042,10 @@ function DescriptionEditor({
       />
       {dirty && (
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" className="h-11 md:h-8" disabled={saving} onClick={() => setDraft(base)}>
+          <Button variant="ghost" className="h-11 max-md:flex-1 md:h-8" disabled={saving} onClick={() => setDraft(base)}>
             Cancel
           </Button>
-          <Button className="h-11 md:h-8" disabled={saving} onClick={() => void save()}>
+          <Button className="h-11 max-md:flex-1 md:h-8" disabled={saving} onClick={() => void save()}>
             {saving ? "Saving…" : "Save"}
           </Button>
         </div>

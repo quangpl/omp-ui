@@ -2,6 +2,7 @@
 
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import {
+  ArrowUp,
   Check,
   ChevronLeft,
   ChevronsUpDown,
@@ -18,6 +19,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { ApiRequestError, api } from "@/lib/api-client";
 import type { AgentState, Comment, GitActionResult, GitBranches, GitStatus, Task } from "@/lib/types";
@@ -34,8 +36,8 @@ function changesLabel(count: number): string {
 }
 
 /**
- * Compact header badge: current branch + uncommitted change count. Tap to list every repo and
- * switch any of them to another branch.
+ * Compact header badge: current branch, plus a change-count chip. Tap the branch to list every
+ * repo and switch any of them to another branch; tap the chip to commit and push everything.
  */
 export function GitIndicator({
   boardId,
@@ -44,7 +46,7 @@ export function GitIndicator({
 }: {
   boardId: string;
   statuses: GitStatus[] | null;
-  /** Called after a branch switch so the board can re-read git status. */
+  /** Called after a branch switch or quick push so the board can re-read git status. */
   onChanged: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -57,76 +59,179 @@ export function GitIndicator({
   const unpushed = repos.reduce((sum, repo) => sum + repo.ahead, 0);
 
   return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) setPicking(null);
-      }}
-    >
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          className="h-11 max-w-56 gap-1.5 px-2.5 font-normal text-muted-foreground md:h-9"
-          aria-label={`Git: ${primary.branch ?? "detached"}${changes ? `, ${changesLabel(changes)}` : ""}`}
-        >
-          <GitBranch />
-          <span className="truncate font-mono text-xs max-sm:hidden">
-            {primary.branch ?? "detached"}
-          </span>
-          {changes > 0 && (
-            <span className="shrink-0 rounded-full bg-amber-500/15 px-1.5 text-[11px] font-medium text-amber-700 tabular-nums dark:text-amber-300">
-              {changes}
-              <span className="max-sm:hidden"> {changes === 1 ? "change" : "changes"}</span>
+    <div className="flex min-w-0 items-center">
+      <Popover
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) setPicking(null);
+        }}
+      >
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            className="h-11 max-w-56 min-w-0 gap-1.5 px-2.5 font-normal text-muted-foreground md:h-9"
+            aria-label={`Git: ${primary.branch ?? "detached"}`}
+          >
+            <GitBranch />
+            <span className="truncate font-mono text-xs max-sm:hidden">
+              {primary.branch ?? "detached"}
             </span>
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-72 max-w-[calc(100vw-1.5rem)] p-0">
+          {picking ? (
+            <BranchPicker
+              boardId={boardId}
+              repo={picking}
+              onBack={() => setPicking(null)}
+              onSwitched={() => {
+                setOpen(false);
+                setPicking(null);
+                onChanged();
+              }}
+            />
+          ) : (
+            <>
+              <div className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">
+                Git status{unpushed > 0 ? ` · ${unpushed} unpushed commit${unpushed === 1 ? "" : "s"}` : ""}
+              </div>
+              <ul className="flex flex-col py-1">
+                {repos.map((repo) => (
+                  <li key={repo.folder} className="flex flex-col gap-0.5 px-3 py-2">
+                    <span className="truncate text-sm font-medium" title={repo.folder}>
+                      {folderName(repo.folder)}
+                    </span>
+                    <span className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                      <button
+                        type="button"
+                        onClick={() => setPicking(repo)}
+                        className="-mx-1 inline-flex min-h-8 max-w-full items-center gap-1 rounded-md px-1 font-mono hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                        aria-label={`Switch branch in ${folderName(repo.folder)} (on ${repo.branch ?? "detached HEAD"})`}
+                      >
+                        <GitBranch className="size-3 shrink-0" />
+                        <span className="truncate">{repo.branch ?? "detached"}</span>
+                        <ChevronsUpDown className="size-3 shrink-0 opacity-60" />
+                      </button>
+                      <span>{repo.dirty ? changesLabel(repo.changedFiles) : "clean"}</span>
+                      {repo.ahead > 0 && <span>{repo.ahead} ahead</span>}
+                      {repo.behind > 0 && <span>{repo.behind} behind</span>}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 max-w-[calc(100vw-1.5rem)] p-0">
-        {picking ? (
-          <BranchPicker
-            boardId={boardId}
-            repo={picking}
-            onBack={() => setPicking(null)}
-            onSwitched={() => {
-              setOpen(false);
-              setPicking(null);
-              onChanged();
-            }}
-          />
-        ) : (
-          <>
-            <div className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">
-              Git status{unpushed > 0 ? ` · ${unpushed} unpushed commit${unpushed === 1 ? "" : "s"}` : ""}
-            </div>
-            <ul className="flex flex-col py-1">
-              {repos.map((repo) => (
-                <li key={repo.folder} className="flex flex-col gap-0.5 px-3 py-2">
-                  <span className="truncate text-sm font-medium" title={repo.folder}>
-                    {folderName(repo.folder)}
-                  </span>
-                  <span className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
-                    <button
-                      type="button"
-                      onClick={() => setPicking(repo)}
-                      className="-mx-1 inline-flex min-h-8 max-w-full items-center gap-1 rounded-md px-1 font-mono hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                      aria-label={`Switch branch in ${folderName(repo.folder)} (on ${repo.branch ?? "detached HEAD"})`}
-                    >
-                      <GitBranch className="size-3 shrink-0" />
-                      <span className="truncate">{repo.branch ?? "detached"}</span>
-                      <ChevronsUpDown className="size-3 shrink-0 opacity-60" />
-                    </button>
-                    <span>{repo.dirty ? changesLabel(repo.changedFiles) : "clean"}</span>
-                    {repo.ahead > 0 && <span>{repo.ahead} ahead</span>}
-                    {repo.behind > 0 && <span>{repo.behind} behind</span>}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-      </PopoverContent>
-    </Popover>
+        </PopoverContent>
+      </Popover>
+      {(changes > 0 || unpushed > 0) && (
+        <QuickPushChip
+          boardId={boardId}
+          repos={repos}
+          changes={changes}
+          unpushed={unpushed}
+          onPushed={onChanged}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Amber "N changes" chip: one click commits every repo's changes and pushes to the default branch. */
+function QuickPushChip({
+  boardId,
+  repos,
+  changes,
+  unpushed,
+  onPushed,
+}: {
+  boardId: string;
+  repos: GitStatus[];
+  changes: number;
+  unpushed: number;
+  onPushed: () => void;
+}) {
+  const [pushing, setPushing] = useState(false);
+  const { pushTarget } = shipLabels(repos);
+  const noRemote = !canShip(repos);
+  const count = changes > 0 ? changes : unpushed;
+  const noun = changes > 0 ? (changes === 1 ? "change" : "changes") : "unpushed";
+  const what = changes > 0 ? changesLabel(changes) : `${unpushed} unpushed commit${unpushed === 1 ? "" : "s"}`;
+  const hint = noRemote
+    ? `${what} · add a git remote (origin) to push`
+    : pushing
+      ? `Pushing to ${pushTarget}…`
+      : changes > 0
+        ? `Commit ${what} and push to ${pushTarget}`
+        : `Push ${what} to ${pushTarget}`;
+
+  const push = async () => {
+    if (noRemote || pushing) return;
+    setPushing(true);
+    try {
+      const { results } = await api.git.pushBoard(boardId);
+      const failed = results.filter((r) => r.error);
+      const done = results.filter((r) => !r.error && !r.skipped);
+      if (done.length === 0 && failed.length === 0) {
+        toast("Nothing to push", { description: "No uncommitted or unpushed changes were found." });
+      } else if (done.length === 0) {
+        toast.error("Couldn't push", { description: failed[0]?.error ?? undefined });
+      } else if (failed.length > 0) {
+        toast.warning("Pushed some folders", {
+          description: failed.map((r) => `${folderName(r.folder)}: ${r.error}`).join("\n"),
+        });
+      } else {
+        const link = done.length === 1 ? done[0].url : null;
+        toast.success(`Pushed to ${pushTarget}`, {
+          action: link
+            ? { label: done[0].commit ? "View commit" : "Open", onClick: () => window.open(link, "_blank", "noopener") }
+            : undefined,
+        });
+      }
+    } catch (err) {
+      toast.error("Couldn't push", {
+        description:
+          err instanceof ApiRequestError && err.status === 409
+            ? "An agent is working in this project. Try again when it finishes."
+            : errorMessage(err),
+      });
+    } finally {
+      setPushing(false);
+      onPushed();
+    }
+  };
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={() => void push()}
+          aria-disabled={noRemote || pushing || undefined}
+          aria-busy={pushing || undefined}
+          aria-label={hint}
+          className="group -ml-1.5 flex h-11 shrink-0 items-center rounded-md px-1 outline-none focus-visible:ring-3 focus-visible:ring-ring/50 aria-disabled:cursor-default md:h-9"
+        >
+          <span
+            className={cn(
+              "inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 text-[11px] leading-5 font-medium text-amber-700 tabular-nums transition-[background-color,transform] dark:text-amber-300",
+              !noRemote &&
+                !pushing &&
+                "group-hover:bg-amber-500/30 group-active:scale-[0.96] motion-reduce:group-active:scale-100",
+            )}
+          >
+            {pushing ? (
+              <LoaderCircle className="size-3 animate-spin" />
+            ) : (
+              !noRemote && <ArrowUp className="size-3" />
+            )}
+            {count}
+            <span className="max-sm:hidden">{noun}</span>
+          </span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{hint}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -279,7 +384,61 @@ export function useTaskGitStatus(
   return { statuses, refresh };
 }
 
-type ShipAction = "pr" | "push";
+export type ShipAction = "pr" | "push";
+
+/** User-facing names for a set of repos: "PR" vs GitLab's "MR", and the branch a push lands on. */
+export function shipLabels(statuses: GitStatus[]): { prNoun: string; pushTarget: string } {
+  const repos = statuses.filter((status) => status.isRepo);
+  const branches = [...new Set(repos.map((repo) => repo.defaultBranch ?? "main"))];
+  return {
+    prNoun: repos[0]?.provider === "gitlab" ? "MR" : "PR",
+    pushTarget: branches.length === 1 ? branches[0] : "the default branch",
+  };
+}
+
+/** True when at least one folder is a git repo with a remote, so Push / Create PR can work. */
+export function canShip(statuses: GitStatus[] | null): boolean {
+  return statuses?.some((status) => status.isRepo && status.remoteUrl) ?? false;
+}
+
+/**
+ * Runs Create PR / Push to main for a card and toasts the outcome. Resolves the server's result,
+ * or null when the request itself failed (already toasted).
+ */
+export async function shipTask(
+  action: ShipAction,
+  taskId: string,
+  { prNoun, pushTarget }: { prNoun: string; pushTarget: string },
+): Promise<GitActionResult | null> {
+  try {
+    const outcome = action === "pr" ? await api.git.pr(taskId) : await api.git.push(taskId);
+    const failed = outcome.results.filter((r) => r.error);
+    const done = outcome.results.filter((r) => !r.error && !r.skipped);
+    if (done.length === 0 && failed.length === 0) {
+      toast("Nothing to ship", { description: "No uncommitted or unpushed changes were found." });
+    } else if (done.length === 0) {
+      toast.error(action === "pr" ? `Couldn't create the ${prNoun}` : "Couldn't push", {
+        description: failed[0]?.error ?? undefined,
+      });
+    } else if (failed.length > 0) {
+      toast.warning(
+        action === "pr" ? `${prNoun} created for some folders` : "Pushed some folders",
+        { description: `${failed.length} folder${failed.length === 1 ? "" : "s"} failed — see details.` },
+      );
+    } else {
+      toast.success(action === "pr" ? `${prNoun} created` : `Pushed to ${pushTarget}`);
+    }
+    return outcome;
+  } catch (err) {
+    toast.error(action === "pr" ? `Couldn't create the ${prNoun}` : "Couldn't push", {
+      description:
+        err instanceof ApiRequestError && err.status === 409
+          ? "The agent is still working. Try again when it finishes."
+          : errorMessage(err),
+    });
+    return null;
+  }
+}
 
 /**
  * "Ship" panel on a card: open a PR/MR or push straight to the default branch.
@@ -303,14 +462,10 @@ export function ShipActions({
   const [result, setResult] = useState<GitActionResult | null>(null);
 
   const repos = statuses?.filter((status) => status.isRepo) ?? [];
-  const primary = repos[0];
-  const isGitlab = primary?.provider === "gitlab";
-  const prNoun = isGitlab ? "MR" : "PR";
-  const branches = [...new Set(repos.map((repo) => repo.defaultBranch ?? "main"))];
-  const pushTarget = branches.length === 1 ? branches[0] : "the default branch";
+  const { prNoun, pushTarget } = shipLabels(repos);
   const agentActive = task.agentState === "running" || task.agentState === "queued";
   const hasChanges = repos.some((repo) => repo.dirty || repo.ahead > 0);
-  const noRemote = !repos.some((repo) => repo.remoteUrl);
+  const noRemote = !canShip(repos);
   // Without gh/glab the server pushes the branch and returns a pre-filled compare / new-MR page.
   const prOpensBrowser = !noRemote && !repos.some((repo) => repo.remoteUrl && repo.prCliAvailable);
 
@@ -339,35 +494,12 @@ export function ShipActions({
 
   const run = async (action: ShipAction) => {
     setBusy(action);
-    try {
-      const outcome =
-        action === "pr" ? await api.git.pr(task.id) : await api.git.push(task.id);
+    const outcome = await shipTask(action, task.id, { prNoun, pushTarget });
+    if (outcome) {
       setResult(outcome);
       onShipped(outcome.comment);
-      const failed = outcome.results.filter((r) => r.error);
-      const done = outcome.results.filter((r) => !r.error && !r.skipped);
-      if (done.length === 0 && failed.length === 0) {
-        toast("Nothing to ship", { description: "No uncommitted or unpushed changes were found." });
-      } else if (done.length === 0) {
-        toast.error(action === "pr" ? `Couldn't create the ${prNoun}` : "Couldn't push");
-      } else if (failed.length > 0) {
-        toast.warning(
-          action === "pr" ? `${prNoun} created for some folders` : "Pushed some folders",
-          { description: `${failed.length} folder${failed.length === 1 ? "" : "s"} failed — see details.` },
-        );
-      } else {
-        toast.success(action === "pr" ? `${prNoun} created` : `Pushed to ${pushTarget}`);
-      }
-    } catch (err) {
-      toast.error(action === "pr" ? `Couldn't create the ${prNoun}` : "Couldn't push", {
-        description:
-          err instanceof ApiRequestError && err.status === 409
-            ? "The agent is still working. Try again when it finishes."
-            : errorMessage(err),
-      });
-    } finally {
-      setBusy(null);
     }
+    setBusy(null);
   };
 
   const hint = agentActive
@@ -382,9 +514,23 @@ export function ShipActions({
   const workspaceBranches = [
     ...new Set(repos.flatMap((repo) => (repo.branch ? [repo.branch] : []))),
   ];
+  const changedFiles = repos.reduce((sum, repo) => sum + (repo.dirty ? repo.changedFiles : 0), 0);
+  const unpushed = repos.reduce((sum, repo) => sum + repo.ahead, 0);
+  const summary = [
+    changedFiles > 0 && changesLabel(changedFiles),
+    unpushed > 0 && `${unpushed} unpushed`,
+  ].filter(Boolean);
 
   return (
-    <ShipFrame>
+    <ShipFrame
+      aside={
+        summary.length > 0 ? (
+          <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground tabular-nums">
+            {summary.join(" · ")}
+          </span>
+        ) : null
+      }
+    >
       {fromWorkspace && (
         <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
           <GitBranch className="size-3.5 shrink-0" />
@@ -398,39 +544,45 @@ export function ShipActions({
           </span>
         </p>
       )}
-      <div className="flex flex-col gap-2 sm:flex-row">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,auto)]">
         <Button
-          className="h-11 w-full sm:w-auto sm:flex-1 md:h-9"
+          className="h-11 w-full min-w-0 transition-transform active:scale-[0.98] md:h-9"
           disabled={agentActive || busy !== null || noRemote}
           onClick={() => void run("pr")}
         >
           {busy === "pr" ? <LoaderCircle className="animate-spin" /> : <GitPullRequest />}
-          {busy === "pr" ? `Creating ${prNoun}…` : `Create ${prNoun}`}
+          <span className="truncate">{busy === "pr" ? `Creating ${prNoun}…` : `Create ${prNoun}`}</span>
         </Button>
         <Button
           variant="outline"
-          className="h-11 w-full sm:w-auto sm:flex-1 md:h-9"
+          className="h-11 w-full min-w-0 transition-transform active:scale-[0.98] md:h-9"
           disabled={agentActive || busy !== null || noRemote}
           onClick={() => void run("push")}
         >
           {busy === "push" ? <LoaderCircle className="animate-spin" /> : <Upload />}
-          {busy === "push" ? "Pushing…" : `Push to ${pushTarget}`}
+          <span className="truncate">{busy === "push" ? "Pushing…" : `Push to ${pushTarget}`}</span>
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">{hint}</p>
+      <p className="text-xs leading-relaxed text-muted-foreground">{hint}</p>
 
       {result && <ShipResults result={result} prNoun={prNoun} />}
     </ShipFrame>
   );
 }
 
-function ShipFrame({ children }: { children: ReactNode }) {
+function ShipFrame({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
   return (
-    <section aria-label="Ship changes" className="flex flex-col gap-2.5 rounded-xl border bg-muted/30 p-3">
-      <h3 className="flex items-center gap-1.5 text-sm font-semibold">
-        <Rocket className="size-4" />
-        Ship changes
-      </h3>
+    <section
+      aria-label="Ship changes"
+      className="flex min-w-0 flex-col gap-3 rounded-xl border bg-card p-3 shadow-xs md:p-4"
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted">
+          <Rocket className="size-4 text-muted-foreground" />
+        </span>
+        <h3 className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-tight">Ship changes</h3>
+        {aside}
+      </div>
       {children}
     </section>
   );
@@ -472,7 +624,7 @@ function ShipResults({ result, prNoun }: { result: GitActionResult; prNoun: stri
             </div>
           </div>
           {entry.url && !entry.error && (
-            <Button asChild variant="outline" className="h-11 self-start md:h-8">
+            <Button asChild variant="outline" className="h-11 w-full sm:w-auto sm:self-start md:h-8">
               <a href={entry.url} target="_blank" rel="noopener noreferrer">
                 <ExternalLink />
                 {result.action === "pr" ? `Open ${prNoun}` : entry.commit ? "View commit" : "Open repository"}

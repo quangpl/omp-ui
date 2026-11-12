@@ -13,5 +13,7 @@ export default defineConfig({
     hookTimeout: 60_000,
     // DB-backed suites share external services; keep files sequential for determinism.
     fileParallelism: false,
+    // Card runs must never reach the developer's real agentmemory server (session tagging, auto-start).
+    env: { AGENTMEMORY_ENABLED: "false" },
   },
 });

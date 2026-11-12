@@ -165,7 +165,7 @@ describe("init", () => {
     expect(env.ADMIN_PASSWORD).toBe("init-secret-1");
     expect(env.AUTH_SECRET).toMatch(HEX_64);
     expect(env.OMP_PATH).toBe(project.fakeOmp);
-    expect(env.MAX_AGENTS).toBe("2");
+    expect(env.MAX_AGENTS).toBe("auto");
     expect(env.WORKSPACE_DIR).toBe(workspace);
     expect(fileMode(project.envFile)).toBe(0o600);
     expect(fs.statSync(project.dataDir).isDirectory()).toBe(true);

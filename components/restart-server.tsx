@@ -251,8 +251,10 @@ export function RestartServerDialog() {
                     </p>
                     {status.running > 0 && (
                       <p className="mt-2 font-medium text-amber-600 dark:text-amber-400">
-                        {status.running} running agent{status.running === 1 ? " is" : "s are"} interrupted —
-                        press Resume on {status.running === 1 ? "its card" : "their cards"} afterwards.
+                        {status.running} running agent{status.running === 1 ? " is" : "s are"} interrupted. With
+                        automatic retries on,{" "}
+                        {status.running === 1 ? "it resumes by itself" : "they resume by themselves"} after the
+                        restart; otherwise press Resume on the card.
                       </p>
                     )}
                   </>

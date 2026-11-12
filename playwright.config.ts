@@ -64,6 +64,8 @@ export default defineConfig({
       FAKE_OMP_SCENARIO: "success",
       FAKE_OMP_LOG,
       FAKE_OMP_SESSION_DIR: path.join(E2E_DATA_DIR, "fake-omp"),
+      // Never touch the developer's real agentmemory server.
+      AGENTMEMORY_ENABLED: "false",
     },
   },
 });

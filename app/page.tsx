@@ -1,152 +1,62 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
-import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { PlusIcon, RadarIcon, RefreshCwIcon, SearchIcon } from "lucide-react";
+import { PlusIcon, RefreshCwIcon } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { useNow } from "@/components/board/format";
-import { BoardCard } from "@/components/boards/board-card";
 import { BoardFormDialog } from "@/components/boards/board-form-dialog";
 import { BoardsEmptyState } from "@/components/boards/boards-empty-state";
 import { DeleteBoardDialog } from "@/components/boards/delete-board-dialog";
+import { ActivityFeed } from "@/components/home/activity-feed";
 import {
-  AgentsNow,
-  AttentionList,
+  DashboardSkeleton,
   GettingStarted,
   Overview,
   QuickActions,
-  RecentResults,
-  useSetupDismissed,
+  RefreshError,
+  useSetupPrefs,
 } from "@/components/home/dashboard-sections";
+import { LiveAgents, type LiveActivity } from "@/components/home/live-agents";
+import { NeedsYouList } from "@/components/home/needs-you";
+import { ProjectsSection } from "@/components/home/project-card";
+import { EntranceContext } from "@/components/home/shared";
+import { StatsPanel } from "@/components/home/stats-panel";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
 import { api, subscribeEvents } from "@/lib/api-client";
-import type { Board, BoardWithCounts, Dashboard, DashboardBoard } from "@/lib/types";
+import { activityLine } from "@/lib/run-activity";
+import type { Board, BoardWithCounts, Dashboard } from "@/lib/types";
 
 type FormState = { open: boolean; board: Board | null };
-
-/** Show the project filter once scanning the grid gets slow. */
-const FILTER_THRESHOLD = 5;
-
-function DashboardSkeleton() {
-  return (
-    <div className="animate-fade-in-soft flex flex-col gap-6" aria-busy="true" aria-label="Loading projects">
-      <div className="space-y-2">
-        <Skeleton className="h-7 w-48" />
-        <Skeleton className="h-4 w-72 max-w-full" />
-      </div>
-      <div className="grid grid-cols-2 gap-2.5 sm:gap-3 lg:grid-cols-4">
-        {Array.from({ length: 4 }, (_, i) => (
-          <Skeleton key={i} className="h-[5.5rem] rounded-xl" />
-        ))}
-      </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3">
-        {Array.from({ length: 3 }, (_, i) => (
-          <div key={i} className="flex flex-col gap-4 rounded-xl border bg-card p-4">
-            <div className="space-y-2">
-              <Skeleton className="h-5 w-2/5" />
-              <Skeleton className="h-3.5 w-3/4" />
-            </div>
-            <div className="flex gap-1.5">
-              <Skeleton className="h-6 w-16 rounded-full" />
-              <Skeleton className="h-6 w-24 rounded-full" />
-              <Skeleton className="h-6 w-14 rounded-full" />
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ProjectsSection({
-  boards,
-  now,
-  onEdit,
-  onDelete,
-}: {
-  boards: DashboardBoard[];
-  now: number;
-  onEdit: (board: Board) => void;
-  onDelete: (board: BoardWithCounts) => void;
-}) {
-  const [filter, setFilter] = useState("");
-  const query = filter.trim().toLowerCase();
-  const shown = query
-    ? boards.filter((b) =>
-        [b.name, b.workdir, ...b.extraFolders].some((text) => text.toLowerCase().includes(query)),
-      )
-    : boards;
-
-  return (
-    <section aria-labelledby="home-projects">
-      <div className="mb-3 flex flex-wrap items-end gap-x-3 gap-y-2">
-        <div className="min-w-0 flex-1">
-          <h2 id="home-projects" className="text-sm font-semibold tracking-tight">
-            Your projects
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            {boards.length} project{boards.length === 1 ? "" : "s"} · tap one to open its board · most
-            recently active first
-          </p>
-        </div>
-        {boards.length >= FILTER_THRESHOLD && (
-          <div className="relative w-full sm:w-56">
-            <SearchIcon
-              className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-              aria-hidden="true"
-            />
-            <Input
-              type="search"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter projects"
-              aria-label="Filter projects"
-              className="h-11 pl-8 md:h-8"
-            />
-          </div>
-        )}
-      </div>
-      {shown.length === 0 ? (
-        <p className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
-          No project matches “{filter.trim()}”.
-        </p>
-      ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-3">
-          {shown.map((board, index) => (
-            <BoardCard
-              key={board.id}
-              board={board}
-              now={now}
-              onEdit={onEdit}
-              onDelete={onDelete}
-              className="animate-card-in"
-              style={{ "--stagger": index } as CSSProperties}
-            />
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
 
 export default function HomePage() {
   const router = useRouter();
   const now = useNow();
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [liveActivity, setLiveActivity] = useState<LiveActivity>({});
   const [form, setForm] = useState<FormState>({ open: false, board: null });
   const [deleting, setDeleting] = useState<BoardWithCounts | null>(null);
-  const [setupDismissed, dismissSetup] = useSetupDismissed();
+  const setupPrefs = useSetupPrefs();
+  // The entrance cascade plays once, when the dashboard first appears; later refreshes swap rows in place.
+  const [entering, setEntering] = useState(true);
+  const loaded = dashboard !== null;
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = window.setTimeout(() => setEntering(false), 900);
+    return () => window.clearTimeout(timer);
+  }, [loaded]);
 
   const load = useCallback(async () => {
     try {
-      setDashboard(await api.dashboard());
+      const next = await api.dashboard();
+      setDashboard(next);
       setLoadError(null);
+      // Live activity only matters for cards that still have an agent.
+      const live = new Set(next.live.map((agent) => agent.taskId));
+      setLiveActivity((prev) => Object.fromEntries(Object.entries(prev).filter(([taskId]) => live.has(taskId))));
     } catch (err) {
-      setLoadError(err instanceof Error && err.message ? err.message : "Could not load projects.");
+      setLoadError(err instanceof Error && err.message ? err.message : "Could not load the dashboard.");
     }
   }, []);
 
@@ -159,8 +69,15 @@ export default function HomePage() {
     };
     const unsubscribe = subscribeEvents(
       (event) => {
-        // Everything shown derives from boards, tasks, runs, the queue and comment counts;
-        // ignore chatty run output.
+        // A run's progress updates its "Live agents" row in place; no refetch.
+        if (event.type === "run.event") {
+          const line = activityLine(event.event.kind, event.event.text);
+          if (line) {
+            setLiveActivity((prev) => ({ ...prev, [event.event.taskId]: { activity: line, at: event.event.createdAt } }));
+          }
+          return;
+        }
+        // Everything else shown derives from boards, tasks, runs, the queue and comment counts.
         if (
           event.type.startsWith("board.") ||
           event.type.startsWith("task.") ||
@@ -180,12 +97,10 @@ export default function HomePage() {
   }, [load]);
 
   const openCreate = () => setForm({ open: true, board: null });
-  const attentionTotal = useMemo(
-    () => dashboard?.boards.reduce((sum, b) => sum + b.attentionCount, 0) ?? 0,
-    [dashboard],
-  );
   const setup = dashboard?.setup;
-  const showSetup = Boolean(setup && !setupDismissed && !(setup.hasCard && setup.hasRun && setup.hasDone));
+  const setupComplete = Boolean(setup?.hasCard && setup.hasRun && setup.hasPush && setup.settingsSaved);
+  const showSetup = Boolean(dashboard && !setupPrefs.dismissed);
+  const steps = dashboard && showSetup && <GettingStarted dashboard={dashboard} prefs={setupPrefs} />;
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -203,64 +118,84 @@ export default function HomePage() {
         }
       />
 
-      <main className="px-safe pb-safe mx-auto w-full max-w-7xl flex-1">
-        <div className="px-4 py-5 sm:px-6 sm:py-8">
-          {loadError && dashboard === null ? (
-            <div className="animate-fade-in-soft mx-auto flex max-w-sm flex-col items-center gap-4 py-16 text-center">
-              <p className="text-sm text-muted-foreground">{loadError}</p>
-              <Button variant="outline" onClick={() => void load()} className="h-11 md:h-9">
-                <RefreshCwIcon />
-                Try again
-              </Button>
-            </div>
-          ) : dashboard === null ? (
-            <DashboardSkeleton />
-          ) : dashboard.boards.length === 0 ? (
-            <BoardsEmptyState onCreate={openCreate} />
-          ) : (
-            <div className="flex flex-col gap-7">
-              <Overview dashboard={dashboard} now={now} />
-              <QuickActions onCreateProject={openCreate} />
-
-              <div className="grid grid-cols-1 gap-7 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6">
-                <div className="flex min-w-0 flex-col gap-7">
-                  {showSetup && setup && (
-                    <GettingStarted
-                      setup={setup}
-                      firstBoardId={dashboard.boards[0]?.id}
-                      onDismiss={dismissSetup}
-                    />
-                  )}
-                  {dashboard.attention.length > 0 && (
-                    <AttentionList cards={dashboard.attention} total={attentionTotal} now={now} />
-                  )}
-                  <ProjectsSection
-                    boards={dashboard.boards}
-                    now={now}
-                    onEdit={(b) => setForm({ open: true, board: b })}
-                    onDelete={setDeleting}
-                  />
-                </div>
-
-                <aside className="flex min-w-0 flex-col gap-7" aria-label="Activity">
-                  <AgentsNow queue={dashboard.queue} />
-                  <RecentResults cards={dashboard.finished} now={now} />
-                  <Link
-                    href="/visualize"
-                    className="card-lift flex min-h-11 items-center gap-2.5 rounded-xl border bg-card px-3 py-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-                  >
-                    <RadarIcon className="size-4 text-muted-foreground" aria-hidden="true" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block font-medium">Visual overview</span>
-                      <span className="block truncate text-xs text-muted-foreground">
-                        Every project and agent at a glance
-                      </span>
-                    </span>
-                  </Link>
-                </aside>
+      <main className="px-safe pb-safe flex-1">
+        <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 md:py-8 lg:px-8">
+          <div className="@container/home">
+            {loadError && dashboard === null ? (
+              <div
+                role="alert"
+                className="animate-fade-in-soft mx-auto flex max-w-sm flex-col items-center gap-4 py-16 text-center"
+              >
+                <p className="text-sm font-medium">Couldn&apos;t load the dashboard</p>
+                <p className="-mt-3 text-sm text-muted-foreground">{loadError}</p>
+                <Button variant="outline" onClick={() => void load()} className="h-11 md:h-9">
+                  <RefreshCwIcon />
+                  Try again
+                </Button>
               </div>
-            </div>
-          )}
+            ) : dashboard === null ? (
+              <DashboardSkeleton />
+            ) : dashboard.boards.length === 0 ? (
+              <BoardsEmptyState onCreate={openCreate} />
+            ) : (
+              <EntranceContext.Provider value={entering}>
+                {/*
+                  One grid, three shapes (container widths, so the sidebar's share is accounted for):
+                  - narrow: a single column ordered by urgency — needs you, live agents, quick actions,
+                    projects, stats, activity (unfinished steps first, finished ones last);
+                  - medium: quick actions move up under the greeting, stats and activity pair up;
+                  - wide: a work column and a 21rem side column (live agents, stats, activity).
+                  The column wrappers are `display: contents` until wide, so `order` reaches every section.
+                */}
+                <div className="grid grid-cols-1 items-start gap-6 @2xl/home:grid-cols-2 @5xl/home:grid-cols-[minmax(0,1fr)_21rem] @5xl/home:gap-x-8">
+                  {loadError && (
+                    <div className="col-span-full min-w-0">
+                      <RefreshError message={loadError} onRetry={() => void load()} />
+                    </div>
+                  )}
+                  <div className="col-span-full min-w-0">
+                    <Overview dashboard={dashboard} now={now} />
+                  </div>
+                  <div className="order-4 col-span-full min-w-0 @xl/home:order-none">
+                    <QuickActions onCreateProject={openCreate} />
+                  </div>
+
+                  <div className="contents @5xl/home:order-1 @5xl/home:flex @5xl/home:min-w-0 @5xl/home:flex-col @5xl/home:gap-8">
+                    {!setupComplete && steps && <div className="order-1 col-span-full min-w-0">{steps}</div>}
+                    <div className="order-2 col-span-full min-w-0">
+                      <NeedsYouList
+                        cards={dashboard.needsYou}
+                        total={dashboard.needsYouTotal}
+                        boards={dashboard.boards}
+                        now={now}
+                      />
+                    </div>
+                    <div className="order-5 col-span-full min-w-0">
+                      <ProjectsSection
+                        boards={dashboard.boards}
+                        now={now}
+                        onEdit={(b) => setForm({ open: true, board: b })}
+                        onDelete={setDeleting}
+                      />
+                    </div>
+                    {setupComplete && steps && <div className="order-8 col-span-full min-w-0">{steps}</div>}
+                  </div>
+
+                  <div className="contents @5xl/home:order-1 @5xl/home:flex @5xl/home:min-w-0 @5xl/home:flex-col @5xl/home:gap-8">
+                    <div className="order-3 col-span-full min-w-0">
+                      <LiveAgents queue={dashboard.queue} live={dashboard.live} liveActivity={liveActivity} />
+                    </div>
+                    <div className="order-6 min-w-0">
+                      <StatsPanel stats={dashboard.stats} />
+                    </div>
+                    <div className="order-7 min-w-0">
+                      <ActivityFeed items={dashboard.activity} now={now} />
+                    </div>
+                  </div>
+                </div>
+              </EntranceContext.Provider>
+            )}
+          </div>
         </div>
       </main>
 

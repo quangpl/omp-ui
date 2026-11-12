@@ -13,6 +13,7 @@ import {
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { toastCardAdded } from "@/components/board/card-added-toast";
 import { NewTaskDialog, type NewTaskInput } from "@/components/board/new-task-form";
 import { Label } from "@/components/ui/label";
 import {
@@ -47,11 +48,11 @@ const NewCardContext = createContext<NewCardContextValue | null>(null);
 
 const LAST_BOARD_KEY = "omp-ui:last-board";
 
-/** True for the "new card" shortcut: plain `N` (or `Shift+N` to start the agent right away). */
+/** True for the "new card" shortcut: plain `N` or `C` (`Shift+N` / `Shift+C` start the agent right away). */
 export function isNewCardShortcut(event: KeyboardEvent): boolean {
   if (event.defaultPrevented || event.repeat || event.isComposing) return false;
   if (event.ctrlKey || event.metaKey || event.altKey) return false;
-  if (event.key !== "n" && event.key !== "N") return false;
+  if (!["n", "N", "c", "C"].includes(event.key)) return false;
   return !isTypingTarget(event.target);
 }
 
@@ -165,11 +166,9 @@ function GlobalNewCardDialog({
     const task = await createCard(board, input);
     if (!task) return false;
     localStorage.setItem(LAST_BOARD_KEY, board.id);
-    toast.success(`Card added to “${board.name}”`, {
-      action: {
-        label: "Open",
-        onClick: () => router.push(`/b/${encodeURIComponent(board.id)}?task=${encodeURIComponent(task.id)}`),
-      },
+    toastCardAdded(task, {
+      boardName: board.name,
+      onOpen: () => router.push(`/b/${encodeURIComponent(board.id)}?task=${encodeURIComponent(task.id)}`),
     });
     return true;
   };

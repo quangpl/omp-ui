@@ -304,14 +304,18 @@ test("a failing agent keeps the card in In progress and explains the error", asy
   const detail = page.getByRole("dialog", { name: task.title });
   await detail.getByRole("button", { name: "Start", exact: true }).click();
 
-  await expect(detail.getByText("Agent failed", { exact: true })).toBeVisible({ timeout: AGENT_TIMEOUT });
+  // Retried automatically after 15 s; until then the card says so and Stop cancels the retry.
+  await expect(detail.getByText("Agent failed — retrying automatically (retry 1)", { exact: true })).toBeVisible({
+    timeout: AGENT_TIMEOUT,
+  });
   await expect(detail.getByRole("alert").filter({ hasText: "Agent failed" })).toContainText(
     "Fake model error: rate limited",
   );
   await expect(detail.getByRole("status", { name: "Status" })).toHaveText(/In progress/);
   await expect(detail.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+  await expect(detail.getByRole("button", { name: "Stop", exact: true })).toBeVisible();
 
   await detail.getByRole("button", { name: "Close", exact: true }).click();
   const card = cardButton(column(page, "In progress"), task.title);
-  await expect(card).toContainText("Failed");
+  await expect(card).toContainText("Retrying");
 });

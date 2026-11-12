@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { EllipsisVertical, PanelRightOpen, Plus } from "lucide-react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { CircleCheckBig, CircleDashed, EllipsisVertical, Inbox, type LucideIcon, PanelRightOpen, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -10,6 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { STATUS_LABELS, TASK_STATUSES, type Task, type TaskStatus } from "@/lib/types";
 import type { TasksByStatus } from "@/hooks/use-board";
@@ -18,7 +19,17 @@ import type { BoardMenuActions } from "@/components/board/card-context-menu";
 import { quickActionsFor, runQuickAction, type QuickActionId } from "@/components/board/quick-actions";
 import { TaskCard } from "@/components/board/task-card";
 
-const SWIPE_MIN_DISTANCE = 60;
+/** Quiet period after the last scroll event before a swipe counts as landed on a column. */
+const SCROLL_SETTLE_MS = 90;
+
+const EMPTY_ICON: Record<TaskStatus, LucideIcon> = {
+  todo: Inbox,
+  in_progress: CircleDashed,
+  done: CircleCheckBig,
+};
+
+const tabId = (status: TaskStatus) => `mobile-column-tab-${status}`;
+const panelId = (status: TaskStatus) => `mobile-column-${status}`;
 
 /** Card footer: the primary quick action one tap away; open card + the rest in the overflow menu. */
 function QuickActions({
@@ -31,7 +42,7 @@ function QuickActions({
   actions: BoardMenuActions;
 }) {
   const [busy, setBusy] = useState(false);
-  const [primary, ...rest] = quickActionsFor(task);
+  const [primary, ...rest] = quickActionsFor(task, { canPush: actions.pushToMain !== null });
 
   const run = async (id: QuickActionId) => {
     setBusy(true);
@@ -47,7 +58,7 @@ function QuickActions({
       <Button
         variant="ghost"
         className={cn(
-          "h-11 flex-1 justify-start gap-2 rounded-none rounded-bl-lg px-3 text-[13px]",
+          "h-11 flex-1 justify-start gap-2 rounded-none rounded-bl-lg px-3.5 text-[13px] font-medium active:bg-muted",
           primary.id === "stop" && "text-destructive hover:bg-destructive/10 hover:text-destructive",
         )}
         aria-label={primary.label}
@@ -63,7 +74,7 @@ function QuickActions({
           <Button
             variant="ghost"
             size="icon"
-            className="size-11 rounded-none rounded-br-lg border-l"
+            className="h-11 w-12 rounded-none rounded-br-lg border-l text-muted-foreground active:bg-muted"
             aria-label={`More actions for ${task.title}`}
           >
             <EllipsisVertical />
@@ -92,7 +103,10 @@ function QuickActions({
   );
 }
 
-/** Phone layout: segmented column tabs, horizontal swipe between columns, FAB for new cards. */
+/**
+ * Phone layout: a sticky segmented column switcher over a horizontally snapping track with one
+ * full-width column per page (swipe or tap a segment), and a floating button for new cards.
+ */
 export function MobileBoard({
   columns,
   activity,
@@ -110,131 +124,214 @@ export function MobileBoard({
   actions: BoardMenuActions;
   onAdd: () => void;
 }) {
-  const listRef = useRef<HTMLDivElement>(null);
-  const touchStart = useRef<{ x: number; y: number } | null>(null);
-  const previous = useRef(active);
-  const [direction, setDirection] = useState<"left" | "right" | null>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const tablistRef = useRef<HTMLDivElement>(null);
+  const settleTimer = useRef<number | undefined>(undefined);
+  const placedRef = useRef(false);
+  const activeIndex = TASK_STATUSES.indexOf(active);
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const onActiveChangeRef = useRef(onActiveChange);
+  onActiveChangeRef.current = onActiveChange;
 
+  // Bring the track to the active column when it changes from outside the track (segment tap,
+  // a new card landing in another column, a deep-linked card). Swipes already sit there. The
+  // segment highlight then follows the track's scroll events, so it glides along with it.
   useEffect(() => {
-    if (previous.current === active) return;
-    setDirection(
-      TASK_STATUSES.indexOf(active) > TASK_STATUSES.indexOf(previous.current) ? "left" : "right",
-    );
-    previous.current = active;
-    listRef.current?.scrollTo({ top: 0 });
-  }, [active]);
+    const track = trackRef.current;
+    if (!track) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const behavior: ScrollBehavior = placedRef.current && !reduceMotion ? "smooth" : "instant";
+    placedRef.current = true;
+    const left = activeIndex * track.clientWidth;
+    if (Math.abs(track.scrollLeft - left) < 2) {
+      tablistRef.current?.style.setProperty("--column-progress", String(activeIndex));
+      return;
+    }
+    track.scrollTo({ left, behavior });
+  }, [activeIndex]);
 
-  const step = (delta: number) => {
-    const next = TASK_STATUSES[TASK_STATUSES.indexOf(active) + delta];
-    if (next) onActiveChange(next);
+  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
+
+  const onTrackScroll = () => {
+    const track = trackRef.current;
+    if (!track) return;
+    const width = Math.max(track.clientWidth, 1);
+    // The segment highlight follows the finger; no React render per frame.
+    tablistRef.current?.style.setProperty("--column-progress", String(track.scrollLeft / width));
+    window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(() => {
+      const landed = TASK_STATUSES[Math.round(track.scrollLeft / width)];
+      if (landed && landed !== activeRef.current) onActiveChangeRef.current(landed);
+    }, SCROLL_SETTLE_MS);
   };
 
-  const tasks = columns[active];
+  const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const last = TASK_STATUSES.length - 1;
+    const target =
+      event.key === "ArrowRight"
+        ? Math.min(activeIndex + 1, last)
+        : event.key === "ArrowLeft"
+          ? Math.max(activeIndex - 1, 0)
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? last
+              : -1;
+    if (target < 0) return;
+    event.preventDefault();
+    const next = TASK_STATUSES[target];
+    onActiveChange(next);
+    document.getElementById(tabId(next))?.focus();
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 border-b bg-background/85 px-3 py-2 backdrop-blur-lg supports-backdrop-filter:bg-background/70">
+        <div
+          ref={tablistRef}
+          role="tablist"
+          aria-label="Columns"
+          className="relative grid grid-cols-3 rounded-xl bg-muted p-1"
+        >
+          {/* Sliding segment; its position is the track's scroll progress (0–2). */}
+          <span
+            aria-hidden
+            className="absolute inset-y-1 left-1 w-[calc((100%-0.5rem)/3)] translate-x-[calc(var(--column-progress,0)*100%)] rounded-lg bg-background shadow-sm ring-1 ring-border/60 will-change-transform"
+          />
+          {TASK_STATUSES.map((status) => {
+            const selected = status === active;
+            const count = columns[status].length;
+            return (
+              <button
+                key={status}
+                id={tabId(status)}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                aria-controls={panelId(status)}
+                tabIndex={selected ? 0 : -1}
+                onClick={() => onActiveChange(status)}
+                onKeyDown={onTabKeyDown}
+                className={cn(
+                  "relative z-10 flex h-11 min-w-0 items-center justify-center gap-1.5 rounded-lg px-1.5 text-[13px] font-medium whitespace-nowrap outline-none transition-[color,transform] duration-150 focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.97] motion-reduce:active:scale-100",
+                  selected ? "text-foreground" : "text-muted-foreground",
+                )}
+              >
+                <span className="truncate">{STATUS_LABELS[status]}</span>
+                <span className="sr-only">·</span>
+                <span
+                  className={cn(
+                    "inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] tabular-nums transition-colors",
+                    selected ? "bg-foreground text-background" : "bg-foreground/8 text-muted-foreground",
+                  )}
+                >
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div
-        role="tablist"
-        aria-label="Columns"
-        className="grid shrink-0 grid-cols-3 gap-1 border-b bg-background px-2 pt-1"
+        ref={trackRef}
+        onScroll={onTrackScroll}
+        className="flex min-h-0 flex-1 snap-x snap-mandatory overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {TASK_STATUSES.map((status) => {
           const selected = status === active;
+          const tasks = columns[status];
+          const EmptyIcon = EMPTY_ICON[status];
           return (
-            <button
+            <div
               key={status}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              aria-controls="mobile-column-panel"
-              onClick={() => onActiveChange(status)}
-              className={cn(
-                "relative flex min-h-11 min-w-0 items-center justify-center gap-1 px-1 text-[13px] font-medium whitespace-nowrap transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
-                selected ? "text-foreground" : "text-muted-foreground",
-              )}
+              id={panelId(status)}
+              role="tabpanel"
+              aria-labelledby={tabId(status)}
+              // Neighbouring columns are only visible mid-swipe: keep them out of focus and the a11y tree.
+              aria-hidden={!selected}
+              inert={!selected}
+              className="h-full w-full shrink-0 snap-start snap-always overflow-x-hidden overflow-y-auto overscroll-y-contain"
             >
-              <span className="truncate">{STATUS_LABELS[status]}</span>
-              <span className="shrink-0 tabular-nums opacity-70">· {columns[status].length}</span>
-              <span
-                aria-hidden
-                className={cn(
-                  "absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-foreground transition-opacity",
-                  selected ? "opacity-100" : "opacity-0",
+              <div className="flex flex-col gap-3 px-3 pt-3 pb-[calc(6.5rem+env(safe-area-inset-bottom))]">
+                {tasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    activity={activity[task.id]}
+                    onOpen={() => onOpen(task.id)}
+                    onAnswer={() => {
+                      void actions.revertToTodo(task.id);
+                      onOpen(task.id);
+                    }}
+                    actions={<QuickActions task={task} onOpen={() => onOpen(task.id)} actions={actions} />}
+                  />
+                ))}
+                {tasks.length === 0 && (
+                  <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed px-6 py-12 text-center">
+                    <span className="flex size-11 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+                      <EmptyIcon aria-hidden className="size-5" />
+                    </span>
+                    <p className="max-w-60 text-sm text-pretty text-muted-foreground">{EMPTY_COLUMN_TEXT[status]}</p>
+                    {status === "todo" && (
+                      <Button variant="outline" className="h-11 px-4" onClick={onAdd}>
+                        <Plus />
+                        Add a card
+                      </Button>
+                    )}
+                  </div>
                 )}
-              />
-            </button>
+              </div>
+            </div>
           );
         })}
       </div>
 
-      <div
-        ref={listRef}
-        id="mobile-column-panel"
-        role="tabpanel"
-        aria-label={STATUS_LABELS[active]}
-        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain"
-        onTouchStart={(event) => {
-          const touch = event.touches[0];
-          touchStart.current = event.touches.length === 1 ? { x: touch.clientX, y: touch.clientY } : null;
-        }}
-        onTouchEnd={(event) => {
-          const start = touchStart.current;
-          touchStart.current = null;
-          const touch = event.changedTouches[0];
-          if (!start || !touch) return;
-          const dx = touch.clientX - start.x;
-          const dy = touch.clientY - start.y;
-          if (Math.abs(dx) > SWIPE_MIN_DISTANCE && Math.abs(dx) > Math.abs(dy) * 1.5) {
-            step(dx < 0 ? 1 : -1);
-          }
-        }}
-      >
-        <div
-          key={active}
-          className={cn(
-            "flex flex-col gap-2.5 px-3 pt-3 pb-[calc(6rem+env(safe-area-inset-bottom))]",
-            direction && "animate-in duration-200 fade-in-0",
-            direction === "left" && "slide-in-from-right-6",
-            direction === "right" && "slide-in-from-left-6",
-          )}
-        >
-          {tasks.map((task) => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              activity={activity[task.id]}
-              onOpen={() => onOpen(task.id)}
-              onAnswer={() => {
-                void actions.revertToTodo(task.id);
-                onOpen(task.id);
-              }}
-              actions={
-                <QuickActions task={task} onOpen={() => onOpen(task.id)} actions={actions} />
-              }
-            />
-          ))}
-          {tasks.length === 0 && (
-            <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed px-6 py-10 text-center">
-              <p className="text-sm text-muted-foreground">{EMPTY_COLUMN_TEXT[active]}</p>
-              {active === "todo" && (
-                <Button variant="outline" className="h-11 px-4" onClick={onAdd}>
-                  <Plus />
-                  Add a card
-                </Button>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
+      {/* Thumb-reachable, clear of the home indicator; the panels pad their ends so it never
+          covers a card's quick actions. */}
       <Button
         size="icon"
         onClick={onAdd}
         aria-label="New card"
-        className="fixed right-[calc(1rem+env(safe-area-inset-right))] bottom-[calc(1rem+env(safe-area-inset-bottom))] z-30 size-14 rounded-full shadow-lg [&_svg:not([class*='size-'])]:size-6"
+        className="fixed right-[calc(1rem+env(safe-area-inset-right))] bottom-[calc(1.25rem+env(safe-area-inset-bottom))] z-30 size-14 rounded-2xl shadow-lg shadow-primary/25 transition-transform duration-150 active:scale-95 motion-reduce:active:scale-100 [&_svg:not([class*='size-'])]:size-6"
       >
         <Plus />
       </Button>
+    </div>
+  );
+}
+
+/** Phone half of the board's initial-load skeleton: column switcher and a few cards. */
+export function MobileBoardSkeleton() {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col md:hidden">
+      <div className="shrink-0 border-b px-3 py-2">
+        <div className="grid grid-cols-3 gap-1 rounded-xl bg-muted p-1">
+          {TASK_STATUSES.map((status) => (
+            <div key={status} className="flex h-11 items-center justify-center gap-1.5 text-[13px] font-medium text-muted-foreground">
+              {STATUS_LABELS[status]}
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="flex flex-col gap-3 px-3 pt-3">
+        {[2, 1, 2].map((lines, index) => (
+          <div key={index} className="rounded-lg border bg-card shadow-xs">
+            <div className="flex flex-col gap-2 p-3.5">
+              <Skeleton className="h-4 w-11/12" />
+              {lines > 1 && <Skeleton className="h-4 w-1/2" />}
+              <div className="mt-1 flex items-center gap-2">
+                <Skeleton className="h-5 w-16 rounded-full" />
+                <Skeleton className="ml-auto h-3 w-6" />
+              </div>
+            </div>
+            <div className="flex h-11 items-center border-t px-3.5">
+              <Skeleton className="h-3.5 w-14" />
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

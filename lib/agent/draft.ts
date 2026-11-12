@@ -1,21 +1,15 @@
 // The card writer: an omp agent that turns whatever the user typed into a card (title + brief)
-// that gets the best result from the agent that will run it. It runs `omp --mode rpc` in the
-// project with read-only tools, so the brief names the real files involved, and it decides
-// whether the work needs parallel subagents and which open cards it must wait for. RPC mode lets
-// the host steer it to answer once it has spent its lookup budget, which keeps drafts fast.
+// that gets the best result from the agent that will run it. It runs on a warm `omp --mode rpc`
+// helper worker in the project with read-only tools, so the brief names the real files involved,
+// and it decides whether the work needs parallel subagents and which open cards it must wait for.
+// RPC mode lets the host steer it to answer once it has spent its lookup budget, which keeps
+// drafts fast.
 import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import path from "node:path";
 import { readModelRoles, type ModelRoles } from "@/lib/agent/model-select";
-import {
-  describeTool,
-  existingFolders,
-  extractJsonObject,
-  isDirectory,
-  readOnlyArgs,
-  textOf,
-} from "@/lib/agent/omp-print";
-import { OmpRpcProcess, describeExit } from "@/lib/agent/rpc";
+import { existingFolders, extractJsonObject, isDirectory, runOmpHelper } from "@/lib/agent/omp-helper";
 import { DESCRIPTION_MAX, TITLE_MAX, clip } from "@/lib/card-draft";
 import { childEnv } from "@/lib/child-env";
 import { dataDir } from "@/lib/files";
@@ -29,9 +23,9 @@ import {
   type Task,
 } from "@/lib/types";
 
-/** omp stops the session itself after this long (`--max-time`): quick and thorough drafts. */
-const QUICK_MAX_TIME_SECONDS = 120;
-const THOROUGH_MAX_TIME_SECONDS = 240;
+/** The card writer is cancelled after this long: quick and thorough drafts. */
+const QUICK_TIMEOUT_SECONDS = 150;
+const THOROUGH_TIMEOUT_SECONDS = 270;
 /** A request this long, or with this many list items, gets the thorough card writer. */
 const THOROUGH_MIN_WORDS = 150;
 const THOROUGH_MIN_LIST_ITEMS = 5;
@@ -40,14 +34,12 @@ const LOOKUPS_PER_TURN = 5;
 /** Tool calls after which the card writer is steered to answer with what it found. */
 const LOOKUP_BUDGET: Record<DraftTier, number> = { quick: 8, thorough: 16 };
 const ANSWER_NOW = "That is enough looking around. Reply now with only the card JSON object, using what you found so far.";
-/** omp must report `ready` within this long. */
-const READY_TIMEOUT_MS = 30_000;
 /** Longer requests are handed over as a file the agent reads instead of inline. */
 const INLINE_MAX = 60_000;
 /** Open cards offered as "Run after" candidates (newest first). */
 const MAX_OPEN_CARDS = 40;
-/** Drafts running at once across the server. */
-const MAX_CONCURRENT_DRAFTS = 4;
+/** Drafts running at once across the server: half the cores, at least 4, at most 16. */
+const MAX_CONCURRENT_DRAFTS = Math.max(4, Math.min(16, Math.floor(availableParallelism() / 2)));
 /** Installed skills listed for the card writer to suggest, and how much of each description. */
 const MAX_PROMPT_SKILLS = 60;
 const SKILL_DESCRIPTION_MAX = 160;
@@ -89,15 +81,15 @@ export function acquireDraftSlot(): (() => void) | null {
 export async function draftCard(options: DraftOptions): Promise<DraftResult> {
   const { text, board, tasks, settings, signal, onActivity } = options;
   const workdir = board.workdir;
-  if (!(await isDirectory(workdir))) throw new Error(`Project folder not found: ${workdir}`);
-  const extras = await existingFolders(board.extraFolders ?? [], workdir);
-
   const env = childEnv();
-  const [roles, skills] = await Promise.all([
+  const [found, extras, roles, skills] = await Promise.all([
+    isDirectory(workdir),
+    existingFolders(board.extraFolders ?? [], workdir),
     readModelRoles(settings.ompPath, workdir, env),
     listOmpSkills(settings.ompPath),
   ]);
-  const { model, thinking, tier, maxTimeSeconds } = chooseDraftModel({ text, roles, board, settings });
+  if (!found) throw new Error(`Project folder not found: ${workdir}`);
+  const { model, thinking, tier, timeoutSeconds } = chooseDraftModel({ text, roles, board, settings });
   // Asked for in so many words: omp's own keyword always means parallel subagents.
   const askedForParallel = text.search(MAGIC_KEYWORD) !== -1;
   signal.throwIfAborted();
@@ -124,108 +116,28 @@ export async function draftCard(options: DraftOptions): Promise<DraftResult> {
   });
   onActivity(`Card agent started (${model ?? "omp default"}${tier === "thorough" ? ", long request" : ""})`);
   try {
-    const reply = await runCardWriter({
+    const reply = await runOmpHelper({
       command: settings.ompPath,
-      args: [
-        "--mode",
-        "rpc",
-        ...readOnlyArgs({ cwd: workdir, addDirs: requestDir ? [...extras, requestDir] : extras, model, thinking, maxTimeSeconds }),
-      ],
       cwd: workdir,
+      addDirs: requestDir ? [...extras, requestDir] : extras,
+      model,
+      thinking,
+      timeoutSeconds,
       env,
       prompt,
       signal,
-      lookupBudget: LOOKUP_BUDGET[tier],
-      maxTimeSeconds,
+      label: "card agent",
       onActivity,
+      writing: "Writing the card…",
+      steer: { afterTools: LOOKUP_BUDGET[tier], message: ANSWER_NOW, activity: "Enough looking around: writing the card…" },
+      // The request folder is unique to this draft: no later call could reuse the worker.
+      reusable: requestDir === null,
     });
     const draft = parseDraftReply(reply, new Map(openCards.map((t) => [t.id, t.title])));
     return { draft: askedForParallel ? { ...draft, orchestrate: true } : draft, model };
   } finally {
     if (requestDir) await rm(requestDir, { recursive: true, force: true }).catch(() => undefined);
   }
-}
-
-/**
- * Run the card writer and resolve with its final assistant text. After `lookupBudget` tool calls
- * it is steered to answer with what it found. Aborting `signal` or running past `--max-time` (plus
- * 30s) kills omp and rejects.
- */
-async function runCardWriter(options: {
-  command: string;
-  args: string[];
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  prompt: string;
-  signal: AbortSignal;
-  lookupBudget: number;
-  maxTimeSeconds: number;
-  onActivity: (text: string) => void;
-}): Promise<string> {
-  const { command, signal, onActivity } = options;
-  signal.throwIfAborted();
-  const proc = new OmpRpcProcess({ command, args: options.args, cwd: options.cwd, env: options.env, autoConfirm: false });
-  const ended = Promise.withResolvers<void>();
-  let reply = "";
-  let failure: string | null = null;
-  let lookups = 0;
-  let timedOut = false;
-  proc.on("frame", (frame) => {
-    if (frame.type === "tool_execution_start") {
-      onActivity(describeTool(frame));
-      lookups += 1;
-      if (lookups === options.lookupBudget) {
-        onActivity("Enough looking around: writing the card…");
-        proc.send({ type: "steer", message: ANSWER_NOW }).catch(() => undefined);
-      }
-    } else if (frame.type === "message_update") {
-      const event = frame.assistantMessageEvent;
-      if (isObject(event) && event.type === "text_start") onActivity("Writing the card…");
-    } else if (frame.type === "message_end" && isObject(frame.message) && frame.message.role === "assistant") {
-      const message = frame.message;
-      if (message.stopReason === "error" || message.stopReason === "aborted") {
-        failure = typeof message.errorMessage === "string" ? message.errorMessage : "The model request failed.";
-      } else if (textOf(message.content)) {
-        reply = textOf(message.content);
-        failure = null;
-      }
-    } else if (frame.type === "agent_end" && frame.isTerminal !== false) {
-      ended.resolve();
-    }
-  });
-  proc.on("exit", () => ended.resolve());
-  // Killing omp settles everything below: readiness and the prompt reject, `ended` resolves.
-  const onAbort = () => proc.kill("SIGTERM");
-  signal.addEventListener("abort", onAbort, { once: true });
-  const timer = setTimeout(() => {
-    timedOut = true;
-    proc.kill("SIGTERM");
-  }, (options.maxTimeSeconds + 30) * 1000);
-  try {
-    await proc.waitReady(READY_TIMEOUT_MS);
-    const response = await proc.send({ type: "prompt", message: options.prompt });
-    if (isObject(response.data) && response.data.agentInvoked === false) throw new Error("The card agent did not start.");
-    await ended.promise;
-  } catch (err) {
-    if (!signal.aborted && !timedOut) {
-      const code = isObject(err) ? err.code : undefined;
-      throw code === "ENOENT" ? new Error(`omp not found at ${command}. Install it from https://omp.sh or set OMP_PATH.`) : err;
-    }
-  } finally {
-    clearTimeout(timer);
-    signal.removeEventListener("abort", onAbort);
-    if (!proc.exited) void proc.close();
-  }
-  signal.throwIfAborted();
-  if (timedOut) throw new Error(`The card agent took longer than ${options.maxTimeSeconds + 30}s.`);
-  if (reply) return reply;
-  if (failure) throw new Error(`The card agent failed: ${failure}`);
-  const exit = proc.exited ? describeExit(await proc.waitExit()) : "it ended without a reply";
-  throw new Error(`The card agent stopped without an answer (${exit}).`);
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** `quick`: short requests, fast model; `thorough`: long or list-heavy ones, the usual model. */
@@ -244,18 +156,18 @@ export function chooseDraftModel(input: {
   roles: ModelRoles | null;
   board: Pick<Board, "model">;
   settings: Pick<AppSettings, "defaultModel">;
-}): { model: string | null; thinking: "low" | null; tier: DraftTier; maxTimeSeconds: number } {
+}): { model: string | null; thinking: "low" | null; tier: DraftTier; timeoutSeconds: number } {
   const { text, roles, board, settings } = input;
   const fallback = board.model?.trim() || settings.defaultModel.trim() || null;
   const words = text.split(/\s+/).filter(Boolean).length;
   const listItems = text.match(LIST_ITEM)?.length ?? 0;
   if (words >= THOROUGH_MIN_WORDS || listItems >= THOROUGH_MIN_LIST_ITEMS) {
-    return { model: fallback, thinking: null, tier: "thorough", maxTimeSeconds: THOROUGH_MAX_TIME_SECONDS };
+    return { model: fallback, thinking: null, tier: "thorough", timeoutSeconds: THOROUGH_TIMEOUT_SECONDS };
   }
   const smol = typeof roles?.smol === "string" && roles.smol.trim() !== "";
   return smol
-    ? { model: "@smol", thinking: null, tier: "quick", maxTimeSeconds: QUICK_MAX_TIME_SECONDS }
-    : { model: fallback, thinking: "low", tier: "quick", maxTimeSeconds: QUICK_MAX_TIME_SECONDS };
+    ? { model: "@smol", thinking: null, tier: "quick", timeoutSeconds: QUICK_TIMEOUT_SECONDS }
+    : { model: fallback, thinking: "low", tier: "quick", timeoutSeconds: QUICK_TIMEOUT_SECONDS };
 }
 
 /**

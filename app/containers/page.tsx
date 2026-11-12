@@ -1,26 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  BoxIcon,
-  HardDriveIcon,
-  ImageIcon,
-  LayersIcon,
-  LayoutGridIcon,
-  Loader2Icon,
-  NetworkIcon,
-  RefreshCwIcon,
-} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { LayoutGridIcon, Loader2Icon, RefreshCwIcon, ServerOffIcon, UnplugIcon } from "lucide-react";
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
 import { AppsCatalog } from "@/components/containers/apps-catalog";
 import { ComposeDialog, type ComposeDraft } from "@/components/containers/compose-dialog";
+import { ComposeImportDialog } from "@/components/containers/compose-import-dialog";
 import { ComposeList } from "@/components/containers/compose-list";
 import { ContainersList } from "@/components/containers/containers-list";
 import { ConfirmDialog, type ConfirmRequest, useJobDialog } from "@/components/containers/dialogs";
 import { LogsSheet, type LogsTarget } from "@/components/containers/logs-sheet";
 import { QuickLaunch } from "@/components/containers/quick-launch";
-import { ImagesList, NetworksList, VolumesList } from "@/components/containers/resources";
+import { DiskUsage, ImagesList, NetworksList, VolumesList } from "@/components/containers/resources";
+import { publishOverview } from "@/components/containers/running-store";
 import { RunDialog } from "@/components/containers/run-dialog";
 import {
   envRows,
@@ -30,12 +24,13 @@ import {
   Notice,
   projectNameFrom,
   type RunForm,
+  SectionHeader,
 } from "@/components/containers/shared";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDocumentTitle } from "@/hooks/use-document-title";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api-client";
+import { BUILTIN_TEMPLATES } from "@/lib/container-templates";
 import type {
   ComposeAction,
   ComposeProject,
@@ -47,11 +42,10 @@ import type {
   PruneKind,
   TemplateCatalog,
 } from "@/lib/docker-types";
+import { isModalOpen, isPlainKey } from "@/lib/hotkeys";
 
 const OVERVIEW_REFRESH_MS = 5000;
 const STATS_REFRESH_MS = 10_000;
-
-type Tab = "containers" | "compose" | "apps" | "images" | "volumes" | "networks";
 
 const ACTION_DONE: Record<ContainerAction, string> = {
   start: "Started",
@@ -107,29 +101,187 @@ function usePolling(load: () => Promise<void>, intervalMs: number, enabled: bool
   }, [load, intervalMs, enabled]);
 }
 
+/**
+ * Running list beside the resources column once the content area (not the viewport: the sidebar
+ * takes its share) is 64rem wide; between 42rem and 64rem the resources pair up under the list.
+ */
+const SPLIT = "grid gap-8 @5xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] @5xl:gap-10";
+const ASIDE = "grid min-w-0 content-start gap-8 @2xl:grid-cols-2 @5xl:grid-cols-1 @5xl:border-l @5xl:pl-10";
+
+/** Docker missing or the server unreachable: the page's only content, so it gets room and a retry. */
+function ProblemPanel({
+  icon,
+  title,
+  detail,
+  retrying,
+  onRetry,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  detail: string | null;
+  retrying: boolean;
+  onRetry: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section
+      role="alert"
+      className="animate-card-in mx-auto w-full max-w-2xl overflow-hidden rounded-2xl bg-card ring-1 ring-foreground/10 md:mt-8"
+    >
+      <div className="flex flex-col gap-4 p-5 sm:flex-row sm:gap-5 sm:p-8">
+        <span className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-destructive/10 text-destructive [&_svg]:size-6">
+          {icon}
+        </span>
+        <div className="min-w-0 flex-1 space-y-3">
+          <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+          {detail && (
+            <p className="rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs break-words whitespace-pre-wrap text-muted-foreground">
+              {detail}
+            </p>
+          )}
+          <p className="text-sm text-pretty text-muted-foreground">{children}</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-3 border-t bg-muted/30 px-5 py-3 sm:px-8">
+        <span className="relative flex size-2 shrink-0" aria-hidden="true">
+          <span className="absolute inset-0 animate-ping rounded-full bg-amber-500/60 motion-reduce:hidden" />
+          <span className="relative size-2 rounded-full bg-amber-500" />
+        </span>
+        <span className="min-w-0 flex-1 text-xs text-muted-foreground">Retrying every few seconds</span>
+        <Button
+          variant="outline"
+          className="h-11 gap-1.5 active:scale-[0.98] md:h-8"
+          onClick={onRetry}
+          disabled={retrying}
+        >
+          {retrying ? <Loader2Icon className="animate-spin motion-reduce:animate-none" /> : <RefreshCwIcon />}
+          Retry now
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/** Mirrors the loaded page: launcher hero, chip row, then the running list beside the resources. */
+function PageSkeleton() {
+  return (
+    <div className="space-y-8" aria-busy="true" aria-label="Loading Docker state">
+      <div className="space-y-4 rounded-2xl p-4 ring-1 ring-foreground/10 sm:p-6">
+        <div className="flex gap-3">
+          <Skeleton className="size-10 rounded-xl max-sm:hidden" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-5 w-24" />
+            <Skeleton className="h-4 w-3/4 max-w-lg" />
+          </div>
+        </div>
+        <Skeleton className="h-12 w-full rounded-xl" />
+        <div className="flex gap-1.5 overflow-hidden">
+          {[20, 16, 18, 20, 16, 22, 18, 16].map((w, i) => (
+            <Skeleton key={i} className="h-11 shrink-0 rounded-full md:h-8" style={{ width: `${w * 0.25}rem` }} />
+          ))}
+        </div>
+      </div>
+      <div className="@container">
+        <div className={SPLIT}>
+          <div className="min-w-0 space-y-3">
+            <Skeleton className="h-5 w-32" />
+            <Skeleton className="h-11 w-full md:h-9" />
+            <div className="divide-y rounded-xl ring-1 ring-foreground/10">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <div key={i} className="flex items-center gap-3 px-4 py-3">
+                  <Skeleton className="size-2.5 rounded-full" />
+                  <div className="flex-1 space-y-1.5">
+                    <Skeleton className="h-4 w-2/5" />
+                    <Skeleton className="h-3 w-3/5" />
+                  </div>
+                  <Skeleton className="h-8 w-24 max-sm:hidden" />
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className={ASIDE}>
+            {[0, 1].map((i) => (
+              <div key={i} className="space-y-3">
+                <Skeleton className="h-5 w-28" />
+                <Skeleton className="h-44 w-full rounded-xl" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ContainersPage() {
   useDocumentTitle("Containers");
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [overview, setOverview] = useState<DockerOverview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState<Map<string, DockerContainerStats>>(new Map());
-  const [tab, setTab] = useState<Tab>("containers");
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  const [catalogOpen, setCatalogOpen] = useState(false);
   const [catalog, setCatalog] = useState<TemplateCatalog | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [runForm, setRunForm] = useState<{ form: RunForm; title?: string } | null>(null);
   const [composeDraft, setComposeDraft] = useState<ComposeDraft | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const [logsTarget, setLogsTarget] = useState<LogsTarget | null>(null);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
+  const [focusLauncher, setFocusLauncher] = useState(false);
+  const launcherRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
     try {
-      setOverview(await api.docker.overview());
+      const next = await api.docker.overview();
+      setOverview(next);
+      publishOverview(next);
       setLoadError(null);
     } catch (err) {
       setLoadError(errorMessage(err, "Could not load Docker state"));
     }
+  }, []);
+
+  // Deep links from the header's "Running containers" popover: ?logs=<id>&name=…,
+  // ?logs=compose:<project>, ?launch=1.
+  const logsParam = searchParams.get("logs");
+  const nameParam = searchParams.get("name");
+  const launchParam = searchParams.get("launch");
+  useEffect(() => {
+    if (!logsParam && !launchParam) return;
+    if (logsParam?.startsWith("compose:")) {
+      const project = logsParam.slice("compose:".length);
+      setLogsTarget({ kind: "compose", id: project, name: project });
+    } else if (logsParam) {
+      setLogsTarget({ kind: "container", id: logsParam, name: nameParam || logsParam });
+    }
+    if (launchParam) setFocusLauncher(true);
+    router.replace("/containers", { scroll: false });
+  }, [logsParam, nameParam, launchParam, router]);
+
+  // The launcher exists once Docker answered; focus it as soon as it does.
+  useEffect(() => {
+    if (!focusLauncher || !launcherRef.current) return;
+    launcherRef.current.focus();
+    launcherRef.current.select();
+    setFocusLauncher(false);
+  }, [focusLauncher, overview?.available]);
+
+  // L = focus the launcher ("/" belongs to the command palette).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isPlainKey(event, "l") && !isPlainKey(event, "L")) return;
+      if (isModalOpen() || !launcherRef.current) return;
+      event.preventDefault();
+      launcherRef.current.focus();
+      launcherRef.current.select();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
   const loadStats = useCallback(async () => {
@@ -144,7 +296,7 @@ export default function ContainersPage() {
   const available = overview?.available ?? false;
   const anyRunning = (overview?.containers ?? []).some((c) => c.state === "running");
   usePolling(refresh, OVERVIEW_REFRESH_MS, true);
-  usePolling(loadStats, STATS_REFRESH_MS, available && anyRunning && tab === "containers");
+  usePolling(loadStats, STATS_REFRESH_MS, available && anyRunning);
 
   const job = useJobDialog(() => void refresh());
 
@@ -161,8 +313,8 @@ export default function ContainersPage() {
   }, []);
 
   useEffect(() => {
-    if (tab === "apps" && !catalog && !catalogLoading && !catalogError) void loadCatalog(false);
-  }, [tab, catalog, catalogLoading, catalogError, loadCatalog]);
+    if (catalogOpen && !catalog && !catalogLoading && !catalogError) void loadCatalog(false);
+  }, [catalogOpen, catalog, catalogLoading, catalogError, loadCatalog]);
 
   async function manualRefresh() {
     setRefreshing(true);
@@ -320,23 +472,6 @@ export default function ContainersPage() {
   }
 
   const containers = overview?.containers ?? [];
-  const counts: Record<Tab, number | null> = {
-    containers: containers.length,
-    compose: overview?.composeProjects.length ?? 0,
-    apps: null,
-    images: overview?.images.length ?? 0,
-    volumes: overview?.volumes.length ?? 0,
-    networks: overview?.networks.length ?? 0,
-  };
-  const tabs: [Tab, string, React.ReactNode][] = [
-    ["containers", "Containers", <BoxIcon key="i" />],
-    ["compose", "Compose", <LayersIcon key="i" />],
-    ["apps", "App catalog", <LayoutGridIcon key="i" />],
-    ["images", "Images", <ImageIcon key="i" />],
-    ["volumes", "Volumes", <HardDriveIcon key="i" />],
-    ["networks", "Networks", <NetworkIcon key="i" />],
-  ];
-
   const runningCount = containers.filter((c) => c.state === "running").length;
   const subtitle = overview?.available
     ? `Docker ${overview.version}${overview.composeVersion ? ` · Compose ${overview.composeVersion}` : ""} · ${runningCount} running`
@@ -360,29 +495,33 @@ export default function ContainersPage() {
           </Button>
         }
       />
-      <main className="px-safe pb-safe mx-auto w-full max-w-6xl flex-1">
-        <div className="space-y-5 px-4 py-5 sm:px-6 sm:py-8">
+      <main className="px-safe pb-safe flex-1">
+        <div className="mx-auto w-full max-w-[1400px] space-y-8 px-4 py-6 sm:px-6 md:py-8 lg:px-8">
           {!overview ? (
             loadError ? (
-              <Notice tone="error" title="Could not load Docker state">
-                {loadError}
-              </Notice>
+              <ProblemPanel
+                icon={<UnplugIcon />}
+                title="Could not load Docker state"
+                detail={loadError}
+                retrying={refreshing}
+                onRetry={() => void manualRefresh()}
+              >
+                The OMP UI server did not answer.
+              </ProblemPanel>
             ) : (
-              <div className="space-y-3" aria-busy="true">
-                <Skeleton className="h-40 w-full rounded-2xl" />
-                <Skeleton className="h-9 w-96 max-w-full rounded-lg" />
-                <Skeleton className="h-64 w-full rounded-xl" />
-              </div>
+              <PageSkeleton />
             )
           ) : !overview.available ? (
-            <Notice tone="error" title="Docker is not available">
-              <p>{overview.error}</p>
-              <p className="mt-2">
-                OMP UI drives the <code className="font-mono text-xs">docker</code> CLI of the server it runs on
-                (set <code className="font-mono text-xs">DOCKER_BIN</code> to use another binary). This page retries every
-                few seconds.
-              </p>
-            </Notice>
+            <ProblemPanel
+              icon={<ServerOffIcon />}
+              title="Docker is not available"
+              detail={overview.error}
+              retrying={refreshing}
+              onRetry={() => void manualRefresh()}
+            >
+              OMP UI drives the <code className="font-mono text-xs">docker</code> CLI of the server it runs on (set{" "}
+              <code className="font-mono text-xs">DOCKER_BIN</code> to use another binary).
+            </ProblemPanel>
           ) : (
             <>
               {loadError && (
@@ -390,129 +529,152 @@ export default function ContainersPage() {
                   {loadError}
                 </Notice>
               )}
-              <QuickLaunch onRunImage={runImage} onPullImage={pullImage} onLaunch={(t) => void launch(t)} />
+              <QuickLaunch
+                overview={overview}
+                templates={catalog?.templates ?? BUILTIN_TEMPLATES}
+                inputRef={launcherRef}
+                onWantCatalog={() => {
+                  if (!catalog && !catalogLoading && !catalogError) void loadCatalog(false);
+                }}
+                onCustomizeTemplate={(t) => void launch(t)}
+                onCustomizeImage={runImage}
+                onPullImage={pullImage}
+                onLaunched={() => void refresh()}
+                onLogs={setLogsTarget}
+                onImportCompose={() => setImportOpen(true)}
+              />
 
-              <Tabs value={tab} onValueChange={(value) => setTab(value as Tab)} className="gap-4">
-                <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-                  <TabsList className="h-10!">
-                    {tabs.map(([value, label, icon]) => (
-                      <TabsTrigger key={value} value={value} className="gap-1.5 px-3">
-                        {icon}
-                        {label}
-                        {counts[value] !== null && (
-                          <span className="text-xs text-muted-foreground tabular-nums">{counts[value]}</span>
-                        )}
-                      </TabsTrigger>
-                    ))}
-                  </TabsList>
+              <div className="@container">
+                <div className={SPLIT}>
+                  <div className="min-w-0 space-y-8">
+                    <ContainersList
+                      containers={containers}
+                      stats={stats}
+                      busyIds={busyIds}
+                      onAction={(c, action) => void containerAction(c, action)}
+                      onLogs={(c) => setLogsTarget({ kind: "container", id: c.id, name: c.name })}
+                      onRemove={removeContainer}
+                    />
+                    <ComposeList
+                      projects={overview.composeProjects}
+                      onAction={composeAction}
+                      onLogs={(p) => setLogsTarget({ kind: "compose", id: p.name, name: p.name })}
+                      onOpenFile={(p) => void openComposeFile(p)}
+                      onRemove={removeCompose}
+                      onNew={() =>
+                        setComposeDraft({
+                          title: "New compose stack",
+                          name: projectNameFrom("stack", composeNames),
+                          yaml: NEW_STACK_YAML,
+                          env: [],
+                          editing: false,
+                        })
+                      }
+                    />
+                  </div>
+
+                  <aside aria-label="Resources" className={ASIDE}>
+                    <DiskUsage
+                      containers={containers}
+                      images={overview.images}
+                      volumes={overview.volumes}
+                      networks={overview.networks}
+                      onPrune={prune}
+                    />
+                    <ImagesList
+                      images={overview.images}
+                      onRun={runImage}
+                      onPull={pullImage}
+                      onRemove={(image) => {
+                        const ref = image.repository === "<none>" ? image.id : `${image.repository}:${image.tag}`;
+                        setConfirm({
+                          title: `Remove ${ref}?`,
+                          description:
+                            image.containers > 0
+                              ? "Containers still use this image; remove them first or force it."
+                              : "The image is deleted from this host. It can be pulled again.",
+                          confirmLabel: "Remove",
+                          destructive: true,
+                          option: "Force (also untag images used by stopped containers)",
+                          onConfirm: async (force) => {
+                            await api.docker.removeImage(ref, force);
+                            toast.success(`Removed ${ref}`);
+                            await refresh();
+                          },
+                        });
+                      }}
+                    />
+                    <VolumesList
+                      volumes={overview.volumes}
+                      onRemove={(volume) =>
+                        setConfirm({
+                          title: "Remove this volume?",
+                          description: (
+                            <>
+                              <span className="font-mono break-all">{volume.name}</span> and all data in it are
+                              deleted.
+                            </>
+                          ),
+                          confirmLabel: "Remove",
+                          destructive: true,
+                          onConfirm: async () => {
+                            await api.docker.removeVolume(volume.name);
+                            toast.success("Volume removed");
+                            await refresh();
+                          },
+                        })
+                      }
+                    />
+                    <NetworksList
+                      networks={overview.networks}
+                      onRemove={(network) =>
+                        setConfirm({
+                          title: `Remove network ${network.name}?`,
+                          description: "Containers still attached to it must be disconnected first.",
+                          confirmLabel: "Remove",
+                          destructive: true,
+                          onConfirm: async () => {
+                            await api.docker.removeNetwork(network.id);
+                            toast.success(`Removed ${network.name}`);
+                            await refresh();
+                          },
+                        })
+                      }
+                    />
+                  </aside>
                 </div>
+              </div>
 
-                <TabsContent value="containers">
-                  <ContainersList
-                    containers={containers}
-                    stats={stats}
-                    busyIds={busyIds}
-                    onAction={(c, action) => void containerAction(c, action)}
-                    onLogs={(c) => setLogsTarget({ kind: "container", id: c.id, name: c.name })}
-                    onRemove={removeContainer}
-                  />
-                </TabsContent>
-                <TabsContent value="compose">
-                  <ComposeList
-                    projects={overview.composeProjects}
-                    onAction={composeAction}
-                    onLogs={(p) => setLogsTarget({ kind: "compose", id: p.name, name: p.name })}
-                    onOpenFile={(p) => void openComposeFile(p)}
-                    onRemove={removeCompose}
-                    onNew={() =>
-                      setComposeDraft({
-                        title: "New compose stack",
-                        name: projectNameFrom("stack", composeNames),
-                        yaml: NEW_STACK_YAML,
-                        env: [],
-                        editing: false,
-                      })
-                    }
-                  />
-                </TabsContent>
-                <TabsContent value="apps">
-                  <AppsCatalog
-                    catalog={catalog}
-                    loading={catalogLoading}
-                    error={catalogError}
-                    onRefresh={() => void loadCatalog(true)}
-                    onLaunch={(t) => void launch(t)}
-                  />
-                </TabsContent>
-                <TabsContent value="images">
-                  <ImagesList
-                    images={overview.images}
-                    onRun={runImage}
-                    onPull={pullImage}
-                    onPrune={prune}
-                    onRemove={(image) => {
-                      const ref = image.repository === "<none>" ? image.id : `${image.repository}:${image.tag}`;
-                      setConfirm({
-                        title: `Remove ${ref}?`,
-                        description:
-                          image.containers > 0
-                            ? "Containers still use this image; remove them first or force it."
-                            : "The image is deleted from this host. It can be pulled again.",
-                        confirmLabel: "Remove",
-                        destructive: true,
-                        option: "Force (also untag images used by stopped containers)",
-                        onConfirm: async (force) => {
-                          await api.docker.removeImage(ref, force);
-                          toast.success(`Removed ${ref}`);
-                          await refresh();
-                        },
-                      });
-                    }}
-                  />
-                </TabsContent>
-                <TabsContent value="volumes">
-                  <VolumesList
-                    volumes={overview.volumes}
-                    onPrune={prune}
-                    onRemove={(volume) =>
-                      setConfirm({
-                        title: "Remove this volume?",
-                        description: (
-                          <>
-                            <span className="font-mono break-all">{volume.name}</span> and all data in it are deleted.
-                          </>
-                        ),
-                        confirmLabel: "Remove",
-                        destructive: true,
-                        onConfirm: async () => {
-                          await api.docker.removeVolume(volume.name);
-                          toast.success("Volume removed");
-                          await refresh();
-                        },
-                      })
-                    }
-                  />
-                </TabsContent>
-                <TabsContent value="networks">
-                  <NetworksList
-                    networks={overview.networks}
-                    onPrune={prune}
-                    onRemove={(network) =>
-                      setConfirm({
-                        title: `Remove network ${network.name}?`,
-                        description: "Containers still attached to it must be disconnected first.",
-                        confirmLabel: "Remove",
-                        destructive: true,
-                        onConfirm: async () => {
-                          await api.docker.removeNetwork(network.id);
-                          toast.success(`Removed ${network.name}`);
-                          await refresh();
-                        },
-                      })
-                    }
-                  />
-                </TabsContent>
-              </Tabs>
+              <section aria-labelledby="catalog-heading" className="space-y-4 border-t pt-6 md:pt-8">
+                <SectionHeader
+                  id="catalog-heading"
+                  title="App catalog"
+                  description="Built-in templates and the Portainer community catalog: single containers and compose stacks."
+                  actions={
+                    <Button
+                      variant="outline"
+                      className="h-11 gap-1.5 active:scale-[0.98] md:h-8"
+                      onClick={() => setCatalogOpen((open) => !open)}
+                      aria-expanded={catalogOpen}
+                      aria-controls="app-catalog"
+                    >
+                      <LayoutGridIcon />
+                      {catalogOpen ? "Hide catalog" : "Browse catalog"}
+                    </Button>
+                  }
+                />
+                {catalogOpen && (
+                  <div id="app-catalog" className="animate-fade-in-soft">
+                    <AppsCatalog
+                      catalog={catalog}
+                      loading={catalogLoading}
+                      error={catalogError}
+                      onRefresh={() => void loadCatalog(true)}
+                      onLaunch={(t) => void launch(t)}
+                    />
+                  </div>
+                )}
+              </section>
             </>
           )}
         </div>
@@ -523,18 +685,22 @@ export default function ContainersPage() {
         title={runForm?.title}
         networks={overview?.networks ?? []}
         onClose={() => setRunForm(null)}
-        onStarted={() => {
-          setTab("containers");
-          void refresh();
-        }}
+        onStarted={() => void refresh()}
       />
       <ComposeDialog
         draft={composeDraft}
         onClose={() => setComposeDraft(null)}
-        onDeployed={() => {
-          setTab("compose");
-          void refresh();
+        onDeployed={() => void refresh()}
+      />
+      <ComposeImportDialog
+        open={importOpen}
+        composeNames={composeNames}
+        onClose={() => setImportOpen(false)}
+        onEdit={({ name, yaml }) => {
+          setImportOpen(false);
+          setComposeDraft({ title: "New compose stack", name, yaml, env: [], editing: false });
         }}
+        onDeployed={() => void refresh()}
       />
       <LogsSheet target={logsTarget} onClose={() => setLogsTarget(null)} />
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
