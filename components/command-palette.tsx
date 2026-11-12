@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
   ChartColumn,
+  Container,
   FolderKanban,
   Keyboard,
   LayoutGrid,
@@ -178,6 +179,14 @@ export function CommandPalette() {
         run: go("/"),
       },
       { id: "go:stats", group: "Go to", label: "Stats", icon: <ChartColumn className="size-4" />, run: go("/stats") },
+      {
+        id: "go:containers",
+        group: "Go to",
+        label: "Containers",
+        hint: "Docker",
+        icon: <Container className="size-4" />,
+        run: go("/containers"),
+      },
       {
         id: "go:settings",
         group: "Go to",
