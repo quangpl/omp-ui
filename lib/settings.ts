@@ -1,5 +1,5 @@
 import type { Repository } from "@/lib/db/types";
-import { DEFAULT_SETTINGS, type AppSettings, type ApprovalMode } from "@/lib/types";
+import { BROWSER_MODES, DEFAULT_SETTINGS, type AppSettings, type ApprovalMode } from "@/lib/types";
 
 const KEY = "app_settings";
 const APPROVAL_MODES: ApprovalMode[] = ["yolo", "write", "always-ask"];
@@ -35,5 +35,7 @@ function sanitize(s: AppSettings): AppSettings {
     ompPath: String(s.ompPath || "omp").trim(),
     approvalMode: APPROVAL_MODES.includes(s.approvalMode) ? s.approvalMode : "yolo",
     defaultModel: String(s.defaultModel ?? "").trim(),
+    autoModel: typeof s.autoModel === "boolean" ? s.autoModel : DEFAULT_SETTINGS.autoModel,
+    browser: BROWSER_MODES.includes(s.browser) ? s.browser : DEFAULT_SETTINGS.browser,
   };
 }

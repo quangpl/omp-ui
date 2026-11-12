@@ -113,3 +113,42 @@ export async function requireTask(repo: Repository, id: string): Promise<Task> {
   if (!task) throw new HttpError(404, "Task not found");
   return task;
 }
+
+const MAX_BLOCKED_BY = 50;
+
+/**
+ * Task queue dependencies: ids of other cards on the same board, deduped. Rejects unknown cards,
+ * the card itself, and anything that would make a cycle (a card waiting on itself indirectly).
+ * `taskId` is null for a card being created.
+ */
+export async function parseBlockedBy(
+  repo: Repository,
+  value: unknown,
+  boardId: string,
+  taskId: string | null,
+): Promise<string[]> {
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) {
+    throw new HttpError(400, "blockedBy must be a list of card ids.");
+  }
+  const ids = [...new Set((value as string[]).map((v) => v.trim()).filter(Boolean))];
+  if (ids.length > MAX_BLOCKED_BY) {
+    throw new HttpError(400, `A card can wait for at most ${MAX_BLOCKED_BY} cards.`);
+  }
+  if (ids.length === 0) return [];
+  if (taskId !== null && ids.includes(taskId)) throw new HttpError(400, "A card cannot wait for itself.");
+  const tasks = new Map((await repo.listTasks(boardId)).map((t) => [t.id, t]));
+  const unknown = ids.find((id) => !tasks.has(id));
+  if (unknown) throw new HttpError(400, `Card ${unknown} is not on this board.`);
+  if (taskId === null) return ids;
+  // Cycle: some blocker (transitively) waits for this card.
+  const seen = new Set<string>();
+  const stack = [...ids];
+  while (stack.length > 0) {
+    const id = stack.pop() as string;
+    if (id === taskId) throw new HttpError(400, "That would make the cards wait for each other forever.");
+    if (seen.has(id)) continue;
+    seen.add(id);
+    stack.push(...(tasks.get(id)?.blockedBy ?? []));
+  }
+  return ids;
+}

@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChartColumnIcon, LayoutGridIcon, SettingsIcon } from "lucide-react";
+import { ChartColumnIcon, LayoutGridIcon, RadarIcon, SettingsIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** Top-level sections, shown as bottom tabs on mobile and inline tabs in the desktop header. */
 export const TOP_TABS = [
   { href: "/", label: "Projects", icon: LayoutGridIcon },
+  { href: "/visualize", label: "Visualize", icon: RadarIcon },
   { href: "/stats", label: "Stats", icon: ChartColumnIcon },
   { href: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const;

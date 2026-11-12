@@ -30,6 +30,7 @@ const globals = globalThis as typeof globalThis & {
 
 const ENV_KEYS = [
   "DATABASE_URL",
+  "DATA_DIR",
   "OMP_PATH",
   "MAX_AGENTS",
   "OMP_EXTRA_ARGS",
@@ -93,6 +94,7 @@ beforeEach(async () => {
   mkdirSync(sessionDir);
 
   process.env.DATABASE_URL = `sqlite:${path.join(root, "omp-ui.db")}`;
+  process.env.DATA_DIR = root;
   process.env.OMP_PATH = FAKE_OMP;
   process.env.FAKE_OMP_LOG = path.join(root, "fake-omp.log");
   process.env.FAKE_OMP_SESSION_DIR = sessionDir;

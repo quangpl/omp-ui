@@ -1,6 +1,6 @@
 import { HttpError, json, readJson, withApi } from "@/lib/server/http";
 import { getAppSettings, updateAppSettings } from "@/lib/settings";
-import type { AppSettings, ApprovalMode } from "@/lib/types";
+import { BROWSER_MODES, type AppSettings, type ApprovalMode, type BrowserMode } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +35,17 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
       throw new HttpError(400, "defaultModel must be a string of at most 200 characters");
     }
     patch.defaultModel = model.trim();
+  }
+  if (body.autoModel !== undefined) {
+    if (typeof body.autoModel !== "boolean") throw new HttpError(400, "autoModel must be a boolean");
+    patch.autoModel = body.autoModel;
+  }
+  if (body.browser !== undefined) {
+    const mode = body.browser;
+    if (typeof mode !== "string" || !(BROWSER_MODES as readonly string[]).includes(mode)) {
+      throw new HttpError(400, `browser must be one of: ${BROWSER_MODES.join(", ")}`);
+    }
+    patch.browser = mode as BrowserMode;
   }
   return patch;
 }

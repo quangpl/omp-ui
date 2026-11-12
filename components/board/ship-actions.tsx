@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import {
   Check,
   ChevronLeft,
@@ -30,7 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { ApiRequestError, api } from "@/lib/api-client";
-import type { Comment, GitActionResult, GitBranches, GitStatus, Task } from "@/lib/types";
+import type { AgentState, Comment, GitActionResult, GitBranches, GitStatus, Task } from "@/lib/types";
 import { errorMessage } from "@/components/board/format";
 
 /** Last path segment, for compact folder labels. */
@@ -256,19 +256,56 @@ function BranchPicker({
   );
 }
 
+/**
+ * Git status of the folders a card ships from (its worktrees on boards with dedicated
+ * workspaces). Loaded while `enabled`; re-read when the agent's state changes and on `refresh()`.
+ */
+export function useTaskGitStatus(
+  taskId: string,
+  enabled: boolean,
+  agentState: AgentState | undefined,
+): { statuses: GitStatus[] | null; refresh: () => void } {
+  const [statuses, setStatuses] = useState<GitStatus[] | null>(null);
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    api.tasks.git(taskId).then(
+      (next) => {
+        if (!cancelled) setStatuses(next);
+      },
+      () => {
+        // Same as the board-level status: unreadable git info shows as "nothing to ship".
+        if (!cancelled) setStatuses([]);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId, enabled, agentState, version]);
+
+  const refresh = useCallback(() => setVersion((n) => n + 1), []);
+  return { statuses, refresh };
+}
+
 type ShipAction = "pr" | "push";
 
 /**
  * "Ship" panel on a card: open a PR/MR or push straight to the default branch.
- * Acts on every project folder with changes; results link out per folder.
+ * Acts on every project folder with changes (or the card's worktrees when `fromWorkspace`);
+ * results link out per folder.
  */
 export function ShipActions({
   task,
   statuses,
+  fromWorkspace = false,
   onShipped,
 }: {
   task: Task;
   statuses: GitStatus[] | null;
+  /** `statuses` describe the card's dedicated workspace rather than the project folders. */
+  fromWorkspace?: boolean;
   /** Called after an action finishes, with the agent comment the server posted. */
   onShipped: (comment: Comment) => void;
 }) {
@@ -293,7 +330,7 @@ export function ShipActions({
       <ShipFrame>
         <p className="flex items-center gap-2 text-sm text-muted-foreground">
           <LoaderCircle className="size-4 animate-spin" />
-          Checking the project&apos;s git status…
+          {fromWorkspace ? "Checking the workspace's git status…" : "Checking the project's git status…"}
         </p>
       </ShipFrame>
     );
@@ -303,7 +340,9 @@ export function ShipActions({
     return (
       <ShipFrame>
         <p className="text-sm text-muted-foreground">
-          This project&apos;s folders aren&apos;t git repositories, so there is nothing to ship.
+          {fromWorkspace
+            ? "This card's workspace has no git repositories, so there is nothing to ship."
+            : "This project's folders aren't git repositories, so there is nothing to ship."}
         </p>
       </ShipFrame>
     );
@@ -351,9 +390,25 @@ export function ShipActions({
         : prOpensBrowser
           ? "Opens a pre-filled PR page in your browser"
           : `Commits all changes${repos.length > 1 ? ` in ${repos.length} folders` : ""}, then opens a ${prNoun} or pushes to ${pushTarget}.`;
+  const workspaceBranches = [
+    ...new Set(repos.flatMap((repo) => (repo.branch ? [repo.branch] : []))),
+  ];
 
   return (
     <ShipFrame>
+      {fromWorkspace && (
+        <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+          <GitBranch className="size-3.5 shrink-0" />
+          <span className="min-w-0 truncate">
+            From this card&apos;s workspace
+            {workspaceBranches.length > 0 && (
+              <>
+                : <span className="font-mono text-foreground">{workspaceBranches.join(", ")}</span>
+              </>
+            )}
+          </span>
+        </p>
+      )}
       <div className="flex flex-col gap-2 sm:flex-row">
         <Button
           className="h-11 w-full sm:w-auto sm:flex-1 md:h-9"

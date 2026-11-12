@@ -7,16 +7,21 @@
 //                         "command" (each stdin command),
 //                         "ui_response" (each extension_ui_response), "steer" (steered messages).
 //   FAKE_OMP_SCENARIO     Default prompt behaviour: success | error | crash | slow | confirm | stream |
-//                         orchestrate.
+//                         orchestrate | board_tools.
 //                         "stream" emits 2 thinking_delta + 15 text_delta frames ~80ms apart, then succeeds.
 //                         "orchestrate" runs a `task` call with two subagents (Scout succeeds, Builder
 //                         fails), reporting progress via task tool updates and, when subscribed via
 //                         set_subagent_subscription, subagent_lifecycle/subagent_progress frames.
 //   FAKE_OMP_STEP_MS      Delay between orchestrate steps (default 80).
+//                         "board_tools" calls the host tools listed in the prompt as
+//                         `<calls>[{"toolName", "arguments"}]</calls>` one after another (`"$created"`
+//                         in arguments becomes the id of the card the last board_create_card made),
+//                         then succeeds with `Tool results: <JSON list of {toolName, isError, text}>`.
 //                         A prompt containing "[fake:<scenario>]" overrides it for that prompt.
 //   FAKE_OMP_SESSION_DIR  Parent dir for the per-process session temp dir (default: os tmpdir).
-//   FAKE_OMP_STARTUP      normal (default) | silent (never sends ready) | exit (exits 2 before ready).
 //   FAKE_OMP_PROTOCOLS    Comma-separated supportedProtocolVersions advertised in ready (default "1,2").
+//   FAKE_OMP_MODEL_ROLES  JSON object `omp config get modelRoles --json` reports (default {});
+//                         "fail" makes that command exit 1. Logged as a "config" entry, not "argv".
 //
 // Test-only commands (answered like real commands): fake_echo {value, delayMs}, fake_crash,
 // fake_chunked {size}, fake_bad_chunk.
@@ -37,6 +42,14 @@ function log(kind, data) {
 function flag(name) {
   const index = argv.indexOf(name);
   return index === -1 ? undefined : argv[index + 1];
+}
+
+if (argv[0] === "config") {
+  log("config", { argv, cwd: process.cwd() });
+  const roles = process.env.FAKE_OMP_MODEL_ROLES || "{}";
+  if (roles === "fail") process.exit(1);
+  process.stdout.write(`${JSON.stringify({ key: argv[2], value: JSON.parse(roles) }, null, 2)}\n`);
+  process.exit(0);
 }
 
 /** Environment variables whose values the "argv" entry records (credentials in, OMP UI secrets out). */
@@ -84,6 +97,10 @@ const uiResponses = [];
 let chunkSeq = 0;
 /** set_subagent_subscription level. */
 let subagentLevel = "off";
+/** Host tool results by host_tool_call id (resolve, or the result if it came first). */
+const hostWaiters = new Map();
+const hostResults = new Map();
+let hostCallSeq = 0;
 
 function emit(frame) {
   process.stdout.write(`${JSON.stringify(frame)}\n`);
@@ -311,6 +328,31 @@ function waitForUi(id) {
   return promise;
 }
 
+function waitForHostResult(id) {
+  const received = hostResults.get(id);
+  if (received) return Promise.resolve(received);
+  const { promise, resolve } = Promise.withResolvers();
+  hostWaiters.set(id, resolve);
+  return promise;
+}
+
+async function boardTools(message) {
+  const match = /<calls>([\s\S]*?)<\/calls>/.exec(String(message));
+  const calls = match ? JSON.parse(match[1]) : [];
+  const results = [];
+  let created = null;
+  for (const call of calls) {
+    const args = JSON.parse(JSON.stringify(call.arguments ?? {}).replaceAll('"$created"', JSON.stringify(created)));
+    const id = `host_${++hostCallSeq}`;
+    emit({ type: "host_tool_call", id, toolCallId: `toolu_${id}`, toolName: call.toolName, arguments: args });
+    const reply = await waitForHostResult(id);
+    const text = reply.result?.content?.map((c) => c.text).join("") ?? "";
+    if (call.toolName === "board_create_card" && !reply.isError) created = JSON.parse(text).created.id;
+    results.push({ toolName: call.toolName, isError: reply.isError === true, text });
+  }
+  completeSuccessfully(`Tool results: ${JSON.stringify(results)}`);
+}
+
 async function startPrompt(command) {
   const scenario = scenarioOf(command.message);
   run = { scenario, steers: [] };
@@ -336,6 +378,9 @@ async function startPrompt(command) {
       break;
     case "orchestrate":
       await orchestrate(run);
+      break;
+    case "board_tools":
+      await boardTools(command.message);
       break;
     case "confirm": {
       emit({ type: "extension_ui_request", id: "ui-notify-1", method: "notify", message: "heads up" });
@@ -374,6 +419,16 @@ async function handle(command) {
     }
     return;
   }
+  if (command.type === "host_tool_result") {
+    log("host_tool_result", { result: command });
+    hostResults.set(command.id, command);
+    const waiter = hostWaiters.get(command.id);
+    if (waiter) {
+      hostWaiters.delete(command.id);
+      waiter(command);
+    }
+    return;
+  }
   log("command", { command });
 
   switch (command.type) {
@@ -406,6 +461,9 @@ async function handle(command) {
     case "set_subagent_subscription":
       subagentLevel = command.level;
       respond(command, { level: command.level });
+      return;
+    case "set_host_tools":
+      respond(command, { toolNames: command.tools.map((t) => t.name) });
       return;
     case "get_last_assistant_text":
       respond(command, { text: lastAssistantText });

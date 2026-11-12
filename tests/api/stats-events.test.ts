@@ -437,6 +437,8 @@ describe("GET /events (SSE)", () => {
     expect(stream.text).not.toContain(elsewhere.id);
     expect(stream.text).not.toContain(boardA.id);
     for (const event of events) {
+      // queue.updated is global: every stream gets it.
+      if (event.type === "queue.updated") continue;
       const boardId =
         event.type === "board.updated" ? event.board.id : event.type === "task.updated" ? event.task.boardId : event.boardId;
       expect(boardId).toBe(boardB.id);

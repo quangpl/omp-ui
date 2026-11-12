@@ -19,6 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useBoard, useGitStatus } from "@/hooks/use-board";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { isTypingTarget } from "@/lib/hotkeys";
 import { TASK_STATUSES, type Board, type Task, type TaskStatus } from "@/lib/types";
 
 export default function BoardPage() {
@@ -72,6 +73,14 @@ function BoardScreen() {
     }
   }, [router, boardPath]);
 
+  /** Show another card in the open panel; replaces the entry so Back still closes the panel. */
+  const switchTask = useCallback(
+    (taskId: string) => {
+      router.replace(`${boardPath}?task=${encodeURIComponent(taskId)}`, { scroll: false });
+    },
+    [router, boardPath],
+  );
+
   useEffect(() => {
     if (!selectedTaskId) pushedRef.current = false;
   }, [selectedTaskId]);
@@ -85,6 +94,32 @@ function BoardScreen() {
     setMobileColumn(selectedTask.status);
   }, [selectedTask]);
 
+  // J / K flip through the board's cards (column order) while the detail panel is open.
+  useEffect(() => {
+    if (!selectedTaskId) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || event.isComposing) return;
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      if (event.key !== "j" && event.key !== "k") return;
+      if (isTypingTarget(event.target)) return;
+      // Only while the panel itself has focus, not e.g. the delete confirmation on top of it.
+      const inPanel =
+        event.target instanceof Element &&
+        event.target.closest('[data-slot="sheet-content"], [data-slot="drawer-content"]');
+      if (!inPanel) return;
+      const ordered = TASK_STATUSES.flatMap((status) => columns[status]);
+      const index = ordered.findIndex((t) => t.id === selectedTaskId);
+      if (index < 0) return;
+      const next = ordered[index + (event.key === "j" ? 1 : -1)];
+      if (next) {
+        event.preventDefault();
+        switchTask(next.id);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedTaskId, columns, switchTask]);
+
   const create = async (input: NewTaskInput) => {
     const task = await controller.createTask(input);
     if (task) setMobileColumn(task.status);
@@ -94,13 +129,13 @@ function BoardScreen() {
   // `N` / `Shift+N` and every "New card…" menu item land here while this board is open.
   useNewCardTarget(boardId, ({ start }) => setNewCard({ start }));
 
-  const { createTask, moveToStatus, runAgent, stopAgent, reload } = controller;
+  const { createTask, revertToTodo, runAgent, stopAgent, reload } = controller;
   const refreshGit = git.refresh;
   const menuActions = useMemo<BoardMenuActions>(
     () => ({
       boardId,
       openCard: openTask,
-      moveToStatus,
+      revertToTodo,
       runAgent,
       stopAgent,
       duplicate: async (task) => {
@@ -120,7 +155,7 @@ function BoardScreen() {
       },
       openSettings: () => setSettingsOpen(true),
     }),
-    [boardId, openTask, moveToStatus, runAgent, stopAgent, createTask, reload, refreshGit],
+    [boardId, openTask, revertToTodo, runAgent, stopAgent, createTask, reload, refreshGit],
   );
 
   if (!board) {
@@ -181,8 +216,7 @@ function BoardScreen() {
           activity={controller.activity}
           isMobile={isMobile}
           menuActions={menuActions}
-          moveTask={controller.moveTask}
-          moveToStatus={controller.moveToStatus}
+          reorderTask={controller.reorderTask}
           onQuickCreate={async (title) => (await controller.createTask({ title })) !== null}
           onAdd={() => setNewCard({})}
           mobileColumn={mobileColumn}
@@ -210,12 +244,15 @@ function BoardScreen() {
       <TaskDetail
         taskId={selectedTaskId}
         boardTask={selectedTask}
+        board={board}
+        tasks={tasks}
+        onOpenTask={switchTask}
         isMobile={isMobile}
         onClose={closeTask}
         subscribe={subscribe}
         upsertTask={controller.upsertTask}
         removeTask={controller.removeTask}
-        moveToStatus={controller.moveToStatus}
+        revertToTodo={controller.revertToTodo}
         gitStatuses={git.statuses}
         onGitChanged={() => void git.refresh()}
       />
@@ -225,7 +262,7 @@ function BoardScreen() {
 
 function BoardSkeleton() {
   return (
-    <div className="flex h-dvh flex-col overflow-hidden">
+    <div className="flex h-dvh animate-fade-in-soft flex-col overflow-hidden">
       <div className="pt-safe border-b">
         <div className="flex h-14 items-center gap-3 px-3 sm:px-4">
           <Skeleton className="size-9 rounded-full" />

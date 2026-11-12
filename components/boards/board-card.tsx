@@ -1,5 +1,6 @@
 "use client";
 
+import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -42,10 +43,14 @@ export function BoardCard({
   board,
   onEdit,
   onDelete,
+  className,
+  style,
 }: {
   board: BoardWithCounts;
   onEdit: (board: BoardWithCounts) => void;
   onDelete: (board: BoardWithCounts) => void;
+  className?: string;
+  style?: CSSProperties;
 }) {
   const router = useRouter();
   const openNewCard = useNewCard();
@@ -55,7 +60,13 @@ export function BoardCard({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <article className="group/board relative flex min-w-0 flex-col gap-4 rounded-xl border bg-card p-4 text-card-foreground shadow-xs transition-[border-color,box-shadow] duration-150 hover:border-primary/35 hover:shadow-md has-[a:focus-visible]:border-ring has-[a:focus-visible]:ring-3 has-[a:focus-visible]:ring-ring/50 data-[state=open]:border-ring data-[state=open]:ring-3 data-[state=open]:ring-ring/50">
+        <article
+          style={style}
+          className={cn(
+            "group/board card-lift relative flex min-w-0 flex-col gap-4 rounded-xl border bg-card p-4 text-card-foreground shadow-xs hover:border-primary/35 has-[a:focus-visible]:border-ring has-[a:focus-visible]:ring-3 has-[a:focus-visible]:ring-ring/50 data-[state=open]:border-ring data-[state=open]:ring-3 data-[state=open]:ring-ring/50",
+            className,
+          )}
+        >
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
               <h2 className="truncate text-base leading-snug font-semibold tracking-tight">

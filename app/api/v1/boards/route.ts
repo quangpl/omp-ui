@@ -24,6 +24,7 @@ export const POST = withApi(async ({ req, repo }) => {
   }
   if (body.model !== undefined) input.model = parseModel(body.model);
   if (body.autoRun !== undefined) input.autoRun = parseBoolean(body.autoRun, "autoRun");
+  if (body.worktrees !== undefined) input.worktrees = parseBoolean(body.worktrees, "worktrees");
   const board = await repo.createBoard(input);
   publish({ type: "board.updated", board });
   return json(board, { status: 201 });

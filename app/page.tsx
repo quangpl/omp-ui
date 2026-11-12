@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { PlusIcon, RefreshCwIcon } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
@@ -74,7 +74,7 @@ export default function BoardsPage() {
       <main className="px-safe pb-safe mx-auto w-full max-w-6xl flex-1">
         <div className="px-4 py-5 sm:px-6 sm:py-8">
           {loadError && boards === null ? (
-            <div className="mx-auto flex max-w-sm flex-col items-center gap-4 py-16 text-center">
+            <div className="animate-fade-in-soft mx-auto flex max-w-sm flex-col items-center gap-4 py-16 text-center">
               <p className="text-sm text-muted-foreground">{loadError}</p>
               <Button variant="outline" onClick={() => void load()} className="h-11 md:h-9">
                 <RefreshCwIcon />
@@ -82,7 +82,7 @@ export default function BoardsPage() {
               </Button>
             </div>
           ) : boards === null ? (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3" aria-busy="true" aria-label="Loading projects">
+            <div className="animate-fade-in-soft grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3" aria-busy="true" aria-label="Loading projects">
               {Array.from({ length: 3 }, (_, i) => (
                 <div key={i} className="flex flex-col gap-4 rounded-xl border bg-card p-4">
                   <div className="space-y-2">
@@ -105,12 +105,14 @@ export default function BoardsPage() {
                 {boards.length} project{boards.length === 1 ? "" : "s"} · tap one to open its board
               </p>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3">
-                {boards.map((board) => (
+                {boards.map((board, index) => (
                   <BoardCard
                     key={board.id}
                     board={board}
                     onEdit={(b) => setForm({ open: true, board: b })}
                     onDelete={setDeleting}
+                    className="animate-card-in"
+                    style={{ "--stagger": index } as CSSProperties}
                   />
                 ))}
               </div>

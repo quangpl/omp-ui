@@ -48,6 +48,7 @@ const SECRETS = {
 const ENV_KEYS = [
   "HOME",
   "DATABASE_URL",
+  "DATA_DIR",
   "OMP_PATH",
   "MAX_AGENTS",
   "OMP_EXTRA_ARGS",
@@ -174,6 +175,7 @@ describe("agent processes inherit host credentials", () => {
     mkdirSync(sessionDir);
 
     process.env.DATABASE_URL = `sqlite:${path.join(root, "omp-ui.db")}`;
+    process.env.DATA_DIR = root;
     process.env.OMP_PATH = FAKE_OMP;
     process.env.FAKE_OMP_LOG = logFile;
     process.env.FAKE_OMP_SESSION_DIR = sessionDir;

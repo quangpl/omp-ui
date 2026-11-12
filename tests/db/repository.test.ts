@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { MongoClient } from "mongodb";
 import pg from "pg";
-import { afterAll, beforeAll, describe } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MongoRepository } from "@/lib/db/mongo";
 import { PostgresRepository } from "@/lib/db/postgres";
@@ -43,6 +44,48 @@ runRepositoryContract(
     if (dir) await fs.rm(dir, { recursive: true, force: true });
   },
 );
+
+describe("sqlite migration", () => {
+  it("adds missing columns to an existing database with defaults for old rows", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ui-migrate-"));
+    const file = path.join(dir, "omp-ui.db");
+    try {
+      // Schema as it was before extra folders, worktrees, dependencies and agent messages.
+      const old = new DatabaseSync(file);
+      old.exec(`
+        CREATE TABLE boards (id TEXT PRIMARY KEY, name TEXT NOT NULL, workdir TEXT NOT NULL, model TEXT,
+          auto_run INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE tasks (id TEXT PRIMARY KEY, board_id TEXT NOT NULL, title TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'todo', position REAL NOT NULL,
+          agent_state TEXT NOT NULL DEFAULT 'idle', agent_error TEXT, session_file TEXT, last_run_id TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE comments (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL,
+          resolved INTEGER NOT NULL DEFAULT 0, resolved_at TEXT, resolved_by_run_id TEXT, created_at TEXT NOT NULL);
+        INSERT INTO boards VALUES ('b1', 'Old', '/work/old', NULL, 1, '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z');
+        INSERT INTO tasks (id, board_id, title, position, created_at, updated_at)
+          VALUES ('t1', 'b1', 'Old task', 1024, '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z');
+        INSERT INTO comments (id, task_id, author, body, created_at)
+          VALUES ('c1', 't1', 'user', 'old comment', '2025-01-01T00:00:00.000Z');
+      `);
+      old.close();
+
+      const repo = new SqliteRepository(file);
+      await repo.init();
+      try {
+        expect(await repo.getBoard("b1")).toMatchObject({ extraFolders: [], worktrees: false });
+        expect(await repo.getTask("t1")).toMatchObject({ blockedBy: [], createdByTaskId: null });
+        expect(await repo.getComment("c1")).toMatchObject({ fromTaskId: null });
+
+        const updated = await repo.updateTask("t1", { blockedBy: ["t0"] });
+        expect(updated!.blockedBy).toEqual(["t0"]);
+      } finally {
+        await repo.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 // -------------------------------------------------------------------- mongodb
 // One database per test, dropped afterwards.

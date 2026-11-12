@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -25,12 +26,14 @@ const globals = globalThis as typeof globalThis & {
 
 const ENV_KEYS = [
   "DATABASE_URL",
+  "DATA_DIR",
   "OMP_PATH",
   "MAX_AGENTS",
   "OMP_EXTRA_ARGS",
   "FAKE_OMP_LOG",
   "FAKE_OMP_SCENARIO",
   "FAKE_OMP_SESSION_DIR",
+  "FAKE_OMP_MODEL_ROLES",
 ] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
 
@@ -170,12 +173,14 @@ beforeEach(async () => {
   mkdirSync(sessionDir);
 
   process.env.DATABASE_URL = `sqlite:${path.join(root, "omp-ui.db")}`;
+  process.env.DATA_DIR = root;
   process.env.OMP_PATH = FAKE_OMP;
   process.env.FAKE_OMP_LOG = logFile;
   process.env.FAKE_OMP_SESSION_DIR = sessionDir;
   process.env.FAKE_OMP_SCENARIO = "success";
   delete process.env.MAX_AGENTS;
   delete process.env.OMP_EXTRA_ARGS;
+  delete process.env.FAKE_OMP_MODEL_ROLES;
   globals.__ompUiRepo = undefined;
   globals.__ompUiAgentManager = undefined;
 
@@ -670,7 +675,12 @@ describe("AgentManager scheduling and project folders", () => {
     await waitDone(task.id);
 
     const [spawned] = argvEntries();
-    expect(flagValues(spawned?.argv, "--add-dir")).toEqual([extra]);
+    // The card's and the board's shared files folders come after the project folders.
+    expect(flagValues(spawned?.argv, "--add-dir")).toEqual([
+      extra,
+      path.join(root, "files", "tasks", task.id),
+      path.join(root, "files", "boards", board.id),
+    ]);
     expect(spawned?.argv).not.toContain(missing);
     const run = await latestRun(task.id);
     expect(run.prompt).toContain(`Project folders: primary ${workdir}, plus ${extra}.`);
@@ -691,10 +701,141 @@ describe("AgentManager scheduling and project folders", () => {
     expect(flagValues(spawned?.argv, "--model")).toEqual(["fake/default"]);
     expect(flagValues(spawned?.argv, "--approval-mode")).toEqual(["write"]);
   });
+
+  it("auto-selects the omp role that fits each card and logs why", async () => {
+    board = (await repo.updateBoard(board.id, { model: null }))!;
+    await updateAppSettings(repo, { defaultModel: "fake/default" });
+    process.env.FAKE_OMP_MODEL_ROLES = JSON.stringify({ smol: "fake/fast:low", slow: "fake/deep:xhigh" });
+    const manager = await getAgentManager();
+    const cards = [
+      ["Fix the race condition in the job queue", "Workers deadlock under load."],
+      ["Fix typo in README", ""],
+      ["Add a CSV export button", "Export the visible rows."],
+    ] as const;
+    const taskIds: string[] = [];
+    for (const [title, description] of cards) {
+      const task = await createTask(title, description);
+      taskIds.push(task.id);
+      await manager.start(task.id);
+      await waitDone(task.id);
+    }
+
+    const spawned = argvEntries();
+    expect(spawned.map((e) => flagValues(e.argv, "--model"))).toEqual([["@slow"], ["@smol"], ["fake/default"]]);
+    expect(spawned.map((e) => flagValues(e.argv, "--thinking"))).toEqual([[], [], []]);
+    const configCalls = readLog().filter((e) => e.kind === "config");
+    expect(configCalls.map((e) => [e.argv, e.cwd])).toEqual(
+      cards.map(() => [["config", "get", "modelRoles", "--json"], workdir]),
+    );
+    const texts = (await runEvents((await latestRun(taskIds[0]!)).id)).map((e) => e.text);
+    expect(texts).toContain("Model auto-selected: @slow (needs deep reasoning: concurrency → slow role (fake/deep:xhigh))");
+    expect(texts).toContain(`Starting agent in ${workdir} (model @slow)`);
+  });
+
+  it("falls back to the default model with a fitting thinking level when omp has no matching role", async () => {
+    board = (await repo.updateBoard(board.id, { model: null }))!;
+    await updateAppSettings(repo, { defaultModel: "fake/default" });
+    process.env.FAKE_OMP_MODEL_ROLES = "fail";
+    const task = await createTask("Investigate the memory leak in the SSE stream");
+    const manager = await getAgentManager();
+
+    await manager.start(task.id);
+    await waitDone(task.id);
+
+    const [spawned] = argvEntries();
+    expect(flagValues(spawned?.argv, "--model")).toEqual(["fake/default"]);
+    expect(flagValues(spawned?.argv, "--thinking")).toEqual(["high"]);
+    const texts = (await runEvents((await latestRun(task.id)).id)).map((e) => e.text);
+    expect(texts).toContain(`Starting agent in ${workdir} (model fake/default, thinking high)`);
+  });
+
+  it("skips auto selection for a board with a pinned model or when it is turned off", async () => {
+    process.env.FAKE_OMP_MODEL_ROLES = JSON.stringify({ slow: "fake/deep" });
+    const manager = await getAgentManager();
+    const pinned = await createTask("Debug the deadlock");
+    await manager.start(pinned.id);
+    await waitDone(pinned.id);
+
+    board = (await repo.updateBoard(board.id, { model: null }))!;
+    await updateAppSettings(repo, { defaultModel: "", autoModel: false });
+    const unpinned = await createTask("Debug the deadlock again");
+    await manager.start(unpinned.id);
+    await waitDone(unpinned.id);
+
+    const spawned = argvEntries();
+    expect(spawned.map((e) => flagValues(e.argv, "--model"))).toEqual([["fake/model-1"], []]);
+    expect(spawned.flatMap((e) => flagValues(e.argv, "--thinking"))).toEqual([]);
+    expect(readLog().filter((e) => e.kind === "config")).toEqual([]);
+  });
+});
+
+describe("AgentManager collaboration, dependencies and workspaces", () => {
+  it("lets an agent delegate a card and wait for it, lending its slot while it waits", async () => {
+    await updateAppSettings(repo, { maxConcurrentAgents: 1 });
+    const calls = [
+      { toolName: "board_create_card", arguments: { title: "Child", description: "[fake:success] do the part" } },
+      { toolName: "board_wait_for_cards", arguments: { cardIds: ["$created"], timeoutSeconds: 20 } },
+    ];
+    const parent = await createTask("Parent", `[fake:board_tools] <calls>${JSON.stringify(calls)}</calls>`);
+    const manager = await getAgentManager();
+
+    await manager.start(parent.id);
+    await waitDone(parent.id);
+
+    const child = (await repo.listTasks(board.id)).find((t) => t.title === "Child");
+    expect(child).toMatchObject({ status: "done", agentState: "idle", createdByTaskId: parent.id });
+    const summary = (await latestRun(parent.id)).summary ?? "";
+    const results = JSON.parse(summary.replace(/^Tool results: /, "")) as { toolName: string; isError: boolean; text: string }[];
+    expect(results.map((r) => [r.toolName, r.isError])).toEqual([
+      ["board_create_card", false],
+      ["board_wait_for_cards", false],
+    ]);
+    const waited = JSON.parse(results[1]!.text) as { cards: { id: string; status: string; summary: string }[] };
+    expect(waited.cards).toEqual([expect.objectContaining({ id: child!.id, status: "done", summary: SUCCESS_SUMMARY })]);
+    const [spawned] = argvEntries();
+    expect(commands("set_host_tools", spawned?.pid).length).toBe(1);
+  });
+
+  it("keeps a queued card waiting until every card in blockedBy is Done", async () => {
+    const blocker = await createTask("Blocker");
+    const waiting = await repo.createTask({ boardId: board.id, title: "Waiting", blockedBy: [blocker.id] });
+    const manager = await getAgentManager();
+
+    await manager.start(waiting.id);
+    await sleep(250);
+    expect(argvEntries()).toHaveLength(0);
+    expect((await manager.queueSnapshot()).queued).toEqual([
+      expect.objectContaining({ taskId: waiting.id, waitingFor: [blocker.id] }),
+    ]);
+
+    const done = (await repo.updateTask(blocker.id, { status: "done" }))!;
+    await manager.onTaskMoved(done, "todo");
+    await waitDone(waiting.id);
+    expect(argvEntries()).toHaveLength(1);
+  });
+
+  it("runs a card of a worktrees board in its own git worktree and branch", async () => {
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: workdir, stdio: "pipe" });
+    git("init", "-q");
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init");
+    board = (await repo.updateBoard(board.id, { worktrees: true }))!;
+    const task = await createTask("Isolated change");
+    const manager = await getAgentManager();
+
+    await manager.start(task.id);
+    await waitDone(task.id);
+
+    const target = path.join(root, "workspaces", task.id, path.basename(workdir));
+    const [spawned] = argvEntries();
+    expect(flagValues(spawned?.argv, "--cwd")).toEqual([target]);
+    const branch = execFileSync("git", ["branch", "--show-current"], { cwd: target }).toString().trim();
+    expect(branch).toMatch(/^omp\/isolated-change-/);
+    expect((await latestRun(task.id)).prompt).toContain(`dedicated git worktree on branch \`${branch}\``);
+  });
 });
 
 describe("AgentManager boot recovery", () => {
-  it("marks runs and tasks left running by a previous server as interrupted", async () => {
+  it("interrupts runs left running by a previous server and re-queues cards that were waiting", async () => {
     const task = await createTask("Was running", "", "in_progress");
     await repo.updateTask(task.id, { agentState: "running" });
     const queued = await createTask("Was queued", "", "in_progress");
@@ -703,8 +844,12 @@ describe("AgentManager boot recovery", () => {
 
     await getAgentManager();
 
+    // A started run is never repeated: its side effects are unknown.
     expect(await getTask(task.id)).toMatchObject({ agentState: "error", agentError: "Interrupted by server restart" });
-    expect(await getTask(queued.id)).toMatchObject({ agentState: "error", agentError: "Interrupted by server restart" });
     expect(await repo.getRun(run.id)).toMatchObject({ status: "aborted" });
+    // A card that only waited has done nothing yet: it runs as if the server never stopped.
+    await waitDone(queued.id);
+    expect(argvEntries()).toHaveLength(1);
+    expect(await repo.listRuns(task.id)).toHaveLength(1);
   });
 });

@@ -1,4 +1,4 @@
-import type { Comment, Task, TaskStatus } from "@/lib/types";
+import type { Comment, QueueSnapshot, Task, TaskStatus } from "@/lib/types";
 
 /**
  * Controls omp agents for tasks. Implemented in lib/agent/manager.ts, obtained via
@@ -32,4 +32,10 @@ export interface AgentManager {
   onTaskDeleted(taskId: string): Promise<void>;
   /** Snapshot for /health and the UI. */
   stats(): { running: string[]; queued: string[] };
+  /** Running and queued cards (queued in start order) with titles and unfinished blockers. */
+  queueSnapshot(): Promise<QueueSnapshot>;
+  /** Move a queued card to `position` (0 = next). False when the card is not queued. */
+  moveInQueue(taskId: string, position: number): boolean;
+  /** Re-check queued cards, e.g. after a card's blockedBy changed. */
+  refreshQueue(): void;
 }

@@ -2,17 +2,12 @@
 
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import {
-  ArrowRightLeft,
-  Check,
   Copy,
   Link2,
   PanelRightOpen,
-  Play,
   Plus,
   RefreshCw,
-  RotateCcw,
   Settings2,
-  Square,
   Trash2,
   Zap,
 } from "lucide-react";
@@ -24,19 +19,19 @@ import {
   ContextMenuLabel,
   ContextMenuSeparator,
   ContextMenuShortcut,
-  ContextMenuSub,
-  ContextMenuSubContent,
-  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { StatusDot } from "@/components/board/board-column";
-import { STATUS_LABELS, TASK_STATUSES, type Task, type TaskStatus } from "@/lib/types";
+import { quickActionsFor, runQuickAction } from "@/components/board/quick-actions";
+import { STATUS_LABELS, type Task } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 /** Everything a card / board right-click menu can do. */
 export interface BoardMenuActions {
   boardId: string;
   openCard: (taskId: string) => void;
-  moveToStatus: (taskId: string, status: TaskStatus) => Promise<void>;
+  /** Quick action: back to To do (stops the agent). Cards never move to an arbitrary column. */
+  revertToTodo: (taskId: string) => Promise<void>;
   runAgent: (taskId: string) => Promise<void>;
   stopAgent: (taskId: string) => Promise<void>;
   duplicate: (task: Task) => Promise<void>;
@@ -82,7 +77,10 @@ function NewCardItems({ actions }: { actions: BoardMenuActions }) {
   );
 }
 
-/** Right-click menu for one card: open, agent, move, duplicate, copy, delete, plus "New card". */
+/**
+ * Right-click menu for one card: open, quick actions (start/resume/retry/stop/revert), duplicate,
+ * copy, delete, plus "New card". The card's column follows its agent, so there is no "Move to".
+ */
 export function CardContextMenu({
   task,
   actions,
@@ -93,7 +91,6 @@ export function CardContextMenu({
   /** Single element (the card); receives the trigger props. */
   children: ReactNode;
 }) {
-  const active = task.agentState === "running" || task.agentState === "queued";
   const link = () =>
     `${location.origin}/b/${encodeURIComponent(actions.boardId)}?task=${encodeURIComponent(task.id)}`;
 
@@ -103,53 +100,36 @@ export function CardContextMenu({
         {children}
       </ContextMenuTrigger>
       <ContextMenuContent className="w-60">
-        <ContextMenuLabel className="truncate" title={task.title}>
-          {task.title}
+        <ContextMenuLabel className="flex min-w-0 flex-col gap-0.5">
+          <span className="truncate" title={task.title}>
+            {task.title}
+          </span>
+          <span className="flex items-center gap-1.5 text-xs font-normal text-muted-foreground">
+            <StatusDot status={task.status} />
+            {STATUS_LABELS[task.status]}
+          </span>
         </ContextMenuLabel>
         <ContextMenuItem onSelect={() => actions.openCard(task.id)}>
           <PanelRightOpen />
           Open card
           <ContextMenuShortcut>↵</ContextMenuShortcut>
         </ContextMenuItem>
-        {active ? (
-          <ContextMenuItem onSelect={() => void actions.stopAgent(task.id)}>
-            <Square className="fill-current" />
-            Stop agent
+        {quickActionsFor(task).map((action) => (
+          <ContextMenuItem
+            key={action.id}
+            title={action.hint}
+            onSelect={() => void runQuickAction(action.id, task.id, actions)}
+          >
+            <action.icon className={cn(action.filled && "fill-current")} />
+            {action.label}
+            <ContextMenuShortcut>{action.shortcut}</ContextMenuShortcut>
           </ContextMenuItem>
-        ) : task.agentState === "error" ? (
-          <ContextMenuItem onSelect={() => void actions.runAgent(task.id)}>
-            <RotateCcw />
-            Retry agent
-          </ContextMenuItem>
-        ) : (
-          <ContextMenuItem onSelect={() => void actions.runAgent(task.id)}>
-            <Play className="fill-current" />
-            Run agent
-          </ContextMenuItem>
-        )}
-        <ContextMenuSub>
-          <ContextMenuSubTrigger>
-            <ArrowRightLeft />
-            Move to
-          </ContextMenuSubTrigger>
-          <ContextMenuSubContent className="w-44">
-            {TASK_STATUSES.map((status) => (
-              <ContextMenuItem
-                key={status}
-                disabled={status === task.status}
-                onSelect={() => void actions.moveToStatus(task.id, status)}
-              >
-                <StatusDot status={status} />
-                {STATUS_LABELS[status]}
-                {status === task.status && <Check className="ml-auto" />}
-              </ContextMenuItem>
-            ))}
-          </ContextMenuSubContent>
-        </ContextMenuSub>
+        ))}
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => void actions.duplicate(task)}>
           <Copy />
           Duplicate
+          <ContextMenuShortcut>D</ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => void copy(link(), "Link")}>
           <Link2 />
@@ -165,6 +145,7 @@ export function CardContextMenu({
         <ContextMenuItem variant="destructive" onSelect={() => actions.requestDelete(task)}>
           <Trash2 />
           Delete card…
+          <ContextMenuShortcut>⌫</ContextMenuShortcut>
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

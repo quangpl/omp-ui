@@ -21,9 +21,11 @@ export interface CreateBoardInput {
   extraFolders?: string[];
   model?: string | null;
   autoRun?: boolean;
+  /** Default false. */
+  worktrees?: boolean;
 }
 export type UpdateBoardInput = Partial<
-  Pick<Board, "name" | "workdir" | "extraFolders" | "model" | "autoRun">
+  Pick<Board, "name" | "workdir" | "extraFolders" | "model" | "autoRun" | "worktrees">
 >;
 
 export interface CreateTaskInput {
@@ -33,6 +35,10 @@ export interface CreateTaskInput {
   status?: TaskStatus;
   /** Omitted: appended to the end of the column (max position + 1024). */
   position?: number;
+  /** Default []. */
+  blockedBy?: string[];
+  /** Default null. */
+  createdByTaskId?: string | null;
 }
 export type UpdateTaskInput = Partial<
   Pick<
@@ -45,6 +51,7 @@ export type UpdateTaskInput = Partial<
     | "agentError"
     | "sessionFile"
     | "lastRunId"
+    | "blockedBy"
   >
 >;
 
@@ -54,6 +61,8 @@ export interface CreateCommentInput {
   body: string;
   /** Agent comments are created resolved; user comments default unresolved. */
   resolved?: boolean;
+  /** Agent-to-agent message: the sending card. Default null. */
+  fromTaskId?: string | null;
 }
 
 export interface CreateRunInput {

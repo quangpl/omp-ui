@@ -6,6 +6,7 @@ import { createPullRequest, isGitRepo, pushToDefault, type GitFolderOutcome } fr
 import { HttpError, json, readJson, type ApiContext } from "@/lib/server/http";
 import { requireBoard, requireTask } from "@/lib/server/validate";
 import type { GitActionResult, Task } from "@/lib/types";
+import { shipFolders } from "@/lib/workspaces";
 
 const MAX_PR_BODY = 60_000;
 
@@ -51,7 +52,8 @@ export async function runTaskGitAction(
     throw new HttpError(409, "Wait for the agent to finish first.");
   }
   const board = await requireBoard(repo, task.boardId);
-  const projectFolders = [board.workdir, ...board.extraFolders];
+  // A card with a dedicated workspace ships from its own worktrees.
+  const projectFolders = await shipFolders(board, task);
   const body = await readJson(req);
 
   let folders = projectFolders;

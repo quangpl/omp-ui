@@ -23,7 +23,8 @@ function composerHint(task: Task): string {
   return "Sending feedback resumes the agent with your notes";
 }
 
-function CommentItem({
+/** Resolved / Open state of a feedback comment, with the toggle. */
+function ResolveControls({
   comment,
   now,
   onSetResolved,
@@ -33,6 +34,71 @@ function CommentItem({
   onSetResolved: (comment: Comment, resolved: boolean) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
+  const toggle = async (resolved: boolean) => {
+    setBusy(true);
+    await onSetResolved(comment, resolved);
+    setBusy(false);
+  };
+
+  return comment.resolved ? (
+    <>
+      <span
+        className="inline-flex items-center gap-1 font-medium text-emerald-700 dark:text-emerald-400"
+        title={comment.resolvedAt ? formatDateTime(comment.resolvedAt) : undefined}
+      >
+        <CircleCheck className="size-3.5" />
+        Resolved{comment.resolvedAt ? ` ${formatRelative(comment.resolvedAt, now)}` : ""}
+      </span>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void toggle(false)}
+        className={cn(
+          HIT_AREA,
+          "inline-flex items-center gap-1 rounded font-medium text-foreground/70 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50",
+        )}
+      >
+        <Undo2 className="size-3.5" />
+        Reopen
+      </button>
+    </>
+  ) : (
+    <>
+      <Badge
+        variant="outline"
+        className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+      >
+        Open
+      </Badge>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void toggle(true)}
+        className={cn(
+          HIT_AREA,
+          "inline-flex items-center gap-1 rounded font-medium text-foreground/70 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50",
+        )}
+      >
+        <CircleCheck className="size-3.5" />
+        Resolve
+      </button>
+    </>
+  );
+}
+
+function CommentItem({
+  comment,
+  now,
+  cards,
+  onOpenCard,
+  onSetResolved,
+}: {
+  comment: Comment;
+  now: number;
+  cards: Task[];
+  onOpenCard: (taskId: string) => void;
+  onSetResolved: (comment: Comment, resolved: boolean) => Promise<void>;
+}) {
   const time = (
     <time dateTime={comment.createdAt} title={formatDateTime(comment.createdAt)}>
       {formatRelative(comment.createdAt, now)}
@@ -60,11 +126,53 @@ function CommentItem({
     );
   }
 
-  const toggle = async (resolved: boolean) => {
-    setBusy(true);
-    await onSetResolved(comment, resolved);
-    setBusy(false);
-  };
+  if (comment.fromTaskId) {
+    // A message from another card's agent: feedback this card's agent must address.
+    const sender = cards.find((card) => card.id === comment.fromTaskId);
+    return (
+      <li className="flex gap-2.5 pr-6 sm:pr-10">
+        <Avatar size="sm" className="mt-0.5">
+          <AvatarFallback className="bg-violet-600 text-white dark:bg-violet-500">
+            <Bot className="size-3.5" />
+          </AvatarFallback>
+        </Avatar>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-baseline gap-2 text-xs">
+            {sender ? (
+              <span className="flex min-w-0 items-baseline gap-1 font-medium text-violet-700 dark:text-violet-300">
+                <span className="shrink-0">Agent ·</span>
+                <button
+                  type="button"
+                  onClick={() => onOpenCard(sender.id)}
+                  title={`Open “${sender.title}”`}
+                  className={cn(
+                    HIT_AREA,
+                    "min-w-0 rounded text-left break-words underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none",
+                  )}
+                >
+                  {sender.title}
+                </button>
+              </span>
+            ) : (
+              <span className="font-medium text-violet-700 dark:text-violet-300">Another agent</span>
+            )}
+            <span className="shrink-0 text-muted-foreground">{time}</span>
+          </div>
+          <div
+            className={cn(
+              "mt-1 rounded-xl rounded-tl-sm border border-violet-500/30 bg-violet-500/5 px-3 py-2 text-sm leading-relaxed dark:bg-violet-500/10",
+              comment.resolved && "text-muted-foreground",
+            )}
+          >
+            <RichText text={comment.body} />
+          </div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
+            <ResolveControls comment={comment} now={now} onSetResolved={onSetResolved} />
+          </div>
+        </div>
+      </li>
+    );
+  }
 
   return (
     <li className="flex flex-col items-end pl-6 sm:pl-10">
@@ -78,50 +186,7 @@ function CommentItem({
       </div>
       <div className="mt-1.5 flex flex-wrap items-center justify-end gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
         <span>You · {time}</span>
-        {comment.resolved ? (
-          <>
-            <span
-              className="inline-flex items-center gap-1 font-medium text-emerald-700 dark:text-emerald-400"
-              title={comment.resolvedAt ? formatDateTime(comment.resolvedAt) : undefined}
-            >
-              <CircleCheck className="size-3.5" />
-              Resolved{comment.resolvedAt ? ` ${formatRelative(comment.resolvedAt, now)}` : ""}
-            </span>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void toggle(false)}
-              className={cn(
-                HIT_AREA,
-                "inline-flex items-center gap-1 rounded font-medium text-foreground/70 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50",
-              )}
-            >
-              <Undo2 className="size-3.5" />
-              Reopen
-            </button>
-          </>
-        ) : (
-          <>
-            <Badge
-              variant="outline"
-              className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-            >
-              Open
-            </Badge>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void toggle(true)}
-              className={cn(
-                HIT_AREA,
-                "inline-flex items-center gap-1 rounded font-medium text-foreground/70 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50",
-              )}
-            >
-              <CircleCheck className="size-3.5" />
-              Resolve
-            </button>
-          </>
-        )}
+        <ResolveControls comment={comment} now={now} onSetResolved={onSetResolved} />
       </div>
     </li>
   );
@@ -130,12 +195,17 @@ function CommentItem({
 export function CommentThread({
   task,
   comments,
+  cards,
+  onOpenCard,
   onSend,
   onSetResolved,
 }: {
   task: Task;
   /** Oldest first. */
   comments: Comment[];
+  /** Cards of the board, to name the sender of agent-to-agent messages. */
+  cards: Task[];
+  onOpenCard: (taskId: string) => void;
   /** Resolves true when the comment was posted. */
   onSend: (body: string) => Promise<boolean>;
   onSetResolved: (comment: Comment, resolved: boolean) => Promise<void>;
@@ -167,6 +237,8 @@ export function CommentThread({
               key={comment.id}
               comment={comment}
               now={now}
+              cards={cards}
+              onOpenCard={onOpenCard}
               onSetResolved={onSetResolved}
             />
           ))}

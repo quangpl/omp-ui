@@ -25,6 +25,7 @@ import {
 import { createCard } from "@/hooks/use-board";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/lib/api-client";
+import { isTypingTarget } from "@/lib/hotkeys";
 import type { BoardWithCounts } from "@/lib/types";
 
 /** What to prefill in the "New card" form. */
@@ -45,17 +46,6 @@ interface NewCardContextValue {
 const NewCardContext = createContext<NewCardContextValue | null>(null);
 
 const LAST_BOARD_KEY = "omp-ui:last-board";
-
-/** `N` / `Shift+N` must not fire while the user types or drives a menu/list with the keyboard. */
-function isTypingTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) return false;
-  if (target instanceof HTMLElement && target.isContentEditable) return true;
-  return Boolean(
-    target.closest(
-      'input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="menu"], [role="listbox"], [role="combobox"]',
-    ),
-  );
-}
 
 /** True for the "new card" shortcut: plain `N` (or `Shift+N` to start the agent right away). */
 export function isNewCardShortcut(event: KeyboardEvent): boolean {

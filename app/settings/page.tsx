@@ -37,8 +37,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { api, type SystemInfo } from "@/lib/api-client";
-import type { AppSettings, ApprovalMode } from "@/lib/types";
+import type { AppSettings, ApprovalMode, BrowserMode } from "@/lib/types";
+import { copyText } from "@/lib/utils";
 
 const APPROVAL_MODES: { value: ApprovalMode; label: string; hint: string }[] = [
   {
@@ -55,6 +57,25 @@ const APPROVAL_MODES: { value: ApprovalMode; label: string; hint: string }[] = [
     value: "always-ask",
     label: "Always ask",
     hint: "Every tool that changes something needs approval, so agents can do very little unattended.",
+  },
+];
+
+const BROWSER_OPTIONS: { value: BrowserMode; label: string; hint: string }[] = [
+  { value: "off", label: "Off", hint: "Agents can't use a web browser." },
+  {
+    value: "headless",
+    label: "Headless (invisible)",
+    hint: "Agents drive an invisible browser on the server to test pages and read the web.",
+  },
+  {
+    value: "visible",
+    label: "Visible window on the server",
+    hint: "The browser window opens on the server's desktop, so you can watch it work.",
+  },
+  {
+    value: "relay",
+    label: "Your Chrome via omp browser-relay",
+    hint: "Agents use your own Chrome (logins included); run “omp browser-relay” on the server first.",
   },
 ];
 
@@ -111,7 +132,9 @@ function AgentSettingsCard() {
     (String(saved.maxConcurrentAgents) !== maxAgents ||
       saved.ompPath !== draft.ompPath ||
       saved.approvalMode !== draft.approvalMode ||
-      saved.defaultModel !== draft.defaultModel);
+      saved.defaultModel !== draft.defaultModel ||
+      saved.autoModel !== draft.autoModel ||
+      saved.browser !== draft.browser);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -123,6 +146,8 @@ function AgentSettingsCard() {
         ompPath: draft.ompPath.trim(),
         approvalMode: draft.approvalMode,
         defaultModel: draft.defaultModel.trim(),
+        autoModel: draft.autoModel,
+        browser: draft.browser,
       });
       setSaved(next);
       setDraft(next);
@@ -136,6 +161,7 @@ function AgentSettingsCard() {
   }
 
   const mode = APPROVAL_MODES.find((m) => m.value === draft?.approvalMode);
+  const browser = BROWSER_OPTIONS.find((b) => b.value === draft?.browser);
 
   return (
     <Card>
@@ -236,6 +262,47 @@ function AgentSettingsCard() {
               <p className="text-xs text-muted-foreground">
                 Used when a board has no model of its own. Leave empty for omp's default.
               </p>
+            </div>
+
+            <label htmlFor="auto-model" className="flex min-h-12 cursor-pointer items-center gap-4 sm:col-span-2">
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">Auto-select model per card</span>
+                <span className="block text-xs text-muted-foreground">
+                  On boards without a model, each run picks one from the card: omp's <code>smol</code> role for
+                  small edits, <code>slow</code> for debugging, performance, security and architecture work,{" "}
+                  <code>designer</code> (if configured) for UI work, the default model otherwise.
+                </span>
+              </span>
+              <Switch
+                id="auto-model"
+                checked={draft.autoModel}
+                onCheckedChange={(checked) => setDraft({ ...draft, autoModel: checked })}
+                disabled={saving}
+              />
+            </label>
+
+            <div className="space-y-2 sm:col-span-2">
+              <Label htmlFor="browser-mode">Browser control</Label>
+              <Select
+                value={draft.browser}
+                onValueChange={(value) => setDraft({ ...draft, browser: value as BrowserMode })}
+                disabled={saving}
+              >
+                <SelectTrigger
+                  id="browser-mode"
+                  className="w-full data-[size=default]:h-11 md:data-[size=default]:h-9"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  {BROWSER_OPTIONS.map((b) => (
+                    <SelectItem key={b.value} value={b.value} className="min-h-11 md:min-h-8">
+                      {b.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {browser && <p className="text-xs text-muted-foreground">{browser.hint}</p>}
             </div>
           </CardContent>
           <CardFooter className="justify-end gap-2">
@@ -456,24 +523,6 @@ function SecurityCard() {
       </form>
     </Card>
   );
-}
-
-async function copyText(text: string) {
-  // navigator.clipboard needs a secure context; self-hosted servers are often plain http on a LAN.
-  if (window.isSecureContext && navigator.clipboard) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-  const area = document.createElement("textarea");
-  area.value = text;
-  area.setAttribute("readonly", "");
-  area.style.position = "fixed";
-  area.style.opacity = "0";
-  document.body.appendChild(area);
-  area.select();
-  const ok = document.execCommand("copy");
-  area.remove();
-  if (!ok) throw new Error("Copy failed");
 }
 
 function ApiAccessCard() {

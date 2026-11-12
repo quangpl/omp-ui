@@ -135,7 +135,7 @@ test("board: FAB adds a card, Start runs it, the detail drawer steers the agent 
   await expectTouchTarget(start, "Start quick action");
   await expectTouchTarget(panel.getByRole("button", { name: `More actions for ${title}` }), "More actions");
 
-  // Start moves the card to In progress and the agent starts working.
+  // Start runs the agent: the card moves to In progress by itself and the agent starts working.
   await start.click();
   await expect(page.getByRole("tab", { name: columnTabName("To do", 0) })).toBeVisible();
   const inProgressTab = page.getByRole("tab", { name: columnTabName("In progress", 1) });
@@ -143,7 +143,8 @@ test("board: FAB adds a card, Start runs it, the detail drawer steers the agent 
   await expect(inProgressTab).toHaveAttribute("aria-selected", "true");
   const card = cardButton(panel, title);
   await expect(card).toContainText("Working", { timeout: AGENT_TIMEOUT });
-  await expect(panel.getByRole("button", { name: "Done", exact: true })).toBeVisible();
+  // While the agent works, the primary quick action is Stop.
+  await expect(panel.getByRole("button", { name: "Stop", exact: true })).toBeVisible();
 
   // Card detail opens as a bottom drawer.
   await card.click();
@@ -175,7 +176,7 @@ test("board: FAB adds a card, Start runs it, the detail drawer steers the agent 
   const item = detail.getByRole("listitem").filter({ hasText: feedback });
   await expect(item.getByText(/^Resolved/)).toBeVisible({ timeout: AGENT_TIMEOUT });
   await expect(detail.getByRole("tabpanel", { name: /Activity/ }).getByText("Fake summary: addressed 1 steered message(s).")).toBeVisible();
-  await expect(detail.getByRole("combobox", { name: "Status" })).toHaveText(/Done/);
+  await expect(detail.getByRole("status", { name: "Status" })).toHaveText(/Done/);
   expect(
     fakeOmpCallsIn(board.workdir).some((entry) => entry.kind === "steer" && entry.message?.includes(feedback)),
   ).toBe(true);

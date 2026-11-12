@@ -923,6 +923,8 @@ describe("settings, health and system", () => {
       ompPath: FAKE_OMP,
       approvalMode: "yolo",
       defaultModel: "",
+      autoModel: true,
+      browser: "headless",
     });
   });
 
@@ -937,6 +939,7 @@ describe("settings, health and system", () => {
       [{ ompPath: "   " }, "ompPath must be a non-empty string"],
       [{ ompPath: 7 }, "ompPath must be a non-empty string"],
       [{ defaultModel: "m".repeat(201) }, "defaultModel must be a string of at most 200 characters"],
+      [{ autoModel: "yes" }, "autoModel must be a boolean"],
       [{ maxConcurrentAgents: 3, approvalMode: "nope" }, "approvalMode must be one of: yolo, write, always-ask"],
     ];
     for (const [body, error] of cases) {
@@ -957,23 +960,27 @@ describe("settings, health and system", () => {
       ompPath: "/opt/omp/bin/omp",
       approvalMode: "write",
       defaultModel: "sonnet",
+      autoModel: true,
+      browser: "headless",
     });
 
     const partial = await api<AppSettings>(settingsRoute, "PATCH", "/settings", {
-      body: { maxConcurrentAgents: 1, approvalMode: "always-ask", defaultModel: "" },
+      body: { maxConcurrentAgents: 1, approvalMode: "always-ask", defaultModel: "", autoModel: false, browser: "off" },
     });
     expect(partial.body).toEqual({
       maxConcurrentAgents: 1,
       ompPath: "/opt/omp/bin/omp",
       approvalMode: "always-ask",
       defaultModel: "",
+      autoModel: false,
+      browser: "off",
     });
     expect((await api<AppSettings>(settingsRoute, "GET", "/settings")).body).toEqual(partial.body);
     expect((await api<AppSettings>(settingsRoute, "PATCH", "/settings", { body: {} })).body).toEqual(partial.body);
 
     // Restore for the other tests in this suite.
     await api(settingsRoute, "PATCH", "/settings", {
-      body: { maxConcurrentAgents: 2, approvalMode: "yolo", ompPath: FAKE_OMP },
+      body: { maxConcurrentAgents: 2, approvalMode: "yolo", ompPath: FAKE_OMP, autoModel: true, browser: "headless" },
     });
   });
 

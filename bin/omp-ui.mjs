@@ -1542,14 +1542,22 @@ const COMMANDS = {
   },
 
   restart: {
-    summary: "Restart the server",
+    summary: "Restart the server (rebuilds first when the sources changed)",
     usage: "omp-ui restart [options]",
-    options: { port: PORT_OPT },
+    options: {
+      port: PORT_OPT,
+      rebuild: { type: "boolean", desc: "Force a fresh production build" },
+    },
     async run(values) {
       const before = loadConfig();
       assertNotPm2(before, "restart");
       applyPortFlag(values);
       await stopServer(before);
+      const state = values.rebuild ? "forced" : buildState();
+      if (state !== "fresh") {
+        log.info(state === "stale" ? "Sources changed — rebuilding" : state === "missing" ? "No build found — building" : "Rebuilding");
+        await buildApp();
+      }
       const cfg = loadConfig();
       if (cfg.port !== before.port && tunnelInfo(before)) {
         log.warn("Port changed — stopping the public tunnel (restart it with: omp-ui public)");

@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -17,6 +18,7 @@ import {
   TASK_STATUSES,
   type Board,
   type GitStatus,
+  type QueueSnapshot,
   type ServerEvent,
   type Task,
   type TaskStatus,
@@ -26,6 +28,101 @@ import {
 export type BoardStreamEvent = ServerEvent | { type: "stream.reconnected" };
 export type BoardStreamListener = (event: BoardStreamEvent) => void;
 export type TasksByStatus = Record<TaskStatus, Task[]>;
+
+/** Running and queued task ids of the global agent queue (queued in start order). */
+export interface QueueIds {
+  running: string[];
+  queued: string[];
+}
+
+// In-tab shared state. A board page opens one SSE connection (`useBoard`); other components
+// (files panels, task cards) read these module-level stores instead of opening their own.
+
+function createStore<T>(initial: T) {
+  let value = initial;
+  const watchers = new Set<() => void>();
+  return {
+    get: () => value,
+    set(next: T) {
+      if (next === value) return;
+      value = next;
+      for (const watcher of watchers) watcher();
+    },
+    subscribe(watcher: () => void) {
+      watchers.add(watcher);
+      return () => {
+        watchers.delete(watcher);
+      };
+    },
+  };
+}
+
+function sameIds(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+
+const EMPTY_QUEUE: QueueIds = { running: [], queued: [] };
+const queueStore = createStore<QueueIds>(EMPTY_QUEUE);
+
+/** Publish the latest agent queue (GET /queue or a `queue.updated` event) to every reader in this tab. */
+export function publishQueue(queue: QueueIds | QueueSnapshot): void {
+  const next: QueueIds =
+    "limit" in queue
+      ? { running: queue.running.map((e) => e.taskId), queued: queue.queued.map((e) => e.taskId) }
+      : { running: queue.running, queued: queue.queued };
+  const current = queueStore.get();
+  if (sameIds(current.running, next.running) && sameIds(current.queued, next.queued)) return;
+  queueStore.set(next);
+}
+
+/** Live agent queue ids, shared by every component in this tab. */
+export function useQueueIds(): QueueIds {
+  return useSyncExternalStore(queueStore.subscribe, queueStore.get, () => EMPTY_QUEUE);
+}
+
+/** 0-based start order of a queued card; -1 when it isn't waiting in the queue. */
+export function useQueuePosition(taskId: string): number {
+  return useSyncExternalStore(
+    queueStore.subscribe,
+    () => queueStore.get().queued.indexOf(taskId),
+    () => -1,
+  );
+}
+
+const EMPTY_TASKS: ReadonlyMap<string, Task> = new Map();
+const boardTasksStore = createStore<ReadonlyMap<string, Task>>(EMPTY_TASKS);
+
+/**
+ * Cards of the open board by id (empty when no board page is mounted). Pass `enabled: false`
+ * to opt out of re-renders (e.g. a card with no dependencies).
+ */
+export function useBoardTasks(enabled = true): ReadonlyMap<string, Task> {
+  return useSyncExternalStore(
+    boardTasksStore.subscribe,
+    () => (enabled ? boardTasksStore.get() : EMPTY_TASKS),
+    () => EMPTY_TASKS,
+  );
+}
+
+const streamListeners = new Set<BoardStreamListener>();
+const NO_STREAMS: readonly string[] = [];
+const streamBoardsStore = createStore<readonly string[]>(NO_STREAMS);
+
+/**
+ * Listen to every mounted board page's live stream (no extra SSE connection). Only boards in
+ * `useBoardStreams()` are covered; components outside a board page need their own subscription.
+ */
+export function subscribeBoardStreams(listener: BoardStreamListener): () => void {
+  streamListeners.add(listener);
+  return () => {
+    streamListeners.delete(listener);
+  };
+}
+
+/** Ids of boards whose live stream is open in this tab (see `subscribeBoardStreams`). */
+export function useBoardStreams(): readonly string[] {
+  return useSyncExternalStore(streamBoardsStore.subscribe, streamBoardsStore.get, () => NO_STREAMS);
+}
 
 /** Spacing between neighbouring positions when appending to a column. */
 export const POSITION_GAP = 1024;
@@ -118,10 +215,10 @@ export interface BoardController {
   /** Insert or replace a card from an API response / event (stale snapshots are ignored). */
   upsertTask: (task: Task) => void;
   removeTask: (taskId: string) => void;
-  /** Optimistic move; rolls back and toasts on failure. */
-  moveTask: (taskId: string, status: TaskStatus, position: number) => Promise<void>;
-  /** Move a card to the bottom of another column. */
-  moveToStatus: (taskId: string, status: TaskStatus) => Promise<void>;
+  /** Optimistic reorder within the card's own column; rolls back and toasts on failure. */
+  reorderTask: (taskId: string, position: number) => Promise<void>;
+  /** Quick action: send a card back to the bottom of To do (the server stops its agent). */
+  revertToTodo: (taskId: string) => Promise<void>;
   /** Create a card; toasts and resolves `null` on failure. */
   createTask: (input: NewCardInput) => Promise<Task | null>;
   /** Start / stop a card's agent; toasts on failure. */
@@ -135,6 +232,8 @@ export interface BoardController {
   activity: Record<string, string>;
   /** State of the live event stream. */
   connection: ConnectionStatus;
+  /** Live agent queue across all boards (running + queued task ids). */
+  queue: QueueIds;
 }
 
 export type ConnectionStatus = "connecting" | "live" | "reconnecting";
@@ -233,6 +332,16 @@ export function useBoard(boardId: string): BoardController {
     setConnection("connecting");
     pendingMovesRef.current.clear();
     void reload();
+    const loadQueue = () => {
+      api.queue
+        .get()
+        .then(publishQueue)
+        .catch(() => {
+          // Queue badges are decorative; the next `queue.updated` event fills them in.
+        });
+    };
+    loadQueue();
+    streamBoardsStore.set([...streamBoardsStore.get(), boardId]);
 
     const noteActivity = (taskId: string, line: string | null) => {
       if (!line) return;
@@ -240,17 +349,20 @@ export function useBoard(boardId: string): BoardController {
       setActivity((prev) => (prev[taskId] === line ? prev : { ...prev, [taskId]: line }));
     };
 
+    // Board listeners first, then the tab-wide fan-out (files panels…).
     const emit = (event: BoardStreamEvent) => {
-      for (const listener of listenersRef.current) {
-        try {
-          listener(event);
-        } catch (err) {
-          console.error(err);
+      for (const listeners of [listenersRef.current, streamListeners]) {
+        for (const listener of listeners) {
+          try {
+            listener(event);
+          } catch (err) {
+            console.error(err);
+          }
         }
       }
     };
 
-    return subscribeEvents(
+    const unsubscribe = subscribeEvents(
       (event) => {
         switch (event.type) {
           case "task.updated":
@@ -274,6 +386,9 @@ export function useBoard(boardId: string): BoardController {
           case "run.delta":
             noteActivity(event.taskId, activityLine(event.kind, event.text));
             break;
+          case "queue.updated":
+            publishQueue({ running: event.running, queued: event.queued });
+            break;
         }
         emit(event);
       },
@@ -281,11 +396,18 @@ export function useBoard(boardId: string): BoardController {
         boardId,
         onReconnect: () => {
           void reload();
+          loadQueue();
           emit({ type: "stream.reconnected" });
         },
         onStatus: setConnection,
       },
     );
+    return () => {
+      unsubscribe();
+      const open = streamBoardsStore.get();
+      const index = open.indexOf(boardId);
+      if (index !== -1) streamBoardsStore.set(open.filter((_, i) => i !== index));
+    };
   }, [boardId, reload, upsertTask, removeTask]);
 
   /** Listen to the board's live event stream (shared SSE connection). Returns an unsubscribe fn. */
@@ -298,6 +420,16 @@ export function useBoard(boardId: string): BoardController {
 
   const tasks = useMemo(() => rawTasks.slice().sort(compareTasks), [rawTasks]);
   const columns = useMemo(() => groupTasks(rawTasks), [rawTasks]);
+  const queue = useQueueIds();
+
+  // Share this board's cards with task cards (dependency badges) without prop drilling.
+  useEffect(() => {
+    const index = new Map(rawTasks.map((task) => [task.id, task]));
+    boardTasksStore.set(index);
+    return () => {
+      if (boardTasksStore.get() === index) boardTasksStore.set(EMPTY_TASKS);
+    };
+  }, [rawTasks]);
 
   /** Position after the last card of a column (optionally ignoring one card). */
   const endPosition = useCallback((status: TaskStatus, excludeId?: string) => {
@@ -309,6 +441,7 @@ export function useBoard(boardId: string): BoardController {
     return max === null ? POSITION_GAP : max + POSITION_GAP;
   }, []);
 
+  /** Optimistic status/position change; rolls back and toasts on failure. */
   const moveTask = useCallback(
     async (taskId: string, status: TaskStatus, position: number) => {
       const before = tasksRef.current.find((t) => t.id === taskId);
@@ -318,7 +451,8 @@ export function useBoard(boardId: string): BoardController {
       pendingMovesRef.current.set(taskId, { status, position });
       setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status, position } : t)));
       try {
-        const updated = await api.tasks.update(taskId, { status, position });
+        const patch = status === before.status ? { position } : { status, position };
+        const updated = await api.tasks.update(taskId, patch);
         pendingMovesRef.current.delete(taskId);
         upsertTask(updated);
       } catch (err) {
@@ -328,18 +462,28 @@ export function useBoard(boardId: string): BoardController {
             t.id === taskId ? { ...t, status: before.status, position: before.position } : t,
           ),
         );
-        toast.error("Couldn't move card", { description: message(err) });
+        toast.error(status === before.status ? "Couldn't reorder card" : "Couldn't revert card", {
+          description: message(err),
+        });
       }
     },
     [upsertTask],
   );
 
-  /** Move a card to the bottom of another column. */
-  const moveToStatus = useCallback(
-    (taskId: string, status: TaskStatus) => {
+  const reorderTask = useCallback(
+    (taskId: string, position: number) => {
       const task = tasksRef.current.find((t) => t.id === taskId);
-      if (!task || task.status === status) return Promise.resolve();
-      return moveTask(taskId, status, endPosition(status, taskId));
+      if (!task) return Promise.resolve();
+      return moveTask(taskId, task.status, position);
+    },
+    [moveTask],
+  );
+
+  const revertToTodo = useCallback(
+    (taskId: string) => {
+      const task = tasksRef.current.find((t) => t.id === taskId);
+      if (!task || task.status === "todo") return Promise.resolve();
+      return moveTask(taskId, "todo", endPosition("todo", taskId));
     },
     [moveTask, endPosition],
   );
@@ -404,8 +548,8 @@ export function useBoard(boardId: string): BoardController {
     setTasks,
     upsertTask,
     removeTask,
-    moveTask,
-    moveToStatus,
+    reorderTask,
+    revertToTodo,
     createTask,
     runAgent,
     stopAgent,
@@ -413,6 +557,7 @@ export function useBoard(boardId: string): BoardController {
     subscribe,
     activity,
     connection,
+    queue,
   };
 }
 

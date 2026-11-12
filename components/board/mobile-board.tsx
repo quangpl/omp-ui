@@ -1,54 +1,63 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, Check, EllipsisVertical, Play, Plus } from "lucide-react";
+import { EllipsisVertical, PanelRightOpen, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { STATUS_LABELS, TASK_STATUSES, type Task, type TaskStatus } from "@/lib/types";
 import type { TasksByStatus } from "@/hooks/use-board";
-import { EMPTY_COLUMN_TEXT, StatusDot } from "@/components/board/board-column";
+import { EMPTY_COLUMN_TEXT } from "@/components/board/board-column";
+import type { BoardMenuActions } from "@/components/board/card-context-menu";
+import { quickActionsFor, runQuickAction, type QuickActionId } from "@/components/board/quick-actions";
 import { TaskCard } from "@/components/board/task-card";
 
 const SWIPE_MIN_DISTANCE = 60;
 
+/** Card footer: the primary quick action one tap away; open card + the rest in the overflow menu. */
 function QuickActions({
   task,
   onOpen,
-  moveToStatus,
+  actions,
 }: {
   task: Task;
   onOpen: () => void;
-  moveToStatus: (taskId: string, status: TaskStatus) => Promise<void>;
+  actions: BoardMenuActions;
 }) {
-  const primary =
-    task.status === "todo"
-      ? { label: "Start", icon: <Play />, to: "in_progress" as const }
-      : task.status === "in_progress"
-        ? { label: "Done", icon: <Check />, to: "done" as const }
-        : null;
+  const [busy, setBusy] = useState(false);
+  const [primary, ...rest] = quickActionsFor(task);
+
+  const run = async (id: QuickActionId) => {
+    setBusy(true);
+    try {
+      await runQuickAction(id, task.id, actions);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <>
-      {primary ? (
-        <Button
-          variant="ghost"
-          className="h-11 flex-1 justify-start gap-2 rounded-none rounded-bl-lg px-3 text-[13px]"
-          onClick={() => void moveToStatus(task.id, primary.to)}
-        >
-          {primary.icon}
-          {primary.label}
-        </Button>
-      ) : (
-        <span className="flex-1" />
-      )}
+      <Button
+        variant="ghost"
+        className={cn(
+          "h-11 flex-1 justify-start gap-2 rounded-none rounded-bl-lg px-3 text-[13px]",
+          primary.id === "stop" && "text-destructive hover:bg-destructive/10 hover:text-destructive",
+        )}
+        aria-label={primary.label}
+        title={primary.hint}
+        disabled={busy}
+        onClick={() => void run(primary.id)}
+      >
+        <primary.icon className={cn(primary.filled && "fill-current")} />
+        {primary.label}
+      </Button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
@@ -62,24 +71,19 @@ function QuickActions({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-52">
           <DropdownMenuItem className="min-h-11" onSelect={onOpen}>
+            <PanelRightOpen />
             Open card
           </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuLabel>Move to…</DropdownMenuLabel>
-          {TASK_STATUSES.map((status) => (
+          {rest.length > 0 && <DropdownMenuSeparator />}
+          {rest.map((action) => (
             <DropdownMenuItem
-              key={status}
+              key={action.id}
               className="min-h-11"
-              disabled={status === task.status}
-              onSelect={() => void moveToStatus(task.id, status)}
+              disabled={busy}
+              onSelect={() => void run(action.id)}
             >
-              <StatusDot status={status} />
-              {STATUS_LABELS[status]}
-              {status === task.status ? (
-                <Check className="ml-auto" />
-              ) : (
-                <ArrowRight className="ml-auto opacity-50" />
-              )}
+              <action.icon className={cn(action.filled && "fill-current")} />
+              {action.label}
             </DropdownMenuItem>
           ))}
         </DropdownMenuContent>
@@ -95,7 +99,7 @@ export function MobileBoard({
   active,
   onActiveChange,
   onOpen,
-  moveToStatus,
+  actions,
   onAdd,
 }: {
   columns: TasksByStatus;
@@ -103,7 +107,7 @@ export function MobileBoard({
   active: TaskStatus;
   onActiveChange: (status: TaskStatus) => void;
   onOpen: (taskId: string) => void;
-  moveToStatus: (taskId: string, status: TaskStatus) => Promise<void>;
+  actions: BoardMenuActions;
   onAdd: () => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
@@ -201,11 +205,7 @@ export function MobileBoard({
               activity={activity[task.id]}
               onOpen={() => onOpen(task.id)}
               actions={
-                <QuickActions
-                  task={task}
-                  onOpen={() => onOpen(task.id)}
-                  moveToStatus={moveToStatus}
-                />
+                <QuickActions task={task} onOpen={() => onOpen(task.id)} actions={actions} />
               }
             />
           ))}

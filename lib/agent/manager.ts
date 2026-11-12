@@ -1,5 +1,8 @@
 import { existsSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { BOARD_TOOLS, BOARD_TOOL_NAMES, runBoardTool, type BoardToolHost } from "@/lib/agent/board-tools";
+import { chooseModel, readModelRoles } from "@/lib/agent/model-select";
 import { buildPrompt, buildSteerMessage } from "@/lib/agent/prompt";
 import { OmpRpcProcess, describeExit, type RpcExitInfo, type RpcFrame } from "@/lib/agent/rpc";
 import {
@@ -16,8 +19,19 @@ import { childEnv } from "@/lib/child-env";
 import { getRepo } from "@/lib/db";
 import type { Repository, UpdateTaskInput } from "@/lib/db/types";
 import { publish } from "@/lib/events";
+import { dataDir, ensureFilesFolder } from "@/lib/files";
 import { getAppSettings } from "@/lib/settings";
-import type { AppSettings, Comment, RunEventKind, SubagentSnapshot, Task, TaskStatus } from "@/lib/types";
+import { ensureWorkspace } from "@/lib/workspaces";
+import type {
+  AppSettings,
+  Comment,
+  QueueEntry,
+  QueueSnapshot,
+  RunEventKind,
+  SubagentSnapshot,
+  Task,
+  TaskStatus,
+} from "@/lib/types";
 
 const READY_TIMEOUT_MS = 60_000;
 const ABORT_TIMEOUT_MS = 5_000;
@@ -80,6 +94,8 @@ interface ActiveRun {
   lastError: string | null;
   /** Subagents the run delegated to, by id. */
   subagents: Map<string, TrackedSubagent>;
+  /** Board tool calls in flight (`host_tool_call` id → abort). */
+  hostCalls: Map<string, AbortController>;
   /** Serializes startup, frame handling and teardown so persistence stays ordered. */
   chain: Promise<void>;
 }
@@ -94,11 +110,52 @@ class OmpAgentManager implements AgentManager {
   private pumping = false;
   private pumpAgain = false;
   private pumpRetry: NodeJS.Timeout | undefined;
+  /** Runs waiting in board_wait_for_cards; each lends its slot to the queue meanwhile. */
+  private lent = 0;
+  /** Last published `queue.updated` (deduplicates). */
+  private lastQueue = "";
 
   constructor(private readonly repo: Repository) {}
 
   stats(): { running: string[]; queued: string[] } {
     return { running: [...this.active.keys()], queued: [...this.claiming, ...this.queue] };
+  }
+
+  async queueSnapshot(): Promise<QueueSnapshot> {
+    const settings = await getAppSettings(this.repo);
+    const boardNames = new Map<string, string>();
+    const entry = async (taskId: string, state: QueueEntry["state"]): Promise<QueueEntry | null> => {
+      const task = await this.repo.getTask(taskId);
+      if (!task) return null;
+      if (!boardNames.has(task.boardId)) {
+        boardNames.set(task.boardId, (await this.repo.getBoard(task.boardId))?.name ?? "");
+      }
+      return {
+        taskId,
+        boardId: task.boardId,
+        boardName: boardNames.get(task.boardId) ?? "",
+        title: task.title,
+        state,
+        waitingFor: state === "queued" ? await this.pendingBlockers(task) : [],
+      };
+    };
+    const isEntry = (e: QueueEntry | null): e is QueueEntry => e !== null;
+    const running = (await Promise.all([...this.active.keys()].map((id) => entry(id, "running")))).filter(isEntry);
+    const queued = (
+      await Promise.all([...this.claiming, ...this.queue].map((id) => entry(id, "queued")))
+    ).filter(isEntry);
+    return { limit: settings.maxConcurrentAgents, running, queued };
+  }
+
+  moveInQueue(taskId: string, position: number): boolean {
+    if (!this.removeFromQueue(taskId)) return false;
+    this.queue.splice(Math.max(0, Math.min(this.queue.length, Math.floor(position))), 0, taskId);
+    void this.pump();
+    return true;
+  }
+
+  refreshQueue(): void {
+    void this.pump();
   }
 
   async start(taskId: string): Promise<Task> {
@@ -137,7 +194,10 @@ class OmpAgentManager implements AgentManager {
 
   async stop(taskId: string): Promise<Task | null> {
     const wasClaiming = this.claiming.delete(taskId);
-    if (this.removeFromQueue(taskId) || wasClaiming) return this.setIdle(taskId);
+    if (this.removeFromQueue(taskId) || wasClaiming) {
+      this.publishQueue();
+      return this.setIdle(taskId);
+    }
 
     const run = this.active.get(taskId);
     if (run && !run.finished) {
@@ -184,6 +244,8 @@ class OmpAgentManager implements AgentManager {
   async onTaskMoved(task: Task, previousStatus: TaskStatus): Promise<void> {
     try {
       if (task.status === previousStatus) return;
+      // A card reaching (or leaving) Done may unblock queued cards that wait for it.
+      void this.pump();
       const busy = this.isTracked(task.id);
       if (task.status === "in_progress") {
         if (busy) return;
@@ -223,7 +285,10 @@ class OmpAgentManager implements AgentManager {
     this.claiming.delete(taskId);
     this.removeFromQueue(taskId);
     const run = this.active.get(taskId);
-    if (!run) return;
+    if (!run) {
+      void this.pump();
+      return;
+    }
     run.finished = true;
     run.restartAfter = false;
     run.closing = true;
@@ -245,6 +310,25 @@ class OmpAgentManager implements AgentManager {
     return true;
   }
 
+  /** Blockers of the card (Task.blockedBy) that exist and are not Done yet. */
+  private async pendingBlockers(task: Task): Promise<string[]> {
+    const pending: string[] = [];
+    for (const id of task.blockedBy) {
+      const blocker = await this.repo.getTask(id);
+      if (blocker && blocker.status !== "done") pending.push(id);
+    }
+    return pending;
+  }
+
+  private publishQueue(): void {
+    const running = [...this.active.keys()];
+    const queued = [...this.claiming, ...this.queue];
+    const key = JSON.stringify([running, queued]);
+    if (key === this.lastQueue) return;
+    this.lastQueue = key;
+    publish({ type: "queue.updated", running, queued });
+  }
+
   private async pump(): Promise<void> {
     if (this.pumping) {
       this.pumpAgain = true;
@@ -257,9 +341,12 @@ class OmpAgentManager implements AgentManager {
         if (this.queue.length === 0) break;
         // Re-read every time a slot frees so settings changes apply without a restart.
         const settings = await getAppSettings(this.repo);
-        while (this.queue.length > 0 && this.active.size < settings.maxConcurrentAgents) {
-          const taskId = this.queue.shift();
-          if (taskId !== undefined) this.launch(taskId, settings);
+        // Start order, skipping cards that wait for unfinished cards (Task.blockedBy).
+        for (const taskId of [...this.queue]) {
+          if (this.active.size - this.lent >= settings.maxConcurrentAgents) break;
+          const task = await this.repo.getTask(taskId);
+          if (task && (await this.pendingBlockers(task)).length > 0) continue;
+          if (this.removeFromQueue(taskId)) this.launch(taskId, settings);
         }
       } while (this.pumpAgain);
     } catch (err) {
@@ -268,6 +355,7 @@ class OmpAgentManager implements AgentManager {
       this.pumpRetry = setTimeout(() => void this.pump(), PUMP_RETRY_MS);
     } finally {
       this.pumping = false;
+      this.publishQueue();
     }
   }
 
@@ -290,6 +378,7 @@ class OmpAgentManager implements AgentManager {
       lastStopReason: null,
       lastError: null,
       subagents: new Map(),
+      hostCalls: new Map(),
       chain: Promise.resolve(),
     };
     this.active.set(taskId, run);
@@ -308,7 +397,11 @@ class OmpAgentManager implements AgentManager {
   private release(run: ActiveRun): void {
     run.finished = true;
     this.resetDeltas(run);
+    for (const call of run.hostCalls.values()) call.abort();
+    run.hostCalls.clear();
     if (this.active.get(run.taskId) === run) this.active.delete(run.taskId);
+    // The agent may have written files or screenshots into the card's folder.
+    if (run.boardId) publish({ type: "files.updated", boardId: run.boardId, taskId: run.taskId });
     if (run.proc && !run.closing) {
       run.closing = true;
       void run.proc.close();
@@ -359,17 +452,44 @@ class OmpAgentManager implements AgentManager {
     run.boardId = task.boardId;
     if (run.finished) return;
 
+    // Dedicated workspace: the card's own worktrees stand in for the project folders.
+    let workdir = board.workdir;
+    let projectExtras = board.extraFolders ?? [];
+    let workspaceBranch: string | null = null;
+    let workspaceNotes: string[] = [];
+    if (board.worktrees) {
+      const { workspace, notes } = await ensureWorkspace(board, task);
+      [workdir, ...projectExtras] = workspace.folders.map((f) => f.path);
+      workspaceBranch = workspace.folders.find((f) => f.isolated)?.branch ?? null;
+      workspaceNotes = notes;
+    }
+    const [taskFiles, boardFiles] = await Promise.all([
+      ensureFilesFolder("tasks", task.id),
+      ensureFilesFolder("boards", board.id),
+    ]);
+    if (run.finished) return;
+
     const feedback = (await repo.listComments(task.id)).filter(
       (c) => c.author === "user" && !c.resolved,
     );
+    const senders: Record<string, string> = {};
+    for (const id of new Set(feedback.map((c) => c.fromTaskId).filter((id): id is string => !!id))) {
+      senders[id] = (await repo.getTask(id))?.title ?? id;
+    }
     const resumeFile = task.sessionFile && existsSync(task.sessionFile) ? task.sessionFile : null;
     const folders = await Promise.all(
-      (board.extraFolders ?? []).map(async (folder) => ({ folder, ok: await isDirectory(folder) })),
+      projectExtras.map(async (folder) => ({ folder, ok: await isDirectory(folder) })),
     );
     const extraFolders = folders.filter((f) => f.ok).map((f) => f.folder);
     const missingFolders = folders.filter((f) => !f.ok).map((f) => f.folder);
     // The prompt lists only folders the agent can actually reach.
-    const prompt = buildPrompt(task, { ...board, extraFolders }, feedback, resumeFile !== null);
+    const prompt = buildPrompt(task, { ...board, workdir, extraFolders }, feedback, resumeFile !== null, {
+      taskFiles,
+      boardFiles,
+      workspaceBranch,
+      browser: settings.browser,
+      senders,
+    });
     const created = await repo.createRun({ taskId: task.id, prompt });
     run.runId = created.id;
     run.promptId = `prompt-${created.id}`;
@@ -385,38 +505,54 @@ class OmpAgentManager implements AgentManager {
     if (running) publish({ type: "task.updated", task: running });
     if (run.finished) return;
 
-    if (!(await isDirectory(board.workdir))) {
-      throw new Error(`Board directory not found: ${board.workdir}`);
+    if (!(await isDirectory(workdir))) {
+      throw new Error(`Board directory not found: ${workdir}`);
     }
 
-    const model = board.model?.trim() || settings.defaultModel;
+    // Roles are read per run: the user may reconfigure omp, and project `.omp` configs differ.
+    const autoSelect = !board.model?.trim() && settings.autoModel;
+    const choice = chooseModel({
+      board,
+      settings,
+      task,
+      feedback,
+      isResume: resumeFile !== null,
+      roles: autoSelect ? await readModelRoles(settings.ompPath, workdir, childEnv()) : null,
+    });
+    if (run.finished) return;
+    const { model, thinking } = choice;
     const args = [
       "--mode",
       "rpc",
       "--cwd",
-      board.workdir,
+      workdir,
       "--no-title",
       "--approval-mode",
       settings.approvalMode,
+      "--config",
+      await writeRunConfig(task.id, settings, taskFiles),
     ];
-    for (const folder of extraFolders) args.push("--add-dir", folder);
+    for (const folder of [...extraFolders, taskFiles, boardFiles]) args.push("--add-dir", folder);
     if (model) args.push("--model", model);
+    if (thinking) args.push("--thinking", thinking);
     if (resumeFile) args.push("--resume", resumeFile);
     const extra = process.env.OMP_EXTRA_ARGS?.trim();
     if (extra) args.push(...extra.split(/\s+/));
 
+    if (choice.source === "auto") {
+      await this.event(run, "status", `Model auto-selected: ${model ?? "omp default"} (${choice.reason})`);
+      if (run.finished) return;
+    }
+    const modelNote = [model && `model ${model}`, thinking && `thinking ${thinking}`].filter(Boolean).join(", ");
     await this.event(
       run,
       "status",
-      [
-        resumeFile ? "Resuming agent session" : "Starting agent",
-        `in ${board.workdir}`,
-        model ? `(model ${model})` : "",
-      ]
+      [resumeFile ? "Resuming agent session" : "Starting agent", `in ${workdir}`, modelNote && `(${modelNote})`]
         .filter(Boolean)
         .join(" "),
     );
     if (run.finished) return;
+    for (const note of workspaceNotes) await this.event(run, "status", note);
     for (const folder of missingFolders) {
       await this.event(run, "status", `Skipped missing folder ${folder}`);
     }
@@ -425,12 +561,19 @@ class OmpAgentManager implements AgentManager {
     const proc = new OmpRpcProcess({
       command: settings.ompPath,
       args,
-      cwd: board.workdir,
+      cwd: workdir,
       env: childEnv(),
       autoConfirm: settings.approvalMode === "yolo",
     });
     run.proc = proc;
-    proc.on("frame", (frame) => this.enqueue(run, () => this.onFrame(run, frame)));
+    proc.on("frame", (frame) => {
+      // Board tools run outside the chain: a wait can last minutes while frames keep flowing.
+      if (frame.type === "host_tool_call" || frame.type === "host_tool_cancel") {
+        this.onHostTool(run, proc, frame);
+        return;
+      }
+      this.enqueue(run, () => this.onFrame(run, frame));
+    });
     proc.on("protocolError", (message) =>
       this.enqueue(run, () => this.onTransportError(run, message, undefined)),
     );
@@ -456,6 +599,14 @@ class OmpAgentManager implements AgentManager {
     // `task` tool's own updates still carry progress then.
     await proc.send({ type: "set_subagent_subscription", level: "progress" }).catch(() => undefined);
     if (run.finished) return;
+
+    // Agent-to-agent collaboration tools, executed by onHostTool.
+    try {
+      await proc.send({ type: "set_host_tools", tools: BOARD_TOOLS });
+    } catch (err) {
+      if (run.finished) return;
+      await this.event(run, "error", `Board tools are unavailable in this run: ${errorMessage(err, run.ompPath)}`);
+    }
 
     run.promptSent = true;
     const response = await proc.send({ id: run.promptId, type: "prompt", message: prompt });
@@ -706,7 +857,8 @@ class OmpAgentManager implements AgentManager {
       // Already part of this run's prompt.
       if (run.feedbackIds.has(comment.id)) return;
       try {
-        await run.proc.send({ type: "steer", message: buildSteerMessage(comment) });
+        const sender = comment.fromTaskId ? await this.repo.getTask(comment.fromTaskId) : null;
+        await run.proc.send({ type: "steer", message: buildSteerMessage(comment, sender?.title) });
       } catch (err) {
         if (run.finished) {
           const task = await this.repo.getTask(run.taskId);
@@ -726,6 +878,53 @@ class OmpAgentManager implements AgentManager {
     } catch (err) {
       console.error(`[agent] failed to steer feedback for task ${run.taskId}:`, err);
     }
+  }
+
+  // --- Board tools (agent-to-agent collaboration) ----------------------------------------
+
+  private toolHost(): BoardToolHost {
+    return {
+      repo: this.repo,
+      start: (taskId) => this.start(taskId),
+      onComment: (task, comment) => this.onComment(task, comment),
+      isBusy: (taskId) => this.isTracked(taskId),
+      lendSlot: (delta) => {
+        this.lent = Math.max(0, this.lent + delta);
+        void this.pump();
+      },
+    };
+  }
+
+  /** `host_tool_call`: run a board tool and answer with `host_tool_result`; `host_tool_cancel` aborts it. */
+  private onHostTool(run: ActiveRun, proc: OmpRpcProcess, frame: RpcFrame): void {
+    if (frame.type === "host_tool_cancel") {
+      const target = asString(frame.targetId);
+      if (target) run.hostCalls.get(target)?.abort();
+      return;
+    }
+    const id = asString(frame.id);
+    if (!id) return;
+    const name = asString(frame.toolName) ?? "";
+    const args = isObject(frame.arguments) ? frame.arguments : {};
+    const controller = new AbortController();
+    run.hostCalls.set(id, controller);
+    const reply = (text: string, isError: boolean) => {
+      run.hostCalls.delete(id);
+      proc.notify({
+        type: "host_tool_result",
+        id,
+        result: { content: [{ type: "text", text }] },
+        ...(isError ? { isError: true } : {}),
+      });
+    };
+    if (run.finished || !run.boardId || !BOARD_TOOL_NAMES.has(name)) {
+      reply(run.finished ? "The run has ended." : `Unknown tool ${name}`, true);
+      return;
+    }
+    runBoardTool(this.toolHost(), { taskId: run.taskId, boardId: run.boardId }, name, args, controller.signal).then(
+      (text) => reply(text, false),
+      (err: unknown) => reply(err instanceof Error ? err.message : String(err), true),
+    );
   }
 
   private async complete(run: ActiveRun): Promise<void> {
@@ -1030,6 +1229,24 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/** Per-run omp config overlay (`--config`): browser control for this card. JSON is valid YAML. */
+async function writeRunConfig(taskId: string, settings: AppSettings, taskFiles: string): Promise<string> {
+  const dir = path.join(dataDir(), "runtime");
+  await mkdir(dir, { recursive: true });
+  const file = path.join(dir, `omp-config-${taskId}.yml`);
+  const browser =
+    settings.browser === "off"
+      ? { enabled: false }
+      : {
+          enabled: true,
+          headless: settings.browser !== "visible",
+          relay: settings.browser === "relay",
+          screenshotDir: path.join(taskFiles, "screenshots"),
+        };
+  await writeFile(file, `${JSON.stringify({ browser }, null, 2)}\n`);
+  return file;
+}
+
 function errorMessage(err: unknown, ompPath: string): string {
   const code = typeof err === "object" && err !== null && "code" in err ? err.code : undefined;
   if (code === "ENOENT") return `omp not found at ${ompPath}. Install from https://omp.sh or set OMP_PATH`;
@@ -1050,17 +1267,29 @@ const g = globalThis as unknown as { __ompUiAgentManager?: Promise<AgentManager>
 
 async function createAgentManager(): Promise<AgentManager> {
   const repo = await getRepo();
-  // Nothing survives a restart: child processes died with the previous server.
+  // Child processes died with the previous server. A card whose run had started is not run again:
+  // what it already did (edits, commits, pushes) is unknown, so it ends interrupted and Run resumes
+  // its omp session. A card that was only waiting in the queue has done nothing yet, so it goes back
+  // in the queue, oldest first (listTasksByAgentState orders by updatedAt).
   await repo.abortRunningRuns("Server restarted");
   const stale = await repo.listTasksByAgentState(["running", "queued"]);
+  const manager = new OmpAgentManager(repo);
   for (const task of stale) {
+    if (task.agentState === "queued") {
+      try {
+        await manager.start(task.id);
+        continue;
+      } catch (err) {
+        console.error(`[agent] could not re-queue task ${task.id} after restart:`, err);
+      }
+    }
     const updated = await repo.updateTask(task.id, {
       agentState: "error",
       agentError: "Interrupted by server restart",
     });
     if (updated) publish({ type: "task.updated", task: updated });
   }
-  return new OmpAgentManager(repo);
+  return manager;
 }
 
 /** Process-wide agent manager; the first call performs boot recovery. */

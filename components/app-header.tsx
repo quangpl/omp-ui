@@ -5,11 +5,16 @@ import { usePathname } from "next/navigation";
 import {
   ChartColumnIcon,
   ChevronLeftIcon,
+  KeyboardIcon,
   LogOutIcon,
+  SearchIcon,
   SettingsIcon,
   UserRoundIcon,
 } from "lucide-react";
 import { isTopLevelPath, TOP_TABS } from "@/components/bottom-tabs";
+import { openCommandPalette } from "@/components/command-palette";
+import { openKeyboardHelp } from "@/components/keyboard-help";
+import { QueueButton } from "@/components/queue-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,6 +25,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Kbd } from "@/components/ui/kbd";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
@@ -160,6 +167,23 @@ export function AppHeader({
 
         <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
           {actions}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-11 rounded-full max-sm:hidden md:size-9"
+                aria-label="Search and commands"
+                onClick={openCommandPalette}
+              >
+                <SearchIcon className="size-4.5 md:size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              Search &amp; commands <Kbd>⌘K</Kbd>
+            </TooltipContent>
+          </Tooltip>
+          <QueueButton />
           <ThemeToggle />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -189,6 +213,13 @@ export function AppHeader({
                   <SettingsIcon />
                   Settings
                 </Link>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={openKeyboardHelp}
+                className="min-h-11 gap-2.5 px-2.5 md:min-h-8"
+              >
+                <KeyboardIcon />
+                Keyboard shortcuts
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
