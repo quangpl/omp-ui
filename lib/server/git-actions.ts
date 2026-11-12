@@ -33,7 +33,7 @@ async function defaultPrBody(ctx: ApiContext<{ id: string }>, task: Task): Promi
   const runs = await ctx.repo.listRuns(task.id);
   const summary = runs.find((r) => r.status === "succeeded" && r.summary?.trim())?.summary?.trim();
   const parts = [task.description.trim(), summary ? `## Agent summary\n\n${summary}` : ""].filter(Boolean);
-  parts.push("---\nCreated from OMP UI");
+  parts.push("---\nCreated from AgentMan");
   const body = parts.join("\n\n");
   return body.length > MAX_PR_BODY ? `${body.slice(0, MAX_PR_BODY - 1)}…` : body;
 }

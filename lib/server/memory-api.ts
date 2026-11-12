@@ -41,7 +41,7 @@ export async function memoryRequest<T>(pathname: string, init?: RequestInit): Pr
       ? body.error
       : `Memory server answered HTTP ${res.status}`;
   if (res.status === 401 || res.status === 403) {
-    throw new HttpError(502, `Memory server rejected omp-ui's credentials (${message})`);
+    throw new HttpError(502, `Memory server rejected AgentMan's credentials (${message})`);
   }
   if (res.status === 400 || res.status === 404) throw new HttpError(res.status, message);
   if (res.status >= 500) throw new MemoryUnavailableError(message);
@@ -282,7 +282,7 @@ export function sessionSummary(s: AmSession): AmSessionSummary | null {
   return s.summary && typeof s.summary === "object" ? s.summary : null;
 }
 
-/** Suffix of the session label omp-ui gives card runs: "<card title> (card <id>)". */
+/** Suffix of the session label AgentMan gives card runs: "<card title> (card <id>)". */
 const CARD_LABEL_RE = /\(card ([A-Za-z0-9_-]+)\)\s*$/;
 
 export function sessionToItem(s: AmSession, cards: CardIndex): MemorySession {
@@ -298,7 +298,7 @@ export function sessionToItem(s: AmSession, cards: CardIndex): MemorySession {
     model: s.model ?? null,
     agentId: s.agentId ?? null,
     firstPrompt: s.firstPrompt ? excerpt(s.firstPrompt, 400) : null,
-    // A string summary is the "<title> (card <id>)" label omp-ui gives card sessions until agentmemory
+    // A string summary is the "<title> (card <id>)" label AgentMan gives card sessions until agentmemory
     // summarizes them; show the title part.
     title:
       summary?.title?.trim() ||
@@ -310,11 +310,11 @@ export function sessionToItem(s: AmSession, cards: CardIndex): MemorySession {
 }
 
 // ---------------------------------------------------------------------------------------------
-// omp-ui cards ↔ agentmemory sessions
+// AgentMan cards ↔ agentmemory sessions
 
 /**
- * Maps agentmemory sessions to omp-ui cards. OMP's agentmemory extension uses the omp session id
- * (the `<uuid>` of the card's `…_<uuid>.jsonl` session file) as the agentmemory session id; omp-ui
+ * Maps agentmemory sessions to AgentMan cards. OMP's agentmemory extension uses the omp session id
+ * (the `<uuid>` of the card's `…_<uuid>.jsonl` session file) as the agentmemory session id; AgentMan
  * labels card sessions "<title> (card <id>)" (see `tagMemorySession`), and a session tag naming a
  * card id (`<id>`, `card:<id>`, `task:<id>`) also links it.
  */

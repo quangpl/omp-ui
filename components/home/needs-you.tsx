@@ -283,7 +283,7 @@ export function NeedsYouList({
           <span className="min-w-0">
             <span className="block text-sm font-medium">Nothing is waiting on you</span>
             <span className="block text-xs text-pretty text-muted-foreground">
-              Agent questions, failures, open feedback and finished work to push show up here.
+              Agent questions, failures, open feedback and unpushed work land here.
             </span>
           </span>
         </Panel>

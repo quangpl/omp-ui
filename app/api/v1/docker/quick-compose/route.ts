@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * One-click compose `up` from a `QuickComposeSpec` (template id, pasted YAML or URL) into a new
- * OMP UI project with a free name; busy host ports move to free ones. Streams NDJSON
+ * AgentMan project with a free name; busy host ports move to free ones. Streams NDJSON
  * `DockerJobEvent`s; `done.id` is the project name.
  */
 export const POST = withApi(async ({ req }) => {

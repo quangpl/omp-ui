@@ -45,7 +45,7 @@ export function CloneRepoForm({
     if (cloning) return;
     const repoUrl = url.trim();
     if (!repoUrl) {
-      setError("Paste the address of the repository.");
+      setError("Paste the repository URL.");
       return;
     }
     setError(null);
@@ -83,7 +83,7 @@ export function CloneRepoForm({
           className="h-11 font-mono md:h-9"
         />
         <p className="text-xs text-muted-foreground">
-          HTTPS or SSH. Private repos need git credentials set up on the server.
+          HTTPS or SSH. Private repos need git credentials on the server.
         </p>
       </div>
 
@@ -118,7 +118,7 @@ export function CloneRepoForm({
       </Button>
       {cloning && (
         <p className="text-center text-xs text-muted-foreground" aria-live="polite">
-          This can take a minute for big repositories.
+          Large repositories can take a minute.
         </p>
       )}
     </form>

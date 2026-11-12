@@ -84,7 +84,7 @@ export function NewTaskForm({
           autoFocus
           value={text}
           readOnly={busy}
-          placeholder="Write it your way, as long as you like: the goal, details, pasted errors or logs, links…"
+          placeholder="Goal, details, pasted errors or logs, links…"
           className="max-h-[45dvh] min-h-36 resize-none text-base md:text-sm"
           onChange={(event) => setText(event.target.value)}
           onSelect={slash.onSelect}
@@ -98,8 +98,8 @@ export function NewTaskForm({
           <span className="flex items-start gap-1.5">
             <Sparkles className="mt-px size-3.5 shrink-0" aria-hidden />
             <span>
-              The card goes straight to In progress. In the background, an agent reads your text and the project,
-              writes the title and brief, and the work starts. Type <Kbd>/</Kbd> to add an OMP skill or shortcut.
+              Goes straight to In progress. An agent writes the title and brief from your text and the project,
+              then starts work. Type <Kbd>/</Kbd> for OMP skills and shortcuts.
             </span>
           </span>
           {words > 0 && <span className="shrink-0 tabular-nums">{words.toLocaleString()} words</span>}
@@ -141,7 +141,7 @@ export function NewTaskDialog({
   };
 
   const form = <NewTaskForm onSubmit={submit} onCancel={() => onOpenChange(false)} projectField={projectField} />;
-  const description = "Describe it in your own words. An agent turns it into a clear card in the background.";
+  const description = "Describe the task. An agent turns it into a card in the background.";
 
   if (isMobile) {
     return (

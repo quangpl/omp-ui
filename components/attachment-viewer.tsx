@@ -566,7 +566,7 @@ function TextView({ attachment, download }: { attachment: Attachment; download: 
     void (async () => {
       try {
         const res = await fetch(attachment.url, { signal: controller.signal, credentials: "same-origin" });
-        if (!res.ok) throw new Error(`The server answered ${res.status}`);
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
         const declared = Number(res.headers.get("content-length"));
         if (declared > MAX_TEXT_BYTES) {
           controller.abort();

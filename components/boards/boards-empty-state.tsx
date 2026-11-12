@@ -3,10 +3,10 @@ import { Button } from "@/components/ui/button";
 
 const STEPS = [
   { title: "Create a project", body: "From a folder on the server or a Git repository." },
-  { title: "Add cards", body: "One card per task. Write it like you'd brief a teammate." },
+  { title: "Add cards", body: "One card per task. Brief it like a teammate." },
   {
     title: "Press Start on a card",
-    body: "The agent does the work. You review the result and comment if anything needs changing.",
+    body: "The agent does the work. Review it and comment if anything needs changing.",
   },
 ];
 
@@ -18,7 +18,7 @@ export function BoardsEmptyState({ onCreate }: { onCreate: () => void }) {
       </div>
       <h2 className="mt-5 text-xl font-semibold tracking-tight">Create your first project</h2>
       <p className="mt-1.5 text-sm text-muted-foreground">
-        Hand tasks to an omp coding agent from a simple kanban board.
+        Hand tasks to an omp coding agent from a kanban board.
       </p>
 
       <ol className="mt-8 w-full space-y-2.5 text-left">

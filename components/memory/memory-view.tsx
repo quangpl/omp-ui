@@ -142,9 +142,8 @@ export function MemoryView({ onStatus }: { onStatus?: (status: MemoryStatus | nu
 
   const emptyHint = (
     <>
-      Agents add memories as they work on cards: decisions, fixes and preferences saved with memory_save, plus
-      lessons agentmemory distills from session observations. Run a card with OMP connected, then check the
-      Sessions tab for what was captured.
+      Agents save decisions, fixes and preferences with memory_save, and agentmemory distills lessons from
+      session observations. Run a card with OMP connected, then check the Sessions tab.
     </>
   );
 
@@ -153,7 +152,7 @@ export function MemoryView({ onStatus }: { onStatus?: (status: MemoryStatus | nu
       <div className="space-y-2">
         <h1 className="sr-only">Memory</h1>
         <p className="max-w-2xl text-sm text-pretty text-muted-foreground">
-          What your agents remember across card runs, from the local agentmemory server.
+          What agents remember across card runs, served by the local agentmemory server.
         </p>
         <StatusLine status={status} stats={stats} />
       </div>

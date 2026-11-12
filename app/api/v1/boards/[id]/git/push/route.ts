@@ -25,7 +25,7 @@ export const POST = withApi<{ id: string }>(async ({ repo, params }) => {
     throw new HttpError(400, "This project's folders aren't git repositories, so there is nothing to push.");
   }
   const files = repos.reduce((sum, s) => sum + s.changedFiles, 0);
-  const message = `Update from OMP UI (${files} ${files === 1 ? "file" : "files"})`;
+  const message = `Update from AgentMan (${files} ${files === 1 ? "file" : "files"})`;
 
   const results: GitRepoActionResult[] = [];
   for (const { folder } of repos) {

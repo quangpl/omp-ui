@@ -556,8 +556,8 @@ function OpenDesk({ index, lineBlocked }: { index: number; lineBlocked: boolean 
         <p className="text-sm font-medium text-muted-foreground">Desk {index + 1} is open</p>
         <p className="text-xs text-muted-foreground">
           {lineBlocked
-            ? "Free — the cards in line wait for others to finish first"
-            : "Start a card and a worker sits down here"}
+            ? "Free — queued cards wait on other cards to finish"
+            : "Start a card to fill this desk"}
         </p>
       </div>
     </li>
@@ -573,7 +573,7 @@ function FloorSection({ dashboard, live }: { dashboard: Dashboard; live: Record<
         id="viz-floor"
         icon={<FactoryIcon />}
         title="The floor"
-        description={`${running.length} of ${limit} desks busy · each agent is a worker, live`}
+        description={`${running.length} of ${limit} desks busy · one worker per agent`}
       />
       <ul
         className={cn(
@@ -909,7 +909,7 @@ function NoProjects() {
       <div className="space-y-1">
         <p className="font-medium">The floor is empty</p>
         <p className="text-sm text-muted-foreground">
-          Create a project and start a card — its agent clocks in here as a worker.
+          Create a project and start a card. Its agent shows up here as a worker.
         </p>
       </div>
       <Button asChild className="h-11 md:h-9">
@@ -942,7 +942,7 @@ export default function VisualizePage() {
       setUpdatedAt(Date.now());
       setLoadError(null);
     } catch (err) {
-      setLoadError(err instanceof Error && err.message ? err.message : "Could not load the overview.");
+      setLoadError(err instanceof Error && err.message ? err.message : "Couldn't load the overview.");
     }
   }, []);
 

@@ -158,7 +158,7 @@ function GlobalNewCardDialog({
 
   const create = async (text: string) => {
     if (!board) {
-      toast.error("Pick a project for the card first");
+      toast.error("Pick a project first");
       return false;
     }
     const task = await createCardFromText(board.id, text);

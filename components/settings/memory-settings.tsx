@@ -164,11 +164,11 @@ export function MemorySettingsSection() {
 
   const description = (
     <>
-      Persistent memory through{" "}
+      Persistent memory via{" "}
       <a href={DOCS_URL} target="_blank" rel="noreferrer" className="underline underline-offset-4">
         agentmemory
       </a>
-      : card runs and omp in your terminal recall and record project knowledge across sessions.
+      . Card runs and omp in your terminal recall and record project knowledge across sessions.
     </>
   );
   const reloadButton = (
@@ -314,8 +314,8 @@ function MemoryStatusView({
       </SettingsPanel>
 
       <p className="text-pretty text-xs text-muted-foreground">
-        The viewer listens on the server host&apos;s loopback, so &ldquo;Open viewer&rdquo; works when your browser runs on
-        that machine. From another device, forward the port first, e.g.{" "}
+        The viewer listens on the server&apos;s loopback, so &ldquo;Open viewer&rdquo; only works from a browser on that
+        machine. From another device, forward the port first, e.g.{" "}
         <code className="font-mono break-all">ssh -L 3113:127.0.0.1:3113 &lt;server&gt;</code>.
       </p>
 
@@ -360,9 +360,9 @@ function MemoryStatusView({
           <AlertTitle>OMP is not connected</AlertTitle>
           <AlertDescription>
             <p>
-              &ldquo;Connect OMP&rdquo; runs <code className="font-mono">agentmemory connect omp --with-mcp</code>: it adds
-              agentmemory&apos;s recall and capture hooks, skills and MCP tools to omp&apos;s config, used by card runs and
-              omp in your terminal alike.
+              &ldquo;Connect OMP&rdquo; runs <code className="font-mono">agentmemory connect omp --with-mcp</code>. It adds
+              agentmemory&apos;s recall and capture hooks, skills and MCP tools to omp&apos;s config, for card runs and
+              omp in your terminal.
             </p>
             {status.omp.error && <p className="break-words">{status.omp.error}</p>}
           </AlertDescription>
@@ -371,7 +371,7 @@ function MemoryStatusView({
 
       {status.healthy && status.embeddings === "bm25" && (
         <p className="text-pretty text-xs text-muted-foreground">
-          Recall is keyword-only. For free on-device semantic recall, add{" "}
+          Recall is keyword-only. For free, on-device semantic recall, add{" "}
           <code className="font-mono">EMBEDDING_PROVIDER=local</code> to <code className="font-mono">~/.agentmemory/.env</code>{" "}
           and restart the server.
         </p>

@@ -30,9 +30,9 @@ export interface ComposeDraft {
   name: string;
   yaml: string;
   env: EnvRow[];
-  /** Redeploying an existing OMP UI project: the name is fixed. */
+  /** Redeploying an existing AgentMan project: the name is fixed. */
   editing: boolean;
-  /** A project OMP UI did not create: shown, not deployable from here. */
+  /** A project AgentMan did not create: shown, not deployable from here. */
   readOnly?: boolean;
   configFile?: string;
   note?: string;
@@ -104,8 +104,8 @@ export function ComposeDialog({
           <DialogTitle>{draft.title}</DialogTitle>
           <DialogDescription className="truncate">
             {draft.readOnly
-              ? `Managed outside OMP UI: ${draft.configFile ?? "compose file"}`
-              : "Saved in OMP UI's data folder and started with docker compose up -d."}
+              ? `Managed outside AgentMan: ${draft.configFile ?? "compose file"}`
+              : "Saved in AgentMan's data folder, started with docker compose up -d."}
           </DialogDescription>
         </DialogHeader>
 

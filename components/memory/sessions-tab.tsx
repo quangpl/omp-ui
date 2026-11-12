@@ -314,7 +314,7 @@ function SessionDetailPanel({
             </div>
           ) : detail.observations.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              Nothing captured in this session yet. Observations land here as the agent reads, edits and runs things.
+              Nothing captured yet. Observations appear as the agent reads, edits and runs commands.
             </p>
           ) : (
             <ol className="space-y-0.5">
@@ -365,7 +365,7 @@ function SessionDetailPanel({
 }
 
 /**
- * Sessions tab: agentmemory's recorded agent sessions (newest first) with their omp-ui cards, and
+ * Sessions tab: agentmemory's recorded agent sessions (newest first) with their AgentMan cards, and
  * a session's timeline of captured observations.
  */
 export function SessionsTab({
@@ -535,7 +535,7 @@ export function SessionsTab({
                 <p className="text-sm leading-relaxed text-pretty text-muted-foreground">
                   {filtered
                     ? "Try another project or status, or clear the filter text."
-                    : "Every omp session with the agentmemory extension shows up here, including card runs. Run a card to record the first one."}
+                    : "Every omp session with the agentmemory extension appears here, card runs included. Run a card to record one."}
                 </p>
               </div>
             </div>
@@ -582,7 +582,7 @@ export function SessionsTab({
           {wide &&
             (detail ?? (
               <p className="p-6 text-sm text-muted-foreground">
-                Pick a session to see its timeline. Sessions run by a card link back to it.
+                Select a session to see its timeline. Card sessions link back to their card.
               </p>
             ))}
         </aside>

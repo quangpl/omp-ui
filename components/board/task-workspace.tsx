@@ -86,8 +86,8 @@ export function WorkspaceSection({ task, onRemoved }: { task: Task; onRemoved: (
       }
     >
       <p className="text-xs text-muted-foreground">
-        The agent works on its own branch in a separate copy of each git folder, so cards running in
-        parallel never touch each other&apos;s files.
+        The agent works on its own branch in a separate worktree of each git folder, so parallel cards
+        never touch each other&apos;s files.
       </p>
       {workspace === null ? (
         error ? (
@@ -111,8 +111,8 @@ export function WorkspaceSection({ task, onRemoved }: { task: Task; onRemoved: (
           <AlertDialogHeader>
             <AlertDialogTitle>Remove this card&apos;s workspace?</AlertDialogTitle>
             <AlertDialogDescription>
-              Deletes the card&apos;s worktrees and their local branches. Changes that weren&apos;t
-              shipped are lost. The next run starts from a fresh workspace.
+              Deletes the card&apos;s worktrees and local branches. Unshipped changes are lost. The next
+              run starts from a fresh workspace.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -158,7 +158,7 @@ function WorkspaceFolderItem({ folder }: { folder: WorkspaceFolder }) {
       <p className="font-mono text-xs break-all text-muted-foreground">{folder.path}</p>
       {!folder.isolated ? (
         <p className="text-xs text-muted-foreground">
-          Not a git repository, so the agent works in the project folder directly.
+          Not a git repository; the agent works in the project folder directly.
         </p>
       ) : (
         !folder.exists && (

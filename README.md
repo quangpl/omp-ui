@@ -1,6 +1,6 @@
-# OMP UI
+# AgentMan
 
-A self-hosted kanban board for [omp](https://omp.sh/docs) coding agents. Write a card and an agent does the work. It runs on your computer or server and works well on your phone.
+Self-hosted kanban board for [omp](https://omp.sh/docs) coding agents. Write a card; an agent does the work. Runs on your machine or server and works on your phone.
 
 ## Start in one command
 
@@ -8,16 +8,16 @@ A self-hosted kanban board for [omp](https://omp.sh/docs) coding agents. Write a
 ./omp-ui up
 ```
 
-`up` asks for an admin password, then installs, builds and starts OMP UI. It prints a link to open on this computer and one for your phone on the same Wi-Fi.
+`up` asks for an admin password, then installs, builds and starts AgentMan. It prints a local link and one for your phone on the same Wi-Fi.
 
-Before you start you need **Node.js 24+** and **omp**, installed and signed in:
+Requires **Node.js 24+** and **omp**, installed and signed in:
 
 ```sh
 curl -fsSL https://omp.sh/install | sh   # install omp
 omp                                      # run once, sign in to a provider
 ```
 
-To use **Docker** instead (omp is included in the image, and your sign-ins are shared with it — see [Credentials](#credentials)):
+**Docker** instead (the image includes omp and shares your sign-ins — see [Credentials](#credentials)):
 
 ```sh
 ./omp-ui docker up                       # or: docker compose up -d — then open http://localhost:3000
@@ -25,64 +25,64 @@ To use **Docker** instead (omp is included in the image, and your sign-ins are s
 
 ## How it works
 
-1. **Create a project.** Pick its folder, or clone a Git repository. A project can include extra folders too, for example a separate frontend and backend repo.
-2. **Add a card.** Write the card in your own words, as long as you like (pasted logs, specs, links). It lands in **In progress** at once; in the background an agent turns it into a clear title and brief, then an omp agent starts working on it in your project folders. You can watch it work live.
-3. **Comment to give feedback.** The agent picks up your comments, marks them resolved, and moves the card to **Done** when it finishes. Comment on a Done card and the agent reopens it and continues where it left off.
+1. **Create a project.** Pick a folder or clone a Git repo. A project can span several folders, e.g. separate frontend and backend repos.
+2. **Add a card.** Describe the task in your own words, any length (logs, specs, links). It lands in **In progress** immediately; a background agent turns it into a title and brief, then an omp agent works on it in your project folders. Watch it live.
+3. **Comment to give feedback.** The agent picks up comments, marks them resolved, and moves the card to **Done** when finished. Commenting on a Done card reopens it; the agent continues where it left off.
 
-Then ship the result with one tap: **Create PR/MR** or **Push to main**.
+Ship the result with one tap: **Create PR/MR** or **Push to main**.
 
-**Quick actions.** Cards move between columns by themselves as their agent works; you can't drag them to another column or pick a status (dragging only reorders cards within a column). The only manual controls are the quick actions: **Start**, **Resume** or **Retry** (run the agent), **Stop** (stop it; the card stays where it is) and **Revert to To do** (stop the agent and move the card back to To do). A Done card that hasn't been pushed yet also shows a **Push to main** icon (when the project is a git repo with a remote); once pushed, its title is struck through and the icon goes away. Hover a card, right-click it, open it, or focus it and press <kbd>R</kbd> (Start/Resume/Retry), <kbd>S</kbd> (Stop), <kbd>Z</kbd> (Revert) or <kbd>P</kbd> (Push to main). On a phone, the card's main button is its first quick action and its **⋯** menu has the rest. A failed card keeps its **Retry** button pinned.
+**Quick actions.** Cards move between columns on their own as the agent works; you can't drag them across columns or set a status (dragging only reorders within a column). Manual controls: **Start**, **Resume** or **Retry** (run the agent), **Stop** (the card stays put) and **Revert to To do** (stop the agent, move the card back to To do). An unpushed Done card also shows a **Push to main** icon (git repo with a remote only); once pushed, its title is struck through and the icon disappears. Hover, right-click or open a card, or focus it and press <kbd>R</kbd> (Start/Resume/Retry), <kbd>S</kbd> (Stop), <kbd>Z</kbd> (Revert) or <kbd>P</kbd> (Push to main). On phones, the card's main button is its first quick action; the rest are in its **⋯** menu. Failed cards keep **Retry** pinned.
 
-**Acting on several cards.** Select cards with <kbd>X</kbd> or <kbd>⌘</kbd>/<kbd>Ctrl</kbd>/<kbd>Shift</kbd>+click (see [Keyboard shortcuts](#keyboard-shortcuts)). A floating bar shows how many are selected and how many each action applies to, with bulk **Start**, **Stop**, **Revert** and **Push**; <kbd>R</kbd>/<kbd>S</kbd>/<kbd>Z</kbd>/<kbd>P</kbd> act on the selection too. The **To do** column header has **Start all** and the **In progress** header has **Stop all**.
+**Bulk actions.** Select cards with <kbd>X</kbd> or <kbd>⌘</kbd>/<kbd>Ctrl</kbd>/<kbd>Shift</kbd>+click (see [Keyboard shortcuts](#keyboard-shortcuts)). A floating bar shows the selection count and how many cards each action applies to: **Start**, **Stop**, **Revert**, **Push**. <kbd>R</kbd>/<kbd>S</kbd>/<kbd>Z</kbd>/<kbd>P</kbd> also act on the selection. The **To do** header has **Start all**; **In progress** has **Stop all**.
 
-**Advisor.** Agents don't stop to ask you technical questions. When a card's agent (or one of its subagents) is unsure which way to go, it calls the `ask_advisor` tool: an advisor agent (omp's `advisor` model role, else `slow`, else the default model thinking hard) reads the card and the project and picks the best option. When a run still ends with questions, the advisor answers the ones it can — posting its answers on the card and, when an answer needs more work, sending the agent back to it once — and only questions that need your own judgment (personal preference or taste, private information, business/legal/money calls, destructive actions) reach you.
+**Advisor.** Agents don't stop to ask you technical questions. When a card's agent (or a subagent) is unsure, it calls the `ask_advisor` tool: an advisor agent (omp's `advisor` model role, else `slow`, else the default model at high thinking) reads the card and project and picks the best option. If a run still ends with questions, the advisor answers what it can — posting answers on the card and, when an answer needs more work, sending the agent back once. Only questions that need your judgment (preference or taste, private information, business/legal/money calls, destructive actions) reach you.
 
-**Agent questions.** When an agent finishes with a question in its summary ("Should the banner auto-dismiss?"), the card grows an amber **The agent has a question** strip. Click it to send the card back to **To do** and open it on the question, type your answer, and the agent continues with it — or dismiss the question. Answering from the open card works from any column.
+**Agent questions.** When an agent ends with a question in its summary ("Should the banner auto-dismiss?"), the card shows an amber **The agent has a question** strip. Click it to move the card back to **To do** and open the question; type your answer and the agent continues — or dismiss it. You can also answer from the open card in any column.
 
-**Shortcuts and menus.** Press <kbd>N</kbd> on any page to add a card; it lands in In progress and its agent starts while the card writer works in the background. Outside a board, the form asks which project. <kbd>⌘K</kbd>/<kbd>Ctrl</kbd>+<kbd>K</kbd> (or <kbd>/</kbd>) opens the command palette: search cards, jump to a project or page, or run an action. Right-click a card (or focus it and press <kbd>.</kbd>) to open it, use its quick actions, duplicate it, copy its link, or delete it. Right-click the board background or a project on the Projects page to add a card there. Every key is listed under [Keyboard shortcuts](#keyboard-shortcuts); press <kbd>?</kbd> anywhere for the cheat sheet.
+**Shortcuts and menus.** <kbd>N</kbd> on any page adds a card; it lands in In progress and its agent starts while the card writer runs in the background. Outside a board, the form asks for the project. <kbd>⌘K</kbd>/<kbd>Ctrl</kbd>+<kbd>K</kbd> (or <kbd>/</kbd>) opens the command palette: search cards, jump to a project or page, run an action. Right-click a card (or focus it and press <kbd>.</kbd>) to open it, run quick actions, duplicate it, copy its link, or delete it. Right-click the board background or a project on the Projects page to add a card there. All keys: [Keyboard shortcuts](#keyboard-shortcuts); <kbd>?</kbd> anywhere opens the cheat sheet.
 
 <details>
 <summary>The details</summary>
 
 - The columns are **To do**, **In progress** and **Done**.
-- A card you write lands in **In progress** right away and its agent starts, whatever the project's **Auto-run** setting: there is nothing to switch on. Duplicates always go to To do.
-- The **card writer**: a read-only omp agent reads your text and the project and writes the title and a Markdown brief (goal, context with the real files involved, requirements, acceptance criteria, notes). It keeps every concrete detail (names, paths, errors, code), turns on parallel subagents when it detects large work, adds **Run after** links to open cards your text says it builds on, and points the agent to installed OMP skills that fit. It works in the background: **Create card** closes the form at once and you can add the next card while it writes. Meanwhile the card is titled from your text (first line), shows **Writing card** with the agent's progress, and its run waits; once the card is written, its run starts. Titles or descriptions you edit meanwhile are kept. If the card writer fails, the agent works from your text as typed and a note on the card says so; stopping the card stops its writer too. A short single line is used as the title as typed, without the card writer. Short requests use the `smol` model role (fast); long ones (150+ words or 5+ list items) use the default model. To keep it quick, it is told to write the card once it has made 8 lookups (16 for long requests), so a draft usually takes well under a minute; writing "orchestrate" in your text always turns on parallel subagents. Text of 2,000+ characters is also saved word for word on the card as `brief.md`. In a column's **Add a card** box, one short line (up to 100 characters) is used as the title as typed; longer text goes through the card writer.
+- A new card lands in **In progress** and its agent starts immediately, regardless of the project's **Auto-run** setting. Duplicates always go to To do.
+- **Card writer.** A read-only omp agent reads your text and the project, then writes the title and a Markdown brief (goal, context with the real files involved, requirements, acceptance criteria, notes). It keeps every concrete detail (names, paths, errors, code), enables parallel subagents for large work, adds **Run after** links to open cards your text builds on, and points the agent to matching installed OMP skills. It runs in the background: **Create card** closes the form immediately so you can add the next card. Meanwhile the card is titled from your text's first line, shows **Writing card** with the writer's progress, and its run waits until the brief is written. Title or description edits made meanwhile are kept. If the writer fails, the agent works from your text as typed and the card notes it; stopping the card stops its writer too. A short single line is used as the title as typed, skipping the writer. Short requests use the `smol` model role; long ones (150+ words or 5+ list items) use the default model. The writer is told to finish after 8 lookups (16 for long requests), so a draft usually takes well under a minute. "orchestrate" in your text always enables parallel subagents. Text of 2,000+ characters is also saved verbatim on the card as `brief.md`. In a column's **Add a card** box, one short line (up to 100 characters) becomes the title as typed; longer text goes through the writer.
 - Each card's agent runs `omp --mode rpc --cwd <primary folder>`, plus `--add-dir <folder>` for every extra folder.
-- Helper agents (card writer, advisor, queue planner, change summaries) run on a pool of warm `omp --mode rpc --no-session` workers: started on first use, reused between calls, closed after 5 idle minutes, at most half the logical cores (2–8). Up to half the logical cores (4–16) cards can be written at once.
+- Helper agents (card writer, advisor, queue planner, change summaries) share a pool of warm `omp --mode rpc --no-session` workers: started on first use, reused between calls, closed after 5 idle minutes, capped at half the logical cores (2–8). Up to half the logical cores (4–16) cards can be written concurrently.
 - An agent's prompt is the card's title and description plus any unresolved comments.
-- For a large card (4+ list items or comments, 300+ words, or asks like "across the codebase", "every page", "in parallel"), the prompt also includes omp's `orchestrate` keyword, so omp splits the work across parallel subagents.
-- **Model per card.** A project with a **Model** set always uses it. Otherwise, with **Auto-select model per card** on (Settings, the default), each run reads the card (or, when resuming, the new comments) and picks one of your omp model roles (`omp config get modelRoles`, read in the project folder): `smol` for small mechanical edits (typos, renames, docs, version bumps) to go fast, `slow` for debugging, concurrency, performance, security, migrations and architecture to get the best answer, `designer` for UI and styling work, and the **Default model** for everything else. When a role is not configured, the default model runs with `--thinking low` (small edits) or `--thinking high` (hard problems). The **Agent log** shows the pick and why.
-- The card's **Agent log** shows how a run works: counts of tool calls, subagents, messages and errors; an **Agents** section with one card per subagent (live status, current tool, tokens and cost; expand for its assignment, recent tool calls, output, and final report or error), sorted so working and failed agents come first; and a timeline where long runs of tool calls fold into one expandable line.
-- A comment on a running card is sent straight into the live session, the same way as typing into the omp CLI while it works: omp's magic keywords in it (`orchestrate`, `ultrathink`, …) take effect, and a large comment (4+ list items, 300+ words, or asks like "in parallel") gets the `orchestrate` keyword added. Messages from another card's agent have these keywords neutralized.
-- When a run succeeds, the agent's final message is posted as a comment, the feedback it handled is resolved, and the card moves to Done.
-- If a run fails, the card stays in In progress with the error and is retried automatically in the same omp session (after 15 s, 30 s, 1 min, 2 min, 4 min; the card shows **Retrying**). After 5 retries in a row it stays failed: comment, or press **Retry**, to try again. Change or turn this off in **Settings → Retry failed runs automatically**.
+- For large cards (4+ list items or comments, 300+ words, or phrases like "across the codebase", "every page", "in parallel"), the prompt includes omp's `orchestrate` keyword so omp splits the work across parallel subagents.
+- **Model per card.** A project's **Model**, if set, always wins. Otherwise, with **Auto-select model per card** on (Settings, the default), each run reads the card (or, on resume, the new comments) and picks one of your omp model roles (`omp config get modelRoles`, read in the project folder): `smol` for small mechanical edits (typos, renames, docs, version bumps), `slow` for debugging, concurrency, performance, security, migrations and architecture, `designer` for UI and styling, and the **Default model** for everything else. If a role isn't configured, the default model runs with `--thinking low` (small edits) or `--thinking high` (hard problems). The **Agent log** shows the pick and the reason.
+- The **Agent log** shows run internals: counts of tool calls, subagents, messages and errors; an **Agents** section with one card per subagent (live status, current tool, tokens, cost; expand for assignment, recent tool calls, output, and final report or error), sorted with working and failed agents first; and a timeline that folds long runs of tool calls into one expandable line.
+- A comment on a running card goes straight into the live session, like typing into the omp CLI mid-run: omp's magic keywords (`orchestrate`, `ultrathink`, …) take effect, and a large comment (4+ list items, 300+ words, or phrases like "in parallel") gets `orchestrate` added. Messages from another card's agent have these keywords neutralized.
+- On success, the agent's final message is posted as a comment, the feedback it handled is resolved, and the card moves to Done.
+- On failure, the card stays in In progress with the error and retries automatically in the same omp session (after 15 s, 30 s, 1 min, 2 min, 4 min; the card shows **Retrying**). After 5 consecutive retries it stays failed: comment or press **Retry** to try again. Configure in **Settings → Retry failed runs automatically**.
 - **Stop** leaves the card where it is (press **Resume** to continue the same session); **Revert to To do** stops the agent and parks the card in To do.
-- Up to `MAX_AGENTS` agents run at the same time. The default, `auto`, sets the limit from the machine: the smaller of the logical cores, the running agents plus what free memory allows at about 600 MB per agent (after keeping 10% of RAM free, at most 2 GB), and 32; it is checked again every 30 s. A number (1–16) is a fixed cap. Switch between Auto and Manual in **Settings**, or run `omp-ui init --max-agents <n|auto>`. The others wait in a queue; the queue button in the header shows it, and you can move a card up or make it run next.
-- **Smart queue.** When you add several cards to a project, a read-only planner agent orders its queued cards (prerequisites and quick unblockers first) and adds **Run after** links between cards that build on each other, so independent cards run in parallel and the rest wait. New cards are held for about 1.5 s so cards added together are planned at once; if the planner fails, they run in the order you added them. Turn it off in **Settings → Smart queue**.
-- If the server restarts, cards that were waiting in the queue go back in it and run, and cards whose agent was working or that had failed resume their omp session automatically (this uses one of the card's retries, so a card that keeps taking the server down stops after 5). With automatic retries off, an interrupted card shows **Interrupted by server restart** and **Resume** continues it.
-- **Self-healing server.** `omp-ui start`/`up`, pm2 and Docker run the server under `bin/supervisor.mjs`: it restarts the server when it crashes (backing off up to 30 s) and force-restarts it when `/api/v1/health` fails 3 checks in a row (15 s apart; tune with `OMP_UI_HEALTH_*`, see `.env.example`).
+- Up to `MAX_AGENTS` agents run concurrently. The default, `auto`, derives the limit from the machine: the minimum of the logical cores, the running agents plus what free memory allows at ~600 MB per agent (keeping 10% of RAM free, at most 2 GB), and 32; re-checked every 30 s. A number (1–16) sets a fixed cap. Switch between Auto and Manual in **Settings**, or run `omp-ui init --max-agents <n|auto>`. Other cards wait in a queue; the header's queue button shows it and lets you move a card up or run it next.
+- **Smart queue.** When you add several cards to a project, a read-only planner agent orders its queued cards (prerequisites and quick unblockers first) and adds **Run after** links between dependent cards, so independent cards run in parallel and the rest wait. New cards are held ~1.5 s so cards added together are planned together; if the planner fails, they run in the order added. Disable in **Settings → Smart queue**.
+- On server restart, queued cards go back in the queue, and cards whose agent was working or had failed resume their omp session automatically (this uses one of the card's retries, so a card that keeps crashing the server stops after 5). With automatic retries off, an interrupted card shows **Interrupted by server restart** and **Resume** continues it.
+- **Self-healing server.** `omp-ui start`/`up`, pm2 and Docker run the server under `bin/supervisor.mjs`, which restarts it on crash (backing off up to 30 s) and force-restarts it after 3 consecutive failed `/api/v1/health` checks (15 s apart; tune with `OMP_UI_HEALTH_*`, see `.env.example`).
 
 </details>
 
 ### Agents working together
 
-- **Dedicated workspaces.** Turn on **Dedicated workspace per card** in a project's settings and each card's agent works in its own git worktree (in `DATA_DIR/workspaces`, on branch `omp/<card>`), so several agents can change the same repo at once. **Create PR/MR** and **Push to main** then ship from that card's worktree. Deleting the card (or **Remove workspace**) removes the worktree and its local branch.
-- **Run after.** In a card, pick the cards it should wait for. Its agent stays queued until all of them are Done.
-- **Files.** Upload files to a card for its agent to read; the agent saves reports, exports and screenshots there for you. **Shared files** in the board menu are shared with every card's agent on the project.
-- **Browser control.** In **Settings → Browser control**, choose whether agents can use a browser: off, headless (default), a visible window on the server, or your own Chrome through `omp browser-relay`. Screenshots land in the card's files.
-- **Agent-to-agent.** Every agent can list and read the project's cards, hand a separate piece of work to a new card (its own agent starts on it), send a message to another card's agent, and wait for cards to finish. A waiting agent lends its slot to the queue. Cards created by an agent show a bot icon and link back; messages from another agent are marked as such in the card's activity.
-- **Visualize.** The **Visualize** tab shows your agents as a crew of robot workers, live. **The floor** has one desk per agent slot: each running card's worker (its own name and colour) shows what it is doing right now (running a command, editing, searching, briefing helpers…), how long it has been on the run, and its subagents as little helpers. Waiting cards stand in **The line** (a lock means they wait for other cards), failed or stalled ones are under **Need a hand**, and shipped cards go on the **Trophy wall**. Every Done card is worth 100 XP toward the crew's level, and badges unlock as you go.
+- **Dedicated workspaces.** With **Dedicated workspace per card** on in a project's settings, each card's agent works in its own git worktree (`DATA_DIR/workspaces`, branch `omp/<card>`), so several agents can change the same repo at once. **Create PR/MR** and **Push to main** ship from that worktree. Deleting the card (or **Remove workspace**) removes the worktree and its local branch.
+- **Run after.** Pick the cards a card should wait for; its agent stays queued until all of them are Done.
+- **Files.** Upload files to a card for its agent to read; the agent saves reports, exports and screenshots there. **Shared files** (board menu) are available to every card's agent in the project.
+- **Browser control.** **Settings → Browser control** sets agent browser access: off, headless (default), a visible window on the server, or your own Chrome via `omp browser-relay`. Screenshots land in the card's files.
+- **Agent-to-agent.** Agents can list and read the project's cards, hand off separate work to a new card (which starts its own agent), message another card's agent, and wait for cards to finish. A waiting agent lends its slot to the queue. Agent-created cards show a bot icon and link back; messages from other agents are marked as such in the card's activity.
+- **Visualize.** The **Visualize** tab shows your agents live as a crew of robot workers. **The floor** has one desk per agent slot: each running card's worker (own name and colour) shows its current activity (running a command, editing, searching, briefing helpers…), time on the run, and its subagents as little helpers. Waiting cards stand in **The line** (a lock means blocked on other cards), failed or stalled ones are under **Need a hand**, and shipped cards go on the **Trophy wall**. Each Done card is worth 100 XP toward the crew's level; badges unlock as you go.
 
 ### Around the app
 
-- **Navigation.** A left sidebar holds the pages, your projects and utilities in its footer; collapse it to an icon rail with <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>B</kbd>. On phones, a menu button opens it as a sheet and tabs run along the bottom.
-- **Home.** The Projects page is a dashboard: **Needs you** (cards waiting on you: a question, a failure, a scheduled retry, unanswered feedback, a stalled card, or Done but not pushed), **Live agents**, your projects with git status and success rate, run stats for the last 24 hours and 7 days with a sparkline, an activity feed, a getting-started checklist, and quick actions with go-to key hints.
-- **Optimize.** The Stats page's **Optimize** section analyzes the server on demand: CPU, memory and disk at a glance, recommendations, the top CPU and memory processes, and every agent-related process (orphaned agents left by a crashed server, dev servers and browsers agents started). End a process (never the server itself; a running card's agent is stopped through its card), close idle helper agents to free memory, and clean storage: files and worktrees of deleted cards, worktrees of shipped cards, old run configs, drafts and change summaries, rotated logs, SQLite compaction and Docker prunes. Items marked **Review** may delete something you still want and are left out of **Clean up safe items**; omp sessions and tool caches are only reported.
-- **Changes tab.** A card's **Changes** tab shows its code changes per repo against the base branch: uncommitted changes plus commits ahead. On top, an agent writes a one- or two-sentence summary, cached by the diff's hash in `DATA_DIR/runtime/diff-summaries/`; when it can't, a plain line with the changed file count is shown instead.
-- **Attachments.** Card and shared files open in a viewer: images (zoom and pan), video, audio, PDF, and text, JSON or logs up to 2 MB; other files download. <kbd>⌘</kbd>/<kbd>Ctrl</kbd>-click opens a file in a new tab. `.mp4`, `.webm`, `.mov`, `.mp3`, `.wav` and `.ogg` files are served inline.
+- **Navigation.** The left sidebar holds pages, projects, and utilities in its footer; collapse it to an icon rail with <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>B</kbd>. On phones, a menu button opens it as a sheet and tabs run along the bottom.
+- **Home.** The Projects page is a dashboard: **Needs you** (cards waiting on you: a question, a failure, a scheduled retry, unanswered feedback, a stalled card, or Done but unpushed), **Live agents**, projects with git status and success rate, 24-hour and 7-day run stats with a sparkline, an activity feed, a getting-started checklist, and quick actions with go-to key hints.
+- **Optimize.** The Stats page's **Optimize** section analyzes the server on demand: CPU, memory and disk usage, recommendations, top CPU and memory processes, and every agent-related process (orphaned agents from a crashed server, dev servers and browsers agents started). End a process (never the server itself; a running card's agent is stopped via its card), close idle helper agents to free memory, and clean storage: files and worktrees of deleted cards, worktrees of shipped cards, old run configs, drafts and change summaries, rotated logs, SQLite compaction and Docker prunes. Items marked **Review** may delete something you still want and are excluded from **Clean up safe items**; omp sessions and tool caches are reported only.
+- **Changes tab.** Shows a card's code changes per repo against the base branch: uncommitted changes plus commits ahead. An agent writes a one- or two-sentence summary on top, cached by diff hash in `DATA_DIR/runtime/diff-summaries/`; if that fails, a plain changed-file count is shown instead.
+- **Attachments.** Card and shared files open in a viewer: images (zoom and pan), video, audio, PDF, and text, JSON or logs up to 2 MB; other files download. <kbd>⌘</kbd>/<kbd>Ctrl</kbd>-click opens a file in a new tab. `.mp4`, `.webm`, `.mov`, `.mp3`, `.wav` and `.ogg` are served inline.
 - **Run reports.** Agents end their summary with a `## Report` section: `Outcome:`, `Tests:`, `Changes:` and `Model:` lines, plus images linked as `/api/v1/tasks/<id>/files/<path>`. The card's activity shows it as a report card with the outcome, duration, model, changes, a test summary bar and a screenshot gallery; each screenshot's **Feedback** button quotes `> re: <path>` into the comment box.
-- **Containers.** The **Containers** page runs Docker for your projects. Its sidebar entry shows how many containers are running; click the count for a list with **Logs**, **Restart** and **Stop**. One launcher searches templates, local images and Docker Hub (Quay too, when turned on), and takes a pasted image reference from any registry (`ghcr.io`, `quay.io`, `registry.k8s.io`, `public.ecr.aws`, …); <kbd>Enter</kbd> runs the image with free host ports mapped automatically. Compose stacks start with one click (including `mysql-adminer`, `elastic-kibana`, `n8n-postgres` and `minio-console`), or from pasted YAML or a URL. Links: `/containers?launch=1` opens the launcher, `/containers?logs=<id>&name=<name>` a container's logs, `/containers?logs=compose:<project>` a stack's logs.
-- **OMP settings.** **Settings → OMP** edits omp's own `config.yml` (in the agent folder `omp config path` reports), with a form (model roles, thinking level, approval mode, steering and interrupt modes, retry, compaction, advisor, tools) or as raw YAML. Each save is checked with the omp CLI on a temporary copy, the previous file is kept as `config.yml.bak`, and the file is replaced atomically; saving raw YAML over a file that changed meanwhile is refused. OMP UI's own approval mode, project or default model, and **Auto-select model per card** override the matching omp settings for its runs.
+- **Containers.** The **Containers** page runs Docker for your projects. Its sidebar entry shows the running container count; click it for a list with **Logs**, **Restart** and **Stop**. One launcher searches templates, local images and Docker Hub (and Quay, when enabled), and accepts a pasted image reference from any registry (`ghcr.io`, `quay.io`, `registry.k8s.io`, `public.ecr.aws`, …); <kbd>Enter</kbd> runs the image with free host ports mapped automatically. Compose stacks start with one click (including `mysql-adminer`, `elastic-kibana`, `n8n-postgres` and `minio-console`), or from pasted YAML or a URL. Links: `/containers?launch=1` opens the launcher, `/containers?logs=<id>&name=<name>` a container's logs, `/containers?logs=compose:<project>` a stack's logs.
+- **OMP settings.** **Settings → OMP** edits omp's own `config.yml` (in the agent folder `omp config path` reports) via a form (model roles, thinking level, approval mode, steering and interrupt modes, retry, compaction, advisor, tools) or raw YAML. Each save is validated with the omp CLI on a temporary copy, the previous file is kept as `config.yml.bak`, and the file is replaced atomically; saving raw YAML over a file that changed meanwhile is refused. AgentMan's own approval mode, project or default model, and **Auto-select model per card** override the matching omp settings for its runs.
 
 ## Keyboard shortcuts
 
@@ -137,7 +137,7 @@ The command palette lists the actions of the focused or open card first, then **
 
 ## Persistent memory (agentmemory)
 
-OMP UI works with [agentmemory](https://github.com/rohitg00/agentmemory), so card agents remember what earlier runs learned about a project.
+AgentMan integrates [agentmemory](https://github.com/rohitg00/agentmemory) so card agents remember what earlier runs learned about a project.
 
 1. Install it once on the server host: `npx -y @agentmemory/agentmemory@latest` (or `npm i -g @agentmemory/agentmemory`).
 2. Connect omp to it: **Settings → Memory → Connect OMP**, or run `agentmemory connect omp --with-mcp`.
@@ -151,25 +151,25 @@ OMP UI works with [agentmemory](https://github.com/rohitg00/agentmemory), so car
 
 ## Shipping changes
 
-A card has two buttons. Each one acts on every project folder that has changes. Neither asks for confirmation. Agents also push to main or open a PR/MR themselves, without asking, when the card or your feedback explicitly asks for it.
+A card has two ship buttons. Each acts on every project folder with changes; neither asks for confirmation. Agents also push to main or open a PR/MR on their own when the card or your feedback explicitly asks for it.
 
 | Button | What happens | Needs |
 | --- | --- | --- |
 | **Create PR/MR** (recommended) | Commits to a new `omp/<card>` branch, pushes it, and opens a pull request (GitHub) or merge request (GitLab) | `git` plus [`gh`](https://cli.github.com) for GitHub or [`glab`](https://gitlab.com/gitlab-org/cli) for GitLab, signed in |
 | **Push to main** | Commits and pushes directly to the repo's default branch | `git` with push access |
 
-To set up authentication, do one of the following:
+To authenticate, either:
 
 - Run `gh auth login` and/or `glab auth login` once.
 - Export `GH_TOKEN` / `GITLAB_TOKEN` in your shell (or set them in `.env`).
 
-Pushing over SSH uses your normal `~/.ssh` keys and ssh-agent. See [Credentials](#credentials) for everything OMP UI picks up from your machine.
+Pushing over SSH uses your normal `~/.ssh` keys and ssh-agent. See [Credentials](#credentials) for everything AgentMan picks up from your machine.
 
 To change branches, tap the branch name in the board header, then the branch next to a folder. The list shows local branches and `origin` branches you haven't checked out yet. Uncommitted changes come along unless they would be overwritten. Switching is blocked while an agent on the board is running or queued.
 
 ## Credentials
 
-OMP UI never asks for your AI or Git logins. It uses what this machine already has.
+AgentMan never asks for your AI or Git logins; it uses what this machine already has.
 
 - **Local (`omp-ui up` / `start`):** the server runs as you, with your full environment. Agents and git use your omp and Claude sign-ins, `~/.gitconfig`, saved Git credentials, `~/.ssh` keys and ssh-agent, the `gh` / `glab` logins, and any API keys or proxies in your environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GH_TOKEN`, `HTTPS_PROXY`, …). Values in `.env` only override; keep credentials out of it.
 - **Docker:** `docker-compose.yml` shares the same things with the container:
@@ -185,7 +185,7 @@ OMP UI never asks for your AI or Git logins. It uses what this machine already h
   | Environment variables | `GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, `GITLAB_HOST`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `AWS_*`, `HTTP(S)_PROXY`, … (full list in `docker-compose.yml`) |
 
   Docker turns a missing path into an empty root-owned folder. `omp-ui docker up` creates the missing ones first; before a plain `docker compose up`, run the commands listed in `docker-compose.yml`. Delete any line there you do not want to share. On Docker Desktop for macOS, start with `SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock` to share the ssh-agent.
-- OMP UI's own secrets (`ADMIN_PASSWORD`, `AUTH_SECRET`, `DATABASE_URL`, `POSTGRES_PASSWORD`, `OMP_UI_*`, …) are removed from the environment of agents and git commands.
+- AgentMan's own secrets (`ADMIN_PASSWORD`, `AUTH_SECRET`, `DATABASE_URL`, `POSTGRES_PASSWORD`, `OMP_UI_*`, …) are removed from the environment of agents and git commands.
 - `omp-ui doctor` lists what it found (names only, never values).
 
 ## CLI
@@ -198,7 +198,7 @@ Run `./omp-ui <command>`. Add `--help` to any command for details.
 | `status` | Check whether it is running and show its links |
 | `stop` / `start` / `restart` | Stop or start the server. `restart` rebuilds first when the sources changed (`--rebuild` always rebuilds), so committed changes go live with one command. If the build fails, the previous build is put back and started, and the command exits with an error |
 | `logs -f` | Follow the server log |
-| `open` | Open OMP UI in your browser |
+| `open` | Open AgentMan in your browser |
 | `passwd` | Change the admin password |
 | `public` | Get a public `https://` link (cloudflared, or ngrok) · `public stop` |
 | `doctor` | Check that Node, omp, git, gh/glab, the port and the database are OK, and list the credentials found |
@@ -235,7 +235,7 @@ pm2 start ecosystem.config.cjs    # or: omp-ui up --pm2
 pm2 save && pm2 startup           # start again after a reboot
 ```
 
-This works on a fresh clone. The first run sets everything up and builds the app, which takes a few minutes. If you didn't set `ADMIN_PASSWORD`, the generated password is printed to `data/pm2-out.log` (search for `OMP UI ADMIN PASSWORD`). `omp-ui up --pm2` also shows it in your terminal.
+This works on a fresh clone. The first run sets everything up and builds the app, which takes a few minutes. If you didn't set `ADMIN_PASSWORD`, the generated password is printed to `data/pm2-out.log` (search for `AgentMan ADMIN PASSWORD`). `omp-ui up --pm2` also shows it in your terminal.
 
 - Follow the logs with `omp-ui pm2 logs`.
 - While pm2 runs it, use `omp-ui pm2 stop` / `restart`. Plain `omp-ui stop` refuses so it doesn't fight pm2.
@@ -292,7 +292,7 @@ This works on a fresh clone. The first run sets everything up and builds the app
 
 ## Security
 
-- **Set a strong admin password before you make OMP UI public.** It is the only thing protecting a tool that runs commands on your machine.
+- **Set a strong admin password before you make AgentMan public.** It is the only thing protecting a tool that runs commands on your machine.
 - Agents run in **`yolo`** approval mode by default: they run commands and edit files without asking. Only point projects at folders you are happy for an agent to change. Use Docker if you want isolation. You can change the mode in **Settings**.
 - Changing the password signs out every session. Keep `.env` private.
 - Use HTTPS outside your home network: either the `public` link or a reverse proxy.

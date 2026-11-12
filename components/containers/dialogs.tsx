@@ -151,7 +151,7 @@ export function useJobDialog(onFinished: () => void): {
             {job?.title}
           </DialogTitle>
           <DialogDescription>
-            {running ? "Working… this can take a while when images are downloaded." : state.message}
+            {running ? "Working… image downloads can take a while." : state.message}
           </DialogDescription>
         </DialogHeader>
         <JobLog lines={state.lines.length ? state.lines : ["Waiting for docker…"]} className="max-h-80" />

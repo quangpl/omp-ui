@@ -313,7 +313,7 @@ export function ContainersList({
         description={
           containers.length > 0
             ? `${runningCount} running · ${containers.length - runningCount} stopped`
-            : "Everything Docker runs on this host"
+            : "All containers on this host"
         }
       />
 
@@ -349,7 +349,7 @@ export function ContainersList({
 
       {containers.length === 0 ? (
         <EmptyState title="No containers yet" icon={<BoxIcon />}>
-          Search the launcher above, or pick one of the popular apps to start one with sensible defaults.
+          Search the launcher above or pick a popular app to start one with defaults.
         </EmptyState>
       ) : visible.length === 0 ? (
         <EmptyState title="Nothing matches this filter" icon={<SearchIcon />} />

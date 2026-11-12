@@ -154,7 +154,7 @@ export function DependenciesSection({
     >
       {blockers.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          No dependencies — the agent can start right away. Add cards this one should wait for.
+          No dependencies; the agent can start right away. Add cards to wait for.
         </p>
       ) : (
         <>

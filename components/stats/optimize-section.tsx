@@ -1,7 +1,7 @@
 "use client";
 
 // Stats → Optimize: analyze what uses CPU, memory and disk on the server, then free it (end
-// leftover processes, close idle helper agents, clean OMP UI leftovers and Docker caches).
+// leftover processes, close idle helper agents, clean AgentMan leftovers and Docker caches).
 import { useState } from "react";
 import Link from "next/link";
 import {
@@ -52,7 +52,7 @@ import { cn } from "@/lib/utils";
 const TOP_ROWS = 8;
 
 const TAGS: Record<ProcessTag, { label: string; className: string } | null> = {
-  server: { label: "OMP UI", className: "bg-primary/10 text-primary" },
+  server: { label: "AgentMan", className: "bg-primary/10 text-primary" },
   "card-agent": { label: "Card agent", className: "bg-primary/10 text-primary" },
   helper: { label: "Helper agent", className: "bg-muted text-muted-foreground" },
   "orphan-agent": { label: "Orphaned agent", className: "bg-destructive/10 text-destructive" },
@@ -192,7 +192,7 @@ export function OptimizeSection() {
     const taskId = p.taskId;
     setConfirm({
       title: `Stop "${p.taskTitle ?? "this card"}"?`,
-      description: "Its agent stops now; the card keeps its place and can run again later.",
+      description: "Stops its agent now. The card keeps its place and can run again later.",
       confirmLabel: "Stop card",
       destructive: true,
       onConfirm: () => perform(`stop:${taskId}`, { kind: "stop-card", taskId }),
@@ -224,7 +224,7 @@ export function OptimizeSection() {
         description={
           report
             ? `Analyzed at ${new Date(report.generatedAt).toLocaleTimeString()} in ${(report.durationMs / 1000).toFixed(1)} s`
-            : "Find what uses CPU, memory and disk, then free it"
+            : "Find what uses CPU, memory and disk, and free it"
         }
         action={
           <Button
@@ -248,8 +248,8 @@ export function OptimizeSection() {
           </Notice>
         ) : (
           <EmptyState icon={<ScanSearchIcon />} title="Check the server's health">
-            Analyze lists the processes using the most CPU and memory, agent leftovers, and the space OMP UI and Docker
-            can give back. Nothing changes until you choose an action.
+            Lists top CPU and memory processes, agent leftovers, and space AgentMan and Docker can reclaim. Nothing
+            changes until you pick an action.
           </EmptyState>
         )
       ) : (
@@ -489,7 +489,7 @@ function ProcessesPanel({
 
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t bg-muted/30 px-4 py-3 sm:px-5">
         <p className="min-w-0 text-xs text-muted-foreground tabular-nums">
-          OMP UI server {formatBytes(memory.server.rssBytes)} (heap {formatBytes(memory.server.heapUsedBytes)}) ·{" "}
+          AgentMan server {formatBytes(memory.server.rssBytes)} (heap {formatBytes(memory.server.heapUsedBytes)}) ·{" "}
           {memory.idleHelpers.count} idle helper agent{memory.idleHelpers.count === 1 ? "" : "s"}
           {memory.idleHelpers.count > 0 && ` (${formatBytes(memory.idleHelpers.rssBytes)})`}
         </p>
@@ -606,7 +606,7 @@ function StoragePanel({
       <div className={PANEL}>
         <PanelHeader
           title="Storage cleanup"
-          note={storage.dataBytes !== null ? `OMP UI data ${formatBytes(storage.dataBytes)}` : undefined}
+          note={storage.dataBytes !== null ? `AgentMan data ${formatBytes(storage.dataBytes)}` : undefined}
         />
         <ul className="divide-y">
           {pending.map((item) => (

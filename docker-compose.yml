@@ -1,4 +1,4 @@
-# OMP UI with Docker Compose.
+# AgentMan with Docker Compose.
 #   docker compose up -d                          # SQLite in ./data
 #   omp-ui docker up --postgres | --mongo         # bundled database (saved to .env)
 #   docker compose --profile public up -d         # + free cloudflared quick tunnel

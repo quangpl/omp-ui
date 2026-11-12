@@ -364,13 +364,13 @@ export function AppSidebar() {
         <div className="flex items-center gap-1 group-data-[collapsible=icon]:justify-center">
           <Link
             href="/"
-            aria-label="OMP UI home"
+            aria-label="AgentMan home"
             onClick={closeMobile}
             className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg p-1 ring-sidebar-ring outline-none focus-visible:ring-2 group-data-[collapsible=icon]:flex-none group-data-[collapsible=icon]:p-0"
           >
             <LogoMark className="size-7 group-data-[collapsible=icon]:size-8" />
             <span className="truncate text-[0.95rem] font-semibold tracking-tight group-data-[collapsible=icon]:hidden">
-              OMP UI
+              AgentMan
             </span>
           </Link>
           {isMobile ? (

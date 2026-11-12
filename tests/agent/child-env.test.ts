@@ -35,7 +35,7 @@ const CREDENTIALS = {
   NODE_EXTRA_CA_CERTS: "/tmp/omp-ui-test-ca.pem",
 } as const;
 
-/** OMP UI's own secrets the children must never see. */
+/** AgentMan's own secrets the children must never see. */
 const SECRETS = {
   ADMIN_PASSWORD: "admin-password-secret",
   AUTH_SECRET: "auth-secret-value",
@@ -116,7 +116,7 @@ describe("childEnv", () => {
 
   afterEach(restoreEnv);
 
-  it("removes OMP UI's own secrets, including any OMP_UI_* key", () => {
+  it("removes AgentMan's own secrets, including any OMP_UI_* key", () => {
     const env = childEnv();
     for (const key of [...SECRET_ENV_KEYS, "OMP_UI_TEST_SECRET"]) expect(env).not.toHaveProperty(key);
     expect(SECRET_ENV_KEYS).toEqual(

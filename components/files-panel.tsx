@@ -229,7 +229,7 @@ export function FilesPanel({
         </div>
       ) : data.files.length === 0 ? (
         <p className="rounded-lg border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
-          {emptyHint ?? "No files yet. Upload or drop files to share them."}
+          {emptyHint ?? "No files yet. Upload or drop files here."}
         </p>
       ) : (
         <ul className="divide-y rounded-lg border">
@@ -329,7 +329,7 @@ export function FilesPanel({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete “{confirming?.name}”?</AlertDialogTitle>
             <AlertDialogDescription>
-              The file is removed from the server. Agents can no longer read it.
+              Deletes the file from the server; agents can no longer read it.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

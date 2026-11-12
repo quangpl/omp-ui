@@ -66,7 +66,7 @@ function recallMode(embeddings: string): { label: string; detail: string } {
     return {
       label: "Keyword recall (BM25)",
       detail:
-        "No embedding provider, so recall matches words, not meaning. Set EMBEDDING_PROVIDER=local in ~/.agentmemory/.env for free on-device semantic search.",
+        "No embedding provider: recall matches words, not meaning. Set EMBEDDING_PROVIDER=local in ~/.agentmemory/.env for free on-device semantic search.",
     };
   }
   return {

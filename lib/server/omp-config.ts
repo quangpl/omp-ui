@@ -53,16 +53,16 @@ export const OMP_CONFIG_SCHEMA: readonly OmpConfigField[] = [
   role(
     "default",
     "Default model",
-    "Used unless a board, OMP UI's default model or auto-select picks another. Append :<level> to pin thinking, e.g. anthropic/claude-opus-5-5:high.",
+    "Used unless a board, AgentMan's default model or auto-select picks another. Append :<level> to pin thinking, e.g. anthropic/claude-opus-5-5:high.",
   ),
-  role("smol", "Fast model (smol)", "Lightweight work. OMP UI's auto-select runs small edits on it."),
+  role("smol", "Fast model (smol)", "Lightweight work. AgentMan's auto-select runs small edits on it."),
   role(
     "slow",
     "Reasoning model (slow)",
     "Thorough analysis. Auto-select runs debugging, performance, security and architecture cards on it.",
   ),
   role("plan", "Plan model", "Architectural planning in plan mode."),
-  role("designer", "Designer model", "UI work. Auto-select runs UI cards on it when it is set."),
+  role("designer", "Designer model", "UI work. Auto-select runs UI cards on it when set."),
   role("task", "Subagent model (task)", "Subagents the agent spawns with its task tool."),
   role("vision", "Vision model", "Reads images for models without vision support."),
   role("advisor", "Advisor model", "Reviews each turn when the advisor is enabled."),
@@ -72,7 +72,7 @@ export const OMP_CONFIG_SCHEMA: readonly OmpConfigField[] = [
     label: "Thinking level",
     type: "enum",
     group: "behavior",
-    help: "Reasoning depth for thinking-capable models when the model selector does not set one.",
+    help: "Reasoning depth for thinking models when the model selector doesn't set one.",
     options: THINKING_OPTIONS,
   },
   {
@@ -80,7 +80,7 @@ export const OMP_CONFIG_SCHEMA: readonly OmpConfigField[] = [
     label: "Approval mode",
     type: "enum",
     group: "behavior",
-    help: "Which tool calls omp runs without asking. Card runs pass the Agent section's approval mode instead, so this applies to omp in your terminal.",
+    help: "Which tool calls omp runs without asking in your terminal. Card runs use the Agent section's approval mode.",
     options: [
       { value: "always-ask", label: "Always ask" },
       { value: "always-ask-cached", label: "Ask and remember" },
@@ -131,7 +131,7 @@ export const OMP_CONFIG_SCHEMA: readonly OmpConfigField[] = [
     label: "Auto-compact context",
     type: "boolean",
     group: "behavior",
-    help: "Summarize older context when the conversation nears the model's context window.",
+    help: "Summarize older context as the conversation nears the model's context window.",
   },
   {
     key: "advisor.enabled",
@@ -166,7 +166,7 @@ export const OMP_CONFIG_SCHEMA: readonly OmpConfigField[] = [
     label: "Isolated subagents",
     type: "boolean",
     group: "tools",
-    help: "Subagents may work in an isolated copy of the repository and apply their changes afterwards.",
+    help: "Subagents can work in an isolated copy of the repo and apply their changes afterwards.",
   },
   {
     key: "task.maxConcurrency",
@@ -182,7 +182,7 @@ export const OMP_CONFIG_SCHEMA: readonly OmpConfigField[] = [
     label: "Subagent depth",
     type: "number",
     group: "tools",
-    help: "How many levels deep subagents may spawn their own subagents.",
+    help: "How deep subagents may nest when they spawn their own subagents.",
     min: 0,
     max: 10,
   },
@@ -191,7 +191,7 @@ export const OMP_CONFIG_SCHEMA: readonly OmpConfigField[] = [
     label: "Python interpreter",
     type: "string",
     group: "tools",
-    help: "Exact Python executable for the eval tool. Leave empty to let omp find one.",
+    help: "Python executable for the eval tool. Leave empty to let omp find one.",
     placeholder: "/usr/bin/python3",
   },
 ];

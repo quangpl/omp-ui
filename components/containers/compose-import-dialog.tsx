@@ -120,8 +120,7 @@ export function ComposeImportDialog({
         <DialogHeader className="border-b px-5 pt-5 pb-4">
           <DialogTitle>Compose from YAML or URL</DialogTitle>
           <DialogDescription>
-            Paste a compose file, or a link to one (GitHub, GitLab and Gist pages work). Busy host ports move to free
-            ones.
+            Paste a compose file or a link to one (GitHub, GitLab, Gist). Busy host ports are remapped to free ones.
           </DialogDescription>
         </DialogHeader>
         <form

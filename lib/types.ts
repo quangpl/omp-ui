@@ -656,7 +656,7 @@ export interface SystemStats {
 // Maintenance: GET /stats/maintenance (analyze) and POST /stats/maintenance (clean up / free)
 
 /**
- * What a process is to OMP UI:
+ * What a process is to AgentMan:
  * - server: this server or one of its ancestors (supervisor, pm2…); never ended from the UI
  * - card-agent: a running card's omp agent (stop the card instead)
  * - helper: a pooled omp helper (card writer, advisor…) of this server
@@ -731,7 +731,7 @@ export interface CleanupItem {
   empty: boolean;
 }
 
-/** Space used outside OMP UI's own data; shown for context, never deleted from the UI. */
+/** Space used outside AgentMan's own data; shown for context, never deleted from the UI. */
 export interface StorageUsage {
   label: string;
   path: string;
@@ -931,7 +931,7 @@ export interface MemoryStatus {
   reachable: boolean;
   /** `/agentmemory/health` reports ok/healthy/degraded. */
   healthy: boolean;
-  /** A start through OMP UI is still running. */
+  /** A start through AgentMan is still running. */
   starting: boolean;
   /** Why the server is not healthy (unreachable, unauthorized, …). */
   error: string | null;

@@ -167,7 +167,7 @@ export function LiveAgents({
         {entries.length === 0 ? (
           <div className="pt-3">
             <p className="text-sm font-medium">No agents working</p>
-            <p className="text-xs text-muted-foreground">Start a card and its agent shows up here with what it is doing.</p>
+            <p className="text-xs text-muted-foreground">Start a card to see its agent and current step here.</p>
             <button
               type="button"
               onClick={() => openNewCard()}

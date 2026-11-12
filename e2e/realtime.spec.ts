@@ -129,7 +129,7 @@ test("the agent log streams output live, then shows the persisted result", async
   const detail = page.getByRole("dialog", { name: task.title });
   await detail.getByRole("tab", { name: /Agent log/ }).click();
   const log = detail.getByRole("tabpanel");
-  await expect(log.getByText("The agent hasn't run on this card yet", { exact: false })).toBeVisible();
+  await expect(log.getByText("No runs yet", { exact: false })).toBeVisible();
 
   await detail.getByRole("button", { name: "Start", exact: true }).click();
   const live = detail.getByTestId("live-output");

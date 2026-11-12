@@ -430,7 +430,7 @@ function label(folder: string): string {
 async function identityArgs(folder: string): Promise<string[]> {
   const email = await git(folder, ["config", "user.email"]);
   if (email.ok && email.stdout.trim()) return [];
-  return ["-c", "user.name=OMP UI", "-c", "user.email=omp-ui@localhost"];
+  return ["-c", "user.name=AgentMan", "-c", "user.email=agentman@localhost"];
 }
 
 /** Commit everything if the tree is dirty; returns the new commit sha or null. */

@@ -147,7 +147,7 @@ export function RunDialog({
         <DialogHeader className="border-b px-5 pt-5 pb-4">
           <DialogTitle>{title ?? "Run a container"}</DialogTitle>
           <DialogDescription>
-            Missing images are pulled first. Ports, volumes and variables can be changed before starting.
+            Missing images are pulled first. Edit ports, volumes and variables before starting.
           </DialogDescription>
         </DialogHeader>
 

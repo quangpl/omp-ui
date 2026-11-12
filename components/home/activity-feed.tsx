@@ -24,7 +24,7 @@ export function ActivityFeed({ items, now }: { items: DashboardActivity[]; now: 
       <Panel className="px-3 py-2">
         {items.length === 0 ? (
           <p className="py-1.5 text-xs text-pretty text-muted-foreground">
-            Cards you create, agent runs and pushes from the last 30 days appear here.
+            Cards, agent runs and pushes from the last 30 days show up here.
           </p>
         ) : (
           <ol className="relative flex flex-col">

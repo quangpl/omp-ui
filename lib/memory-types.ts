@@ -1,4 +1,4 @@
-// Stable JSON shapes of `/api/v1/memory/*` (the omp-ui proxy in front of the local agentmemory
+// Stable JSON shapes of `/api/v1/memory/*` (the AgentMan proxy in front of the local agentmemory
 // server). Routes normalize agentmemory's records into these so the UI never depends on the
 // memory server's internal field names.
 
@@ -55,7 +55,7 @@ export interface MemoryLesson {
   createdAt: string | null;
 }
 
-/** An omp-ui card a memory session belongs to (matched by the card's omp session file). */
+/** An AgentMan card a memory session belongs to (matched by the card's omp session file). */
 export interface MemoryCardLink {
   boardId: string;
   taskId: string;
@@ -122,7 +122,7 @@ export interface MemoryFacet {
   count: number;
 }
 
-/** A project option for filters: memory projects plus omp-ui boards (by workdir folder name). */
+/** A project option for filters: memory projects plus AgentMan boards (by workdir folder name). */
 export interface MemoryProject {
   /** agentmemory project name (git repository or folder basename). */
   value: string;

@@ -104,7 +104,7 @@ export function AgentStateBadge({
     return (
       <Badge
         className={cn("gap-1 bg-violet-500/10 text-violet-700 dark:bg-violet-400/15 dark:text-violet-300", className)}
-        title="The card agent is writing the title and brief; the agent starts right after"
+        title="Writing the title and brief; the agent starts next"
       >
         <Sparkles className="animate-pulse" />
         Writing card
