@@ -37,6 +37,7 @@ Then ship the result with one tap: **Create PR/MR** or **Push to main**.
 - The columns are **To do**, **In progress** and **Done**.
 - Each project runs `omp --cwd <primary folder>`, plus `--add-dir <folder>` for every extra folder.
 - An agent's prompt is the card's title and description plus any unresolved comments.
+- For a large card (4+ list items or comments, 300+ words, or asks like "across the codebase", "every page", "in parallel"), the prompt also includes omp's `orchestrate` keyword, so omp splits the work across parallel subagents.
 - A comment on a running card is sent straight into the live session.
 - When a run succeeds, the agent's final message is posted as a comment, the feedback it handled is resolved, and the card moves to Done.
 - If a run fails, the card stays in In progress with the error. Comment, or press **Run**, to retry.
@@ -60,6 +61,8 @@ To set up authentication, do one of the following:
 - Export `GH_TOKEN` / `GITLAB_TOKEN` in your shell (or set them in `.env`).
 
 Pushing over SSH uses your normal `~/.ssh` keys and ssh-agent. See [Credentials](#credentials) for everything OMP UI picks up from your machine.
+
+To change branches, tap the branch name in the board header, then the branch next to a folder. The list shows local branches and `origin` branches you haven't checked out yet. Uncommitted changes come along unless they would be overwritten. Switching is blocked while an agent on the board is running or queued.
 
 ## Credentials
 

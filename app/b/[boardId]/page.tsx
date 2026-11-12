@@ -113,7 +113,7 @@ function BoardScreen() {
         actions={
           <>
             <ConnectionPill status={controller.connection} />
-            <GitIndicator statuses={git.statuses} />
+            <GitIndicator boardId={boardId} statuses={git.statuses} onChanged={() => void git.refresh()} />
             {/* Phones use the thumb-reachable floating button instead. */}
             <Button className="h-9 max-md:hidden" onClick={() => setNewOpen(true)}>
               <Plus />

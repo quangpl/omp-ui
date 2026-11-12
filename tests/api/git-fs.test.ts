@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { api, env, freshEnv, setupAdmin, teardown, tempDir, waitFor } from "./helpers";
 
 import * as boardGitRoute from "@/app/api/v1/boards/[id]/git/route";
+import * as boardBranchesRoute from "@/app/api/v1/boards/[id]/git/branches/route";
 import * as boardTasksRoute from "@/app/api/v1/boards/[id]/tasks/route";
 import * as boardsRoute from "@/app/api/v1/boards/route";
 import * as browseRoute from "@/app/api/v1/fs/browse/route";
@@ -16,7 +17,7 @@ import * as taskPushRoute from "@/app/api/v1/tasks/[id]/git/push/route";
 import * as taskRoute from "@/app/api/v1/tasks/[id]/route";
 import * as taskRunRoute from "@/app/api/v1/tasks/[id]/run/route";
 import * as taskStopRoute from "@/app/api/v1/tasks/[id]/stop/route";
-import type { Board, Comment, FsBrowseResult, GitActionResult, GitStatus, Task } from "@/lib/types";
+import type { Board, Comment, FsBrowseResult, GitActionResult, GitBranches, GitStatus, Task } from "@/lib/types";
 
 interface Repo {
   work: string;
@@ -396,6 +397,119 @@ describe("git status and quick actions", () => {
       } finally {
         process.env.PATH = originalPath;
       }
+    },
+    GIT_TIMEOUT,
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("branch switching", () => {
+  let shop: Repo;
+  let notes: string;
+  let board: Board;
+
+  async function branches(folder: string) {
+    return api<GitBranches & { error?: string }>(
+      boardBranchesRoute,
+      "GET",
+      `/boards/${board.id}/git/branches?folder=${encodeURIComponent(folder)}`,
+      { params: { id: board.id } },
+    );
+  }
+
+  async function switchTo(body: Record<string, unknown>) {
+    return api<GitStatus & { error?: string }>(boardBranchesRoute, "POST", `/boards/${board.id}/git/branches`, {
+      body,
+      params: { id: board.id },
+    });
+  }
+
+  beforeAll(async () => {
+    await freshEnv();
+    await setupAdmin();
+    shop = makeRepo("shop");
+    // `release` exists only on origin.
+    git(shop.work, "push", "origin", "main:release");
+    git(shop.work, "fetch", "origin");
+    // `feature/cart` is local-only and changes README.md.
+    git(shop.work, "switch", "-c", "feature/cart");
+    writeFileSync(path.join(shop.work, "README.md"), "# shop\n\ncart\n");
+    git(shop.work, "commit", "-am", "Cart");
+    git(shop.work, "switch", "main");
+    notes = tempDir(path.join("projects", "branch-notes"));
+    board = await createBoard({ name: "Branches", workdir: shop.work, extraFolders: [notes], autoRun: false });
+  });
+
+  it("lists local branches newest first, then origin-only ones", async () => {
+    const res = await branches(shop.work);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      folder: shop.work,
+      current: "main",
+      branches: [
+        { name: "feature/cart", remoteOnly: false },
+        { name: "main", remoteOnly: false },
+        { name: "release", remoteOnly: true },
+      ],
+    });
+  });
+
+  it("switches to a local branch and to an origin-only branch", async () => {
+    const toFeature = await switchTo({ folder: shop.work, branch: "feature/cart" });
+    expect(toFeature.status, JSON.stringify(toFeature.body)).toBe(200);
+    expect(toFeature.body).toMatchObject({ folder: shop.work, branch: "feature/cart", dirty: false });
+    expect(git(shop.work, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature/cart");
+
+    const toRelease = await switchTo({ folder: shop.work, branch: "release" });
+    expect(toRelease.status, JSON.stringify(toRelease.body)).toBe(200);
+    expect(toRelease.body.branch).toBe("release");
+    expect(git(shop.work, "rev-parse", "--abbrev-ref", "release@{upstream}")).toBe("origin/release");
+    expect((await branches(shop.work)).body.branches).toContainEqual({ name: "release", remoteOnly: false });
+  });
+
+  it("refuses a switch that would overwrite uncommitted changes, leaving the folder as it was", async () => {
+    writeFileSync(path.join(shop.work, "README.md"), "# shop\n\nlocal edit\n");
+    const res = await switchTo({ folder: shop.work, branch: "feature/cart" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Uncommitted changes would be overwritten by switching. Commit or discard them first.");
+    expect(git(shop.work, "rev-parse", "--abbrev-ref", "HEAD")).toBe("release");
+    git(shop.work, "checkout", "--", "README.md");
+  });
+
+  it("validates the folder and branch", async () => {
+    const outside = tempDir("branch-outside");
+    const cases: [Record<string, unknown>, string][] = [
+      [{ branch: "main" }, "folder is required."],
+      [{ folder: outside, branch: "main" }, `This folder is not part of the project: ${outside}`],
+      [{ folder: notes, branch: "main" }, "This project folder is not a git repository."],
+      [{ folder: shop.work }, "branch is required."],
+      [{ folder: shop.work, branch: "--orphan" }, "There is no branch named “--orphan”."],
+      [{ folder: shop.work, branch: "nope" }, "There is no branch named “nope”."],
+    ];
+    for (const [body, error] of cases) {
+      const res = await switchTo(body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(res.body).toEqual({ error });
+    }
+    expect((await branches(notes)).status).toBe(400);
+    expect(git(shop.work, "rev-parse", "--abbrev-ref", "HEAD")).toBe("release");
+  });
+
+  it(
+    "answers 409 while an agent on the board is running",
+    async () => {
+      const busy = await createTask(board.id, "Busy agent [fake:slow]");
+      await api<Task>(taskRunRoute, "POST", `/tasks/${busy.id}/run`, { params: { id: busy.id } });
+      await waitFor(async () => {
+        const res = await api<{ task: Task }>(taskRoute, "GET", `/tasks/${busy.id}`, { params: { id: busy.id } });
+        return res.body.task.agentState === "running";
+      }, 20_000);
+      const res = await switchTo({ folder: shop.work, branch: "main" });
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({ error: "Wait for the agent to finish first." });
+      expect(git(shop.work, "rev-parse", "--abbrev-ref", "HEAD")).toBe("release");
+      await api<Task>(taskStopRoute, "POST", `/tasks/${busy.id}/stop`, { params: { id: busy.id } });
     },
     GIT_TIMEOUT,
   );

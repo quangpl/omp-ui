@@ -1,7 +1,10 @@
 "use client";
 
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import {
+  Check,
+  ChevronLeft,
+  ChevronsUpDown,
   CircleCheck,
   ExternalLink,
   GitBranch,
@@ -23,10 +26,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { ApiRequestError, api } from "@/lib/api-client";
-import type { Comment, GitActionResult, GitStatus, Task } from "@/lib/types";
+import type { Comment, GitActionResult, GitBranches, GitStatus, Task } from "@/lib/types";
 import { errorMessage } from "@/components/board/format";
 
 /** Last path segment, for compact folder labels. */
@@ -39,8 +43,22 @@ function changesLabel(count: number): string {
   return `${count} ${count === 1 ? "change" : "changes"}`;
 }
 
-/** Compact header badge: current branch + uncommitted change count; lists every repo on tap. */
-export function GitIndicator({ statuses }: { statuses: GitStatus[] | null }) {
+/**
+ * Compact header badge: current branch + uncommitted change count. Tap to list every repo and
+ * switch any of them to another branch.
+ */
+export function GitIndicator({
+  boardId,
+  statuses,
+  onChanged,
+}: {
+  boardId: string;
+  statuses: GitStatus[] | null;
+  /** Called after a branch switch so the board can re-read git status. */
+  onChanged: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [picking, setPicking] = useState<GitStatus | null>(null);
   const repos = statuses?.filter((status) => status.isRepo) ?? [];
   if (repos.length === 0) return null;
 
@@ -49,7 +67,13 @@ export function GitIndicator({ statuses }: { statuses: GitStatus[] | null }) {
   const unpushed = repos.reduce((sum, repo) => sum + repo.ahead, 0);
 
   return (
-    <Popover>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setPicking(null);
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
           variant="ghost"
@@ -69,29 +93,166 @@ export function GitIndicator({ statuses }: { statuses: GitStatus[] | null }) {
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 max-w-[calc(100vw-1.5rem)] p-0">
-        <div className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">
-          Git status{unpushed > 0 ? ` · ${unpushed} unpushed commit${unpushed === 1 ? "" : "s"}` : ""}
-        </div>
-        <ul className="flex flex-col py-1">
-          {repos.map((repo) => (
-            <li key={repo.folder} className="flex flex-col gap-0.5 px-3 py-2">
-              <span className="truncate text-sm font-medium" title={repo.folder}>
-                {folderName(repo.folder)}
-              </span>
-              <span className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
-                <span className="inline-flex items-center gap-1 font-mono">
-                  <GitBranch className="size-3" />
-                  {repo.branch ?? "detached"}
-                </span>
-                <span>{repo.dirty ? changesLabel(repo.changedFiles) : "clean"}</span>
-                {repo.ahead > 0 && <span>{repo.ahead} ahead</span>}
-                {repo.behind > 0 && <span>{repo.behind} behind</span>}
-              </span>
-            </li>
-          ))}
-        </ul>
+        {picking ? (
+          <BranchPicker
+            boardId={boardId}
+            repo={picking}
+            onBack={() => setPicking(null)}
+            onSwitched={() => {
+              setOpen(false);
+              setPicking(null);
+              onChanged();
+            }}
+          />
+        ) : (
+          <>
+            <div className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">
+              Git status{unpushed > 0 ? ` · ${unpushed} unpushed commit${unpushed === 1 ? "" : "s"}` : ""}
+            </div>
+            <ul className="flex flex-col py-1">
+              {repos.map((repo) => (
+                <li key={repo.folder} className="flex flex-col gap-0.5 px-3 py-2">
+                  <span className="truncate text-sm font-medium" title={repo.folder}>
+                    {folderName(repo.folder)}
+                  </span>
+                  <span className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                    <button
+                      type="button"
+                      onClick={() => setPicking(repo)}
+                      className="-mx-1 inline-flex min-h-8 max-w-full items-center gap-1 rounded-md px-1 font-mono hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                      aria-label={`Switch branch in ${folderName(repo.folder)} (on ${repo.branch ?? "detached HEAD"})`}
+                    >
+                      <GitBranch className="size-3 shrink-0" />
+                      <span className="truncate">{repo.branch ?? "detached"}</span>
+                      <ChevronsUpDown className="size-3 shrink-0 opacity-60" />
+                    </button>
+                    <span>{repo.dirty ? changesLabel(repo.changedFiles) : "clean"}</span>
+                    {repo.ahead > 0 && <span>{repo.ahead} ahead</span>}
+                    {repo.behind > 0 && <span>{repo.behind} behind</span>}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
       </PopoverContent>
     </Popover>
+  );
+}
+
+/** Filterable branch list for one repo; tapping a branch checks it out. */
+function BranchPicker({
+  boardId,
+  repo,
+  onBack,
+  onSwitched,
+}: {
+  boardId: string;
+  repo: GitStatus;
+  onBack: () => void;
+  onSwitched: () => void;
+}) {
+  const [list, setList] = useState<GitBranches | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [switching, setSwitching] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.git.branches(boardId, repo.folder).then(
+      (result) => !cancelled && setList(result),
+      (err) => !cancelled && setLoadError(errorMessage(err)),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [boardId, repo.folder]);
+
+  const switchTo = async (branch: string) => {
+    setSwitching(branch);
+    try {
+      await api.git.switchBranch(boardId, { folder: repo.folder, branch });
+      toast.success(`Switched ${folderName(repo.folder)} to ${branch}`);
+      onSwitched();
+    } catch (err) {
+      toast.error("Couldn't switch branch", {
+        description:
+          err instanceof ApiRequestError && err.status === 409
+            ? "An agent is working in this project. Try again when it finishes."
+            : errorMessage(err),
+      });
+      setSwitching(null);
+    }
+  };
+
+  const needle = query.trim().toLowerCase();
+  const shown = list?.branches.filter((b) => b.name.toLowerCase().includes(needle)) ?? [];
+
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center gap-1 border-b px-1 py-1">
+        <Button variant="ghost" size="icon" className="size-11 md:size-8" onClick={onBack} aria-label="Back to git status">
+          <ChevronLeft />
+        </Button>
+        <span className="truncate text-xs font-medium text-muted-foreground" title={repo.folder}>
+          Switch branch · {folderName(repo.folder)}
+        </span>
+      </div>
+      <div className="border-b p-2">
+        <Input
+          autoFocus
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Filter branches"
+          aria-label="Filter branches"
+          className="h-11 md:h-8"
+        />
+      </div>
+      {repo.dirty && (
+        <p className="border-b px-3 py-2 text-xs text-muted-foreground">
+          {changesLabel(repo.changedFiles)} will come along to the new branch.
+        </p>
+      )}
+      {loadError ? (
+        <p className="px-3 py-3 text-sm text-destructive">{loadError}</p>
+      ) : !list ? (
+        <p className="flex items-center gap-2 px-3 py-3 text-sm text-muted-foreground">
+          <LoaderCircle className="size-4 animate-spin" />
+          Loading branches…
+        </p>
+      ) : shown.length === 0 ? (
+        <p className="px-3 py-3 text-sm text-muted-foreground">No matching branches.</p>
+      ) : (
+        <ul className="flex max-h-72 flex-col overflow-y-auto py-1">
+          {shown.map((branch) => {
+            const current = branch.name === list.current;
+            return (
+              <li key={`${branch.remoteOnly ? "origin/" : ""}${branch.name}`}>
+                <button
+                  type="button"
+                  disabled={switching !== null || current}
+                  onClick={() => void switchTo(branch.name)}
+                  aria-current={current || undefined}
+                  className="flex min-h-11 w-full items-center gap-2 px-3 text-left text-sm hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:outline-none disabled:cursor-default disabled:hover:bg-transparent md:min-h-8"
+                >
+                  {switching === branch.name ? (
+                    <LoaderCircle className="size-3.5 shrink-0 animate-spin" />
+                  ) : (
+                    <Check className={cn("size-3.5 shrink-0", !current && "invisible")} />
+                  )}
+                  <span className={cn("truncate font-mono text-xs", current && "font-semibold")}>{branch.name}</span>
+                  {branch.remoteOnly && (
+                    <span className="ml-auto shrink-0 rounded-full bg-muted px-1.5 text-[11px] text-muted-foreground">
+                      origin
+                    </span>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 

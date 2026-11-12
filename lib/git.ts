@@ -1,11 +1,11 @@
-// Git operations for project folders: clone, status, push to the default branch, open PR/MR.
+// Git operations for project folders: clone, status, branches, push to the default branch, open PR/MR.
 // Every command runs via execFile with an argument array (never a shell) and never prompts.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { childEnv } from "@/lib/child-env";
 import { HttpError } from "@/lib/server/http";
-import type { GitProvider, GitRepoActionResult, GitStatus } from "@/lib/types";
+import type { GitBranches, GitProvider, GitRepoActionResult, GitStatus } from "@/lib/types";
 import { getWorkspaceRoot } from "@/lib/workspace";
 
 const QUICK_TIMEOUT_MS = 15_000;
@@ -89,6 +89,10 @@ function explain(cmd: string, result: CommandResult): string {
       "Git doesn't know who you are. Set user.name and user.email (git config --global).",
     ],
     [/gh auth login|not logged in|glab auth login/i, `"${cmd}" isn't signed in. Run "${cmd} auth login" on the server.`],
+    [
+      /would be overwritten by checkout|commit your changes or stash them/i,
+      "Uncommitted changes would be overwritten by switching. Commit or discard them first.",
+    ],
     [/already exists/i, "That already exists."],
   ];
   for (const [pattern, message] of rules) if (pattern.test(text)) return message;
@@ -297,6 +301,57 @@ export async function gitStatus(folder: string): Promise<GitStatus> {
     behind: behind ?? 0,
     prCliAvailable: cli ? commandExists(cli) : false,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Branches
+
+/** Short names of the refs under `prefix`, most recent commit first. */
+async function refNames(folder: string, prefix: string): Promise<string[]> {
+  const strip = prefix.split("/").length;
+  const result = await git(folder, ["for-each-ref", "--sort=-committerdate", `--format=%(refname:lstrip=${strip})`, prefix]);
+  return result.ok ? result.stdout.split("\n").map((l) => l.trim()).filter(Boolean) : [];
+}
+
+/** Local branches (most recent commit first), then origin branches with no local copy. */
+export async function listBranches(folder: string): Promise<GitBranches> {
+  if (!(await isGitRepo(folder))) throw new HttpError(400, "This project folder is not a git repository.");
+  const [head, localNames, remoteNames] = await Promise.all([
+    git(folder, ["symbolic-ref", "--short", "-q", "HEAD"]),
+    refNames(folder, "refs/heads"),
+    refNames(folder, "refs/remotes/origin"),
+  ]);
+  const known = new Set(localNames);
+  return {
+    folder,
+    current: (head.ok && head.stdout.trim()) || null,
+    branches: [
+      ...localNames.map((name) => ({ name, remoteOnly: false })),
+      ...remoteNames
+        .filter((name) => name !== "HEAD" && !known.has(name))
+        .map((name) => ({ name, remoteOnly: true })),
+    ],
+  };
+}
+
+/**
+ * Check out an existing branch (local, or origin-only → new local tracking branch). Uncommitted
+ * changes carry over unless they conflict, in which case git refuses and nothing changes.
+ */
+export function switchBranch(folder: string, name: string): Promise<GitStatus> {
+  return withFolderLock(folder, async () => {
+    const { current, branches } = await listBranches(folder);
+    const branch = branches.find((b) => b.name === name);
+    if (!branch) throw new HttpError(400, `There is no branch named “${name}”.`);
+    if (name !== current) {
+      const result = await git(
+        folder,
+        branch.remoteOnly ? ["switch", "--track", `origin/${name}`] : ["switch", "--", name],
+      );
+      if (!result.ok) throw new HttpError(400, explain("git", result));
+    }
+    return gitStatus(folder);
+  });
 }
 
 // ---------------------------------------------------------------------------

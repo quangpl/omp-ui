@@ -8,6 +8,7 @@ import type {
   AiStats,
   FsBrowseResult,
   GitActionResult,
+  GitBranches,
   GitStatus,
   Run,
   RunEvent,
@@ -155,6 +156,12 @@ export const api = {
       request<{ path: string; output: string }>("/git/clone", { method: "POST", json: input }),
     /** One entry per project folder (workdir first). */
     status: (boardId: string) => request<GitStatus[]>(`/boards/${boardId}/git`),
+    /** Local + origin-only branches of one project folder. */
+    branches: (boardId: string, folder: string) =>
+      request<GitBranches>(`/boards/${boardId}/git/branches?folder=${encodeURIComponent(folder)}`),
+    /** Check out an existing branch in one project folder; returns its fresh status. */
+    switchBranch: (boardId: string, input: { folder: string; branch: string }) =>
+      request<GitStatus>(`/boards/${boardId}/git/branches`, { method: "POST", json: input }),
     /** Commit the task's changes and push straight to the default branch (all changed folders). */
     push: (taskId: string, input: { message?: string; folders?: string[] } = {}) =>
       request<GitActionResult>(`/tasks/${taskId}/git/push`, { method: "POST", json: input }),

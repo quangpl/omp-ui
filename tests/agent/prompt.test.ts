@@ -134,6 +134,53 @@ describe("buildPrompt (resumed session)", () => {
   });
 });
 
+describe("buildPrompt orchestration keyword", () => {
+  // omp's magic-keyword match: a standalone, lowercase "orchestrate".
+  const KEYWORD = /(?<![\p{L}\p{N}_./\\-])orchestrate(?![\p{L}\p{N}_/\\-])(?!\.[\p{L}\p{N}_-])(?!\()/u;
+
+  it("leaves small tasks to a single agent", () => {
+    expect(buildPrompt(task, board, [], false)).not.toMatch(KEYWORD);
+    expect(buildPrompt(task, board, [comment("Use the brand colors")], true)).not.toMatch(KEYWORD);
+    const routine = { ...task, description: "Fix the typo and make sure all tests pass." };
+    expect(buildPrompt(routine, board, [], false)).not.toMatch(KEYWORD);
+  });
+
+  it("orchestrates a task listing several work items", () => {
+    const big = {
+      ...task,
+      description: "Shop revamp:\n- Cart page\n- [ ] Checkout flow\n1. Order history\n2) Admin dashboard",
+    };
+    const prompt = buildPrompt(big, board, [], false);
+    expect(prompt).toMatch(KEYWORD);
+    expect(prompt).toContain("- This task spans several pieces of work: orchestrate it");
+  });
+
+  it("counts feedback comments as work items", () => {
+    const three = [comment("Rename the button"), comment("Fix the typo"), comment("Add a footer")];
+    expect(buildPrompt(task, board, three, false)).not.toMatch(KEYWORD);
+    expect(buildPrompt(task, board, [...three, comment("Dark mode")], false)).toMatch(KEYWORD);
+    expect(buildPrompt(task, board, [...three, comment("Dark mode")], true)).toMatch(KEYWORD);
+  });
+
+  it("orchestrates explicit broad or parallel asks and long briefs", () => {
+    for (const description of [
+      "Replace moment with date-fns across the codebase.",
+      "Add a loading skeleton to every page.",
+      "Run these in parallel if you can.",
+      "word ".repeat(300),
+    ]) {
+      expect(buildPrompt({ ...task, description }, board, [], false)).toMatch(KEYWORD);
+    }
+  });
+
+  it("keeps orchestrating a large task when resuming without feedback", () => {
+    const big = { ...task, description: "Update all components to the new design system." };
+    const prompt = buildPrompt(big, board, [], true);
+    expect(prompt.startsWith("Continue working on this task")).toBe(true);
+    expect(prompt).toMatch(KEYWORD);
+  });
+});
+
 describe("buildSteerMessage", () => {
   it("wraps the trimmed comment body with steering instructions", () => {
     const message = buildSteerMessage(comment("  Please also handle errors\nfrom the API  "));
