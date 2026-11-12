@@ -2,6 +2,7 @@ import type { CreateTaskInput } from "@/lib/db/types";
 import { publish } from "@/lib/events";
 import { json, readJson, withApi } from "@/lib/server/http";
 import {
+  parseBlockedBy,
   parseDescription,
   parsePosition,
   parseStatus,
@@ -26,6 +27,9 @@ export const POST = withApi<Params>(async ({ req, repo, manager, params }) => {
   if (body.description !== undefined) input.description = parseDescription(body.description);
   if (body.status !== undefined) input.status = parseStatus(body.status);
   if (body.position !== undefined) input.position = parsePosition(body.position);
+  if (body.blockedBy !== undefined) {
+    input.blockedBy = await parseBlockedBy(repo, body.blockedBy, board.id, null);
+  }
   const task = await repo.createTask(input);
   publish({ type: "task.updated", task });
   if (task.status === "in_progress" && board.autoRun) {

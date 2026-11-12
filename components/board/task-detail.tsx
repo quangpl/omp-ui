@@ -4,17 +4,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Ellipsis,
   MessageSquare,
-  Play,
+  Paperclip,
   Rocket,
-  RotateCcw,
-  Square,
   Terminal,
   Trash2,
   TriangleAlert,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,47 +38,56 @@ import {
   DrawerDescription,
   DrawerTitle,
 } from "@/components/ui/drawer";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { Kbd } from "@/components/ui/kbd";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ApiRequestError, api } from "@/lib/api-client";
 import {
   STATUS_LABELS,
-  TASK_STATUSES,
+  type Board,
   type Comment,
   type GitStatus,
   type Run,
   type Task,
-  type TaskStatus,
 } from "@/lib/types";
 import type { BoardStreamListener } from "@/hooks/use-board";
 import { AgentLog } from "@/components/board/agent-log";
 import { StatusDot } from "@/components/board/board-column";
 import { CommentThread } from "@/components/board/comment-thread";
+import { DetailSection } from "@/components/board/detail-section";
 import { errorMessage, formatDateTime, formatRelative } from "@/components/board/format";
-import { ShipActions } from "@/components/board/ship-actions";
+import { quickActionForKey, quickActionsFor, type QuickActionId } from "@/components/board/quick-actions";
+import { ShipActions, useTaskGitStatus } from "@/components/board/ship-actions";
 import { AgentStateBadge } from "@/components/board/task-card";
+import { CreatedByNote, DelegatedCards, DependenciesSection } from "@/components/board/task-relations";
+import { WorkspaceSection } from "@/components/board/task-workspace";
+import { FilesPanel } from "@/components/files-panel";
 
 export interface TaskDetailProps {
   /** Selected card, or null when the panel is closed. */
   taskId: string | null;
   /** Live copy of the card from the board state (preferred over the fetched one). */
   boardTask: Task | undefined;
+  /** The card's board (dedicated workspaces on/off). */
+  board: Board;
+  /** Every card of the board, for dependencies, delegation and agent-to-agent messages. */
+  tasks: Task[];
+  /** Show another card of the board in this panel. */
+  onOpenTask: (taskId: string) => void;
   isMobile: boolean;
   onClose: () => void;
   subscribe: (listener: BoardStreamListener) => () => void;
   upsertTask: (task: Task) => void;
   removeTask: (taskId: string) => void;
-  moveToStatus: (taskId: string, status: TaskStatus) => Promise<void>;
-  /** Git status of the board's folders (null while loading), for the Ship panel. */
+  /** Sends the card back to To do (stopping its agent). Toasts its own errors. */
+  revertToTodo: (taskId: string) => Promise<void>;
+  /**
+   * Git status of the board's folders (null while loading), for the Ship panel. Unused on boards
+   * with dedicated workspaces: those ship from the card's own worktrees.
+   */
   gitStatuses: GitStatus[] | null;
   /** Called after a push/PR so the board can re-read git status. */
   onGitChanged: () => void;
@@ -202,11 +209,14 @@ interface DetailState {
 function TaskDetailBody({
   taskId,
   boardTask,
+  board,
+  tasks,
+  onOpenTask,
   onClose,
   subscribe,
   upsertTask,
   removeTask,
-  moveToStatus,
+  revertToTodo,
   gitStatuses,
   onGitChanged,
 }: TaskDetailProps & { taskId: string }) {
@@ -219,6 +229,14 @@ function TaskDetailBody({
   const deletingRef = useRef(false);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  // Latest R/S/Z handler for the open card (set once the card is loaded).
+  const quickKeyRef = useRef<((event: KeyboardEvent) => void) | null>(null);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => quickKeyRef.current?.(event);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   // Copies received over SSE, with receive time. SSE is authoritative: an API response or fetch
   // that started before a live copy arrived must not overwrite it (e.g. a stale `resolved: false`).
@@ -306,6 +324,12 @@ function TaskDetailBody({
   };
 
   const task = boardTask && detail ? newerTask(detail.task, boardTask) : (boardTask ?? detail?.task);
+  // Dedicated workspaces: ship from the card's worktrees instead of the project folders.
+  const workspaceGit = useTaskGitStatus(
+    taskId,
+    board.worktrees && (task?.status === "done" || shipRequested),
+    task?.agentState,
+  );
 
   if (!task) {
     return (
@@ -330,7 +354,7 @@ function TaskDetailBody({
     : [];
   const runs = detail?.runs ?? [];
 
-  const save = async (patch: { title?: string; description?: string }) => {
+  const save = async (patch: { title?: string; description?: string; blockedBy?: string[] }) => {
     try {
       const updated = await api.tasks.update(task.id, patch);
       upsertTask(updated);
@@ -352,6 +376,31 @@ function TaskDetailBody({
     } finally {
       setAgentBusy(false);
     }
+  };
+
+  const runQuickAction = async (id: QuickActionId) => {
+    if (id !== "revert") return toggleAgent(id !== "stop");
+    setAgentBusy(true);
+    try {
+      await revertToTodo(task.id);
+    } finally {
+      setAgentBusy(false);
+    }
+  };
+
+  const quickActions = quickActionsFor(task);
+  quickKeyRef.current = (event) => {
+    if (event.defaultPrevented || event.repeat || event.isComposing || agentBusy) return;
+    // Only keys pressed inside this panel (not in menus or confirm dialogs portaled above it).
+    const panel = scrollRef.current?.closest("[role='dialog']");
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || !(target === document.body || panel?.contains(target))) return;
+    // Typing in a field never triggers single-key actions.
+    if (target.isContentEditable || target.closest("input, textarea, select, [contenteditable]")) return;
+    const action = quickActionForKey(task, event);
+    if (!action) return;
+    event.preventDefault();
+    void runQuickAction(action.id);
   };
 
   const send = async (body: string) => {
@@ -395,50 +444,42 @@ function TaskDetailBody({
           <p className="mt-0.5 px-1.5 text-xs text-muted-foreground">
             Created <span title={formatDateTime(task.createdAt)}>{formatRelative(task.createdAt)}</span>
           </p>
+          <CreatedByNote task={task} cards={tasks} onOpenCard={onOpenTask} />
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Select
-            value={task.status}
-            onValueChange={(value) => void moveToStatus(task.id, value as TaskStatus)}
+          <span
+            role="status"
+            aria-label="Status"
+            title="Status follows the agent. Use the quick actions to change it."
+            className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-sm"
           >
-            <SelectTrigger
-              aria-label="Status"
-              className="min-w-36 data-[size=default]:h-11 md:data-[size=default]:h-9"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {TASK_STATUSES.map((status) => (
-                <SelectItem key={status} value={status} className="max-md:min-h-11">
-                  <StatusDot status={status} />
-                  {STATUS_LABELS[status]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            <StatusDot status={task.status} />
+            {STATUS_LABELS[task.status]}
+          </span>
           <AgentStateBadge state={task.agentState} />
-          <div className="ml-auto flex items-center gap-1">
-            {active ? (
-              <Button
-                variant="outline"
-                className="h-11 px-4 md:h-9"
-                disabled={agentBusy}
-                onClick={() => void toggleAgent(false)}
-              >
-                <Square className="fill-current" />
-                Stop
-              </Button>
-            ) : (
-              <Button
-                className="h-11 px-4 md:h-9"
-                disabled={agentBusy}
-                onClick={() => void toggleAgent(true)}
-              >
-                <Play className="fill-current" />
-                Run agent
-              </Button>
-            )}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
+            {quickActions.map((action, index) => {
+              const Icon = action.icon;
+              return (
+                <Tooltip key={action.id}>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant={index > 0 ? "ghost" : action.id === "stop" ? "outline" : "default"}
+                      className="h-11 px-4 md:h-9"
+                      disabled={agentBusy}
+                      onClick={() => void runQuickAction(action.id)}
+                    >
+                      <Icon className={action.filled ? "fill-current" : undefined} />
+                      {action.label}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {action.hint} <Kbd>{action.shortcut}</Kbd>
+                  </TooltipContent>
+                </Tooltip>
+              );
+            })}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="size-11 md:size-9" aria-label="More card actions">
@@ -469,40 +510,49 @@ function TaskDetailBody({
         </div>
 
         {task.agentState === "error" && (
-          <Alert variant="destructive" className="has-data-[slot=alert-action]:pr-24">
+          <Alert variant="destructive">
             <TriangleAlert />
             <AlertTitle>Agent failed</AlertTitle>
             <AlertDescription className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words">
               {task.agentError || "The last run ended with an error."}
             </AlertDescription>
-            <AlertAction>
-              <Button
-                size="sm"
-                variant="outline"
-                className="max-md:h-11"
-                disabled={agentBusy}
-                onClick={() => void toggleAgent(true)}
-              >
-                <RotateCcw />
-                Retry
-              </Button>
-            </AlertAction>
           </Alert>
         )}
 
         {shipVisible && (
           <ShipActions
             task={task}
-            statuses={gitStatuses}
+            statuses={board.worktrees ? workspaceGit.statuses : gitStatuses}
+            fromWorkspace={board.worktrees}
             onShipped={(comment) => {
               // Brand-new comment: the SSE copy, if it already arrived, wins.
               applyCommentResponse(comment, Number.NEGATIVE_INFINITY);
+              if (board.worktrees) workspaceGit.refresh();
               onGitChanged();
             }}
           />
         )}
 
         <DescriptionEditor task={task} onSave={(description) => save({ description })} />
+
+        <DependenciesSection
+          task={task}
+          cards={tasks}
+          onOpenCard={onOpenTask}
+          onChange={(blockedBy) => save({ blockedBy })}
+        />
+        <DelegatedCards task={task} cards={tasks} onOpenCard={onOpenTask} />
+        {board.worktrees && <WorkspaceSection task={task} onRemoved={workspaceGit.refresh} />}
+        <DetailSection icon={Paperclip} title="Files">
+          <p className="text-xs text-muted-foreground">
+            The agent can read these files and saves its outputs and screenshots here.
+          </p>
+          <FilesPanel
+            scope="tasks"
+            id={task.id}
+            emptyHint="No files yet. Add files for the agent, or let it save its results here."
+          />
+        </DetailSection>
       </div>
 
       <Tabs value={tab} onValueChange={(value) => setTab(value as "activity" | "log")} className="gap-0">
@@ -529,6 +579,8 @@ function TaskDetailBody({
             <CommentThread
               task={task}
               comments={comments}
+              cards={tasks}
+              onOpenCard={onOpenTask}
               onSend={send}
               onSetResolved={setResolved}
             />

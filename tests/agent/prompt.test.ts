@@ -12,6 +12,7 @@ const board: Board = {
   extraFolders: [],
   model: null,
   autoRun: true,
+  worktrees: false,
   createdAt: NOW,
   updatedAt: NOW,
 };
@@ -27,6 +28,8 @@ const task: Task = {
   agentError: null,
   sessionFile: null,
   lastRunId: null,
+  blockedBy: [],
+  createdByTaskId: null,
   createdAt: NOW,
   updatedAt: NOW,
   commentCount: 0,
@@ -43,6 +46,7 @@ function comment(body: string, overrides: Partial<Comment> = {}): Comment {
     resolved: false,
     resolvedAt: null,
     resolvedByRunId: null,
+    fromTaskId: null,
     createdAt: NOW,
     ...overrides,
   };
@@ -188,5 +192,34 @@ describe("buildSteerMessage", () => {
     expect(message).toContain("New feedback from the user on this task:");
     expect(message).toContain("\n\nPlease also handle errors\nfrom the API\n\n");
     expect(message).toMatch(/mention how you addressed it in your final summary/);
+  });
+
+  it("names the sending card for a message from another card's agent", () => {
+    const message = buildSteerMessage(comment("API is ready", { fromTaskId: "t9" }), "Build the API");
+
+    expect(message).toContain('New message from the agent working on card "Build the API" (t9):');
+  });
+});
+
+describe("buildPrompt run context", () => {
+  const context = {
+    taskFiles: "/data/files/tasks/t1",
+    boardFiles: "/data/files/boards/b1",
+    workspaceBranch: null,
+    browser: "off" as const,
+    senders: { t9: "Build the API" },
+  };
+
+  it("labels feedback sent by another card's agent", () => {
+    const prompt = buildPrompt(task, board, [comment("Endpoint is /cart", { fromTaskId: "t9" })], false, context);
+
+    expect(prompt).toContain('1. [From the agent on card "Build the API" (t9)] Endpoint is /cart');
+  });
+
+  it("mentions the browser only when it is enabled", () => {
+    expect(buildPrompt(task, board, [], false, context)).not.toContain("Browser:");
+    expect(buildPrompt(task, board, [], false, { ...context, browser: "headless" })).toContain(
+      "Screenshots are saved to /data/files/tasks/t1/screenshots",
+    );
   });
 });

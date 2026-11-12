@@ -1,4 +1,17 @@
-import type { Board, Comment, Task } from "@/lib/types";
+import type { Board, BrowserMode, Comment, Task } from "@/lib/types";
+
+/** Per-run facts beyond the card: shared folders, workspace, browser, message senders. */
+export interface RunContext {
+  /** The card's shared files folder. */
+  taskFiles: string;
+  /** The board's shared files folder (all cards). */
+  boardFiles: string;
+  /** Branch of the card's dedicated worktree(s); null when it works in the project folders. */
+  workspaceBranch: string | null;
+  browser: BrowserMode;
+  /** Titles of the cards whose agents sent feedback, by card id. */
+  senders: Record<string, string>;
+}
 
 const SUMMARY_INSTRUCTION =
   "Finish with a concise summary of what you did (this summary is shown to the user on the card): what changed, how you verified it, and anything left for the user to decide.";
@@ -41,7 +54,9 @@ export function buildPrompt(
   board: Board,
   openFeedback: Comment[],
   isResume: boolean,
+  context?: RunContext,
 ): string {
+  const senders = context?.senders ?? {};
   const feedback = openFeedback.filter((c) => c.author === "user" && !c.resolved);
   const folders = projectFolders(board);
   const where = folders ? "this project (any of the folders above)" : `this repository (${board.workdir})`;
@@ -50,7 +65,7 @@ export function buildPrompt(
     return [
       "New feedback on this task:",
       "",
-      numberedFeedback(feedback),
+      numberedFeedback(feedback, senders),
       "",
       ...(folders ? [folders, ""] : []),
       `Address all of the feedback above in ${where}. Make the changes and verify them.`,
@@ -81,7 +96,10 @@ export function buildPrompt(
     ...(folders ? ["", folders] : []),
   ];
   if (feedback.length > 0) {
-    lines.push("", "## Feedback from the user", "", numberedFeedback(feedback));
+    lines.push("", "## Feedback from the user", "", numberedFeedback(feedback, senders));
+  }
+  if (context) {
+    lines.push("", "## Workspace and collaboration", "", ...collaborationLines(task, context));
   }
   lines.push(
     "",
@@ -122,10 +140,12 @@ function projectFolders(board: Board): string | null {
   return `Project folders: primary ${board.workdir}, plus ${extra.join(", ")}. You may read and change files in any of them as the task requires.`;
 }
 
-/** Message steered into a live session when the user comments while the agent runs. */
-export function buildSteerMessage(comment: Comment): string {
+/** Message steered into a live session when the user (or another card's agent) comments while the agent runs. */
+export function buildSteerMessage(comment: Comment, senderTitle?: string | null): string {
   return [
-    "New feedback from the user on this task:",
+    comment.fromTaskId
+      ? `New message from the agent working on card "${senderTitle ?? comment.fromTaskId}" (${comment.fromTaskId}):`
+      : "New feedback from the user on this task:",
     "",
     comment.body.trim(),
     "",
@@ -133,17 +153,38 @@ export function buildSteerMessage(comment: Comment): string {
   ].join("\n");
 }
 
+function collaborationLines(task: Task, context: RunContext): string[] {
+  const lines = [
+    ...(context.workspaceBranch
+      ? [
+          `- You work in a dedicated git worktree on branch \`${context.workspaceBranch}\`, separate from other cards' agents. Stay on this branch; do not push — the user ships it from the card.`,
+        ]
+      : []),
+    `- Files: ${context.taskFiles} holds files shared on this card; read the ones relevant to the task, and save deliverables meant for the user there (reports, exports, screenshots). ${context.boardFiles} is shared by every card of this board; use it to hand files to other cards' agents.`,
+    `- Other agents may be working on other cards of this board at the same time. Your card id is ${task.id}. Board tools: board_list_cards and board_read_card show the cards; board_create_card delegates a clearly separable piece of work to a new card with its own agent (give it a complete brief; prefer doing small work yourself); board_message_card sends a message to another card's agent; board_wait_for_cards waits until cards finish and returns their summaries.`,
+  ];
+  if (context.browser !== "off") {
+    lines.push(
+      `- Browser: you can drive a web browser through the \`browser\` API in eval (open pages, click, fill forms, take screenshots) to check web pages and UIs${context.browser === "relay" ? "; it is the user's own Chrome, so open your own tab and never act on their logged-in accounts beyond the task" : ""}. Screenshots are saved to ${context.taskFiles}/screenshots, where the user can see them.`,
+    );
+  }
+  return lines;
+}
+
 function taskSection(task: Task): string {
   const description = task.description.trim();
   return [`# Task: ${task.title.trim()}`, "", description || "(no description)"].join("\n");
 }
 
-function numberedFeedback(comments: Comment[]): string {
+function numberedFeedback(comments: Comment[], senders: Record<string, string>): string {
   return comments
     .map((c, i) => {
       const [first = "", ...rest] = c.body.trim().split("\n");
+      const from = c.fromTaskId
+        ? `[From the agent on card "${senders[c.fromTaskId] ?? c.fromTaskId}" (${c.fromTaskId})] `
+        : "";
       const indent = " ".repeat(String(i + 1).length + 2);
-      return [`${i + 1}. ${first}`, ...rest.map((line) => (line ? indent + line : line))].join(
+      return [`${i + 1}. ${from}${first}`, ...rest.map((line) => (line ? indent + line : line))].join(
         "\n",
       );
     })

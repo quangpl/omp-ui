@@ -1,11 +1,10 @@
 "use client";
 
-import { type PointerEvent as ReactPointerEvent, useMemo, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, useMemo, useState } from "react";
 import {
   closestCorners,
   DndContext,
   type DragEndEvent,
-  type DragOverEvent,
   DragOverlay,
   type DragStartEvent,
   KeyboardSensor,
@@ -19,6 +18,7 @@ import {
 import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { STATUS_LABELS, TASK_STATUSES, type Task, type TaskStatus } from "@/lib/types";
 import { positionBetween, type TasksByStatus } from "@/hooks/use-board";
+import { useBoardHotkeys } from "@/hooks/use-board-hotkeys";
 import { BoardColumn, COLUMN_DROPPABLE_PREFIX } from "@/components/board/board-column";
 import { BoardContextMenu, type BoardMenuActions } from "@/components/board/card-context-menu";
 import { MobileBoard } from "@/components/board/mobile-board";
@@ -46,8 +46,8 @@ export interface KanbanBoardProps {
   isMobile: boolean;
   /** Card clicks and the desktop right-click menus. */
   menuActions: BoardMenuActions;
-  moveTask: (taskId: string, status: TaskStatus, position: number) => Promise<void>;
-  moveToStatus: (taskId: string, status: TaskStatus) => Promise<void>;
+  /** Reorders a card within its own column; cards never change column by drag. */
+  reorderTask: (taskId: string, position: number) => Promise<void>;
   /** Inline composer submit (desktop To do column). Resolves true when the card was created. */
   onQuickCreate: (title: string) => Promise<boolean>;
   /** Opens the full "New card" form (mobile FAB). */
@@ -65,7 +65,7 @@ export function KanbanBoard(props: KanbanBoardProps) {
         active={props.mobileColumn}
         onActiveChange={props.onMobileColumnChange}
         onOpen={props.menuActions.openCard}
-        moveToStatus={props.moveToStatus}
+        actions={props.menuActions}
         onAdd={props.onAdd}
       />
     );
@@ -75,7 +75,7 @@ export function KanbanBoard(props: KanbanBoardProps) {
       columns={props.columns}
       activity={props.activity}
       menuActions={props.menuActions}
-      moveTask={props.moveTask}
+      reorderTask={props.reorderTask}
       onQuickCreate={props.onQuickCreate}
     />
   );
@@ -85,9 +85,9 @@ function DesktopBoard({
   columns,
   activity,
   menuActions,
-  moveTask,
+  reorderTask,
   onQuickCreate,
-}: Pick<KanbanBoardProps, "columns" | "activity" | "menuActions" | "moveTask" | "onQuickCreate">) {
+}: Pick<KanbanBoardProps, "columns" | "activity" | "menuActions" | "reorderTask" | "onQuickCreate">) {
   const sensors = useSensors(
     useSensor(FinePointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 8 } }),
@@ -112,101 +112,57 @@ function DesktopBoard({
   }, [columns]);
 
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [dragIds, setDragIds] = useState<ColumnIds | null>(null);
-  const dragIdsRef = useRef<ColumnIds | null>(null);
-  const updateDragIds = (next: ColumnIds | null) => {
-    dragIdsRef.current = next;
-    setDragIds(next);
-  };
 
-  const ids = dragIds ?? baseIds;
+  useBoardHotkeys({ ids: baseIds, taskById, dragging: activeId !== null }, menuActions);
 
-  const containerOf = (id: UniqueIdentifier, source: ColumnIds): TaskStatus | null => {
+  const containerOf = (id: UniqueIdentifier): TaskStatus | null => {
     const key = String(id);
     if (key.startsWith(COLUMN_DROPPABLE_PREFIX)) {
       const status = key.slice(COLUMN_DROPPABLE_PREFIX.length) as TaskStatus;
       return TASK_STATUSES.includes(status) ? status : null;
     }
-    return TASK_STATUSES.find((status) => source[status].includes(key)) ?? null;
+    return TASK_STATUSES.find((status) => baseIds[status].includes(key)) ?? null;
   };
 
-  const reset = () => {
-    setActiveId(null);
-    updateDragIds(null);
-  };
-
-  const handleDragStart = ({ active }: DragStartEvent) => {
-    setActiveId(String(active.id));
-    updateDragIds(baseIds);
-  };
-
-  const handleDragOver = ({ active, over }: DragOverEvent) => {
-    const current = dragIdsRef.current;
-    if (!over || !current) return;
-    const from = containerOf(active.id, current);
-    const to = containerOf(over.id, current);
-    if (!from || !to || from === to) return;
-
-    const activeKey = String(active.id);
-    const target = current[to].filter((id) => id !== activeKey);
-    const overIndex = target.indexOf(String(over.id));
-    let insertAt = target.length;
-    if (overIndex >= 0) {
-      const translated = active.rect.current.translated;
-      const below = translated ? translated.top > over.rect.top + over.rect.height / 2 : false;
-      insertAt = overIndex + (below ? 1 : 0);
-    }
-    target.splice(insertAt, 0, activeKey);
-    updateDragIds({
-      ...current,
-      [from]: current[from].filter((id) => id !== activeKey),
-      [to]: target,
-    });
-  };
-
+  // Reorder only: the card stays in its own column (other columns aren't drop targets, see
+  // BoardColumn); a drop anywhere else is ignored.
   const handleDragEnd = ({ active, over }: DragEndEvent) => {
-    const current = dragIdsRef.current;
-    reset();
+    setActiveId(null);
     const task = taskById.get(String(active.id));
-    if (!over || !current || !task) return;
-
-    const status = containerOf(active.id, current);
-    if (!status) return;
-    let list = current[status];
+    if (!over || !task) return;
     const overKey = String(over.id);
-    if (!overKey.startsWith(COLUMN_DROPPABLE_PREFIX) && overKey !== task.id) {
-      const from = list.indexOf(task.id);
-      const to = list.indexOf(overKey);
-      if (from >= 0 && to >= 0) list = arrayMove(list, from, to);
-    }
-    list = list.filter((id) => taskById.has(id));
+    if (overKey === task.id || overKey.startsWith(COLUMN_DROPPABLE_PREFIX)) return;
+    if (containerOf(over.id) !== task.status) return;
 
-    const unchanged =
-      status === task.status &&
-      list.length === baseIds[status].length &&
-      list.every((id, i) => id === baseIds[status][i]);
-    if (unchanged) return;
-
-    const index = list.indexOf(task.id);
-    const prev = index > 0 ? taskById.get(list[index - 1]) : undefined;
-    const next = index >= 0 ? taskById.get(list[index + 1]) : undefined;
-    void moveTask(task.id, status, positionBetween(prev, next));
+    const list = baseIds[task.status];
+    const from = list.indexOf(task.id);
+    const to = list.indexOf(overKey);
+    if (from < 0 || to < 0) return;
+    const ordered = arrayMove(list, from, to);
+    const prev = to > 0 ? taskById.get(ordered[to - 1]) : undefined;
+    const next = taskById.get(ordered[to + 1]);
+    void reorderTask(task.id, positionBetween(prev, next));
   };
 
   const titleOf = (id: UniqueIdentifier) => taskById.get(String(id))?.title ?? "card";
-  const columnLabelOf = (id: UniqueIdentifier) => {
-    const status = containerOf(id, dragIdsRef.current ?? baseIds);
-    return status ? STATUS_LABELS[status] : "";
+  /** "position 2 of 5 in In progress" for a card, or just the column name for its empty area. */
+  const placeOf = (id: UniqueIdentifier) => {
+    const status = containerOf(id);
+    if (!status) return "";
+    const index = baseIds[status].indexOf(String(id));
+    const column = STATUS_LABELS[status];
+    return index >= 0 ? `position ${index + 1} of ${baseIds[status].length} in ${column}` : column;
   };
   const announcements: Announcements = {
-    onDragStart: ({ active }) => `Picked up ${titleOf(active.id)}.`,
+    onDragStart: ({ active }) =>
+      `Picked up ${titleOf(active.id)} at ${placeOf(active.id)}. Use the up and down arrow keys to reorder it within its column.`,
     onDragOver: ({ active, over }) =>
-      over ? `${titleOf(active.id)} is over ${columnLabelOf(over.id)}.` : undefined,
+      over ? `${titleOf(active.id)} is over ${placeOf(over.id)}.` : undefined,
     onDragEnd: ({ active, over }) =>
-      over
-        ? `${titleOf(active.id)} dropped in ${columnLabelOf(over.id)}.`
-        : `${titleOf(active.id)} dropped.`,
-    onDragCancel: ({ active }) => `Moving ${titleOf(active.id)} cancelled.`,
+      over && over.id !== active.id && !String(over.id).startsWith(COLUMN_DROPPABLE_PREFIX)
+        ? `${titleOf(active.id)} moved to ${placeOf(over.id)}.`
+        : `${titleOf(active.id)} dropped; its order is unchanged.`,
+    onDragCancel: ({ active }) => `Reordering ${titleOf(active.id)} cancelled.`,
   };
 
   const activeTask = activeId ? taskById.get(activeId) : undefined;
@@ -215,15 +171,14 @@ function DesktopBoard({
     <DndContext
       sensors={sensors}
       collisionDetection={closestCorners}
-      onDragStart={handleDragStart}
-      onDragOver={handleDragOver}
+      onDragStart={({ active }: DragStartEvent) => setActiveId(String(active.id))}
       onDragEnd={handleDragEnd}
-      onDragCancel={reset}
+      onDragCancel={() => setActiveId(null)}
       accessibility={{
         announcements,
         screenReaderInstructions: {
           draggable:
-            "Press Enter to open the card, or Shift+F10 for its actions menu. Press Space to pick it up, use the arrow keys to move it, then Space again to drop it or Escape to cancel.",
+            "Press Enter to open the card, Shift+F10 for its actions menu, R to start, resume or retry its agent, S to stop it, or Z to revert it to To do. Press Space to pick it up and reorder it within its column with the up and down arrow keys, then Space again to drop it or Escape to cancel.",
         },
       }}
     >
@@ -233,10 +188,7 @@ function DesktopBoard({
             <BoardColumn
               key={status}
               status={status}
-              tasks={ids[status].flatMap((id) => {
-                const task = taskById.get(id);
-                return task ? [task] : [];
-              })}
+              tasks={columns[status]}
               activity={activity}
               menuActions={menuActions}
               onCreate={status === "todo" ? onQuickCreate : undefined}

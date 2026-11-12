@@ -103,6 +103,7 @@ export function runRepositoryContract(
           extraFolders: [],
           model: null,
           autoRun: true,
+          worktrees: false,
         });
         expect(typeof board.id).toBe("string");
         expect(board.id.length).toBeGreaterThan(0);
@@ -111,21 +112,27 @@ export function runRepositoryContract(
         expect(await repo.getBoard(board.id)).toEqual(board);
       });
 
-      it("round-trips explicit fields including extraFolders", async () => {
+      it("round-trips explicit fields including extraFolders and worktrees", async () => {
         const board = await repo.createBoard({
           name: "Full",
           workdir: "/work/front",
           extraFolders: ["/work/back", "/work/shared lib"],
           model: "sonnet",
           autoRun: false,
+          worktrees: true,
         });
 
         expect(board).toMatchObject({
           extraFolders: ["/work/back", "/work/shared lib"],
           model: "sonnet",
           autoRun: false,
+          worktrees: true,
         });
         expect(await repo.getBoard(board.id)).toEqual(board);
+
+        const off = await repo.updateBoard(board.id, { worktrees: false });
+        expect(off).toMatchObject({ worktrees: false, autoRun: false });
+        expect(await repo.getBoard(board.id)).toEqual(off);
       });
 
       it("assigns distinct ids", async () => {
@@ -256,11 +263,37 @@ export function runRepositoryContract(
           agentError: null,
           sessionFile: null,
           lastRunId: null,
+          blockedBy: [],
+          createdByTaskId: null,
           commentCount: 0,
           openCommentCount: 0,
         });
         expect(task.createdAt).toBe(task.updatedAt);
         expect(await repo.getTask(task.id)).toEqual(task);
+      });
+
+      it("round-trips blockedBy and createdByTaskId, and updates blockedBy", async () => {
+        const board = await newBoard();
+        const parent = await repo.createTask({ boardId: board.id, title: "parent" });
+        const dep = await repo.createTask({ boardId: board.id, title: "dep" });
+        const child = await repo.createTask({
+          boardId: board.id,
+          title: "child",
+          blockedBy: [dep.id, parent.id],
+          createdByTaskId: parent.id,
+        });
+
+        expect(child).toMatchObject({ blockedBy: [dep.id, parent.id], createdByTaskId: parent.id });
+        expect(await repo.getTask(child.id)).toEqual(child);
+        expect((await repo.listTasks(board.id)).find((t) => t.id === child.id)).toEqual(child);
+
+        const narrowed = await repo.updateTask(child.id, { blockedBy: [dep.id] });
+        expect(narrowed).toMatchObject({ blockedBy: [dep.id], createdByTaskId: parent.id });
+        expect(await repo.getTask(child.id)).toEqual(narrowed);
+
+        const cleared = await repo.updateTask(child.id, { blockedBy: [] });
+        expect(cleared!.blockedBy).toEqual([]);
+        expect(await repo.getTask(child.id)).toEqual(cleared);
       });
 
       it("appends to the end of each column by default (step 1024, per board and status)", async () => {
@@ -476,6 +509,7 @@ export function runRepositoryContract(
           resolved: false,
           resolvedAt: null,
           resolvedByRunId: null,
+          fromTaskId: null,
         });
         expect(await repo.getComment(user.id)).toEqual(user);
 
@@ -487,6 +521,21 @@ export function runRepositoryContract(
         const explicit = await repo.addComment({ taskId: task.id, author: "user", body: "x", resolved: true });
         expect(explicit.resolved).toBe(true);
         expect(typeof explicit.resolvedAt).toBe("string");
+      });
+
+      it("round-trips fromTaskId for agent-to-agent messages", async () => {
+        const task = await setupTask();
+        const sender = await repo.createTask({ boardId: task.boardId, title: "sender" });
+
+        const message = await repo.addComment({
+          taskId: task.id,
+          author: "user",
+          body: "please review",
+          fromTaskId: sender.id,
+        });
+        expect(message).toMatchObject({ author: "user", resolved: false, fromTaskId: sender.id });
+        expect(await repo.getComment(message.id)).toEqual(message);
+        expect(await repo.listComments(task.id)).toEqual([message]);
       });
 
       it("lists comments oldest first, scoped to the task", async () => {

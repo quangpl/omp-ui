@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import type { Comment, Task } from "@/lib/types";
 import {
   AGENT_TIMEOUT,
+  FAKE_SUCCESS_SUMMARY,
   SLOW_MARKER,
   apiToken,
   cardButton,
@@ -81,24 +82,26 @@ test("two sessions on one board see each other's card changes live", async ({ pa
     await expect(cardButton(todo, title)).toBeVisible();
     await expect(cardButton(column(other, "To do"), title)).toBeVisible();
 
-    // Move in A (status select; Done needs no agent) → B's columns follow, and back again.
+    // A starts the agent from the detail header → the run lands the card in Done and B's columns follow.
     await cardButton(todo, title).click();
     const detail = page.getByRole("dialog", { name: title });
-    const status = detail.getByRole("combobox", { name: "Status" });
-    await status.click();
-    await page.getByRole("option", { name: "Done", exact: true }).click();
-    await expect(cardButton(column(other, "Done"), title)).toBeVisible();
+    const status = detail.getByRole("status", { name: "Status" });
+    await detail.getByRole("button", { name: "Start", exact: true }).click();
+    await expect(status).toHaveText(/Done/, { timeout: AGENT_TIMEOUT });
+    await expect(cardButton(column(other, "Done"), title)).toBeVisible({ timeout: AGENT_TIMEOUT });
     await expect(cardButton(column(other, "To do"), title)).toHaveCount(0);
 
-    await status.click();
-    await page.getByRole("option", { name: "To do", exact: true }).click();
+    // A reverts it → B sees it back in To do.
+    await detail.getByRole("button", { name: "Revert to To do", exact: true }).click();
+    await expect(status).toHaveText(/To do/);
     await expect(cardButton(column(other, "To do"), title)).toBeVisible();
     await expect(cardButton(column(other, "Done"), title)).toHaveCount(0);
 
-    // B opens the same card; A's comment shows up in B's open drawer (To do: no agent starts).
+    // B opens the same card (with the agent's summary); A's comment shows up in B's open drawer
+    // (To do: no agent starts).
     await cardButton(column(other, "To do"), title).click();
     const otherDetail = other.getByRole("dialog", { name: title });
-    await expect(otherDetail.getByText("No activity yet.", { exact: false })).toBeVisible();
+    await expect(otherDetail.getByRole("listitem").filter({ hasText: FAKE_SUCCESS_SUMMARY })).toHaveCount(1);
     await detail.getByRole("textbox", { name: "Feedback", exact: true }).fill(comment);
     await detail.getByRole("button", { name: "Send feedback" }).click();
     const otherComment = otherDetail.getByRole("listitem").filter({ hasText: comment });
@@ -135,7 +138,7 @@ test("the agent log streams output live, then shows the persisted result", async
   const log = detail.getByRole("tabpanel");
   await expect(log.getByText("The agent hasn't run on this card yet", { exact: false })).toBeVisible();
 
-  await detail.getByRole("button", { name: "Run agent" }).click();
+  await detail.getByRole("button", { name: "Start", exact: true }).click();
   const live = detail.getByTestId("live-output");
   await expect(live).toBeVisible({ timeout: AGENT_TIMEOUT });
 
@@ -152,7 +155,7 @@ test("the agent log streams output live, then shows the persisted result", async
 
   // Message end: the live block is replaced by the persisted text and the card is Done.
   await expect(live).toBeHidden({ timeout: AGENT_TIMEOUT });
-  await expect(detail.getByRole("combobox", { name: "Status" })).toHaveText(/Done/, {
+  await expect(detail.getByRole("status", { name: "Status" })).toHaveText(/Done/, {
     timeout: AGENT_TIMEOUT,
   });
   await expect(log.getByText("Succeeded", { exact: true })).toBeVisible();
@@ -196,7 +199,7 @@ test("the Projects page follows counts and the running indicator live", async ({
     // A starts the card.
     await page.goto(`/b/${board.id}?task=${task.id}`);
     const detail = page.getByRole("dialog", { name: task.title });
-    await detail.getByRole("button", { name: "Run agent" }).click();
+    await detail.getByRole("button", { name: "Start", exact: true }).click();
     await expect(detail.getByText("Working", { exact: true })).toBeVisible({ timeout: AGENT_TIMEOUT });
 
     await expect(projectCard).toContainText(/In progress\s*1(?!\d)/);

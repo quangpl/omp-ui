@@ -5,14 +5,14 @@ const STEPS = [
   { title: "Create a project", body: "From a folder on the server or a Git repository." },
   { title: "Add cards", body: "One card per task. Write it like you'd brief a teammate." },
   {
-    title: "Move a card to In progress",
+    title: "Press Start on a card",
     body: "The agent does the work. You review the result and comment if anything needs changing.",
   },
 ];
 
 export function BoardsEmptyState({ onCreate }: { onCreate: () => void }) {
   return (
-    <section className="mx-auto flex max-w-md flex-col items-center px-2 py-10 text-center sm:py-16">
+    <section className="animate-fade-in-soft mx-auto flex max-w-md flex-col items-center px-2 py-10 text-center sm:py-16">
       <div className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
         <FolderPlusIcon className="size-7" />
       </div>

@@ -23,8 +23,8 @@ The `ADMIN_PASSWORD` env var, when set, is applied at server boot (overwrites th
 | --- | --- | --- |
 | GET | `/health` | `{ ok: true, version, db: "sqlite"\|"mongodb"\|"postgres", agents: { running: string[], queued: string[] } }` (no auth) |
 | GET | `/system` | `{ version, db, omp: { path, installed: boolean, version: string\|null } }` |
-| GET | `/settings` | `AppSettings` |
-| PATCH | `/settings` | `Partial<AppSettings>` → `AppSettings` |
+| GET | `/settings` | `AppSettings`: `{ maxConcurrentAgents, ompPath, approvalMode, defaultModel, autoModel, browser }` |
+| PATCH | `/settings` | `Partial<AppSettings>` → `AppSettings`. `autoModel` (boolean, default `true`): on boards without a model, pick a model role per run from the card (see README) |
 
 ## Stats
 
@@ -35,6 +35,12 @@ The `ADMIN_PASSWORD` env var, when set, is applied at server boot (overwrites th
 
 `AiStats.quota` and `AiStats.usage` each carry `available: boolean` and a plain-language `error` (e.g. `"omp is not installed"`, `"omp usage took too long to respond"`); a failing `omp` command never fails the request. Each quota limit has `usedFraction` (0–1), `windowLabel` (e.g. `"5 Hour"`) and `resetsAt` (ISO). Timestamps are ISO strings.
 
+## Dashboard
+
+| Method | Path | Response |
+| --- | --- | --- |
+| GET | `/dashboard` | `Dashboard`: everything the home page shows in one request — `boards` (each `BoardWithCounts` plus `lastActivityAt` and `attentionCount`, most recently active first), `totals` (cards per column across all projects), `attention` (cards that need you: `reason: "failed"` when the agent errored, `"stalled"` when a card sits In progress with no agent working on it; failed first, at most 12), `finished` (Done cards an agent worked on, newest first, at most 6), `queue` (`QueueSnapshot`) and `setup: { hasCard, hasRun, hasDone }` for the getting-started checklist |
+
 ## Boards (projects)
 
 A board is one project. `workdir` is the main folder (omp runs there); `extraFolders` are additional folders that belong to the same project (e.g. separate frontend/backend repos), passed to omp as `--add-dir`.
@@ -42,12 +48,16 @@ A board is one project. `workdir` is the main folder (omp runs there); `extraFol
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
 | GET | `/boards` | – | `BoardWithCounts[]` |
-| POST | `/boards` | `{ name, workdir, extraFolders?, model?, autoRun? }` | `Board` (201) |
+| POST | `/boards` | `{ name, workdir, extraFolders?, model?, autoRun?, worktrees? }` | `Board` (201) |
 | GET | `/boards/:id` | – | `Board` |
-| PATCH | `/boards/:id` | `Partial<{ name, workdir, extraFolders, model, autoRun }>` | `Board` |
-| DELETE | `/boards/:id` | – | `{ ok: true }` (stops its agents, cascades) |
+| PATCH | `/boards/:id` | `Partial<{ name, workdir, extraFolders, model, autoRun, worktrees }>` | `Board` |
+| DELETE | `/boards/:id` | – | `{ ok: true }` (stops its agents, cascades, removes its shared files and every card's files and workspace) |
 | GET | `/boards/:id/tasks` | – | `Task[]` |
-| POST | `/boards/:id/tasks` | `{ title, description?, status?, position? }` | `Task` (201). Creating directly in `in_progress` with autoRun starts the agent |
+| POST | `/boards/:id/tasks` | `{ title, description?, status?, position?, blockedBy? }` | `Task` (201). Creating directly in `in_progress` with autoRun starts the agent |
+| GET | `/boards/:id/files` | – | `SharedFiles` of the board (shared with every card's agent) |
+| POST | `/boards/:id/files?name=<file>` | raw file bytes | `SharedFiles` (201); replaces a file of the same name; max 100 MB |
+| GET | `/boards/:id/files/<name>` | – | the file (`?download=1` forces a download) |
+| DELETE | `/boards/:id/files/<name>` | – | `SharedFiles` |
 | GET | `/boards/:id/git` | – | `GitStatus[]`, one per project folder (`workdir` first, then `extraFolders`) |
 | GET | `/boards/:id/git/branches?folder=<abs>` | – | `GitBranches`: `current` (null when detached) and `branches` – local ones newest first, then `origin` branches without a local copy (`remoteOnly: true`). No fetch; reflects the last fetch. 400 if `folder` is not a project folder or not a git repository |
 | POST | `/boards/:id/git/branches` | `{ folder, branch }` | `GitStatus` of `folder` after checking out `branch` (a `remoteOnly` branch becomes a local branch tracking `origin`). Uncommitted changes carry over; if they would be overwritten git refuses and the 400 says so. 400 if the branch doesn't exist; 409 while any agent on the board is queued or running |
@@ -70,8 +80,8 @@ Git never prompts: commands run without a terminal (`GIT_TERMINAL_PROMPT=0`, SSH
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
 | GET | `/tasks/:id` | – | `{ task: Task, comments: Comment[], runs: Run[] }` |
-| PATCH | `/tasks/:id` | `Partial<{ title, description, status, position }>` | `Task`. Status change triggers agent rules below |
-| DELETE | `/tasks/:id` | – | `{ ok: true }` |
+| PATCH | `/tasks/:id` | `Partial<{ title, description, status, position, blockedBy }>` | `Task`. Status change triggers agent rules below. `blockedBy`: ids of other cards on the same board; 400 for the card itself, unknown cards, or a cycle |
+| DELETE | `/tasks/:id` | – | `{ ok: true }` (also removes the card's files and workspace) |
 | POST | `/tasks/:id/run` | – | `Task` (starts/queues agent, moves to In progress) |
 | POST | `/tasks/:id/stop` | – | `Task` |
 | GET | `/tasks/:id/comments` | – | `Comment[]` |
@@ -82,10 +92,26 @@ Git never prompts: commands run without a terminal (`GIT_TERMINAL_PROMPT=0`, SSH
 | GET | `/runs/:id/events?after=<seq>&limit=<n>` | – | `RunEvent[]` |
 | POST | `/tasks/:id/git/push` | `{ message?, folders? }` | `GitActionResult` – “Push to main” |
 | POST | `/tasks/:id/git/pr` | `{ title?, body?, folders? }` | `GitActionResult` – “Create PR/MR” |
+| GET | `/tasks/:id/git` | – | `GitStatus[]` of the folders the card ships from: its worktrees, else the project folders |
+| GET | `/tasks/:id/workspace` | – | `TaskWorkspace`: one `WorkspaceFolder` per project folder |
+| DELETE | `/tasks/:id/workspace` | – | `TaskWorkspace` after removing the card's worktrees and their local branch; 409 while its agent is queued or running |
+| GET | `/tasks/:id/files` | – | `SharedFiles` of the card |
+| POST | `/tasks/:id/files?name=<file>` | raw file bytes | `SharedFiles` (201); replaces a file of the same name; max 100 MB |
+| GET | `/tasks/:id/files/<name>` | – | the file. Images, PDF and plain text open inline; anything else (HTML, SVG, …) is always a download. `?download=1` forces a download |
+| DELETE | `/tasks/:id/files/<name>` | – | `SharedFiles` |
+
+## Agent queue
+
+| Method | Path | Body | Response |
+| --- | --- | --- | --- |
+| GET | `/queue` | – | `QueueSnapshot`: `limit` (max agents at once), `running` and `queued` (start order) `QueueEntry`s, each with the blocking cards that are not Done yet (`waitingFor`) |
+| POST | `/queue` | `{ taskId, position }` | `QueueSnapshot` after moving a queued card (`position` 0 starts next); 409 if the card is not queued |
+
+Queued cards start in queue order as slots free up, skipping cards whose `blockedBy` cards are not all Done; a card reaching Done re-checks the queue.
 
 ### Git buttons (Push to main / Create PR)
 
-Both act on every project folder (`workdir` + `extraFolders`), or only on `folders` (each must be one of the project folders), one folder at a time. A failure in one folder doesn't stop the others; each folder gets a `GitRepoActionResult`.
+Both act on every project folder (`workdir` + `extraFolders`), or only on `folders` (each must be one of the project folders), one folder at a time. On a board with `worktrees`, the card's existing worktrees stand in for the project folders. A failure in one folder doesn't stop the others; each folder gets a `GitRepoActionResult`.
 
 - 409 while the task's agent is queued or running (“Wait for the agent to finish first.”). 400 if none of the folders is a git repository.
 - Folders that are not git repositories, or have nothing to commit or push, are returned with `skipped: true`.
@@ -96,16 +122,26 @@ Both act on every project folder (`workdir` + `extraFolders`), or only on `folde
 
 ### Agent rules (Trello flow)
 
-- Move a card to **In progress** → omp agent starts in the board `workdir` (when the board has `autoRun`; otherwise press *Run*).
+- Move a card to **In progress** (PATCH `status`) → omp agent starts in the board `workdir` (when the board has `autoRun`; otherwise call `POST /tasks/:id/run`).
 - The web UI creates new cards on `autoRun` boards with `status: "in_progress"`, so they start right away (unless the user opts out). API clients choose `status` themselves; the default is still `todo`.
 - Agent finishes successfully → its final message is posted as an `agent` comment, every open feedback comment included in the run is **auto-resolved**, and the card moves to **Done**.
 - Agent fails → card stays in **In progress** with `agentState: "error"` and an agent comment explaining the error.
 - Comment on a **Done** card (or an idle In-progress card) → card reopens to **In progress** and the agent resumes the same omp session with the feedback.
 - Comment while the agent is **running** → feedback is steered into the live session.
 - Move to **To do**/**Done** manually while running → agent is stopped.
+- The web UI never sets an arbitrary status: cards move by themselves as their agent works, and the only status-affecting controls are its quick actions — **Start**/**Resume**/**Retry** = `POST /tasks/:id/run`, **Stop** = `POST /tasks/:id/stop`, **Revert to To do** = `PATCH /tasks/:id` with `{ status: "todo" }`. Dragging in the UI only reorders within a column (PATCH `position`). API clients can still PATCH any `status`.
+
+### Workspaces, files, browser and collaboration
+
+- **Dedicated workspaces** (`Board.worktrees`): the card's first run creates `DATA_DIR/workspaces/<taskId>/<folder>` as a git worktree of each project folder that is the top of a git repository with a commit, on branch `omp/<title-slug>-<id>`; the agent runs there. Other folders stay shared. Worktrees and the branch are removed with the card.
+- **Files**: every run gets the card's folder (`DATA_DIR/files/tasks/<taskId>`) and the board's (`DATA_DIR/files/boards/<boardId>`) as `--add-dir`. `files.updated` is published on upload/delete and when a run ends.
+- **Browser control** (`AppSettings.browser`: `off` · `headless` · `visible` · `relay`): written to a per-run omp config overlay (`--config`); screenshots go to the card's `screenshots/` folder.
+- **Agent-to-agent tools** (omp RPC host tools, scoped to the card's board): `board_list_cards`, `board_read_card`, `board_create_card` (new card with `createdByTaskId`, its agent starts unless `start: false`; at most 20 per card, 3 levels deep), `board_message_card` (a `Comment` with `author: "user"` and `fromTaskId` = sender, handled like feedback), `board_wait_for_cards` (blocks until the cards are no longer queued/running; the waiting agent's slot is lent to the queue meanwhile).
 
 ## Live updates
 
-`GET /events?boardId=<id>` – Server-Sent Events. Each message: `data: <ServerEvent JSON>\n\n`. Omit `boardId` to receive everything. A `: ping` comment is sent every 20 s.
+`GET /events?boardId=<id>` – Server-Sent Events. Each message: `data: <ServerEvent JSON>\n\n`. Omit `boardId` to receive everything; `queue.updated` is sent on every stream. A `: ping` comment is sent every 20 s.
 
-Types (`Board`, `Task`, `Comment`, `Run`, `RunEvent`, `AppSettings`, `ServerEvent`, `FsBrowseResult`, `GitStatus`, `GitRepoActionResult`, `GitActionResult`) are defined in [`lib/types.ts`](../lib/types.ts).
+Run events of kind `agent` hold a JSON `SubagentSnapshot` (one subagent of an orchestrated run); the latest per `id` is its state. They are written when a subagent appears, changes status or reports, and when the run ends (subagents still working are marked `aborted`). Progress in between is sent only live as `run.agent`.
+
+Types (`Board`, `Task`, `Comment`, `Run`, `RunEvent`, `AppSettings`, `ServerEvent`, `FsBrowseResult`, `GitStatus`, `GitRepoActionResult`, `GitActionResult`, `SharedFiles`, `TaskWorkspace`, `QueueSnapshot`) are defined in [`lib/types.ts`](../lib/types.ts).

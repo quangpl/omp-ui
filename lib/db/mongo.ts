@@ -48,6 +48,8 @@ interface BoardDoc {
   extraFolders?: string[];
   model: string | null;
   autoRun: boolean;
+  /** Missing on documents created before dedicated workspaces. */
+  worktrees?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -63,6 +65,9 @@ interface TaskDoc {
   agentError: string | null;
   sessionFile: string | null;
   lastRunId: string | null;
+  /** Missing on documents created before card dependencies. */
+  blockedBy?: string[];
+  createdByTaskId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -75,6 +80,8 @@ interface CommentDoc {
   resolved: boolean;
   resolvedAt: string | null;
   resolvedByRunId: string | null;
+  /** Missing on documents created before agent-to-agent messages. */
+  fromTaskId?: string | null;
   createdAt: string;
 }
 
@@ -119,6 +126,7 @@ function toBoard(d: BoardDoc): Board {
     extraFolders: parseFolderList(d.extraFolders),
     model: d.model ?? null,
     autoRun: d.autoRun,
+    worktrees: d.worktrees ?? false,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
   };
@@ -136,6 +144,8 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     agentError: d.agentError ?? null,
     sessionFile: d.sessionFile ?? null,
     lastRunId: d.lastRunId ?? null,
+    blockedBy: parseFolderList(d.blockedBy),
+    createdByTaskId: d.createdByTaskId ?? null,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
     commentCount: stats?.total ?? 0,
@@ -152,6 +162,7 @@ function toComment(d: CommentDoc): Comment {
     resolved: d.resolved,
     resolvedAt: d.resolvedAt ?? null,
     resolvedByRunId: d.resolvedByRunId ?? null,
+    fromTaskId: d.fromTaskId ?? null,
     createdAt: d.createdAt,
   };
 }
@@ -189,7 +200,7 @@ function pickDefined<T extends object, K extends keyof T>(patch: T, keys: readon
   return out;
 }
 
-const BOARD_PATCH_KEYS = ["name", "workdir", "extraFolders", "model", "autoRun"] as const satisfies readonly (keyof UpdateBoardInput)[];
+const BOARD_PATCH_KEYS = ["name", "workdir", "extraFolders", "model", "autoRun", "worktrees"] as const satisfies readonly (keyof UpdateBoardInput)[];
 const TASK_PATCH_KEYS = [
   "title",
   "description",
@@ -199,6 +210,7 @@ const TASK_PATCH_KEYS = [
   "agentError",
   "sessionFile",
   "lastRunId",
+  "blockedBy",
 ] as const satisfies readonly (keyof UpdateTaskInput)[];
 const RUN_PATCH_KEYS = ["status", "summary", "error", "endedAt"] as const satisfies readonly (keyof UpdateRunInput)[];
 
@@ -344,6 +356,7 @@ export class MongoRepository implements Repository {
       extraFolders: input.extraFolders ?? [],
       model: input.model ?? null,
       autoRun: input.autoRun ?? true,
+      worktrees: input.worktrees ?? false,
       createdAt: now,
       updatedAt: now,
     };
@@ -419,6 +432,8 @@ export class MongoRepository implements Repository {
       agentError: null,
       sessionFile: null,
       lastRunId: null,
+      blockedBy: input.blockedBy ?? [],
+      createdByTaskId: input.createdByTaskId ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -470,6 +485,7 @@ export class MongoRepository implements Repository {
       resolved,
       resolvedAt: resolved ? now : null,
       resolvedByRunId: null,
+      fromTaskId: input.fromTaskId ?? null,
       createdAt: now,
     };
     await this.comments.insertOne(doc);

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Ellipsis, RotateCcw, Settings2, Trash2 } from "lucide-react";
+import { Ellipsis, Paperclip, RotateCcw, Settings2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -16,6 +16,20 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerHeader,
+  DrawerTitle,
+} from "@/components/ui/drawer";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -26,8 +40,52 @@ import { api } from "@/lib/api-client";
 import type { Board } from "@/lib/types";
 import { errorMessage } from "@/components/board/format";
 import { BoardFormDialog } from "@/components/boards/board-form-dialog";
+import { FilesPanel } from "@/components/files-panel";
+import { useIsMobile } from "@/hooks/use-mobile";
 
-/** Header overflow menu: project settings, refresh, delete. */
+const SHARED_FILES_TITLE = "Shared files";
+const SHARED_FILES_DESCRIPTION = "Files here are shared with every card's agent on this project.";
+
+/** Board-wide shared files: dialog on desktop, bottom sheet on mobile. */
+function SharedFilesDialog({
+  boardId,
+  open,
+  onOpenChange,
+}: {
+  boardId: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const isMobile = useIsMobile();
+  if (isMobile) {
+    return (
+      <Drawer open={open} onOpenChange={onOpenChange}>
+        <DrawerContent className="data-[vaul-drawer-direction=bottom]:max-h-[92dvh]">
+          <DrawerHeader className="text-left">
+            <DrawerTitle className="text-lg">{SHARED_FILES_TITLE}</DrawerTitle>
+            <DrawerDescription>{SHARED_FILES_DESCRIPTION}</DrawerDescription>
+          </DrawerHeader>
+          <div className="overflow-y-auto overscroll-contain px-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
+            {open && <FilesPanel scope="boards" id={boardId} />}
+          </div>
+        </DrawerContent>
+      </Drawer>
+    );
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90dvh] grid-cols-1 overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{SHARED_FILES_TITLE}</DialogTitle>
+          <DialogDescription>{SHARED_FILES_DESCRIPTION}</DialogDescription>
+        </DialogHeader>
+        {open && <FilesPanel scope="boards" id={boardId} className="min-w-0" />}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Header overflow menu: project settings, shared files, refresh, delete. */
 export function BoardMenu({
   board,
   onUpdated,
@@ -44,6 +102,7 @@ export function BoardMenu({
 }) {
   const router = useRouter();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const remove = async () => {
@@ -71,6 +130,10 @@ export function BoardMenu({
             <Settings2 />
             Project settings
           </DropdownMenuItem>
+          <DropdownMenuItem className="max-md:min-h-11" onSelect={() => setFilesOpen(true)}>
+            <Paperclip />
+            Shared files
+          </DropdownMenuItem>
           <DropdownMenuItem className="max-md:min-h-11" onSelect={onRefresh}>
             <RotateCcw />
             Refresh
@@ -93,6 +156,8 @@ export function BoardMenu({
         onOpenChange={setSettingsOpen}
         onSaved={(saved) => onUpdated(saved)}
       />
+
+      <SharedFilesDialog boardId={board.id} open={filesOpen} onOpenChange={setFilesOpen} />
 
       <AlertDialog open={deleteOpen} onOpenChange={(open) => !deleting && setDeleteOpen(open)}>
         <AlertDialogContent>

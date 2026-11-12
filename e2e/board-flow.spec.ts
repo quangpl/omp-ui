@@ -84,10 +84,10 @@ test("card lifecycle: edit, feedback, agent run to Done, log, reopen by comment"
   await expect(firstFeedback.getByText("Open", { exact: true })).toBeVisible();
   await expect(detail.getByRole("textbox", { name: "Feedback", exact: true })).toHaveValue("");
 
-  // Move to In progress with the status select: the fake agent runs and the card lands in Done.
-  const status = detail.getByRole("combobox", { name: "Status" });
-  await status.click();
-  await page.getByRole("option", { name: "In progress" }).click();
+  // Start from the detail header: the card goes In progress, the fake agent runs and lands it in Done.
+  const status = detail.getByRole("status", { name: "Status" });
+  await expect(status).toHaveText(/To do/);
+  await detail.getByRole("button", { name: "Start", exact: true }).click();
   await expect(status).toHaveText(/Done/, { timeout: AGENT_TIMEOUT });
 
   const agentReply = detail.getByRole("listitem").filter({ hasText: FAKE_SUCCESS_SUMMARY });
@@ -137,14 +137,18 @@ test("card lifecycle: edit, feedback, agent run to Done, log, reopen by comment"
   await expect(cardButton(todo, title)).toHaveCount(0);
 });
 
-test("dragging a card to In progress starts the agent and it ends in Done", async ({ page, request }) => {
+test("dragging a card to another column does nothing; its Start quick action runs the agent", async ({
+  page,
+  request,
+}) => {
   const board = await createProjectViaApi(request, uniqueName("drag"));
   const title = uniqueName("Drag me");
   await createTaskViaApi(request, board.id, { title });
 
   await page.goto(`/b/${board.id}`);
-  const card = cardButton(column(page, "To do"), title);
+  const todo = column(page, "To do");
   const target = column(page, "In progress");
+  const card = cardButton(todo, title);
   await expect(card).toBeVisible();
   await expect(target.getByText("Nothing in progress.", { exact: false })).toBeVisible();
 
@@ -159,21 +163,35 @@ test("dragging a card to In progress starts the agent and it ends in Done", asyn
   // Pass the 6px activation distance, then travel to the middle of the In progress column.
   await page.mouse.move(startX + 12, startY + 4, { steps: 4 });
   await page.mouse.move(to.x + to.width / 2, to.y + to.height / 3, { steps: 25 });
-  // While hovering, the placeholder already sits in the target column.
-  await expect(cardButton(target, title)).toBeVisible();
   await page.mouse.up();
 
+  // The agent owns the status: the drop is ignored and the card stays in To do.
+  await expect(card).toBeVisible();
+  await expect(cardButton(target, title)).toHaveCount(0);
+  await expect(target.getByText("Nothing in progress.", { exact: false })).toBeVisible();
+  // Nothing was persisted either, and no agent started.
+  await page.reload();
+  await expect(card).toBeVisible();
+  await expect(cardButton(target, title)).toHaveCount(0);
+  expect(fakeOmpCallsIn(board.workdir).filter((entry) => entry.kind === "argv")).toHaveLength(0);
+
+  // The hover quick action starts the agent; the card moves by itself and ends in Done.
+  await card.hover();
+  await todo.getByRole("button", { name: "Start", exact: true }).click();
   await expect(cardButton(column(page, "Done"), title)).toBeVisible({
     timeout: AGENT_TIMEOUT,
   });
-  await expect(cardButton(column(page, "To do"), title)).toHaveCount(0);
-  await expect(cardButton(column(page, "In progress"), title)).toHaveCount(0);
+  await expect(cardButton(todo, title)).toHaveCount(0);
+  await expect(cardButton(target, title)).toHaveCount(0);
 
   // The run happened in the board's folder.
   expect(fakeOmpCallsIn(board.workdir).filter((entry) => entry.kind === "argv")).toHaveLength(1);
 });
 
-test("Stop aborts a slow run and leaves the card in In progress", async ({ page, request }) => {
+test("Stop aborts a slow run and leaves the card in In progress; Revert moves it back to To do", async ({
+  page,
+  request,
+}) => {
   const board = await createProjectViaApi(request, uniqueName("stop"));
   const task = await createTaskViaApi(request, board.id, {
     title: `${SLOW_MARKER} ${uniqueName("Long job")}`,
@@ -181,10 +199,10 @@ test("Stop aborts a slow run and leaves the card in In progress", async ({ page,
 
   await page.goto(`/b/${board.id}?task=${task.id}`);
   const detail = page.getByRole("dialog", { name: task.title });
-  const status = detail.getByRole("combobox", { name: "Status" });
+  const status = detail.getByRole("status", { name: "Status" });
   await expect(status).toHaveText(/To do/);
 
-  await detail.getByRole("button", { name: "Run agent" }).click();
+  await detail.getByRole("button", { name: "Start", exact: true }).click();
   await expect(detail.getByText("Working", { exact: true })).toBeVisible({ timeout: AGENT_TIMEOUT });
   await expect(status).toHaveText(/In progress/);
 
@@ -195,7 +213,7 @@ test("Stop aborts a slow run and leaves the card in In progress", async ({ page,
   await expect(log.getByText("Running", { exact: true })).toBeVisible();
 
   await detail.getByRole("button", { name: "Stop", exact: true }).click();
-  await expect(detail.getByRole("button", { name: "Run agent" })).toBeVisible({ timeout: AGENT_TIMEOUT });
+  await expect(detail.getByRole("button", { name: "Resume", exact: true })).toBeVisible({ timeout: AGENT_TIMEOUT });
   await expect(detail.getByText("Working", { exact: true })).toHaveCount(0);
   await expect(status).toHaveText(/In progress/);
   await expect(log.getByText("Stopped", { exact: true })).toBeVisible();
@@ -208,8 +226,16 @@ test("Stop aborts a slow run and leaves the card in In progress", async ({ page,
   await detail.getByRole("tab", { name: /Activity/ }).click();
   await expect(detail.getByText(/Fake summary/)).toHaveCount(0);
 
+  // Revert to To do: the stopped card goes back to To do and can be started again.
+  await detail.getByRole("button", { name: "Revert to To do", exact: true }).click();
+  await expect(status).toHaveText(/To do/);
+  await expect(detail.getByRole("button", { name: "Start", exact: true })).toBeVisible();
+  await expect(detail.getByRole("button", { name: "Revert to To do", exact: true })).toHaveCount(0);
+
   await detail.getByRole("button", { name: "Close", exact: true }).click();
-  await expect(cardButton(column(page, "In progress"), task.title)).toBeVisible();
+  await expect(detail).toBeHidden();
+  await expect(cardButton(column(page, "To do"), task.title)).toBeVisible();
+  await expect(cardButton(column(page, "In progress"), task.title)).toHaveCount(0);
 });
 
 test("a failing agent keeps the card in In progress and explains the error", async ({ page, request }) => {
@@ -220,14 +246,14 @@ test("a failing agent keeps the card in In progress and explains the error", asy
 
   await page.goto(`/b/${board.id}?task=${task.id}`);
   const detail = page.getByRole("dialog", { name: task.title });
-  await detail.getByRole("button", { name: "Run agent" }).click();
+  await detail.getByRole("button", { name: "Start", exact: true }).click();
 
   await expect(detail.getByText("Agent failed", { exact: true })).toBeVisible({ timeout: AGENT_TIMEOUT });
   await expect(detail.getByRole("alert").filter({ hasText: "Agent failed" })).toContainText(
     "Fake model error: rate limited",
   );
-  await expect(detail.getByRole("combobox", { name: "Status" })).toHaveText(/In progress/);
-  await expect(detail.getByRole("button", { name: "Retry" })).toBeVisible();
+  await expect(detail.getByRole("status", { name: "Status" })).toHaveText(/In progress/);
+  await expect(detail.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
 
   await detail.getByRole("button", { name: "Close", exact: true }).click();
   const card = cardButton(column(page, "In progress"), task.title);

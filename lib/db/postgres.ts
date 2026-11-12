@@ -51,11 +51,13 @@ CREATE TABLE IF NOT EXISTS boards (
   extra_folders TEXT NOT NULL DEFAULT '[]',
   model TEXT,
   auto_run BOOLEAN NOT NULL DEFAULT TRUE,
+  worktrees BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
--- Migration for databases created before boards had extra folders.
+-- Migrations for databases created before these columns existed.
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS extra_folders TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS worktrees BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_boards_created ON boards (created_at);
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -69,9 +71,13 @@ CREATE TABLE IF NOT EXISTS tasks (
   agent_error TEXT,
   session_file TEXT,
   last_run_id TEXT,
+  blocked_by TEXT NOT NULL DEFAULT '[]',
+  created_by_task_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS blocked_by TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by_task_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_tasks_board_status_position ON tasks (board_id, status, position);
 CREATE INDEX IF NOT EXISTS idx_tasks_agent_state ON tasks (agent_state);
 
@@ -83,8 +89,10 @@ CREATE TABLE IF NOT EXISTS comments (
   resolved BOOLEAN NOT NULL DEFAULT FALSE,
   resolved_at TEXT,
   resolved_by_run_id TEXT,
+  from_task_id TEXT,
   created_at TEXT NOT NULL
 );
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS from_task_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_comments_task ON comments (task_id);
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -127,6 +135,7 @@ interface BoardRow {
   extra_folders: string;
   model: string | null;
   auto_run: boolean;
+  worktrees: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -142,6 +151,8 @@ interface TaskRow {
   agent_error: string | null;
   session_file: string | null;
   last_run_id: string | null;
+  blocked_by: string;
+  created_by_task_id: string | null;
   created_at: string;
   updated_at: string;
   comment_count: number;
@@ -156,6 +167,7 @@ interface CommentRow {
   resolved: boolean;
   resolved_at: string | null;
   resolved_by_run_id: string | null;
+  from_task_id: string | null;
   created_at: string;
 }
 
@@ -188,6 +200,7 @@ function toBoard(r: BoardRow): Board {
     extraFolders: parseFolderList(r.extra_folders),
     model: r.model,
     autoRun: r.auto_run,
+    worktrees: r.worktrees,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -205,6 +218,8 @@ function toTask(r: TaskRow): Task {
     agentError: r.agent_error,
     sessionFile: r.session_file,
     lastRunId: r.last_run_id,
+    blockedBy: parseFolderList(r.blocked_by),
+    createdByTaskId: r.created_by_task_id,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     commentCount: Number(r.comment_count),
@@ -221,6 +236,7 @@ function toComment(r: CommentRow): Comment {
     resolved: r.resolved,
     resolvedAt: r.resolved_at,
     resolvedByRunId: r.resolved_by_run_id,
+    fromTaskId: r.from_task_id,
     createdAt: r.created_at,
   };
 }
@@ -357,8 +373,8 @@ export class PostgresRepository implements Repository {
   async createBoard(input: CreateBoardInput): Promise<Board> {
     const now = nowIso();
     const res = await this.query<BoardRow>(
-      `INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $7) RETURNING *`,
+      `INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8) RETURNING *`,
       [
         newId(),
         input.name,
@@ -366,6 +382,7 @@ export class PostgresRepository implements Repository {
         JSON.stringify(input.extraFolders ?? []),
         input.model ?? null,
         input.autoRun ?? true,
+        input.worktrees ?? false,
         now,
       ],
     );
@@ -379,6 +396,7 @@ export class PostgresRepository implements Repository {
       ["extra_folders", patch.extraFolders === undefined ? undefined : JSON.stringify(patch.extraFolders)],
       ["model", patch.model],
       ["auto_run", patch.autoRun],
+      ["worktrees", patch.worktrees],
       ["updated_at", nowIso()],
     ]);
     const res = await this.query<BoardRow>(
@@ -430,9 +448,19 @@ export class PostgresRepository implements Repository {
         position = max == null ? POSITION_STEP : Number(max) + POSITION_STEP;
       }
       await this.query(
-        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'idle', $7, $7)`,
-        [id, input.boardId, input.title, input.description ?? "", status, position, now],
+        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, blocked_by, created_by_task_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'idle', $7, $8, $9, $9)`,
+        [
+          id,
+          input.boardId,
+          input.title,
+          input.description ?? "",
+          status,
+          position,
+          JSON.stringify(input.blockedBy ?? []),
+          input.createdByTaskId ?? null,
+          now,
+        ],
         client,
       );
     });
@@ -451,6 +479,7 @@ export class PostgresRepository implements Repository {
       ["agent_error", patch.agentError],
       ["session_file", patch.sessionFile],
       ["last_run_id", patch.lastRunId],
+      ["blocked_by", patch.blockedBy === undefined ? undefined : JSON.stringify(patch.blockedBy)],
       ["updated_at", nowIso()],
     ]);
     const res = await this.query(`UPDATE tasks SET ${sql} WHERE id = $${params.length + 1}`, [
@@ -485,9 +514,18 @@ export class PostgresRepository implements Repository {
     const now = nowIso();
     const resolved = input.resolved ?? input.author === "agent";
     const res = await this.query<CommentRow>(
-      `INSERT INTO comments (id, task_id, author, body, resolved, resolved_at, resolved_by_run_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NULL, $7) RETURNING *`,
-      [newId(), input.taskId, input.author, input.body, resolved, resolved ? now : null, now],
+      `INSERT INTO comments (id, task_id, author, body, resolved, resolved_at, resolved_by_run_id, from_task_id, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8) RETURNING *`,
+      [
+        newId(),
+        input.taskId,
+        input.author,
+        input.body,
+        resolved,
+        resolved ? now : null,
+        input.fromTaskId ?? null,
+        now,
+      ],
     );
     return toComment(res.rows[0]);
   }

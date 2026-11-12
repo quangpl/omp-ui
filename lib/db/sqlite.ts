@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS boards (
   extra_folders TEXT NOT NULL DEFAULT '[]',
   model TEXT,
   auto_run INTEGER NOT NULL DEFAULT 1,
+  worktrees INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -71,6 +72,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   agent_error TEXT,
   session_file TEXT,
   last_run_id TEXT,
+  blocked_by TEXT NOT NULL DEFAULT '[]',
+  created_by_task_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -85,6 +88,7 @@ CREATE TABLE IF NOT EXISTS comments (
   resolved INTEGER NOT NULL DEFAULT 0,
   resolved_at TEXT,
   resolved_by_run_id TEXT,
+  from_task_id TEXT,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_comments_task ON comments (task_id);
@@ -142,6 +146,7 @@ function toBoard(r: Row): Board {
     extraFolders: parseFolderList(r.extra_folders),
     model: strOrNull(r.model),
     autoRun: num(r.auto_run) !== 0,
+    worktrees: num(r.worktrees) !== 0,
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
   };
@@ -159,6 +164,8 @@ function toTask(r: Row): Task {
     agentError: strOrNull(r.agent_error),
     sessionFile: strOrNull(r.session_file),
     lastRunId: strOrNull(r.last_run_id),
+    blockedBy: parseFolderList(r.blocked_by),
+    createdByTaskId: strOrNull(r.created_by_task_id),
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
     commentCount: num(r.comment_count),
@@ -175,6 +182,7 @@ function toComment(r: Row): Comment {
     resolved: num(r.resolved) !== 0,
     resolvedAt: strOrNull(r.resolved_at),
     resolvedByRunId: strOrNull(r.resolved_by_run_id),
+    fromTaskId: strOrNull(r.from_task_id),
     createdAt: str(r.created_at),
   };
 }
@@ -253,10 +261,27 @@ export class SqliteRepository implements Repository {
     this.db.exec("PRAGMA foreign_keys = ON");
     this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec(SCHEMA);
-    // Migration for databases created before boards had extra folders.
-    const boardColumns = this.db.prepare("PRAGMA table_info(boards)").all();
-    if (!boardColumns.some((c) => c.name === "extra_folders")) {
-      this.db.exec("ALTER TABLE boards ADD COLUMN extra_folders TEXT NOT NULL DEFAULT '[]'");
+    // Migrations for databases created before these columns existed.
+    this.addMissingColumns("boards", [
+      ["extra_folders", "TEXT NOT NULL DEFAULT '[]'"],
+      ["worktrees", "INTEGER NOT NULL DEFAULT 0"],
+    ]);
+    this.addMissingColumns("tasks", [
+      ["blocked_by", "TEXT NOT NULL DEFAULT '[]'"],
+      ["created_by_task_id", "TEXT"],
+    ]);
+    this.addMissingColumns("comments", [["from_task_id", "TEXT"]]);
+  }
+
+  private addMissingColumns(table: string, columns: [name: string, definition: string][]): void {
+    const existing = new Set(
+      this.db
+        .prepare(`PRAGMA table_info(${table})`)
+        .all()
+        .map((c) => str(c.name)),
+    );
+    for (const [name, definition] of columns) {
+      if (!existing.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
     }
   }
 
@@ -321,11 +346,12 @@ export class SqliteRepository implements Repository {
       extraFolders: input.extraFolders ?? [],
       model: input.model ?? null,
       autoRun: input.autoRun ?? true,
+      worktrees: input.worktrees ?? false,
       createdAt: now,
       updatedAt: now,
     };
     this.stmt(
-      "INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       board.id,
       board.name,
@@ -333,6 +359,7 @@ export class SqliteRepository implements Repository {
       JSON.stringify(board.extraFolders),
       board.model,
       board.autoRun ? 1 : 0,
+      board.worktrees ? 1 : 0,
       board.createdAt,
       board.updatedAt,
     );
@@ -346,6 +373,7 @@ export class SqliteRepository implements Repository {
       ["extra_folders", patch.extraFolders === undefined ? undefined : JSON.stringify(patch.extraFolders)],
       ["model", patch.model],
       ["auto_run", patch.autoRun === undefined ? undefined : patch.autoRun ? 1 : 0],
+      ["worktrees", patch.worktrees === undefined ? undefined : patch.worktrees ? 1 : 0],
       ["updated_at", nowIso()],
     ]);
     const res = this.db.prepare(`UPDATE boards SET ${sql} WHERE id = ?`).run(...params, id);
@@ -393,9 +421,20 @@ export class SqliteRepository implements Repository {
         position = row && row.m != null ? Number(row.m) + POSITION_STEP : POSITION_STEP;
       }
       this.stmt(
-        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?)`,
-      ).run(id, input.boardId, input.title, input.description ?? "", status, position, now, now);
+        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, blocked_by, created_by_task_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?)`,
+      ).run(
+        id,
+        input.boardId,
+        input.title,
+        input.description ?? "",
+        status,
+        position,
+        JSON.stringify(input.blockedBy ?? []),
+        input.createdByTaskId ?? null,
+        now,
+        now,
+      );
     });
     const task = await this.getTask(id);
     if (!task) throw new Error(`Task ${id} vanished after insert`);
@@ -412,6 +451,7 @@ export class SqliteRepository implements Repository {
       ["agent_error", patch.agentError],
       ["session_file", patch.sessionFile],
       ["last_run_id", patch.lastRunId],
+      ["blocked_by", patch.blockedBy === undefined ? undefined : JSON.stringify(patch.blockedBy)],
       ["updated_at", nowIso()],
     ]);
     const res = this.db.prepare(`UPDATE tasks SET ${sql} WHERE id = ?`).run(...params, id);
@@ -448,11 +488,12 @@ export class SqliteRepository implements Repository {
       resolved,
       resolvedAt: resolved ? now : null,
       resolvedByRunId: null,
+      fromTaskId: input.fromTaskId ?? null,
       createdAt: now,
     };
     this.stmt(
-      `INSERT INTO comments (id, task_id, author, body, resolved, resolved_at, resolved_by_run_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO comments (id, task_id, author, body, resolved, resolved_at, resolved_by_run_id, from_task_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       comment.id,
       comment.taskId,
@@ -461,6 +502,7 @@ export class SqliteRepository implements Repository {
       comment.resolved ? 1 : 0,
       comment.resolvedAt,
       comment.resolvedByRunId,
+      comment.fromTaskId,
       comment.createdAt,
     );
     return comment;

@@ -28,6 +28,12 @@ export interface Board {
   model: string | null;
   /** When true, moving a card into "In progress" starts the agent automatically. */
   autoRun: boolean;
+  /**
+   * Dedicated workspaces: each card's agent works in its own git worktree of every project
+   * folder that is a git repository (branch `omp/<card>`), so parallel cards never share a
+   * working tree. Non-git folders stay shared. Default false.
+   */
+  worktrees: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -50,6 +56,13 @@ export interface Task {
   /** omp session JSONL path; reused with `--resume` so feedback keeps context. */
   sessionFile: string | null;
   lastRunId: string | null;
+  /**
+   * Task queue dependencies: ids of cards on the same board that must be Done before this
+   * card's agent starts. While any is not Done, a queued run waits. Default [].
+   */
+  blockedBy: string[];
+  /** Card whose agent created this card (agent-to-agent delegation); null when a person did. */
+  createdByTaskId: string | null;
   createdAt: string;
   updatedAt: string;
   /** Derived: total comments. */
@@ -69,6 +82,11 @@ export interface Comment {
   resolvedAt: string | null;
   /** Run that addressed this feedback. */
   resolvedByRunId: string | null;
+  /**
+   * Agent-to-agent message: id of the card whose agent sent this comment. Such comments have
+   * `author: "user"` (they are feedback the receiving agent must address). Null otherwise.
+   */
+  fromTaskId: string | null;
   createdAt: string;
 }
 
@@ -155,13 +173,30 @@ export interface AppSettings {
   approvalMode: ApprovalMode;
   /** Default `--model` when a board has none. Empty = omp default. */
   defaultModel: string;
+  /**
+   * When a board has no model: pick one per run from the task (omp's `smol` role for small edits,
+   * `slow` for hard problems, `designer` for UI work), falling back to `defaultModel`.
+   */
+  autoModel: boolean;
+  /** What a card's agent may do with a web browser (omp's `browser` tool). */
+  browser: BrowserMode;
 }
+
+/**
+ * Browser control for agents: `off` disables omp's browser; `headless` (default) runs an
+ * invisible browser; `visible` shows its window on the server's desktop; `relay` drives the
+ * server user's own Chrome through omp's browser relay (`omp browser-relay`).
+ */
+export const BROWSER_MODES = ["off", "headless", "visible", "relay"] as const;
+export type BrowserMode = (typeof BROWSER_MODES)[number];
 
 export const DEFAULT_SETTINGS: AppSettings = {
   maxConcurrentAgents: 2,
   ompPath: "omp",
   approvalMode: "yolo",
   defaultModel: "",
+  autoModel: true,
+  browser: "headless",
 };
 
 /** Server-sent events on GET /api/v1/events. */
@@ -175,6 +210,10 @@ export type ServerEvent =
   | { type: "comment.deleted"; commentId: string; taskId: string; boardId: string }
   | { type: "run.updated"; run: Run; boardId: string }
   | { type: "run.event"; event: RunEvent; boardId: string }
+  /** Files of a card (`taskId`) or the board's shared files (`taskId` null) changed. */
+  | { type: "files.updated"; boardId: string; taskId: string | null }
+  /** The agent queue changed: running and queued task ids, queued in start order. */
+  | { type: "queue.updated"; running: string[]; queued: string[] }
   /** Live, NOT persisted: subagent progress between its persisted `agent` events. */
   | { type: "run.agent"; runId: string; taskId: string; boardId: string; agent: SubagentSnapshot }
   /**
@@ -194,6 +233,108 @@ export type ServerEvent =
 
 export interface ApiError {
   error: string;
+}
+
+/** A file shared on a card or on a board (GET /tasks/:id/files, GET /boards/:id/files). */
+export interface SharedFile {
+  /** Path relative to the files folder, `/`-separated (agents may create sub-folders). */
+  name: string;
+  /** Absolute path on the server (what an agent reads/writes). */
+  path: string;
+  size: number;
+  modifiedAt: string;
+}
+
+export interface SharedFiles {
+  /** Absolute folder holding these files; agents get it as an extra workspace directory. */
+  folder: string;
+  files: SharedFile[];
+}
+
+/** One project folder of a card's dedicated workspace (GET /tasks/:id/workspace). */
+export interface WorkspaceFolder {
+  /** Project folder on the board. */
+  source: string;
+  /** Where the agent works: the worktree, or `source` for a non-git (shared) folder. */
+  path: string;
+  /** Worktree branch; null for a shared folder. */
+  branch: string | null;
+  /** True when `path` is a dedicated git worktree. */
+  isolated: boolean;
+  /** False until the card's first run creates the worktree. */
+  exists: boolean;
+}
+
+export interface TaskWorkspace {
+  /** Board has dedicated workspaces on (Board.worktrees). */
+  enabled: boolean;
+  folders: WorkspaceFolder[];
+}
+
+/** One entry of the agent queue (GET /queue). */
+export interface QueueEntry {
+  taskId: string;
+  boardId: string;
+  boardName: string;
+  title: string;
+  state: "running" | "queued";
+  /** Blocking cards (Task.blockedBy) that are not Done yet; the run waits for them. */
+  waitingFor: string[];
+}
+
+export interface QueueSnapshot {
+  /** Max agents running at once. */
+  limit: number;
+  running: QueueEntry[];
+  /** Start order. */
+  queued: QueueEntry[];
+}
+
+/** A card with its project's name, for cross-project lists on the home dashboard. */
+export type DashboardCard = Pick<
+  Task,
+  | "id"
+  | "boardId"
+  | "title"
+  | "status"
+  | "agentState"
+  | "agentError"
+  | "commentCount"
+  | "openCommentCount"
+  | "lastRunId"
+  | "updatedAt"
+> & { boardName: string };
+
+/**
+ * Why a card needs the user: its agent `failed`, or it sits In progress with no agent working
+ * on it (`stalled`: stopped, or never started on a board without auto-run).
+ */
+export type AttentionReason = "failed" | "stalled";
+
+export interface DashboardBoard extends BoardWithCounts {
+  /** Latest card change on the board, else the board's own update. */
+  lastActivityAt: string;
+  /** Cards on this board that need the user (see AttentionReason). */
+  attentionCount: number;
+}
+
+/** GET /dashboard — everything the home page shows, in one request. */
+export interface Dashboard {
+  generatedAt: string;
+  /** Most recently active first. */
+  boards: DashboardBoard[];
+  /** Cards per column across every project. */
+  totals: Record<TaskStatus, number>;
+  /**
+   * Failed first, then stalled; most recently changed first within each. At most 12; the full
+   * count is the sum of `boards[].attentionCount`.
+   */
+  attention: (DashboardCard & { reason: AttentionReason })[];
+  /** Done cards an agent worked on, most recently finished first (at most 6). */
+  finished: DashboardCard[];
+  queue: QueueSnapshot;
+  /** Getting-started progress beyond "has a project". */
+  setup: { hasCard: boolean; hasRun: boolean; hasDone: boolean };
 }
 
 /** GET /fs/browse — server-side folder picker. */

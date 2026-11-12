@@ -62,7 +62,7 @@ type ApiHandler<P> = (ctx: ApiContext<P>) => Response | Promise<Response>;
  * Wrap a route handler: boots the repo, auth (ADMIN_PASSWORD) and agent manager, enforces
  * authentication unless `auth: false`, awaits route params, and maps thrown errors to JSON.
  */
-export function withApi<P extends Record<string, string> = Record<string, never>>(
+export function withApi<P extends Record<string, string | string[]> = Record<string, never>>(
   handler: ApiHandler<P>,
   options: { auth?: boolean } = {},
 ): (req: Request, context?: { params?: Promise<P> }) => Promise<Response> {

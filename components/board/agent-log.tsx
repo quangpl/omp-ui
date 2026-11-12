@@ -1,13 +1,23 @@
 "use client";
 
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, Brain, ChevronRight, LoaderCircle } from "lucide-react";
+import {
+  ArrowDown,
+  Brain,
+  ChevronRight,
+  LoaderCircle,
+  MessageSquareText,
+  Network,
+  TriangleAlert,
+  Wrench,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api-client";
-import type { Run, RunEvent, RunStatus } from "@/lib/types";
+import { SUBAGENT_STATUS_LABELS, parseSubagent } from "@/lib/subagents";
+import type { Run, RunEvent, RunStatus, SubagentSnapshot, SubagentStatus } from "@/lib/types";
 import type { BoardStreamListener } from "@/hooks/use-board";
 import {
   errorMessage,
@@ -17,11 +27,16 @@ import {
   useNow,
 } from "@/components/board/format";
 import { RichText } from "@/components/board/rich-text";
+import { RunAgents, SubagentStatusIcon, subagentAnchor } from "@/components/board/run-agents";
 
 const PAGE_SIZE = 500;
 const COLLAPSED_RUN_COUNT = 3;
 /** Distance from the bottom (px) still treated as "following" the log. */
 const STICK_THRESHOLD = 48;
+/** Consecutive tool calls beyond this fold into one expandable summary line. */
+const TOOL_GROUP_INLINE = 3;
+/** Lines of a folded tool group still shown while it is the live tail. */
+const TOOL_GROUP_TAIL = 2;
 
 const RUN_STATUS: Record<RunStatus, { label: string; className: string }> = {
   running: {
@@ -44,6 +59,12 @@ function RunStatusBadge({ status }: { status: RunStatus }) {
       {label}
     </Badge>
   );
+}
+
+function withoutKey<V>(map: ReadonlyMap<string, V>, key: string): Map<string, V> {
+  const next = new Map(map);
+  next.delete(key);
+  return next;
 }
 
 /** Merge events by `seq`, keeping ascending order and dropping duplicates. */
@@ -100,6 +121,187 @@ function EventLine({ event }: { event: RunEvent }) {
     default:
       return <RichText text={event.text} className="text-sm leading-relaxed" />;
   }
+}
+
+/** "▸ bash: npm test" → "bash". */
+function toolName(text: string): string {
+  return text.replace(/^▸\s*/, "").split(":", 1)[0].trim() || "tool";
+}
+
+/** A failed tool call (`✗ bash failed: …`) belongs with the calls around it. */
+function isToolFailure(event: RunEvent): boolean {
+  return event.kind === "error" && event.text.startsWith("✗ ");
+}
+
+interface SubagentChange {
+  agent: SubagentSnapshot;
+  change: "spawned" | "ended";
+}
+
+type LogBlock =
+  | { type: "event"; key: string; event: RunEvent }
+  | { type: "tools"; key: string; events: RunEvent[] }
+  | { type: "agents"; key: string; changes: SubagentChange[] };
+
+/**
+ * Arrange the raw event stream for reading: runs of tool calls become one group, and subagent
+ * updates become "delegated"/"finished" markers (their full state lives in the Agents section).
+ */
+function arrangeEvents(events: RunEvent[]): LogBlock[] {
+  const blocks: LogBlock[] = [];
+  const seen = new Map<string, SubagentStatus>();
+  for (const event of events) {
+    const last = blocks.at(-1);
+    if (event.kind === "tool" || isToolFailure(event)) {
+      if (last?.type === "tools") last.events.push(event);
+      else blocks.push({ type: "tools", key: `tools-${event.seq}`, events: [event] });
+      continue;
+    }
+    if (event.kind === "agent") {
+      const agent = parseSubagent(event.text);
+      if (!agent) continue;
+      const previous = seen.get(agent.id);
+      seen.set(agent.id, agent.status);
+      const ended = TERMINAL_SUBAGENT.has(agent.status);
+      const change: SubagentChange["change"] | null =
+        previous === undefined ? (ended ? "ended" : "spawned") : ended && previous !== agent.status ? "ended" : null;
+      if (!change) continue;
+      const lastChange = last?.type === "agents" ? last.changes.at(-1) : undefined;
+      if (last?.type === "agents" && lastChange?.change === change) last.changes.push({ agent, change });
+      else blocks.push({ type: "agents", key: `agents-${event.seq}`, changes: [{ agent, change }] });
+      continue;
+    }
+    blocks.push({ type: "event", key: String(event.seq), event });
+  }
+  return blocks;
+}
+
+const TERMINAL_SUBAGENT = new Set<SubagentStatus>(["completed", "failed", "aborted"]);
+
+/** A run of tool calls: inline when short, otherwise one expandable summary line. */
+function ToolGroup({ events, live }: { events: RunEvent[]; live: boolean }) {
+  const [open, setOpen] = useState(false);
+  if (events.length <= TOOL_GROUP_INLINE) {
+    return events.map((event) => <EventLine key={event.seq} event={event} />);
+  }
+  const calls = events.filter((event) => event.kind === "tool");
+  const failures = events.length - calls.length;
+  const byTool = new Map<string, number>();
+  for (const call of calls) byTool.set(toolName(call.text), (byTool.get(toolName(call.text)) ?? 0) + 1);
+  const breakdown = [...byTool].sort((a, b) => b[1] - a[1]);
+  const tail = !open && live ? events.slice(-TOOL_GROUP_TAIL) : [];
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="tool-group">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="relative flex min-h-8 items-center gap-1.5 self-start rounded-md text-left text-xs text-muted-foreground outline-none select-none after:absolute after:-inset-y-1.5 after:inset-x-0 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+      >
+        <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+        <Wrench className="size-3.5 shrink-0" />
+        <span className="font-medium tabular-nums">{calls.length} tool calls</span>
+        <span className="truncate font-mono text-[11px]">
+          {breakdown
+            .slice(0, 4)
+            .map(([name, count]) => (count > 1 ? `${name} ×${count}` : name))
+            .join(" · ")}
+          {breakdown.length > 4 ? " …" : ""}
+        </span>
+        {failures > 0 && <span className="shrink-0 text-destructive tabular-nums">{failures} failed</span>}
+      </button>
+      {open ? (
+        <div className="ml-1.5 flex flex-col gap-1.5 border-l-2 pl-3">
+          {events.map((event) => (
+            <EventLine key={event.seq} event={event} />
+          ))}
+        </div>
+      ) : (
+        tail.length > 0 && (
+          <div className="ml-1.5 flex flex-col gap-1.5 border-l-2 border-dashed pl-3 opacity-80">
+            {tail.map((event) => (
+              <EventLine key={event.seq} event={event} />
+            ))}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+/** "Delegated to …" / "Finished: …" marker; each chip jumps to the agent's card. */
+function SubagentChanges({ runId, changes }: { runId: string; changes: SubagentChange[] }) {
+  const spawned = changes[0].change === "spawned";
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+      <Network className="size-3.5 shrink-0" />
+      <span className="font-medium">{spawned ? "Delegated to" : "Finished"}</span>
+      {changes.map(({ agent }) => (
+        <button
+          key={agent.id}
+          type="button"
+          title={spawned ? (agent.description ?? agent.task) : SUBAGENT_STATUS_LABELS[agent.status]}
+          onClick={() => {
+            const card = document.getElementById(subagentAnchor(runId, agent.id));
+            card?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+            card?.querySelector("details")?.setAttribute("open", "");
+          }}
+          className="inline-flex min-h-7 items-center gap-1 rounded-full border bg-background px-2 font-mono text-[11px] text-foreground/80 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
+        >
+          {spawned ? (
+            <span className="size-1.5 rounded-full bg-sky-500" />
+          ) : (
+            <SubagentStatusIcon status={agent.status} className="size-3" />
+          )}
+          {agent.id}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** At-a-glance shape of the run: how much it did and through what. */
+function RunOverview({ events, agents }: { events: RunEvent[]; agents: number }) {
+  let tools = 0;
+  let messages = 0;
+  let errors = 0;
+  const byTool = new Map<string, number>();
+  for (const event of events) {
+    if (event.kind === "tool") {
+      tools++;
+      const name = toolName(event.text);
+      byTool.set(name, (byTool.get(name) ?? 0) + 1);
+    } else if (event.kind === "text") messages++;
+    else if (event.kind === "error") errors++;
+  }
+  const breakdown = [...byTool]
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => `${name} ×${count}`)
+    .join(", ");
+  const items = [
+    tools > 0 && { icon: Wrench, label: `${tools} tool call${tools === 1 ? "" : "s"}`, title: breakdown },
+    agents > 0 && { icon: Network, label: `${agents} agent${agents === 1 ? "" : "s"}` },
+    messages > 0 && { icon: MessageSquareText, label: `${messages} message${messages === 1 ? "" : "s"}` },
+    errors > 0 && { icon: TriangleAlert, label: `${errors} error${errors === 1 ? "" : "s"}`, danger: true },
+  ].filter((item) => item !== false);
+  if (items.length === 0) return null;
+  return (
+    <ul aria-label="Run overview" className="flex flex-wrap gap-1.5">
+      {items.map(({ icon: Icon, label, title, danger }) => (
+        <li
+          key={label}
+          title={title}
+          className={cn(
+            "inline-flex h-6 items-center gap-1 rounded-md bg-muted px-2 text-[11px] text-muted-foreground tabular-nums",
+            danger && "bg-destructive/10 text-destructive dark:bg-destructive/20",
+          )}
+        >
+          <Icon className="size-3" />
+          {label}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 interface LiveOutput {
@@ -174,11 +376,17 @@ export function AgentLog({
   const [reloadKey, setReloadKey] = useState(0);
   // Streaming preview of the message the agent is writing right now (selected run only).
   const [live, setLive] = useState<LiveOutput | null>(null);
+  // Subagent progress published between their persisted `agent` events (selected run only).
+  const [liveAgents, setLiveAgents] = useState<ReadonlyMap<string, SubagentSnapshot>>(new Map());
   useEffect(() => {
     setLive(null);
+    setLiveAgents(new Map());
   }, [runId]);
   useEffect(() => {
-    if (!running) setLive(null);
+    if (!running) {
+      setLive(null);
+      setLiveAgents(new Map());
+    }
   }, [running]);
   const runIdRef = useRef(runId);
   runIdRef.current = runId;
@@ -224,14 +432,35 @@ export function AgentLog({
         } else if (event.type === "run.event" && event.event.runId === runIdRef.current) {
           const persisted = event.event;
           setEvents((prev) => mergeEvents(prev, [persisted]));
-          // The finished message replaces its streaming preview.
-          setLive((prev) => (prev && prev.kind === persisted.kind ? null : prev));
+          if (persisted.kind === "agent") {
+            // A persisted snapshot is newer than any live one before it.
+            const id = parseSubagent(persisted.text)?.id;
+            if (id) setLiveAgents((prev) => (prev.has(id) ? withoutKey(prev, id) : prev));
+          } else {
+            // The finished message replaces its streaming preview.
+            setLive((prev) => (prev && prev.kind === persisted.kind ? null : prev));
+          }
         } else if (event.type === "run.delta" && event.runId === runIdRef.current) {
           setLive({ kind: event.kind, text: event.text });
+        } else if (event.type === "run.agent" && event.runId === runIdRef.current) {
+          const { agent } = event;
+          setLiveAgents((prev) => new Map(prev).set(agent.id, agent));
         }
       }),
     [subscribe],
   );
+
+  const blocks = useMemo(() => arrangeEvents(events), [events]);
+  const agents = useMemo(() => {
+    const latest = new Map<string, SubagentSnapshot>();
+    for (const event of events) {
+      if (event.kind !== "agent") continue;
+      const agent = parseSubagent(event.text);
+      if (agent) latest.set(agent.id, agent);
+    }
+    for (const [id, agent] of liveAgents) if (latest.has(id)) latest.set(id, agent);
+    return [...latest.values()];
+  }, [events, liveAgents]);
 
   // Follow the tail while the run is live, unless the user scrolled up.
   const endRef = useRef<HTMLDivElement>(null);
@@ -271,12 +500,12 @@ export function AgentLog({
 
   useLayoutEffect(() => {
     if (visible && running && followRef.current) scrollToEnd();
-  }, [events, live, visible, running, scrollToEnd]);
+  }, [blocks, live, visible, running, scrollToEnd]);
 
   if (sortedRuns.length === 0) {
     return (
       <div className="px-4 py-10 text-center text-sm text-muted-foreground">
-        The agent hasn&apos;t run on this card yet. Move it to In progress or press Run agent.
+        The agent hasn&apos;t run on this card yet. Press Start to run it.
       </div>
     );
   }
@@ -348,6 +577,8 @@ export function AgentLog({
             </span>
           </div>
 
+          <RunOverview events={events} agents={agents.length} />
+
           {selectedRun.prompt && (
             <details className="group rounded-lg border text-xs">
               <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1.5 px-3 font-medium text-muted-foreground select-none [&::-webkit-details-marker]:hidden">
@@ -360,6 +591,11 @@ export function AgentLog({
             </details>
           )}
 
+          {agents.length > 0 && <RunAgents runId={selectedRun.id} agents={agents} />}
+
+          {agents.length > 0 && events.length > 0 && (
+            <h3 className="-mb-1 text-xs font-medium text-muted-foreground">Timeline</h3>
+          )}
           <div
             data-vaul-no-drag
             className="flex flex-col gap-2.5"
@@ -372,7 +608,19 @@ export function AgentLog({
             ) : events.length === 0 && !running ? (
               <p className="py-4 text-sm text-muted-foreground">No output recorded for this run.</p>
             ) : (
-              events.map((event) => <EventLine key={event.seq} event={event} />)
+              blocks.map((block, i) =>
+                block.type === "tools" ? (
+                  <ToolGroup
+                    key={block.key}
+                    events={block.events}
+                    live={running && !live && i === blocks.length - 1}
+                  />
+                ) : block.type === "agents" ? (
+                  <SubagentChanges key={block.key} runId={selectedRun.id} changes={block.changes} />
+                ) : (
+                  <EventLine key={block.key} event={block.event} />
+                ),
+              )
             )}
             {running && live && <LiveBlock live={live} />}
             {running && !live && (

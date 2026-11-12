@@ -6,12 +6,15 @@ export const dynamic = "force-dynamic";
 
 const PING_INTERVAL_MS = 20_000;
 
-function eventBoardId(event: ServerEvent): string {
+/** Board an event belongs to; null for global events (sent on every stream). */
+function eventBoardId(event: ServerEvent): string | null {
   switch (event.type) {
     case "board.updated":
       return event.board.id;
     case "task.updated":
       return event.task.boardId;
+    case "queue.updated":
+      return null;
     default:
       return event.boardId;
   }
@@ -35,7 +38,10 @@ export const GET = withApi(({ req }) => {
         }
       };
       const unsubscribe = subscribe((event) => {
-        if (boardId && eventBoardId(event) !== boardId) return;
+        if (boardId) {
+          const eventBoard = eventBoardId(event);
+          if (eventBoard !== null && eventBoard !== boardId) return;
+        }
         send(`data: ${JSON.stringify(event)}\n\n`);
       });
       const ping = setInterval(() => send(": ping\n\n"), PING_INTERVAL_MS);

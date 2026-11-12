@@ -6,16 +6,20 @@ import type {
   BoardWithCounts,
   Comment,
   AiStats,
+  Dashboard,
   FsBrowseResult,
   GitActionResult,
   GitBranches,
   GitStatus,
+  QueueSnapshot,
   Run,
   RunEvent,
   ServerEvent,
   SystemStats,
+  SharedFiles,
   Task,
   TaskStatus,
+  TaskWorkspace,
 } from "@/lib/types";
 
 /** Thrown for non-2xx responses. `status` 401 means the session expired. */
@@ -72,6 +76,8 @@ export interface SystemInfo {
   omp: { path: string; installed: boolean; version: string | null };
 }
 
+export type FileScope = "tasks" | "boards";
+
 export const api = {
   auth: {
     status: () => request<{ configured: boolean; authenticated: boolean }>("/auth/status"),
@@ -84,6 +90,8 @@ export const api = {
       request<TokenResponse>("/auth/password", { method: "POST", json: { current, next } }),
   },
   system: () => request<SystemInfo>("/system"),
+  /** Home dashboard aggregate: projects, totals, cards needing attention, recent results, queue. */
+  dashboard: () => request<Dashboard>("/dashboard"),
   settings: {
     get: () => request<AppSettings>("/settings"),
     update: (patch: Partial<AppSettings>) =>
@@ -98,6 +106,7 @@ export const api = {
       extraFolders?: string[];
       model?: string | null;
       autoRun?: boolean;
+      worktrees?: boolean;
     }) =>
       request<Board>("/boards", { method: "POST", json: input }),
     update: (
@@ -108,6 +117,7 @@ export const api = {
         extraFolders: string[];
         model: string | null;
         autoRun: boolean;
+        worktrees: boolean;
       }>,
     ) => request<Board>(`/boards/${id}`, { method: "PATCH", json: patch }),
     remove: (id: string) => request<{ ok: true }>(`/boards/${id}`, { method: "DELETE" }),
@@ -116,12 +126,24 @@ export const api = {
   tasks: {
     create: (
       boardId: string,
-      input: { title: string; description?: string; status?: TaskStatus; position?: number },
+      input: {
+        title: string;
+        description?: string;
+        status?: TaskStatus;
+        position?: number;
+        blockedBy?: string[];
+      },
     ) => request<Task>(`/boards/${boardId}/tasks`, { method: "POST", json: input }),
     get: (id: string) => request<TaskDetail>(`/tasks/${id}`),
     update: (
       id: string,
-      patch: Partial<{ title: string; description: string; status: TaskStatus; position: number }>,
+      patch: Partial<{
+        title: string;
+        description: string;
+        status: TaskStatus;
+        position: number;
+        blockedBy: string[];
+      }>,
     ) => request<Task>(`/tasks/${id}`, { method: "PATCH", json: patch }),
     remove: (id: string) => request<{ ok: true }>(`/tasks/${id}`, { method: "DELETE" }),
     run: (id: string) => request<Task>(`/tasks/${id}/run`, { method: "POST" }),
@@ -130,6 +152,38 @@ export const api = {
     comment: (id: string, body: string) =>
       request<Comment>(`/tasks/${id}/comments`, { method: "POST", json: { body } }),
     runs: (id: string) => request<Run[]>(`/tasks/${id}/runs`),
+    /** The card's dedicated workspace (worktree per git project folder). */
+    workspace: (id: string) => request<TaskWorkspace>(`/tasks/${id}/workspace`),
+    /** Delete the card's worktrees and their local branches (refused while its agent runs). */
+    removeWorkspace: (id: string) =>
+      request<TaskWorkspace>(`/tasks/${id}/workspace`, { method: "DELETE" }),
+    /** Git status of the folders the card ships from: its worktrees, else the project folders. */
+    git: (id: string) => request<GitStatus[]>(`/tasks/${id}/git`),
+  },
+  /** Files shared on a card (`scope` "tasks") or on a whole board (`scope` "boards"). */
+  files: {
+    list: (scope: FileScope, id: string) => request<SharedFiles>(`/${scope}/${id}/files`),
+    upload: (scope: FileScope, id: string, file: Blob, name: string) =>
+      request<SharedFiles>(`/${scope}/${id}/files?name=${encodeURIComponent(name)}`, {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: file,
+      }),
+    /** Download/preview URL (cookie-authenticated). `download` forces a save dialog. */
+    url: (scope: FileScope, id: string, name: string, download = false) =>
+      `${BASE}/${scope}/${id}/files/${name.split("/").map(encodeURIComponent).join("/")}${download ? "?download=1" : ""}`,
+    remove: (scope: FileScope, id: string, name: string) =>
+      request<SharedFiles>(
+        `/${scope}/${id}/files/${name.split("/").map(encodeURIComponent).join("/")}`,
+        { method: "DELETE" },
+      ),
+  },
+  /** The agent queue across all boards. */
+  queue: {
+    get: () => request<QueueSnapshot>("/queue"),
+    /** Move a queued card to `position` (0 = starts next). */
+    move: (taskId: string, position: number) =>
+      request<QueueSnapshot>("/queue", { method: "POST", json: { taskId, position } }),
   },
   comments: {
     setResolved: (id: string, resolved: boolean) =>

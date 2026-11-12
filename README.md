@@ -1,6 +1,6 @@
 # OMP UI
 
-A self-hosted kanban board for [omp](https://omp.sh/docs) coding agents. Write a card, drag it to **In progress**, and an agent does the work. It runs on your computer or server and works well on your phone.
+A self-hosted kanban board for [omp](https://omp.sh/docs) coding agents. Write a card, press **Start**, and an agent does the work. It runs on your computer or server and works well on your phone.
 
 ## Start in one command
 
@@ -26,12 +26,14 @@ To use **Docker** instead (omp is included in the image, and your sign-ins are s
 ## How it works
 
 1. **Create a project.** Pick its folder, or clone a Git repository. A project can include extra folders too, for example a separate frontend and backend repo.
-2. **Add a card and drag it to *In progress*.** An omp agent starts working on it in your project folders. You can watch it work live.
+2. **Add a card and press *Start*.** An omp agent starts working on it in your project folders, and the card moves to **In progress** by itself. You can watch it work live.
 3. **Comment to give feedback.** The agent picks up your comments, marks them resolved, and moves the card to **Done** when it finishes. Comment on a Done card and the agent reopens it and continues where it left off.
 
 Then ship the result with one tap: **Create PR/MR** or **Push to main**.
 
-**Quick actions.** Press <kbd>N</kbd> on any page to add a card (<kbd>Shift</kbd>+<kbd>N</kbd> always starts its agent); outside a board, the form asks which project. Right-click a card to open it, run or stop its agent, move, duplicate, copy its link, or delete it. Right-click the board background or a project on the Projects page to add a card there.
+**Quick actions.** Cards move between columns by themselves as their agent works; you can't drag them to another column or pick a status (dragging only reorders cards within a column). The only manual controls are the quick actions: **Start**, **Resume** or **Retry** (run the agent), **Stop** (stop it; the card stays where it is) and **Revert to To do** (stop the agent and move the card back to To do). Hover a card, right-click it, open it, or focus it and press <kbd>R</kbd> (Start/Resume/Retry), <kbd>S</kbd> (Stop) or <kbd>Z</kbd> (Revert). On a phone, the card's main button is its first quick action and its **⋯** menu has Revert to To do.
+
+**Shortcuts and menus.** Press <kbd>N</kbd> on any page to add a card (<kbd>Shift</kbd>+<kbd>N</kbd> always starts its agent); outside a board, the form asks which project. Right-click a card to open it, use its quick actions, duplicate it, copy its link, or delete it. Right-click the board background or a project on the Projects page to add a card there.
 
 <details>
 <summary>The details</summary>
@@ -41,13 +43,24 @@ Then ship the result with one tap: **Create PR/MR** or **Push to main**.
 - Each project runs `omp --cwd <primary folder>`, plus `--add-dir <folder>` for every extra folder.
 - An agent's prompt is the card's title and description plus any unresolved comments.
 - For a large card (4+ list items or comments, 300+ words, or asks like "across the codebase", "every page", "in parallel"), the prompt also includes omp's `orchestrate` keyword, so omp splits the work across parallel subagents.
+- **Model per card.** A project with a **Model** set always uses it. Otherwise, with **Auto-select model per card** on (Settings, the default), each run reads the card (or, when resuming, the new comments) and picks one of your omp model roles (`omp config get modelRoles`, read in the project folder): `smol` for small mechanical edits (typos, renames, docs, version bumps) to go fast, `slow` for debugging, concurrency, performance, security, migrations and architecture to get the best answer, `designer` for UI and styling work, and the **Default model** for everything else. When a role is not configured, the default model runs with `--thinking low` (small edits) or `--thinking high` (hard problems). The **Agent log** shows the pick and why.
+- The card's **Agent log** shows how a run works: counts of tool calls, subagents, messages and errors; an **Agents** section with one card per subagent (live status, current tool, tokens and cost; expand for its assignment, recent tool calls, output, and final report or error), sorted so working and failed agents come first; and a timeline where long runs of tool calls fold into one expandable line.
 - A comment on a running card is sent straight into the live session.
 - When a run succeeds, the agent's final message is posted as a comment, the feedback it handled is resolved, and the card moves to Done.
-- If a run fails, the card stays in In progress with the error. Comment, or press **Run**, to retry.
-- If you drag a running card out of In progress, its agent stops.
-- Up to `MAX_AGENTS` agents run at the same time. The others wait in a queue.
+- If a run fails, the card stays in In progress with the error. Comment, or press **Retry**, to try again.
+- **Stop** leaves the card where it is (press **Resume** to continue the same session); **Revert to To do** stops the agent and parks the card in To do.
+- Up to `MAX_AGENTS` agents run at the same time. The others wait in a queue; the queue button in the header shows it, and you can move a card up or make it run next.
+- If the server restarts, cards that were waiting in the queue go back in it and run. A card whose agent was already working is not run again (it may have changed files or pushed): it shows **Interrupted by server restart**, and **Resume** continues the same omp session.
 
 </details>
+
+### Agents working together
+
+- **Dedicated workspaces.** Turn on **Dedicated workspace per card** in a project's settings and each card's agent works in its own git worktree (in `DATA_DIR/workspaces`, on branch `omp/<card>`), so several agents can change the same repo at once. **Create PR/MR** and **Push to main** then ship from that card's worktree. Deleting the card (or **Remove workspace**) removes the worktree and its local branch.
+- **Run after.** In a card, pick the cards it should wait for. Its agent stays queued until all of them are Done.
+- **Files.** Upload files to a card for its agent to read; the agent saves reports, exports and screenshots there for you. **Shared files** in the board menu are shared with every card's agent on the project.
+- **Browser control.** In **Settings → Browser control**, choose whether agents can use a browser: off, headless (default), a visible window on the server, or your own Chrome through `omp browser-relay`. Screenshots land in the card's files.
+- **Agent-to-agent.** Every agent can list and read the project's cards, hand a separate piece of work to a new card (its own agent starts on it), send a message to another card's agent, and wait for cards to finish. A waiting agent lends its slot to the queue. Cards created by an agent show a bot icon and link back; messages from another agent are marked as such in the card's activity.
 
 ## Shipping changes
 
@@ -96,7 +109,7 @@ Run `./omp-ui <command>`. Add `--help` to any command for details.
 | --- | --- |
 | `up` | Set everything up and start it. This is the only command you need. Add `--public` for an internet link and `--port 8080` to change the port |
 | `status` | Check whether it is running and show its links |
-| `stop` / `start` / `restart` | Stop or start the server |
+| `stop` / `start` / `restart` | Stop or start the server. `restart` rebuilds first when the sources changed, so committed changes go live with one command |
 | `logs -f` | Follow the server log |
 | `open` | Open OMP UI in your browser |
 | `passwd` | Change the admin password |

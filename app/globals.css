@@ -151,3 +151,97 @@
     overflow-x: hidden;
   }
 }
+
+/* ── Motion foundation ──────────────────────────────────────────────
+   Shared easing tokens + entry/feedback animations. Everything here
+   respects prefers-reduced-motion (see the override block below). */
+
+:root {
+  --ease-out-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.25, 0.64, 1);
+}
+
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade-in-soft {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* Staggered entry: set `--stagger: <index>` inline for cascade. */
+@utility animate-card-in {
+  animation: card-in 0.3s var(--ease-out-smooth) both;
+  animation-delay: calc(min(var(--stagger, 0), 12) * 28ms);
+}
+
+@utility animate-fade-in-soft {
+  animation: fade-in-soft 0.2s ease-out both;
+}
+
+/* Shimmer sweep for skeletons (GPU-cheap, background-position only). */
+@utility animate-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-muted) 0%,
+    color-mix(in oklch, var(--color-muted), var(--color-foreground) 7%) 50%,
+    var(--color-muted) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.8s linear infinite;
+}
+
+/* Hover elevation for interactive cards; hue-tinted shadow, hover-capable
+   pointers only so touch scrolling never triggers it. */
+@utility card-lift {
+  transition:
+    translate 0.18s var(--ease-out-smooth),
+    box-shadow 0.18s var(--ease-out-smooth),
+    border-color 0.18s ease;
+  @media (hover: hover) {
+    &:hover {
+      translate: 0 -1px;
+      box-shadow:
+        0 4px 14px -6px oklch(0.25 0.03 272 / 0.18),
+        0 1px 3px oklch(0.25 0.03 272 / 0.08);
+    }
+  }
+}
+
+/* Unobtrusive thin scrollbar for board columns / panels. */
+@utility scrollbar-subtle {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--color-foreground) 18%, transparent) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-card-in,
+  .animate-fade-in-soft {
+    animation-duration: 0.01ms;
+    animation-delay: 0ms;
+  }
+  .animate-shimmer {
+    animation: none;
+  }
+}

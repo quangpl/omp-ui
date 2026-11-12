@@ -1,19 +1,41 @@
 "use client";
 
-import type { ReactNode, Ref } from "react";
+import { memo, type ReactNode, type Ref } from "react";
 import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
-import { CircleCheck, Clock, LoaderCircle, MessageSquare, MessageSquareDot, TriangleAlert } from "lucide-react";
+import {
+  Bot,
+  CircleCheck,
+  Clock,
+  Hourglass,
+  LoaderCircle,
+  MessageSquare,
+  MessageSquareDot,
+  TriangleAlert,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useBoardTasks, useQueuePosition } from "@/hooks/use-board";
 import { cn } from "@/lib/utils";
 import type { AgentState, Task } from "@/lib/types";
 
-/** Small pill describing the agent attached to a card; renders nothing when idle. */
-export function AgentStateBadge({ state, className }: { state: AgentState; className?: string }) {
+/**
+ * Small pill describing the agent attached to a card; renders nothing when idle.
+ * `queuePosition` (0-based) turns "Queued" into "#N in queue".
+ */
+export function AgentStateBadge({
+  state,
+  queuePosition = -1,
+  className,
+}: {
+  state: AgentState;
+  queuePosition?: number;
+  className?: string;
+}) {
   if (state === "queued") {
     return (
       <Badge variant="secondary" className={cn("gap-1", className)}>
         <Clock />
-        Queued
+        {queuePosition >= 0 ? `#${queuePosition + 1} in queue` : "Queued"}
       </Badge>
     );
   }
@@ -56,10 +78,12 @@ interface TaskCardProps {
   activity?: string;
   /** Always-visible quick actions row (mobile). */
   actions?: ReactNode;
+  /** Desktop hover/focus quick-action strip, pinned to the card's top-right corner (outside the card button). */
+  quickActions?: ReactNode;
   className?: string;
 }
 
-export function TaskCard({
+export const TaskCard = memo(function TaskCard({
   task,
   onOpen,
   overlay,
@@ -69,6 +93,7 @@ export function TaskCard({
   dragListeners,
   activity,
   actions,
+  quickActions,
   className,
 }: TaskCardProps) {
   const done = task.status === "done";
@@ -76,14 +101,31 @@ export function TaskCard({
     .split("\n")
     .map((line) => line.trim())
     .find(Boolean);
-  const hasMeta = task.agentState !== "idle" || task.commentCount > 0;
+  const queuePosition = useQueuePosition(task.id);
+  // Only cards with dependencies re-render when other cards change.
+  const boardTasks = useBoardTasks(task.blockedBy.length > 0 && !done);
+  const waitingFor = done
+    ? []
+    : task.blockedBy
+        .map((id) => boardTasks.get(id))
+        .filter((blocker): blocker is Task => blocker !== undefined && blocker.status !== "done");
+  const hasMeta =
+    task.agentState !== "idle" ||
+    task.commentCount > 0 ||
+    waitingFor.length > 0 ||
+    Boolean(task.createdByTaskId);
+  const showQuickActions = Boolean(quickActions) && !overlay && !placeholder;
+  // A running/queued card keeps its Stop button visible, so the title must not run under it.
+  const pinnedQuickAction =
+    Boolean(quickActions) && (task.agentState === "running" || task.agentState === "queued");
 
   return (
     <div
       className={cn(
-        "rounded-lg border bg-card text-card-foreground shadow-xs transition-[border-color,box-shadow,opacity]",
+        "group/card relative rounded-lg border bg-card text-card-foreground shadow-xs transition-[border-color,box-shadow,opacity]",
         done && "bg-card/70",
-        overlay && "cursor-grabbing shadow-lg ring-1 ring-foreground/10 rotate-[1.5deg]",
+        !overlay && !placeholder && "card-lift",
+        overlay && "cursor-grabbing shadow-xl ring-1 ring-foreground/10 rotate-[1.5deg] scale-[1.02]",
         placeholder && "opacity-40",
         className,
       )}
@@ -91,6 +133,7 @@ export function TaskCard({
       <button
         ref={activatorRef}
         type="button"
+        data-task-id={overlay ? undefined : task.id}
         {...dragAttributes}
         {...dragListeners}
         onClick={onOpen}
@@ -100,7 +143,7 @@ export function TaskCard({
           actions && "rounded-b-none",
         )}
       >
-        <span className="flex items-start gap-2">
+        <span className={cn("flex items-start gap-2", pinnedQuickAction && "pr-7")}>
           {done && (
             <CircleCheck
               aria-label="Done"
@@ -130,7 +173,38 @@ export function TaskCard({
         )}
         {hasMeta && (
           <span className="mt-2.5 flex flex-wrap items-center gap-1.5">
-            <AgentStateBadge state={task.agentState} />
+            <AgentStateBadge state={task.agentState} queuePosition={queuePosition} />
+            {waitingFor.length > 0 && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex h-5 items-center gap-1 rounded-full bg-violet-500/10 px-1.5 text-[11px] font-medium text-violet-700 dark:bg-violet-400/15 dark:text-violet-300">
+                    <Hourglass className="size-3" aria-hidden />
+                    Waiting for {waitingFor.length}
+                    <span className="sr-only">
+                      {waitingFor.length === 1 ? " card: " : " cards: "}
+                      {waitingFor.map((blocker) => blocker.title).join(", ")}
+                    </span>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className="flex-col items-start gap-0.5">
+                  <span className="font-medium">Starts after:</span>
+                  {waitingFor.map((blocker) => (
+                    <span key={blocker.id} className="max-w-60 truncate">
+                      {blocker.title}
+                    </span>
+                  ))}
+                </TooltipContent>
+              </Tooltip>
+            )}
+            {Boolean(task.createdByTaskId) && (
+              <span
+                className="inline-flex size-5 items-center justify-center rounded-full bg-muted text-muted-foreground"
+                title="Created by an agent"
+              >
+                <Bot className="size-3" aria-hidden />
+                <span className="sr-only">Created by an agent</span>
+              </span>
+            )}
             {task.openCommentCount > 0 && (
               <span
                 className="inline-flex h-5 items-center gap-1 rounded-full bg-amber-500/12 px-1.5 text-[11px] font-medium text-amber-700 dark:text-amber-300"
@@ -154,7 +228,8 @@ export function TaskCard({
           </span>
         )}
       </button>
+      {showQuickActions && quickActions}
       {actions && <div className="flex items-center border-t">{actions}</div>}
     </div>
   );
-}
+});

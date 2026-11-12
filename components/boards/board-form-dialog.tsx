@@ -90,6 +90,7 @@ export function BoardFormDialog({
   const [workdir, setWorkdir] = useState("");
   const [extraFolders, setExtraFolders] = useState<string[]>([]);
   const [model, setModel] = useState("");
+  const [worktrees, setWorktrees] = useState(false);
   const [autoRun, setAutoRun] = useState(true);
   const [showMore, setShowMore] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -107,7 +108,8 @@ export function BoardFormDialog({
     setExtraFolders(board?.extraFolders ?? []);
     setModel(board?.model ?? "");
     setAutoRun(board?.autoRun ?? true);
-    setShowMore(Boolean(board?.model) || board?.autoRun === false);
+    setWorktrees(board?.worktrees ?? false);
+    setShowMore(Boolean(board?.model) || board?.autoRun === false || Boolean(board?.worktrees));
     setBusy(false);
     setSaving(false);
     setError(null);
@@ -145,6 +147,7 @@ export function BoardFormDialog({
       workdir: workdir.trim(),
       extraFolders,
       model: model.trim() || null,
+      worktrees,
       autoRun,
     };
     if (!input.workdir) {
@@ -366,7 +369,7 @@ export function BoardFormDialog({
                 id={`${formId}-model`}
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                placeholder="omp default"
+                placeholder="Auto"
                 autoComplete="off"
                 autoCapitalize="off"
                 autoCorrect="off"
@@ -374,7 +377,10 @@ export function BoardFormDialog({
                 disabled={saving}
                 className="h-11 md:h-9"
               />
-              <p className="text-xs text-muted-foreground">Leave empty to use the default from Settings.</p>
+              <p className="text-xs text-muted-foreground">
+                Leave empty to let each card pick its model (Settings → Auto-select model), or to use the
+                default from Settings.
+              </p>
             </div>
             <label
               htmlFor={`${formId}-autorun`}
@@ -383,13 +389,31 @@ export function BoardFormDialog({
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium">Auto-run</span>
                 <span className="block text-xs text-muted-foreground">
-                  Start the agent when a card is added or moves to In progress
+                  Start the agent as soon as a card is added
                 </span>
               </span>
               <Switch
                 id={`${formId}-autorun`}
                 checked={autoRun}
                 onCheckedChange={setAutoRun}
+                disabled={saving}
+              />
+            </label>
+            <label
+              htmlFor={`${formId}-worktrees`}
+              className="flex min-h-12 cursor-pointer items-center gap-4"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">Dedicated workspace per card</span>
+                <span className="block text-xs text-muted-foreground">
+                  Each card&apos;s agent works in its own git worktree on branch omp/&lt;card&gt;, so
+                  several agents can work on the same repo at once. Ship from the card.
+                </span>
+              </span>
+              <Switch
+                id={`${formId}-worktrees`}
+                checked={worktrees}
+                onCheckedChange={setWorktrees}
                 disabled={saving}
               />
             </label>

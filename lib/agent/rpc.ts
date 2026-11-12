@@ -225,6 +225,11 @@ export class OmpRpcProcess extends EventEmitter<RpcEvents> {
     return promise;
   }
 
+  /** Fire-and-forget frame that gets no `response` (e.g. `host_tool_result`). False once stdin is closed. */
+  notify(frame: object): boolean {
+    return this.write(frame);
+  }
+
   /** Graceful shutdown: end stdin, wait 5s, SIGTERM, wait 3s, SIGKILL. */
   async close(): Promise<void> {
     if (this.exitInfo) return;
