@@ -196,7 +196,11 @@ export function ProjectCard({
                   <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full", DOT_CLASS[status])} />
                   {STATUS_LABELS[status]}
                 </dt>
-                <dd className="text-lg leading-none font-semibold tracking-tight tabular-nums">{board.counts[status]}</dd>
+                <dd className="text-lg leading-none font-semibold tracking-tight tabular-nums">
+                  {board.counts[status]}
+                  {/* Keeps the text unambiguous: "Done 1. 100% success", not "Done1100% success". */}
+                  <span className="sr-only">. </span>
+                </dd>
               </div>
             ))}
           </dl>
