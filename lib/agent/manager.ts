@@ -2,13 +2,22 @@ import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { buildPrompt, buildSteerMessage } from "@/lib/agent/prompt";
 import { OmpRpcProcess, describeExit, type RpcExitInfo, type RpcFrame } from "@/lib/agent/rpc";
+import {
+  describeTaskCall,
+  isTerminalSubagent,
+  lifecyclePatch,
+  mergeSubagent,
+  progressPatch,
+  taskToolPatches,
+  type SubagentPatch,
+} from "@/lib/agent/subagents";
 import type { AgentManager } from "@/lib/agent/types";
 import { childEnv } from "@/lib/child-env";
 import { getRepo } from "@/lib/db";
 import type { Repository, UpdateTaskInput } from "@/lib/db/types";
 import { publish } from "@/lib/events";
 import { getAppSettings } from "@/lib/settings";
-import type { AppSettings, Comment, RunEventKind, Task, TaskStatus } from "@/lib/types";
+import type { AppSettings, Comment, RunEventKind, SubagentSnapshot, Task, TaskStatus } from "@/lib/types";
 
 const READY_TIMEOUT_MS = 60_000;
 const ABORT_TIMEOUT_MS = 5_000;
@@ -21,8 +30,18 @@ const MAX_TOOL_ERROR_TEXT = 1_000;
 /** Live `run.delta` events: at most one per run+kind per window (leading + trailing). */
 const DELTA_THROTTLE_MS = 120;
 const MAX_THINKING_DELTA = 4_000;
+/** Live `run.agent` progress: at most one per subagent per window (status changes are persisted). */
+const SUBAGENT_LIVE_THROTTLE_MS = 300;
 
 type DeltaKind = "text" | "thinking";
+
+/** A subagent of the run: its merged state, and what was last persisted / published live. */
+interface TrackedSubagent {
+  snapshot: SubagentSnapshot;
+  persisted: string;
+  published: string;
+  publishedAt: number;
+}
 
 /** Streaming accumulator for one kind of content of the assistant message in progress. */
 interface DeltaStream {
@@ -59,6 +78,8 @@ interface ActiveRun {
   lastText: string;
   lastStopReason: string | null;
   lastError: string | null;
+  /** Subagents the run delegated to, by id. */
+  subagents: Map<string, TrackedSubagent>;
   /** Serializes startup, frame handling and teardown so persistence stays ordered. */
   chain: Promise<void>;
 }
@@ -135,6 +156,7 @@ class OmpAgentManager implements AgentManager {
               endedAt: nowIso(),
             });
             if (updated) publish({ type: "run.updated", run: updated, boardId: run.boardId });
+            await this.settleSubagents(run);
             await this.event(run, "status", "Stopped by user");
           }
           task = await this.setIdle(taskId);
@@ -267,6 +289,7 @@ class OmpAgentManager implements AgentManager {
       lastText: "",
       lastStopReason: null,
       lastError: null,
+      subagents: new Map(),
       chain: Promise.resolve(),
     };
     this.active.set(taskId, run);
@@ -429,6 +452,11 @@ class OmpAgentManager implements AgentManager {
     }
     if (run.finished) return;
 
+    // Orchestrated runs: stream subagent lifecycle + progress. Older omp versions lack it; the
+    // `task` tool's own updates still carry progress then.
+    await proc.send({ type: "set_subagent_subscription", level: "progress" }).catch(() => undefined);
+    if (run.finished) return;
+
     run.promptSent = true;
     const response = await proc.send({ id: run.promptId, type: "prompt", message: prompt });
     if (run.finished) return;
@@ -466,7 +494,11 @@ class OmpAgentManager implements AgentManager {
       case "tool_execution_start":
         await this.event(run, "tool", describeToolStart(frame));
         break;
+      case "tool_execution_update":
+        for (const patch of taskToolPatches(frame)) await this.trackSubagent(run, patch);
+        break;
       case "tool_execution_end":
+        for (const patch of taskToolPatches(frame)) await this.trackSubagent(run, patch);
         if (frame.isError === true) {
           const name = asString(frame.toolName) ?? "tool";
           const detail = truncate(oneLineTrim(resultText(frame.result)), MAX_TOOL_ERROR_TEXT);
@@ -532,6 +564,16 @@ class OmpAgentManager implements AgentManager {
           `Extension error${asString(frame.extensionPath) ? ` (${asString(frame.extensionPath)})` : ""}: ${asString(frame.error) ?? "unknown error"}`,
         );
         break;
+      case "subagent_lifecycle": {
+        const patch = lifecyclePatch(frame.payload);
+        if (patch) await this.trackSubagent(run, patch);
+        break;
+      }
+      case "subagent_progress": {
+        const patch = isObject(frame.payload) ? progressPatch(frame.payload.progress) : null;
+        if (patch) await this.trackSubagent(run, patch);
+        break;
+      }
       case "rpc_frame_error":
         await this.onTransportError(
           run,
@@ -722,6 +764,7 @@ class OmpAgentManager implements AgentManager {
           endedAt: nowIso(),
         });
         if (updated) publish({ type: "run.updated", run: updated, boardId: run.boardId });
+        await this.settleSubagents(run);
         await this.event(run, "status", "Agent finished");
       }
 
@@ -766,6 +809,7 @@ class OmpAgentManager implements AgentManager {
           endedAt: nowIso(),
         });
         if (updated) publish({ type: "run.updated", run: updated, boardId: run.boardId });
+        await this.settleSubagents(run);
         await this.event(run, "error", message);
       }
       const task = await repo.updateTask(run.taskId, { agentState: "error", agentError: message });
@@ -801,6 +845,60 @@ class OmpAgentManager implements AgentManager {
       publish({ type: "run.event", event, boardId: run.boardId });
     } catch (err) {
       console.error(`[agent] failed to store a run event for task ${run.taskId}:`, err);
+    }
+  }
+
+  /**
+   * Merge a subagent update. A new subagent, a status change or its final report is persisted
+   * as an `agent` run event; anything else (tool calls, token counts) is only published live.
+   */
+  private async trackSubagent(run: ActiveRun, patch: SubagentPatch): Promise<void> {
+    if (run.finished || !run.runId) return;
+    const tracked = run.subagents.get(patch.id);
+    const snapshot = mergeSubagent(tracked?.snapshot, patch);
+    if (!tracked) {
+      const entry: TrackedSubagent = { snapshot, persisted: "", published: "", publishedAt: 0 };
+      run.subagents.set(patch.id, entry);
+      await this.persistSubagent(run, entry);
+      return;
+    }
+    const milestone =
+      snapshot.status !== tracked.snapshot.status ||
+      snapshot.output !== tracked.snapshot.output ||
+      snapshot.error !== tracked.snapshot.error;
+    tracked.snapshot = snapshot;
+    if (milestone) {
+      await this.persistSubagent(run, tracked);
+      return;
+    }
+    const json = JSON.stringify(snapshot);
+    const now = Date.now();
+    if (json === tracked.published || now - tracked.publishedAt < SUBAGENT_LIVE_THROTTLE_MS) return;
+    tracked.published = json;
+    tracked.publishedAt = now;
+    publish({ type: "run.agent", runId: run.runId, taskId: run.taskId, boardId: run.boardId, agent: snapshot });
+  }
+
+  private async persistSubagent(run: ActiveRun, tracked: TrackedSubagent): Promise<void> {
+    const json = JSON.stringify(tracked.snapshot);
+    if (json === tracked.persisted) return;
+    tracked.persisted = json;
+    tracked.published = json;
+    await this.event(run, "agent", json);
+  }
+
+  /** Run ended: persist every subagent's final state; any still working died with the process. */
+  private async settleSubagents(run: ActiveRun): Promise<void> {
+    for (const tracked of run.subagents.values()) {
+      if (!isTerminalSubagent(tracked.snapshot.status)) {
+        tracked.snapshot = mergeSubagent(tracked.snapshot, {
+          id: tracked.snapshot.id,
+          status: "aborted",
+          currentTool: null,
+          currentToolDetail: null,
+        });
+      }
+      await this.persistSubagent(run, tracked);
     }
   }
 
@@ -872,10 +970,11 @@ function assistantError(message: Json): string | undefined {
 function describeToolStart(frame: RpcFrame): string {
   const name = asString(frame.toolName) ?? "tool";
   const args = isObject(frame.args) ? frame.args : undefined;
+  const intent = asString(frame.intent) ?? asString(args?.intent);
   const detail =
+    (name === "task" ? describeTaskCall(args, intent) || undefined : undefined) ??
     asString(args?.command) ??
-    asString(frame.intent) ??
-    asString(args?.intent) ??
+    intent ??
     asString(args?.path) ??
     (args && Object.keys(args).length > 0 ? JSON.stringify(args) : "");
   const line = oneLineTrim(detail);

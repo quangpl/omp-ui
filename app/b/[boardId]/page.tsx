@@ -45,8 +45,8 @@ function BoardScreen() {
   const controller = useBoard(boardId);
   const { board, columns, tasks, loading, error, subscribe } = controller;
   const git = useGitStatus(boardId, subscribe);
-  /** Open "New card" form; `start` presets "Start agent now". */
-  const [newCard, setNewCard] = useState<{ start: boolean } | null>(null);
+  /** Open "New card" form; `start` presets "Start agent now" (else the board's auto-run). */
+  const [newCard, setNewCard] = useState<{ start?: boolean } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deleting, setDeleting] = useState<Task | null>(null);
   const [mobileColumn, setMobileColumn] = useState<TaskStatus>("todo");
@@ -92,7 +92,7 @@ function BoardScreen() {
   };
 
   // `N` / `Shift+N` and every "New card…" menu item land here while this board is open.
-  useNewCardTarget(boardId, ({ start }) => setNewCard({ start: Boolean(start) }));
+  useNewCardTarget(boardId, ({ start }) => setNewCard({ start }));
 
   const { createTask, moveToStatus, runAgent, stopAgent, reload } = controller;
   const refreshGit = git.refresh;
@@ -104,7 +104,12 @@ function BoardScreen() {
       runAgent,
       stopAgent,
       duplicate: async (task) => {
-        const copy = await createTask({ title: `${task.title} (copy)`, description: task.description });
+        // A copy waits in To do even on auto-run boards: re-running a finished card is opt-in.
+        const copy = await createTask({
+          title: `${task.title} (copy)`,
+          description: task.description,
+          start: false,
+        });
         if (copy) setMobileColumn(copy.status);
       },
       requestDelete: setDeleting,
@@ -151,7 +156,7 @@ function BoardScreen() {
             {/* Phones use the thumb-reachable floating button instead. */}
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button className="h-9 max-md:hidden" onClick={() => setNewCard({ start: false })}>
+                <Button className="h-9 max-md:hidden" onClick={() => setNewCard({})}>
                   <Plus />
                   Add card
                 </Button>
@@ -179,7 +184,7 @@ function BoardScreen() {
           moveTask={controller.moveTask}
           moveToStatus={controller.moveToStatus}
           onQuickCreate={async (title) => (await controller.createTask({ title })) !== null}
-          onAdd={() => setNewCard({ start: false })}
+          onAdd={() => setNewCard({})}
           mobileColumn={mobileColumn}
           onMobileColumnChange={setMobileColumn}
         />
@@ -189,7 +194,7 @@ function BoardScreen() {
         open={newCard !== null}
         onOpenChange={(open) => !open && setNewCard(null)}
         isMobile={isMobile}
-        defaultStart={newCard?.start}
+        defaultStart={newCard?.start ?? board.autoRun}
         onCreate={create}
       />
 

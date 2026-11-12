@@ -19,15 +19,12 @@ test.beforeEach(async ({ page }) => {
   await login(page);
 });
 
-test("card lifecycle: compose, edit, feedback, agent run to Done, log, reopen by comment", async ({
+test("a card added in To do on an auto-run board moves to In progress and its agent runs", async ({
   page,
   request,
 }) => {
-  test.setTimeout(120_000);
-  const board = await createProjectViaApi(request, uniqueName("lifecycle"));
-  const title = uniqueName("Add a health check");
-  const feedback = "Please also return the version";
-  const followUp = "Now add a test for it too";
+  const board = await createProjectViaApi(request, uniqueName("autostart"));
+  const title = uniqueName("Add a status page");
 
   await page.goto(`/b/${board.id}`);
   const todo = column(page, "To do");
@@ -38,10 +35,30 @@ test("card lifecycle: compose, edit, feedback, agent run to Done, log, reopen by
   const composer = todo.getByLabel("Card title", { exact: true });
   await composer.fill(title);
   await composer.press("Enter");
-  await expect(cardButton(todo, title)).toBeVisible();
   await expect(composer).toHaveValue("");
   await composer.press("Escape");
   await expect(todo.getByRole("button", { name: "Add a card" })).toBeVisible();
+
+  // The card skips To do: its agent starts right away and the fake run lands it in Done.
+  await expect(cardButton(column(page, "Done"), title)).toBeVisible({ timeout: AGENT_TIMEOUT });
+  await expect(cardButton(todo, title)).toHaveCount(0);
+  await expect(todo.getByText("No cards yet.")).toBeVisible();
+});
+
+test("card lifecycle: edit, feedback, agent run to Done, log, reopen by comment", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(120_000);
+  const board = await createProjectViaApi(request, uniqueName("lifecycle"));
+  const title = uniqueName("Add a health check");
+  const feedback = "Please also return the version";
+  const followUp = "Now add a test for it too";
+  await createTaskViaApi(request, board.id, { title });
+
+  await page.goto(`/b/${board.id}`);
+  const todo = column(page, "To do");
+  await expect(cardButton(todo, title)).toBeVisible();
 
   // Open the detail panel: the URL carries the card id.
   await cardButton(todo, title).click();

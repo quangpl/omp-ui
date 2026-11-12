@@ -383,7 +383,7 @@ export function BoardFormDialog({
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium">Auto-run</span>
                 <span className="block text-xs text-muted-foreground">
-                  Start the agent when a card moves to In progress
+                  Start the agent when a card is added or moves to In progress
                 </span>
               </span>
               <Switch

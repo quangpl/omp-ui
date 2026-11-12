@@ -68,11 +68,16 @@ test("two sessions on one board see each other's card changes live", async ({ pa
     await expect(connectionPill(other)).toContainText("Live");
     await markNoReload(other);
 
-    // Create in A → appears in B.
+    // Create in A (parked in To do: auto-run boards start new cards by default) → appears in B.
     const todo = column(page, "To do");
-    await todo.getByRole("button", { name: "Add a card" }).click();
-    await todo.getByLabel("Card title", { exact: true }).fill(title);
-    await todo.getByLabel("Card title", { exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Add card", exact: true }).click();
+    const newCard = page.getByRole("dialog", { name: "New card" });
+    await newCard.getByLabel("Title", { exact: true }).fill(title);
+    const startNow = newCard.getByRole("switch", { name: /Start agent now/ });
+    await expect(startNow).toBeChecked();
+    await startNow.click();
+    await newCard.getByRole("button", { name: "Create card" }).click();
+    await expect(newCard).toBeHidden();
     await expect(cardButton(todo, title)).toBeVisible();
     await expect(cardButton(column(other, "To do"), title)).toBeVisible();
 

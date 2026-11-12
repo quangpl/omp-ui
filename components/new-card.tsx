@@ -31,7 +31,7 @@ import type { BoardWithCounts } from "@/lib/types";
 export interface NewCardRequest {
   /** Project to create the card in; defaults to the open board, else the last one used. */
   boardId?: string;
-  /** Preset "Start agent now". */
+  /** Preset "Start agent now"; defaults to the project's auto-run. */
   start?: boolean;
 }
 
@@ -95,7 +95,7 @@ export function NewCardProvider({ children }: { children: ReactNode }) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!isNewCardShortcut(event)) return;
       event.preventDefault();
-      openNewCard({ start: event.shiftKey });
+      openNewCard({ start: event.shiftKey || undefined });
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -165,8 +165,9 @@ function GlobalNewCardDialog({
     };
   }, [request]);
 
+  const board = boards?.find((b) => b.id === boardId);
+
   const create = async (input: NewTaskInput) => {
-    const board = boards?.find((b) => b.id === boardId);
     if (!board) {
       toast.error("Pick a project for the card first");
       return false;
@@ -220,7 +221,7 @@ function GlobalNewCardDialog({
       open={open}
       onOpenChange={(next) => !next && onClose()}
       isMobile={isMobile}
-      defaultStart={request?.start}
+      defaultStart={request?.start ?? board?.autoRun ?? false}
       projectField={projectField}
       onCreate={create}
     />

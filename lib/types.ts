@@ -87,7 +87,52 @@ export interface Run {
   endedAt: string | null;
 }
 
-export type RunEventKind = "status" | "text" | "thinking" | "tool" | "error";
+/**
+ * `agent` events carry a JSON-encoded `SubagentSnapshot` (full state of one subagent at that
+ * point); the latest event per subagent id wins.
+ */
+export type RunEventKind = "status" | "text" | "thinking" | "tool" | "error" | "agent";
+
+export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "aborted";
+
+/** A tool call a subagent made (newest first in `recentTools`). */
+export interface SubagentToolCall {
+  tool: string;
+  /** Intent or argument summary. */
+  detail?: string;
+  isError?: boolean;
+}
+
+/** One subagent the run delegated work to (omp `task` tool / orchestration). */
+export interface SubagentSnapshot {
+  /** omp agent id (`agent://<id>`); nested subagents are dot-qualified (`Parent.Child`). */
+  id: string;
+  /** Agent definition: `task`, `scout`, `reviewer`… */
+  agent: string;
+  /** Spawn order within its batch. */
+  index?: number;
+  status: SubagentStatus;
+  description?: string;
+  /** The brief it was given (truncated). */
+  task?: string;
+  model?: string;
+  /** What it says it is doing now. */
+  intent?: string;
+  /** Tool running right now. */
+  currentTool?: string;
+  currentToolDetail?: string;
+  recentTools?: SubagentToolCall[];
+  /** Last lines of its output (newest first). */
+  recentOutput?: string[];
+  toolCount?: number;
+  requests?: number;
+  tokens?: number;
+  cost?: number;
+  durationMs?: number;
+  /** Final report (truncated). */
+  output?: string;
+  error?: string;
+}
 
 export interface RunEvent {
   /** Monotonic per-database integer sequence; used as the `after` cursor. */
@@ -130,6 +175,8 @@ export type ServerEvent =
   | { type: "comment.deleted"; commentId: string; taskId: string; boardId: string }
   | { type: "run.updated"; run: Run; boardId: string }
   | { type: "run.event"; event: RunEvent; boardId: string }
+  /** Live, NOT persisted: subagent progress between its persisted `agent` events. */
+  | { type: "run.agent"; runId: string; taskId: string; boardId: string; agent: SubagentSnapshot }
   /**
    * Live, NOT persisted: streaming assistant output while a message is being generated.
    * `text` is the accumulated content of the current message so far (not just the delta), so a

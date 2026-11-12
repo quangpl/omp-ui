@@ -42,7 +42,8 @@ export interface BoardMenuActions {
   duplicate: (task: Task) => Promise<void>;
   /** Asks for confirmation before deleting. */
   requestDelete: (task: Task) => void;
-  newCard: (start: boolean) => void;
+  /** `start` presets "Start agent now"; omitted, the board's auto-run decides. */
+  newCard: (start?: boolean) => void;
   refresh: () => void;
   openSettings: () => void;
 }
@@ -67,7 +68,7 @@ async function copy(text: string, what: string) {
 function NewCardItems({ actions }: { actions: BoardMenuActions }) {
   return (
     <>
-      <ContextMenuItem onSelect={() => actions.newCard(false)}>
+      <ContextMenuItem onSelect={() => actions.newCard()}>
         <Plus />
         New card…
         <ContextMenuShortcut>N</ContextMenuShortcut>

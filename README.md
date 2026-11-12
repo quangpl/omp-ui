@@ -31,12 +31,13 @@ To use **Docker** instead (omp is included in the image, and your sign-ins are s
 
 Then ship the result with one tap: **Create PR/MR** or **Push to main**.
 
-**Quick actions.** Press <kbd>N</kbd> on any page to add a card (<kbd>Shift</kbd>+<kbd>N</kbd> also starts its agent); outside a board, the form asks which project. Right-click a card to open it, run or stop its agent, move, duplicate, copy its link, or delete it. Right-click the board background or a project on the Projects page to add a card there.
+**Quick actions.** Press <kbd>N</kbd> on any page to add a card (<kbd>Shift</kbd>+<kbd>N</kbd> always starts its agent); outside a board, the form asks which project. Right-click a card to open it, run or stop its agent, move, duplicate, copy its link, or delete it. Right-click the board background or a project on the Projects page to add a card there.
 
 <details>
 <summary>The details</summary>
 
 - The columns are **To do**, **In progress** and **Done**.
+- On a project with **Auto-run** on (the default), a new card skips To do: it lands in In progress and its agent starts. Turn off **Start agent now** in the form to park it in To do instead. Duplicates always go to To do.
 - Each project runs `omp --cwd <primary folder>`, plus `--add-dir <folder>` for every extra folder.
 - An agent's prompt is the card's title and description plus any unresolved comments.
 - For a large card (4+ list items or comments, 300+ words, or asks like "across the codebase", "every page", "in parallel"), the prompt also includes omp's `orchestrate` keyword, so omp splits the work across parallel subagents.

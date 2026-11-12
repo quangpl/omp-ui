@@ -11,7 +11,7 @@ import { getRepo } from "@/lib/db";
 import type { Repository } from "@/lib/db/types";
 import { subscribe } from "@/lib/events";
 import { updateAppSettings } from "@/lib/settings";
-import type { Board, Comment, Run, RunEvent, ServerEvent, Task } from "@/lib/types";
+import type { Board, Comment, Run, RunEvent, ServerEvent, SubagentSnapshot, Task } from "@/lib/types";
 
 const FAKE_OMP = fileURLToPath(new URL("../fixtures/fake-omp.mjs", import.meta.url));
 const SUCCESS_SUMMARY = "Fake summary: implemented the task and ran the tests.";
@@ -337,6 +337,65 @@ describe("AgentManager run lifecycle", () => {
     const errors = (await runEvents(run.id)).filter((e) => e.kind === "error").map((e) => e.text);
     expect(errors).toContain("Model error: Fake model error: rate limited");
     expect(publishedAgentStates(task.id)).toEqual(["queued", "running", "error"]);
+  });
+
+  it("records orchestrated subagents: persisted milestones, live progress, final reports", async () => {
+    const task = await createTask("Split the work", "[fake:orchestrate]");
+    const manager = await getAgentManager();
+
+    await manager.start(task.id);
+    await waitDone(task.id);
+    await waitIdleManager(manager);
+
+    const run = await latestRun(task.id);
+    const runLog = await runEvents(run.id);
+    expect(runLog.filter((e) => e.kind === "tool").map((e) => e.text)).toContain(
+      "▸ task: Splitting the work — delegating to 2 subagents (Scout, Builder)",
+    );
+    const snapshots = runLog.filter((e) => e.kind === "agent").map((e) => JSON.parse(e.text) as SubagentSnapshot);
+    const latest = new Map(snapshots.map((s) => [s.id, s]));
+    expect(latest.get("Scout")).toMatchObject({
+      agent: "scout",
+      status: "completed",
+      task: "Map the login form code and its tests.",
+      output: "Found the form in src/login.tsx; tests live in tests/login.test.ts.",
+      toolCount: 6,
+    });
+    expect(latest.get("Scout")?.currentTool).toBeUndefined();
+    expect(latest.get("Builder")).toMatchObject({ agent: "task", status: "failed", error: "Type error in src/login.tsx" });
+    // Progress ticks are live-only; the log keeps the milestones (first sighting, status, report).
+    expect(snapshots.length).toBeLessThanOrEqual(6);
+    const live = events.filter((e) => e.type === "run.agent" && e.runId === run.id);
+    expect(live.length).toBeGreaterThan(0);
+    expect(live).toContainEqual(
+      expect.objectContaining({ agent: expect.objectContaining({ id: "Scout", status: "running", currentTool: expect.any(String) }) }),
+    );
+  });
+
+  it("marks subagents still working when the run is stopped as aborted", async () => {
+    process.env.FAKE_OMP_STEP_MS = "5000";
+    try {
+      const task = await createTask("Split the work", "[fake:orchestrate]");
+      const manager = await getAgentManager();
+
+      await manager.start(task.id);
+      const run = await waitFor(async () => {
+        const [current] = await repo.listRuns(task.id);
+        if (!current) return null;
+        const spawned = (await runEvents(current.id)).filter((e) => e.kind === "agent");
+        return spawned.length >= 2 ? current : null;
+      }, "subagents to be recorded");
+      await manager.stop(task.id);
+      await waitIdleManager(manager);
+
+      const snapshots = (await runEvents(run.id))
+        .filter((e) => e.kind === "agent")
+        .map((e) => JSON.parse(e.text) as SubagentSnapshot);
+      const latest = new Map(snapshots.map((s) => [s.id, s.status]));
+      expect(Object.fromEntries(latest)).toEqual({ Scout: "aborted", Builder: "aborted" });
+    } finally {
+      delete process.env.FAKE_OMP_STEP_MS;
+    }
   });
 
   it("records a crash as an error and never leaves the task running", async () => {
