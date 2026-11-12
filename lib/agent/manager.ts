@@ -28,6 +28,7 @@ import {
 } from "@/lib/agent/subagents";
 import type { AgentManager } from "@/lib/agent/types";
 import { childEnv } from "@/lib/child-env";
+import { startCleanupScheduler } from "@/lib/cleanup";
 import { getRepo } from "@/lib/db";
 import type { Repository, UpdateTaskInput } from "@/lib/db/types";
 import { publish } from "@/lib/events";
@@ -1810,6 +1811,7 @@ async function createAgentManager(): Promise<AgentManager> {
   await repo.abortRunningRuns("Server restarted");
   const manager = new OmpAgentManager(repo);
   await manager.recover();
+  startCleanupScheduler(repo, manager);
   return manager;
 }
 

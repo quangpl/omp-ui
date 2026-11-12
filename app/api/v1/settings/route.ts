@@ -1,6 +1,15 @@
+import { parseCleanupIds, resetCleanupAnchor } from "@/lib/cleanup";
 import { HttpError, json, readJson, withApi } from "@/lib/server/http";
 import { MAX_EXPLICIT_AGENTS, getAppSettings, updateAppSettings } from "@/lib/settings";
-import { BROWSER_MODES, type AppSettings, type ApprovalMode, type BrowserMode } from "@/lib/types";
+import {
+  BROWSER_MODES,
+  CLEANUP_SCHEDULES,
+  SCHEDULED_CLEANUP_IDS,
+  type AppSettings,
+  type ApprovalMode,
+  type BrowserMode,
+  type CleanupSchedule,
+} from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -62,6 +71,20 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
     }
     patch.browser = mode as BrowserMode;
   }
+  if (body.cleanupSchedule !== undefined) {
+    const schedule = body.cleanupSchedule;
+    if (typeof schedule !== "string" || !(CLEANUP_SCHEDULES as readonly string[]).includes(schedule)) {
+      throw new HttpError(400, `cleanupSchedule must be one of: ${CLEANUP_SCHEDULES.join(", ")}`);
+    }
+    patch.cleanupSchedule = schedule as CleanupSchedule;
+  }
+  if (body.cleanupTargets !== undefined) {
+    const ids = parseCleanupIds(body.cleanupTargets, { allowEmpty: true });
+    if (!ids) {
+      throw new HttpError(400, `cleanupTargets must be an array of: ${SCHEDULED_CLEANUP_IDS.join(", ")}`);
+    }
+    patch.cleanupTargets = ids;
+  }
   return patch;
 }
 
@@ -69,5 +92,9 @@ export const GET = withApi(async ({ repo }) => json(await getAppSettings(repo)))
 
 export const PATCH = withApi(async ({ req, repo }) => {
   const patch = parsePatch(await readJson(req));
-  return json(await updateAppSettings(repo, patch));
+  const before = await getAppSettings(repo);
+  const next = await updateAppSettings(repo, patch);
+  // A new schedule counts from now, so enabling it never runs a cleanup right away.
+  if (next.cleanupSchedule !== before.cleanupSchedule) await resetCleanupAnchor(repo);
+  return json(next);
 });

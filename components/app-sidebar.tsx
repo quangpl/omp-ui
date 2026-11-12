@@ -341,7 +341,7 @@ function AccountMenu() {
 }
 
 /**
- * The app's left sidebar: brand, primary actions, section navigation, the live project list and
+ * The app's left sidebar: brand, primary actions, the live project list, section navigation and
  * global utilities. Desktop: collapsible to an icon rail (⌘/Ctrl+B). Phones: an off-canvas sheet
  * opened from the header, closed again on navigation.
  */
@@ -443,6 +443,8 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
+        <ProjectsGroup pathname={pathname} onNavigate={closeMobile} />
+
         <SidebarGroup>
           <SidebarGroupLabel className="max-md:px-3">Navigate</SidebarGroupLabel>
           <SidebarGroupContent>
@@ -486,8 +488,6 @@ export function AppSidebar() {
             </nav>
           </SidebarGroupContent>
         </SidebarGroup>
-
-        <ProjectsGroup pathname={pathname} onNavigate={closeMobile} />
       </SidebarContent>
 
       <SidebarSeparator className="mx-0" />

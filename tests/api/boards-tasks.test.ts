@@ -38,6 +38,7 @@ import type {
   RunEvent,
   Task,
 } from "@/lib/types";
+import { DEFAULT_SETTINGS } from "@/lib/types";
 import { APP_VERSION } from "@/lib/version";
 import { getRepo } from "@/lib/db";
 
@@ -953,6 +954,8 @@ describe("settings, health and system", () => {
       browser: "headless",
       autoRetry: true,
       maxAutoRetries: 5,
+      cleanupSchedule: "off",
+      cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
     });
   });
 
@@ -999,6 +1002,8 @@ describe("settings, health and system", () => {
       browser: "headless",
       autoRetry: true,
       maxAutoRetries: 5,
+      cleanupSchedule: "off",
+      cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
     });
 
     const partial = await api<AppSettings>(settingsRoute, "PATCH", "/settings", {
@@ -1023,6 +1028,8 @@ describe("settings, health and system", () => {
       browser: "off",
       autoRetry: false,
       maxAutoRetries: 0,
+      cleanupSchedule: "off",
+      cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
     });
     expect((await api<AppSettings>(settingsRoute, "GET", "/settings")).body).toEqual(partial.body);
     expect((await api<AppSettings>(settingsRoute, "PATCH", "/settings", { body: {} })).body).toEqual(partial.body);

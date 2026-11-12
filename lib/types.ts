@@ -214,6 +214,10 @@ export interface AppSettings {
   autoRetry: boolean;
   /** Automatic retries per card before it stays failed (0-20); a success or a manual run resets the count. */
   maxAutoRetries: number;
+  /** Run the AgentMan-data cleanup automatically; "off" (default) leaves it to "Clean up now". */
+  cleanupSchedule: CleanupSchedule;
+  /** What scheduled and manual "Clean up now" runs remove (default: every safe target). */
+  cleanupTargets: ScheduledCleanupId[];
 }
 
 /**
@@ -223,6 +227,24 @@ export interface AppSettings {
  */
 export const BROWSER_MODES = ["off", "headless", "visible", "relay"] as const;
 export type BrowserMode = (typeof BROWSER_MODES)[number];
+
+/** How often the scheduled AgentMan-data cleanup runs (Settings → Cleanup). */
+export const CLEANUP_SCHEDULES = ["off", "weekly", "monthly"] as const;
+export type CleanupSchedule = (typeof CLEANUP_SCHEDULES)[number];
+
+/** AgentMan-data cleanups a schedule may run (Docker prunes stay manual on the Maintenance page). */
+export const SCHEDULED_CLEANUP_IDS = [
+  "orphan-card-files",
+  "orphan-board-files",
+  "orphan-workspaces",
+  "shipped-workspaces",
+  "run-configs",
+  "drafts",
+  "diff-cache",
+  "rotated-logs",
+  "database",
+] as const satisfies readonly CleanupId[];
+export type ScheduledCleanupId = (typeof SCHEDULED_CLEANUP_IDS)[number];
 
 export const DEFAULT_SETTINGS: AppSettings = {
   maxConcurrentAgents: "auto",
@@ -234,6 +256,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   browser: "headless",
   autoRetry: true,
   maxAutoRetries: 5,
+  cleanupSchedule: "off",
+  // Worktrees of shipped cards may still be wanted; they are opt-in.
+  cleanupTargets: SCHEDULED_CLEANUP_IDS.filter((id) => id !== "shipped-workspaces"),
 };
 
 /** An installed omp skill (from `omp skill list`): pickable with "/" when composing a card. */
@@ -800,6 +825,30 @@ export interface MaintenanceStepResult {
 export interface MaintenanceResult {
   results: MaintenanceStepResult[];
   freedBytes: number;
+}
+
+/** A cleanup the schedule may run, as shown in Settings (texts from the Maintenance targets). */
+export interface CleanupTargetInfo {
+  id: ScheduledCleanupId;
+  label: string;
+  description: string;
+  risk: "safe" | "review";
+}
+
+/** GET|POST /api/v1/settings/cleanup: the scheduled cleanup's configuration and last outcome. */
+export interface CleanupStatus {
+  schedule: CleanupSchedule;
+  targets: ScheduledCleanupId[];
+  /** Every schedulable target with label/description/risk taken from lib/maintenance.ts TARGETS. */
+  available: CleanupTargetInfo[];
+  /** ISO. */
+  lastRunAt: string | null;
+  lastTrigger: "manual" | "scheduled" | null;
+  lastResult: MaintenanceResult | null;
+  /** ISO; null when schedule is "off". */
+  nextRunAt: string | null;
+  /** A cleanup is in progress right now. */
+  running: boolean;
 }
 
 export interface AiQuotaLimit {
