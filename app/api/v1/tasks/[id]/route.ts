@@ -6,6 +6,7 @@ import {
   parseBlockedBy,
   parseDescription,
   parsePosition,
+  parseQuestionClear,
   parseStatus,
   parseTitle,
   requireTask,
@@ -31,6 +32,7 @@ export const PATCH = withApi<Params>(async ({ req, repo, manager, params }) => {
   if (body.description !== undefined) patch.description = parseDescription(body.description);
   if (body.status !== undefined) patch.status = parseStatus(body.status);
   if (body.position !== undefined) patch.position = parsePosition(body.position);
+  if (body.question !== undefined) patch.question = parseQuestionClear(body.question);
   if (body.blockedBy !== undefined) {
     patch.blockedBy = await parseBlockedBy(repo, body.blockedBy, previous.boardId, previous.id);
   }

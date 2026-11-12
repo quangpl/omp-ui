@@ -373,6 +373,8 @@ export function runRepositoryContract(
           title: "Original",
           description: "desc",
         });
+        expect(task.question).toBeNull();
+        expect(task.pushedAt).toBeNull();
 
         const updated = await repo.updateTask(task.id, {
           title: "Renamed",
@@ -380,8 +382,10 @@ export function runRepositoryContract(
           position: 42.5,
           agentState: "error",
           agentError: "omp crashed",
+          question: "Ship it?",
           sessionFile: "/sessions/abc.jsonl",
           lastRunId: "run-1",
+          pushedAt: "2026-01-02T03:04:05.000Z",
         });
         expect(updated).toMatchObject({
           id: task.id,
@@ -392,8 +396,10 @@ export function runRepositoryContract(
           position: 42.5,
           agentState: "error",
           agentError: "omp crashed",
+          question: "Ship it?",
           sessionFile: "/sessions/abc.jsonl",
           lastRunId: "run-1",
+          pushedAt: "2026-01-02T03:04:05.000Z",
           createdAt: task.createdAt,
         });
         expect(updated!.updatedAt > task.updatedAt).toBe(true);
@@ -403,14 +409,17 @@ export function runRepositoryContract(
           description: "",
           agentState: "idle",
           agentError: null,
+          question: null,
         });
         expect(cleared).toMatchObject({
           title: "Renamed",
           description: "",
           agentState: "idle",
           agentError: null,
+          question: null,
           sessionFile: "/sessions/abc.jsonl",
           lastRunId: "run-1",
+          pushedAt: "2026-01-02T03:04:05.000Z",
         });
         expect(await repo.getTask(task.id)).toEqual(cleared);
       });

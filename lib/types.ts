@@ -53,6 +53,11 @@ export interface Task {
   position: number;
   agentState: AgentState;
   agentError: string | null;
+  /**
+   * Question(s) the agent asked the user in its last run summary. Set when a run succeeds,
+   * cleared when the next run starts or the user dismisses it (PATCH question: null).
+   */
+  question: string | null;
   /** omp session JSONL path; reused with `--resume` so feedback keeps context. */
   sessionFile: string | null;
   lastRunId: string | null;
@@ -63,6 +68,11 @@ export interface Task {
   blockedBy: string[];
   /** Card whose agent created this card (agent-to-agent delegation); null when a person did. */
   createdByTaskId: string | null;
+  /**
+   * When "Push to main" last landed this card's changes on the default branch; null if never.
+   * Cards with it set show a struck-through title.
+   */
+  pushedAt: string | null;
   createdAt: string;
   updatedAt: string;
   /** Derived: total comments. */
@@ -234,6 +244,25 @@ export type ServerEvent =
 export interface ApiError {
   error: string;
 }
+
+/**
+ * A card the card-writer agent made from free text (POST /boards/:id/tasks/draft): what the user
+ * reviews and creates. `description` never contains the `orchestrate` keyword; `orchestrate` adds it.
+ */
+export interface CardDraft {
+  title: string;
+  description: string;
+  /** The work splits into independent parts: the card asks omp to orchestrate parallel subagents. */
+  orchestrate: boolean;
+  /** Open cards on the board this one must wait for ("Run after"). */
+  waitFor: { id: string; title: string }[];
+}
+
+/** One NDJSON line streamed by POST /boards/:id/tasks/draft; ends with `draft` or `error`. */
+export type DraftStreamEvent =
+  | { type: "activity"; text: string }
+  | { type: "draft"; draft: CardDraft; model: string | null }
+  | { type: "error"; message: string };
 
 /** A file shared on a card or on a board (GET /tasks/:id/files, GET /boards/:id/files). */
 export interface SharedFile {

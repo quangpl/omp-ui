@@ -39,6 +39,7 @@ import type {
   Task,
 } from "@/lib/types";
 import { APP_VERSION } from "@/lib/version";
+import { getRepo } from "@/lib/db";
 
 interface TaskDetail {
   task: Task;
@@ -448,6 +449,21 @@ describe("tasks and comments", () => {
     const missing = await patchTask(MISSING_ID, { title: "x" });
     expect(missing.status).toBe(404);
     expect(missing.body.error).toBe("Task not found");
+  });
+
+  it("clears the agent's question with PATCH question: null and rejects any other value", async () => {
+    const task = await createTask(board.id, { title: "Questioned" });
+    await (await getRepo()).updateTask(task.id, { question: "Keep the beta label?" });
+
+    const rejected = await patchTask(task.id, { question: "my answer" });
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error).toBe("question can only be cleared (set it to null)");
+    const kept = await api<{ task: Task }>(taskRoute, "GET", `/tasks/${task.id}`, { params: { id: task.id } });
+    expect(kept.body.task.question).toBe("Keep the beta label?");
+
+    const cleared = await patchTask(task.id, { question: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.question).toBeNull();
   });
 
   it("moving a card to In progress on a board without autoRun does not start omp", async () => {

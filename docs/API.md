@@ -80,7 +80,7 @@ Git never prompts: commands run without a terminal (`GIT_TERMINAL_PROMPT=0`, SSH
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
 | GET | `/tasks/:id` | – | `{ task: Task, comments: Comment[], runs: Run[] }` |
-| PATCH | `/tasks/:id` | `Partial<{ title, description, status, position, blockedBy }>` | `Task`. Status change triggers agent rules below. `blockedBy`: ids of other cards on the same board; 400 for the card itself, unknown cards, or a cycle |
+| PATCH | `/tasks/:id` | `Partial<{ title, description, status, position, blockedBy, question }>` | `Task`. Status change triggers agent rules below. `blockedBy`: ids of other cards on the same board; 400 for the card itself, unknown cards, or a cycle. `question` accepts only `null` (dismiss the agent's question; the agent sets it) |
 | DELETE | `/tasks/:id` | – | `{ ok: true }` (also removes the card's files and workspace) |
 | POST | `/tasks/:id/run` | – | `Task` (starts/queues agent, moves to In progress) |
 | POST | `/tasks/:id/stop` | – | `Task` |
@@ -115,7 +115,7 @@ Both act on every project folder (`workdir` + `extraFolders`), or only on `folde
 
 - 409 while the task's agent is queued or running (“Wait for the agent to finish first.”). 400 if none of the folders is a git repository.
 - Folders that are not git repositories, or have nothing to commit or push, are returned with `skipped: true`.
-- **Push to main**: if there are uncommitted changes, `git add -A` + commit (message = `message` or the task title), then `git push origin HEAD:<default branch>`. The default branch comes from `origin/HEAD` (falling back to `main`/`master`). `url` links to the pushed commit on GitHub/GitLab, otherwise to the repository page. If the remote has newer commits or the branch is protected, that folder's `error` explains it and suggests Create PR.
+- **Push to main**: if there are uncommitted changes, `git add -A` + commit (message = `message` or the task title), then `git push origin HEAD:<default branch>`. The default branch comes from `origin/HEAD` (falling back to `main`/`master`). `url` links to the pushed commit on GitHub/GitLab, otherwise to the repository page. If the remote has newer commits or the branch is protected, that folder's `error` explains it and suggests Create PR. When at least one folder was pushed and none failed, the task's `pushedAt` is set to now (the UI strikes through the card's title).
 - **Create PR**: creates branch `omp/<task-slug>-<random>` from the current HEAD (the folder stays on that branch), commits uncommitted changes (message = PR title), `git push -u origin <branch>`, then opens a PR with `gh` (GitHub) or an MR with `glab` (GitLab) against the default branch. PR title defaults to the task title; body defaults to the task description + the latest agent summary + “Created from OMP UI”. Without the CLI (or if it fails, e.g. not signed in), the branch is still pushed and `url` is the provider's “new pull request” page, so the user can open it with one tap.
 - If no identity is configured for git on the server, commits are made as `OMP UI <omp-ui@localhost>`.
 - Afterwards one resolved `agent` comment summarising the result in plain language (with links) is posted on the task and returned as `comment`; `comment.added` and `task.updated` are published.
@@ -124,7 +124,7 @@ Both act on every project folder (`workdir` + `extraFolders`), or only on `folde
 
 - Move a card to **In progress** (PATCH `status`) → omp agent starts in the board `workdir` (when the board has `autoRun`; otherwise call `POST /tasks/:id/run`).
 - The web UI creates new cards on `autoRun` boards with `status: "in_progress"`, so they start right away (unless the user opts out). API clients choose `status` themselves; the default is still `todo`.
-- Agent finishes successfully → its final message is posted as an `agent` comment, every open feedback comment included in the run is **auto-resolved**, and the card moves to **Done**.
+- Agent finishes successfully → its final message is posted as an `agent` comment, every open feedback comment included in the run is **auto-resolved**, and the card moves to **Done**. If that message asks the user something, the advisor (a read-only `omp -p` agent) triages it first: questions it can answer are posted as an `agent` comment ("**Advisor** answered…"); when an answer needs more work it adds a `user` feedback comment starting with `**Advisor:**`, keeps the card In progress and resumes the agent (once: a run addressing advisor feedback sends its own questions to the user). What is left for the user is stored on `task.question` (cleared when the next run starts or via PATCH `question: null`); the web UI shows it on the card and lets the user answer with one click.
 - Agent fails → card stays in **In progress** with `agentState: "error"` and an agent comment explaining the error.
 - Comment on a **Done** card (or an idle In-progress card) → card reopens to **In progress** and the agent resumes the same omp session with the feedback.
 - Comment while the agent is **running** → feedback is steered into the live session.
@@ -136,7 +136,7 @@ Both act on every project folder (`workdir` + `extraFolders`), or only on `folde
 - **Dedicated workspaces** (`Board.worktrees`): the card's first run creates `DATA_DIR/workspaces/<taskId>/<folder>` as a git worktree of each project folder that is the top of a git repository with a commit, on branch `omp/<title-slug>-<id>`; the agent runs there. Other folders stay shared. Worktrees and the branch are removed with the card.
 - **Files**: every run gets the card's folder (`DATA_DIR/files/tasks/<taskId>`) and the board's (`DATA_DIR/files/boards/<boardId>`) as `--add-dir`. `files.updated` is published on upload/delete and when a run ends.
 - **Browser control** (`AppSettings.browser`: `off` · `headless` · `visible` · `relay`): written to a per-run omp config overlay (`--config`); screenshots go to the card's `screenshots/` folder.
-- **Agent-to-agent tools** (omp RPC host tools, scoped to the card's board): `board_list_cards`, `board_read_card`, `board_create_card` (new card with `createdByTaskId`, its agent starts unless `start: false`; at most 20 per card, 3 levels deep), `board_message_card` (a `Comment` with `author: "user"` and `fromTaskId` = sender, handled like feedback), `board_wait_for_cards` (blocks until the cards are no longer queued/running; the waiting agent's slot is lent to the queue meanwhile).
+- **Agent-to-agent tools** (omp RPC host tools, scoped to the card's board): `board_list_cards`, `board_read_card`, `board_create_card` (new card with `createdByTaskId`, its agent starts unless `start: false`; at most 20 per card, 3 levels deep), `board_message_card` (a `Comment` with `author: "user"` and `fromTaskId` = sender, handled like feedback), `board_wait_for_cards` (blocks until the cards are no longer queued/running; the waiting agent's slot is lent to the queue meanwhile). Plus `ask_advisor` (`{ question, options?, context? }`): the advisor decides the question instead of the user, or marks it as one only the user can answer.
 
 ## Live updates
 

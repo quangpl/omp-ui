@@ -18,6 +18,7 @@ import {
 import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { STATUS_LABELS, TASK_STATUSES, type Task, type TaskStatus } from "@/lib/types";
 import { positionBetween, type TasksByStatus } from "@/hooks/use-board";
+import type { QuickCreate } from "@/components/board/inline-composer";
 import { useBoardHotkeys } from "@/hooks/use-board-hotkeys";
 import { BoardColumn, COLUMN_DROPPABLE_PREFIX } from "@/components/board/board-column";
 import { BoardContextMenu, type BoardMenuActions } from "@/components/board/card-context-menu";
@@ -49,7 +50,7 @@ export interface KanbanBoardProps {
   /** Reorders a card within its own column; cards never change column by drag. */
   reorderTask: (taskId: string, position: number) => Promise<void>;
   /** Inline composer submit (desktop To do column). Resolves true when the card was created. */
-  onQuickCreate: (title: string) => Promise<boolean>;
+  onQuickCreate: QuickCreate;
   /** Opens the full "New card" form (mobile FAB). */
   onAdd: () => void;
   mobileColumn: TaskStatus;

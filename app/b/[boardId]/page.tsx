@@ -217,7 +217,7 @@ function BoardScreen() {
           isMobile={isMobile}
           menuActions={menuActions}
           reorderTask={controller.reorderTask}
-          onQuickCreate={async (title) => (await controller.createTask({ title })) !== null}
+          onQuickCreate={async (text, progress) => (await controller.createFromText(text, progress)) !== null}
           onAdd={() => setNewCard({})}
           mobileColumn={mobileColumn}
           onMobileColumnChange={setMobileColumn}
@@ -228,6 +228,7 @@ function BoardScreen() {
         open={newCard !== null}
         onOpenChange={(open) => !open && setNewCard(null)}
         isMobile={isMobile}
+        boardId={boardId}
         defaultStart={newCard?.start ?? board.autoRun}
         onCreate={create}
       />

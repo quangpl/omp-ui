@@ -1,6 +1,17 @@
 import { existsSync } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  ADVISOR_FEEDBACK_PREFIX,
+  ADVISOR_TOOL,
+  consultAdvisor,
+  formatAnswers,
+  formatDecision,
+  parseAdvisorArgs,
+  triageQuestions,
+  type AdvisorScope,
+  type QuestionTriage,
+} from "@/lib/agent/advisor";
 import { BOARD_TOOLS, BOARD_TOOL_NAMES, runBoardTool, type BoardToolHost } from "@/lib/agent/board-tools";
 import { chooseModel, readModelRoles } from "@/lib/agent/model-select";
 import { buildPrompt, buildSteerMessage } from "@/lib/agent/prompt";
@@ -20,6 +31,7 @@ import { getRepo } from "@/lib/db";
 import type { Repository, UpdateTaskInput } from "@/lib/db/types";
 import { publish } from "@/lib/events";
 import { dataDir, ensureFilesFolder } from "@/lib/files";
+import { extractQuestion } from "@/lib/question";
 import { getAppSettings } from "@/lib/settings";
 import { ensureWorkspace } from "@/lib/workspaces";
 import type {
@@ -96,6 +108,10 @@ interface ActiveRun {
   subagents: Map<string, TrackedSubagent>;
   /** Board tool calls in flight (`host_tool_call` id → abort). */
   hostCalls: Map<string, AbortController>;
+  /** What the advisor needs to answer this run's questions; set once the run has started. */
+  advisor: Omit<AdvisorScope, "signal" | "onActivity"> | null;
+  /** This run addresses advisor feedback: its own questions go to the user, not back to the agent. */
+  advisorFollowUp: boolean;
   /** Serializes startup, frame handling and teardown so persistence stays ordered. */
   chain: Promise<void>;
 }
@@ -169,7 +185,7 @@ class OmpAgentManager implements AgentManager {
     try {
       const current = await this.repo.getTask(taskId);
       if (!current) throw new Error("Task not found");
-      const patch: UpdateTaskInput = { agentState: "queued", agentError: null };
+      const patch: UpdateTaskInput = { agentState: "queued", agentError: null, question: null };
       if (current.status !== "in_progress") {
         patch.status = "in_progress";
         patch.position = await this.topPosition(current.boardId, "in_progress", taskId);
@@ -379,6 +395,8 @@ class OmpAgentManager implements AgentManager {
       lastError: null,
       subagents: new Map(),
       hostCalls: new Map(),
+      advisor: null,
+      advisorFollowUp: false,
       chain: Promise.resolve(),
     };
     this.active.set(taskId, run);
@@ -494,6 +512,8 @@ class OmpAgentManager implements AgentManager {
     run.runId = created.id;
     run.promptId = `prompt-${created.id}`;
     for (const c of feedback) run.feedbackIds.add(c.id);
+    run.advisor = { task, board, workdir, extraFolders, settings };
+    run.advisorFollowUp = feedback.some((c) => c.body.startsWith(ADVISOR_FEEDBACK_PREFIX));
     publish({ type: "run.updated", run: created, boardId: run.boardId });
     if (run.finished) return;
 
@@ -600,9 +620,9 @@ class OmpAgentManager implements AgentManager {
     await proc.send({ type: "set_subagent_subscription", level: "progress" }).catch(() => undefined);
     if (run.finished) return;
 
-    // Agent-to-agent collaboration tools, executed by onHostTool.
+    // Agent-to-agent collaboration tools and the advisor, executed by onHostTool.
     try {
-      await proc.send({ type: "set_host_tools", tools: BOARD_TOOLS });
+      await proc.send({ type: "set_host_tools", tools: [...BOARD_TOOLS, ADVISOR_TOOL] });
     } catch (err) {
       if (run.finished) return;
       await this.event(run, "error", `Board tools are unavailable in this run: ${errorMessage(err, run.ompPath)}`);
@@ -917,6 +937,13 @@ class OmpAgentManager implements AgentManager {
         ...(isError ? { isError: true } : {}),
       });
     };
+    if (name === ADVISOR_TOOL.name && !run.finished) {
+      this.askAdvisor(run, args, controller.signal).then(
+        (text) => reply(text, false),
+        (err: unknown) => reply(err instanceof Error ? err.message : String(err), true),
+      );
+      return;
+    }
     if (run.finished || !run.boardId || !BOARD_TOOL_NAMES.has(name)) {
       reply(run.finished ? "The run has ended." : `Unknown tool ${name}`, true);
       return;
@@ -925,6 +952,50 @@ class OmpAgentManager implements AgentManager {
       (text) => reply(text, false),
       (err: unknown) => reply(err instanceof Error ? err.message : String(err), true),
     );
+  }
+
+  /** `ask_advisor`: the advisor decides a question the agent would otherwise leave for the user. */
+  private async askAdvisor(run: ActiveRun, args: Json, signal: AbortSignal): Promise<string> {
+    const ask = parseAdvisorArgs(args);
+    if (!run.advisor) throw new Error("The advisor is not available yet.");
+    await this.event(run, "status", truncate(`Agent asked the advisor: ${oneLineTrim(ask.question)}`, MAX_TOOL_ERROR_TEXT));
+    try {
+      const decision = await consultAdvisor({ ...run.advisor, signal }, ask);
+      await this.event(
+        run,
+        "status",
+        truncate(
+          `Advisor${decision.needsUser ? " (left for the user)" : ""}: ${oneLineTrim(decision.decision)}`,
+          MAX_TOOL_ERROR_TEXT,
+        ),
+      );
+      return formatDecision(decision);
+    } catch (err) {
+      if (!signal.aborted) await this.event(run, "error", `Advisor failed: ${errorMessage(err, run.ompPath)}`);
+      throw err;
+    }
+  }
+
+  /**
+   * The run's summary asks the user something: the advisor answers what it can and keeps for the
+   * user only what needs their judgment. Null when it could not (the question goes to the user as is).
+   */
+  private async triage(run: ActiveRun, question: string, summary: string): Promise<QuestionTriage | null> {
+    if (!run.advisor) return null;
+    await this.event(run, "status", "Advisor is reviewing the agent's questions");
+    try {
+      // The run has already ended: nothing cancels the triage (omp's --max-time bounds it).
+      const triage = await triageQuestions({ ...run.advisor, signal: new AbortController().signal }, { question, summary });
+      await this.event(
+        run,
+        "status",
+        `Advisor answered ${triage.answers.length} question${triage.answers.length === 1 ? "" : "s"}${triage.userQuestion ? "; the rest needs you" : ""}`,
+      );
+      return triage;
+    } catch (err) {
+      await this.event(run, "error", `Advisor could not review the questions: ${errorMessage(err, run.ompPath)}`);
+      return null;
+    }
   }
 
   private async complete(run: ActiveRun): Promise<void> {
@@ -954,6 +1025,8 @@ class OmpAgentManager implements AgentManager {
         }
       }
       if (!summary) summary = run.lastText || run.currentText.trim();
+      const asked = extractQuestion(summary);
+      const triage = asked ? await this.triage(run, asked, summary) : null;
 
       if (run.runId) {
         const updated = await repo.updateRun(run.runId, {
@@ -975,17 +1048,39 @@ class OmpAgentManager implements AgentManager {
       });
       publish({ type: "comment.added", comment, boardId: run.boardId });
 
+      if (triage && triage.answers.length > 0) {
+        const answers = await repo.addComment({
+          taskId: run.taskId,
+          author: "agent",
+          body: formatAnswers(triage.answers),
+          resolved: true,
+        });
+        publish({ type: "comment.added", comment: answers, boardId: run.boardId });
+      }
+      // The advisor sends the agent back to work once; a second round of questions goes to the user.
+      const followUp = triage?.followUp && !run.advisorFollowUp ? triage.followUp : null;
+      if (followUp) {
+        const feedback = await repo.addComment({
+          taskId: run.taskId,
+          author: "user",
+          body: `${ADVISOR_FEEDBACK_PREFIX}${followUp}`,
+        });
+        publish({ type: "comment.added", comment: feedback, boardId: run.boardId });
+        run.restartAfter = true;
+      }
+      const question = triage ? (triage.userQuestion ?? (triage.followUp && !followUp ? asked : null)) : asked;
+
       if (run.runId && run.feedbackIds.size > 0) {
         const resolved = await repo.resolveComments([...run.feedbackIds], run.runId);
         for (const c of resolved) publish({ type: "comment.updated", comment: c, boardId: run.boardId });
       }
 
-      const position = await this.topPosition(run.boardId, "done", run.taskId);
+      // A card the advisor sends back to work stays In progress.
       const task = await repo.updateTask(run.taskId, {
-        status: "done",
-        position,
+        ...(followUp ? {} : { status: "done" as const, position: await this.topPosition(run.boardId, "done", run.taskId) }),
         agentState: "idle",
         agentError: null,
+        question,
       });
       if (task) publish({ type: "task.updated", task });
     } catch (err) {

@@ -211,6 +211,7 @@ function GlobalNewCardDialog({
       open={open}
       onOpenChange={(next) => !next && onClose()}
       isMobile={isMobile}
+      boardId={board?.id ?? null}
       defaultStart={request?.start ?? board?.autoRun ?? false}
       projectField={projectField}
       onCreate={create}

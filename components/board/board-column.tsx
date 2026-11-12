@@ -7,7 +7,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/utils";
 import { STATUS_LABELS, type Task, type TaskStatus } from "@/lib/types";
 import { type BoardMenuActions, CardContextMenu } from "@/components/board/card-context-menu";
-import { InlineComposer } from "@/components/board/inline-composer";
+import { InlineComposer, type QuickCreate } from "@/components/board/inline-composer";
 import {
   type QuickActionHandlers,
   type QuickActionId,
@@ -164,6 +164,11 @@ function SortableTaskCard({
             onOpen={() => {
               if (!isDragging) menuActions.openCard(task.id);
             }}
+            onAnswer={() => {
+              if (isDragging) return;
+              void menuActions.revertToTodo(task.id);
+              menuActions.openCard(task.id);
+            }}
           />
         </div>
       </div>
@@ -185,7 +190,7 @@ export function BoardColumn({
   /** Card clicks and right-click menu actions. */
   menuActions: BoardMenuActions;
   /** When set, shows the inline "Add a card" composer at the bottom. */
-  onCreate?: (title: string) => Promise<boolean>;
+  onCreate?: QuickCreate;
 }) {
   // Cards only reorder within their own column: while a card is dragged, every other column
   // (its body and its cards) stops being a drop target.

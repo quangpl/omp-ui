@@ -44,6 +44,8 @@ interface LogEntry {
   cwd?: string;
   command?: { type: string; id?: string; message?: string };
   message?: string;
+  /** "print" entries (the advisor): the prompt read from stdin. */
+  prompt?: string;
 }
 
 let root: string;
@@ -295,6 +297,81 @@ describe("AgentManager run lifecycle", () => {
       expect.objectContaining({ type: "run.updated", run: expect.objectContaining({ id: run.id, status: "succeeded" }) }),
     );
     expect(events.some((e) => e.type === "run.event" && e.event.runId === run.id)).toBe(true);
+  });
+
+  it("stores the agent's question on the card and clears it when the next run starts", async () => {
+    const task = await createTask("Decide paging", "[fake:question]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    const done = await waitDone(task.id);
+    await waitIdleManager(manager);
+    expect(done.question).toBe("Should pagination default to 20 or 50 items per page?");
+
+    // Starting the next run (e.g. after an answer) clears the question immediately.
+    const restarted = await manager.start(task.id);
+    expect(restarted.question).toBeNull();
+    await waitDone(task.id);
+    await waitIdleManager(manager);
+  });
+
+  it("answers the agent's ask_advisor call with the advisor's decision", async () => {
+    const calls = [
+      { toolName: "ask_advisor", arguments: { question: "Offset or cursor pagination?", options: ["offset", "cursor"] } },
+    ];
+    const task = await createTask("Add paging", `[fake:board_tools] <calls>${JSON.stringify(calls)}</calls>`);
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    await waitDone(task.id);
+
+    const run = await latestRun(task.id);
+    const [result] = JSON.parse((run.summary ?? "").replace(/^Tool results: /, "")) as { isError: boolean; text: string }[];
+    expect(result).toMatchObject({ isError: false });
+    expect(result!.text).toContain("Advisor's decision: Use offset pagination with 20 items per page");
+    const [advisor] = readLog().filter((e) => e.kind === "print");
+    expect(flagValues(advisor?.argv, "--tools")).toEqual(["read,grep,glob"]);
+    expect(advisor?.cwd).toBe(workdir);
+    expect(advisor?.prompt).toContain("Offset or cursor pagination?");
+    expect(advisor?.prompt).toContain("Title: Add paging");
+    const texts = (await runEvents(run.id)).map((e) => e.text);
+    expect(texts).toContain("Agent asked the advisor: Offset or cursor pagination?");
+    expect(texts).toContain("Advisor: Use offset pagination with 20 items per page");
+  });
+
+  it("lets the advisor answer the run's question and send the agent back to work once", async () => {
+    const task = await createTask("Decide paging", "[fake:question] [fake-advisor:answer]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    // Run 1 asks, the advisor answers with a follow-up; run 2 asks again and the guard stops the loop.
+    const done = await waitTask(
+      task.id,
+      (t) => t.status === "done" && t.agentState === "idle" && t.question !== null,
+      "the second run to finish",
+    );
+    await waitIdleManager(manager);
+
+    expect(done.question).toBe("Should pagination default to 20 or 50 items per page?");
+    expect(await repo.listRuns(task.id)).toHaveLength(2);
+    expect(readLog().filter((e) => e.kind === "print")).toHaveLength(2);
+    const comments = await repo.listComments(task.id);
+    const followUp = comments.find((c) => c.author === "user");
+    expect(followUp).toMatchObject({ resolved: true });
+    expect(followUp?.body).toMatch(/^\*\*Advisor:\*\* Set the default page size to 20/);
+    expect(comments.filter((c) => c.body.startsWith("**Advisor** answered"))).toHaveLength(2);
+    // The follow-up went to the resumed session as feedback.
+    expect(commands("prompt")[1]?.command?.message).toContain("Set the default page size to 20");
+  });
+
+  it("leaves the question to the user when the advisor fails", async () => {
+    const task = await createTask("Decide paging", "[fake:question] [fake-advisor:fail]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    const done = await waitDone(task.id);
+    await waitIdleManager(manager);
+
+    expect(done.question).toBe("Should pagination default to 20 or 50 items per page?");
+    expect(await repo.listRuns(task.id)).toHaveLength(1);
+    const texts = (await runEvents((await latestRun(task.id)).id)).map((e) => e.text);
+    expect(texts.some((t) => t.startsWith("Advisor could not review the questions"))).toBe(true);
   });
 
   it("closes the omp process after a successful run", async () => {

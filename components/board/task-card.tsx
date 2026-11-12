@@ -5,6 +5,7 @@ import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/
 import {
   Bot,
   CircleCheck,
+  CircleHelp,
   Clock,
   Hourglass,
   LoaderCircle,
@@ -15,6 +16,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useBoardTasks, useQueuePosition } from "@/hooks/use-board";
+import { questionPreview } from "@/lib/question";
 import { cn } from "@/lib/utils";
 import type { AgentState, Task } from "@/lib/types";
 
@@ -76,6 +78,11 @@ interface TaskCardProps {
   dragListeners?: DraggableSyntheticListeners;
   /** Latest agent activity line; shown under the title while the agent runs. */
   activity?: string;
+  /**
+   * Click handler of the question strip (shown when the agent left a question): send the card
+   * back to To do and open it on the question. Without it the strip renders inert (drag overlay).
+   */
+  onAnswer?: () => void;
   /** Always-visible quick actions row (mobile). */
   actions?: ReactNode;
   /** Desktop hover/focus quick-action strip, pinned to the card's top-right corner (outside the card button). */
@@ -92,6 +99,7 @@ export const TaskCard = memo(function TaskCard({
   dragAttributes,
   dragListeners,
   activity,
+  onAnswer,
   actions,
   quickActions,
   className,
@@ -140,7 +148,7 @@ export const TaskCard = memo(function TaskCard({
         className={cn(
           "block w-full touch-manipulation rounded-lg p-3 text-left outline-none select-none",
           "focus-visible:ring-3 focus-visible:ring-ring/50 md:hover:bg-muted/40",
-          actions && "rounded-b-none",
+          (actions || task.question) && "rounded-b-none",
         )}
       >
         <span className={cn("flex items-start gap-2", pinnedQuickAction && "pr-7")}>
@@ -154,9 +162,12 @@ export const TaskCard = memo(function TaskCard({
             className={cn(
               "line-clamp-2 min-w-0 text-sm leading-snug font-medium break-words",
               done && "text-muted-foreground",
+              task.pushedAt && "line-through",
             )}
+            title={task.pushedAt ? "Pushed to main" : undefined}
           >
             {task.title}
+            {task.pushedAt && <span className="sr-only"> (pushed to main)</span>}
           </span>
         </span>
         {task.agentState === "running" && activity ? (
@@ -228,6 +239,36 @@ export const TaskCard = memo(function TaskCard({
           </span>
         )}
       </button>
+      {task.question && (
+        <button
+          type="button"
+          onClick={onAnswer}
+          disabled={!onAnswer}
+          title={task.question}
+          className={cn(
+            "flex w-full items-start gap-2 border-t border-amber-500/25 bg-amber-500/10 px-3 py-2 text-left outline-none",
+            !actions && "rounded-b-lg",
+            onAnswer &&
+              "transition-colors hover:bg-amber-500/20 focus-visible:ring-3 focus-visible:ring-ring/50",
+          )}
+        >
+          <CircleHelp aria-hidden className="mt-0.5 size-3.5 shrink-0 text-amber-700 dark:text-amber-300" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-[11px] font-semibold text-amber-800 dark:text-amber-200">
+              The agent has a question
+            </span>
+            <span className="line-clamp-2 text-xs break-words text-amber-900/90 dark:text-amber-100/90">
+              {questionPreview(task.question)}
+            </span>
+            <span className="sr-only">Answer it: moves the card back to To do and opens it</span>
+          </span>
+          {onAnswer && (
+            <span className="mt-0.5 shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-200">
+              Answer
+            </span>
+          )}
+        </button>
+      )}
       {showQuickActions && quickActions}
       {actions && <div className="flex items-center border-t">{actions}</div>}
     </div>

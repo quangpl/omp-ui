@@ -6,8 +6,9 @@
 //                         "argv" (argv, cwd, sorted envKeys and allowlisted env values at startup),
 //                         "command" (each stdin command),
 //                         "ui_response" (each extension_ui_response), "steer" (steered messages).
-//   FAKE_OMP_SCENARIO     Default prompt behaviour: success | error | crash | slow | confirm | stream |
-//                         orchestrate | board_tools.
+//   FAKE_OMP_SCENARIO     Default prompt behaviour: success | question | error | crash | slow | confirm |
+//                         stream | orchestrate | board_tools.
+//                         "question" succeeds with a summary that ends in a question for the user.
 //                         "stream" emits 2 thinking_delta + 15 text_delta frames ~80ms apart, then succeeds.
 //                         "orchestrate" runs a `task` call with two subagents (Scout succeeds, Builder
 //                         fails), reporting progress via task tool updates and, when subscribed via
@@ -50,6 +51,45 @@ if (argv[0] === "config") {
   if (roles === "fail") process.exit(1);
   process.stdout.write(`${JSON.stringify({ key: argv[2], value: JSON.parse(roles) }, null, 2)}\n`);
   process.exit(0);
+}
+
+// Print mode (`-p --mode json`, the advisor): reads the prompt from stdin, logs it as a "print"
+// entry (not "argv"), and answers with one assistant message chosen by a `[fake-advisor:<mode>]`
+// marker in the prompt (the card's text is part of it):
+//   (none)       consult: a decision; triage: every question left for the user, unchanged.
+//   user         consult: marked for the user.
+//   answer       triage: answers the question and sends the agent back to work (followUp); the
+//                followUp carries "[fake:question] [fake-advisor:answer]", so the next run asks again.
+//   fail         exits 1 without an answer.
+if (argv.includes("-p")) {
+  let prompt = "";
+  for await (const chunk of process.stdin) prompt += chunk;
+  log("print", { argv, cwd: process.cwd(), prompt });
+  const mode = /\[fake-advisor:([a-z_]+)\]/.exec(prompt)?.[1] ?? "";
+  if (mode === "fail") {
+    process.stderr.write("fake omp: advisor exploded\n", () => process.exit(1));
+    await new Promise(() => undefined);
+  }
+  const questions = /<questions>\n([\s\S]*?)\n<\/questions>/.exec(prompt)?.[1];
+  let reply;
+  if (questions === undefined) {
+    reply =
+      mode === "user"
+        ? { needsUser: true, decision: "Use the existing blue", reason: "Brand colors are the user's call." }
+        : { needsUser: false, decision: "Use offset pagination with 20 items per page", reason: "Matches the other list endpoints." };
+  } else if (mode === "answer") {
+    reply = {
+      answers: [{ question: questions, answer: "20 items, like the other endpoints." }],
+      userQuestion: null,
+      followUp: "Set the default page size to 20 and add a test for it. [fake:question] [fake-advisor:answer]",
+    };
+  } else {
+    reply = { answers: [], userQuestion: questions, followUp: null };
+  }
+  const text = JSON.stringify(reply);
+  const message = { role: "assistant", content: [{ type: "text", text }], stopReason: "stop", timestamp: Date.now() };
+  process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`, () => process.exit(0));
+  await new Promise(() => undefined);
 }
 
 /** Environment variables whose values the "argv" entry records (credentials in, OMP UI secrets out). */
@@ -363,6 +403,11 @@ async function startPrompt(command) {
   switch (scenario) {
     case "success":
       completeSuccessfully("Fake summary: implemented the task and ran the tests.");
+      break;
+    case "question":
+      completeSuccessfully(
+        "Fake summary: added the endpoint.\n\nShould pagination default to 20 or 50 items per page?",
+      );
       break;
     case "error":
       finishRun(assistant("", "error", "Fake model error: rate limited"));

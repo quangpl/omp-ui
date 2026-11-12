@@ -15,16 +15,6 @@ import {
   Upload,
 } from "lucide-react";
 import { toast } from "sonner";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -310,7 +300,6 @@ export function ShipActions({
   onShipped: (comment: Comment) => void;
 }) {
   const [busy, setBusy] = useState<ShipAction | null>(null);
-  const [confirmPush, setConfirmPush] = useState(false);
   const [result, setResult] = useState<GitActionResult | null>(null);
 
   const repos = statuses?.filter((status) => status.isRepo) ?? [];
@@ -422,7 +411,7 @@ export function ShipActions({
           variant="outline"
           className="h-11 w-full sm:w-auto sm:flex-1 md:h-9"
           disabled={agentActive || busy !== null || noRemote}
-          onClick={() => setConfirmPush(true)}
+          onClick={() => void run("push")}
         >
           {busy === "push" ? <LoaderCircle className="animate-spin" /> : <Upload />}
           {busy === "push" ? "Pushing…" : `Push to ${pushTarget}`}
@@ -431,25 +420,6 @@ export function ShipActions({
       <p className="text-xs text-muted-foreground">{hint}</p>
 
       {result && <ShipResults result={result} prNoun={prNoun} />}
-
-      <AlertDialog open={confirmPush} onOpenChange={setConfirmPush}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Commit all changes and push directly to {pushTarget}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {repos.length > 1
-                ? `Applies to every changed folder: ${repos.map((repo) => folderName(repo.folder)).join(", ")}.`
-                : "No pull request and no review — the commit lands on the main line right away."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel className="max-md:h-11">Cancel</AlertDialogCancel>
-            <AlertDialogAction className="max-md:h-11" onClick={() => void run("push")}>
-              Push to {pushTarget}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </ShipFrame>
   );
 }

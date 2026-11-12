@@ -12,7 +12,8 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ApiRequestError, api, subscribeEvents } from "@/lib/api-client";
+import { ApiRequestError, type DraftProgress, api, subscribeEvents } from "@/lib/api-client";
+import { type DraftCardInput, draftToCard, fallbackDraft, isPlainTitle } from "@/lib/card-draft";
 import { SUBAGENT_STATUS_LABELS, parseSubagent } from "@/lib/subagents";
 import {
   TASK_STATUSES,
@@ -158,6 +159,10 @@ export interface NewCardInput {
    * new cards on auto-run boards skip To do and start right away.
    */
   start?: boolean;
+  /** Cards this one waits for ("Run after"). */
+  blockedBy?: string[];
+  /** The free text the card was written from; saved on the card as `brief.md`. */
+  brief?: string;
 }
 
 /**
@@ -176,6 +181,8 @@ export async function createCard(
     task = await api.tasks.create(board.id, {
       title: input.title,
       description: input.description || undefined,
+      blockedBy: input.blockedBy?.length ? input.blockedBy : undefined,
+      brief: input.brief,
       status: start ? "in_progress" : "todo",
       position: options.position,
     });
@@ -221,6 +228,11 @@ export interface BoardController {
   revertToTodo: (taskId: string) => Promise<void>;
   /** Create a card; toasts and resolves `null` on failure. */
   createTask: (input: NewCardInput) => Promise<Task | null>;
+  /**
+   * Inline "Add a card": a short line is the title as typed, longer text goes through the card
+   * agent first. Toasts and resolves `null` on failure (not when `progress.signal` aborts it).
+   */
+  createFromText: (text: string, progress?: DraftProgress) => Promise<Task | null>;
   /** Start / stop a card's agent; toasts on failure. */
   runAgent: (taskId: string) => Promise<void>;
   stopAgent: (taskId: string) => Promise<void>;
@@ -502,6 +514,26 @@ export function useBoard(boardId: string): BoardController {
     [boardId, endPosition, upsertTask],
   );
 
+  const createFromText = useCallback(
+    async (text: string, progress: DraftProgress = {}): Promise<Task | null> => {
+      const value = text.trim();
+      if (isPlainTitle(value)) return createTask({ title: value });
+      let card: DraftCardInput;
+      try {
+        card = draftToCard((await api.tasks.draft(boardId, value, progress)).draft, value);
+      } catch (err) {
+        if (progress.signal?.aborted) return null;
+        toast.error("The card agent couldn't write this card", {
+          description: message(err),
+          action: { label: "Add as typed", onClick: () => void createTask(draftToCard(fallbackDraft(value), value)) },
+        });
+        return null;
+      }
+      return createTask(card);
+    },
+    [boardId, createTask],
+  );
+
   const runAgent = useCallback(
     async (taskId: string) => {
       try {
@@ -551,6 +583,7 @@ export function useBoard(boardId: string): BoardController {
     reorderTask,
     revertToTodo,
     createTask,
+    createFromText,
     runAgent,
     stopAgent,
     deleteTask,

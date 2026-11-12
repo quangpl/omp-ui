@@ -114,7 +114,12 @@ export async function runTaskGitAction(
     resolved: true,
   });
   publish({ type: "comment.added", comment, boardId: task.boardId });
-  const fresh = await repo.getTask(task.id);
+  // A clean push (something landed, nothing failed) marks the card as pushed: its title is struck through.
+  const pushed =
+    action === "push" && results.some((r) => !r.skipped && !r.error) && !results.some((r) => r.error);
+  const fresh = pushed
+    ? await repo.updateTask(task.id, { pushedAt: new Date().toISOString() })
+    : await repo.getTask(task.id);
   if (fresh) publish({ type: "task.updated", task: fresh });
 
   const response: GitActionResult = { action, results, comment };
