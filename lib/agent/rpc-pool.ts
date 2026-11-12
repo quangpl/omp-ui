@@ -129,3 +129,18 @@ function unpark(worker: IdleWorker): void {
   worker.proc.off("exit", worker.onExit);
   worker.proc.setRef(true);
 }
+
+/** Pids of the warm workers waiting for a call. */
+export function idleWorkerPids(): number[] {
+  return idleWorkers().flatMap((w) => (w.proc.pid === undefined || w.proc.exited ? [] : [w.proc.pid]));
+}
+
+/** Close every idle worker (they respawn on demand); returns how many were closed. */
+export function closeIdleWorkers(): number {
+  const idle = [...idleWorkers()];
+  for (const worker of idle) {
+    unpark(worker);
+    void worker.proc.close();
+  }
+  return idle.length;
+}

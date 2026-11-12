@@ -69,27 +69,20 @@ test("two sessions on one board see each other's card changes live", async ({ pa
     await expect(connectionPill(other)).toContainText("Live");
     await markNoReload(other);
 
-    // Create in A (parked in To do: auto-run boards start new cards by default) → appears in B.
+    // Create in A → appears in B; it starts on its own and the run lands it in Done in both tabs.
     const todo = column(page, "To do");
     await page.getByRole("button", { name: "Add card", exact: true }).click();
     const newCard = page.getByRole("dialog", { name: "New card" });
     await newCard.getByLabel("What should the agent do?", { exact: true }).fill(title);
-    const startNow = newCard.getByRole("switch", { name: /Start agent now/ });
-    await expect(startNow).toBeChecked();
-    await startNow.click();
     await newCard.getByRole("button", { name: "Create card" }).click();
     await expect(newCard).toBeHidden({ timeout: AGENT_TIMEOUT });
-    await expect(cardButton(todo, title)).toBeVisible();
-    await expect(cardButton(column(other, "To do"), title)).toBeVisible();
+    await expect(cardButton(column(page, "Done"), title)).toBeVisible({ timeout: AGENT_TIMEOUT });
+    await expect(cardButton(column(other, "Done"), title)).toBeVisible({ timeout: AGENT_TIMEOUT });
 
-    // A starts the agent from the detail header → the run lands the card in Done and B's columns follow.
-    await cardButton(todo, title).click();
+    await cardButton(column(page, "Done"), title).click();
     const detail = page.getByRole("dialog", { name: title });
     const status = detail.getByRole("status", { name: "Status" });
-    await detail.getByRole("button", { name: "Start", exact: true }).click();
-    await expect(status).toHaveText(/Done/, { timeout: AGENT_TIMEOUT });
-    await expect(cardButton(column(other, "Done"), title)).toBeVisible({ timeout: AGENT_TIMEOUT });
-    await expect(cardButton(column(other, "To do"), title)).toHaveCount(0);
+    await expect(status).toHaveText(/Done/);
 
     // A reverts it → B sees it back in To do.
     await detail.getByRole("button", { name: "Revert to To do", exact: true }).click();

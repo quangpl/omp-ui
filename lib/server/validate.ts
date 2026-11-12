@@ -4,7 +4,15 @@ import path from "node:path";
 import { BRIEF_MAX, DESCRIPTION_MAX, TITLE_MAX } from "@/lib/card-draft";
 import type { Repository } from "@/lib/db/types";
 import { HttpError } from "@/lib/server/http";
-import { TASK_STATUSES, type Board, type Task, type TaskStatus } from "@/lib/types";
+import {
+  CLEANUP_IDS,
+  TASK_STATUSES,
+  type Board,
+  type CleanupId,
+  type MaintenanceAction,
+  type Task,
+  type TaskStatus,
+} from "@/lib/types";
 
 function text(value: unknown, field: string, min: number, max: number): string {
   if (typeof value !== "string") throw new HttpError(400, `${field} must be a string`);
@@ -163,4 +171,40 @@ export async function parseBlockedBy(
     stack.push(...(tasks.get(id)?.blockedBy ?? []));
   }
   return ids;
+}
+
+/** POST /stats/maintenance body: `{ kind: "cleanup", ids } | { kind: "kill", pids } | { kind: "release-memory" } | { kind: "stop-card", taskId }`. */
+export function parseMaintenanceAction(body: Record<string, unknown>): MaintenanceAction {
+  switch (body.kind) {
+    case "cleanup": {
+      const ids = body.ids;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.length > CLEANUP_IDS.length) {
+        throw new HttpError(400, "ids must be a non-empty array of cleanup ids");
+      }
+      for (const id of ids) {
+        if (!(CLEANUP_IDS as readonly unknown[]).includes(id)) {
+          throw new HttpError(400, `ids must be among: ${CLEANUP_IDS.join(", ")}`);
+        }
+      }
+      return { kind: "cleanup", ids: [...new Set(ids as CleanupId[])] };
+    }
+    case "kill": {
+      const pids = body.pids;
+      if (!Array.isArray(pids) || pids.length === 0 || pids.length > 100) {
+        throw new HttpError(400, "pids must be a non-empty array (at most 100)");
+      }
+      if (!pids.every((pid) => Number.isInteger(pid) && pid > 1)) throw new HttpError(400, "pids must be integers above 1");
+      return { kind: "kill", pids: [...new Set(pids as number[])] };
+    }
+    case "release-memory":
+      return { kind: "release-memory" };
+    case "stop-card": {
+      if (typeof body.taskId !== "string" || !/^[A-Za-z0-9_-]+$/.test(body.taskId)) {
+        throw new HttpError(400, "taskId is required");
+      }
+      return { kind: "stop-card", taskId: body.taskId };
+    }
+    default:
+      throw new HttpError(400, "kind must be one of: cleanup, kill, release-memory, stop-card");
+  }
 }

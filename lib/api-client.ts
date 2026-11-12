@@ -5,7 +5,6 @@ import type {
   Board,
   BoardWithCounts,
   BoardPushResult,
-  CardDraft,
   Comment,
   AiStats,
   OmpSkill,
@@ -14,11 +13,13 @@ import type {
   OmpModel,
   MemoryStatus,
   Dashboard,
-  DraftStreamEvent,
   FsBrowseResult,
   GitActionResult,
   GitBranches,
   GitStatus,
+  MaintenanceAction,
+  MaintenanceReport,
+  MaintenanceResult,
   QueueSnapshot,
   RestartStatus,
   Run,
@@ -99,45 +100,6 @@ async function send(path: string, init: RequestInit & { json?: unknown } = {}): 
 
 async function request<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
   return (await (await send(path, init)).json()) as T;
-}
-
-/** Progress hooks for a card-agent draft: `signal` stops the agent, `onActivity` gets its progress lines. */
-export interface DraftProgress {
-  signal?: AbortSignal;
-  onActivity?: (line: string) => void;
-}
-
-/**
- * POST /boards/:id/tasks/draft: the card-writer agent turns `text` into a card. Rejects with the
- * agent's error.
- */
-async function draftCard(
-  boardId: string,
-  text: string,
-  options: DraftProgress = {},
-): Promise<{ draft: CardDraft; model: string | null }> {
-  const res = await send(`/boards/${boardId}/tasks/draft`, { method: "POST", json: { text }, signal: options.signal });
-  if (!res.body) throw new ApiRequestError("The server sent no answer", 502);
-  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
-  let buffer = "";
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      buffer += value ?? "";
-      const lines = buffer.split("\n");
-      buffer = done ? "" : (lines.pop() ?? "");
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        const event = JSON.parse(line) as DraftStreamEvent;
-        if (event.type === "activity") options.onActivity?.(event.text);
-        else if (event.type === "draft") return { draft: event.draft, model: event.model };
-        else throw new ApiRequestError(event.message, 502);
-      }
-      if (done) throw new ApiRequestError("The card agent stopped without an answer", 502);
-    }
-  } finally {
-    reader.cancel().catch(() => undefined);
-  }
 }
 
 export interface TokenResponse {
@@ -312,12 +274,14 @@ export const api = {
         status?: TaskStatus;
         position?: number;
         blockedBy?: string[];
-        /** The free text the card was written from; saved on the card as `brief.md`. */
-        brief?: string;
       },
     ) => request<Task>(`/boards/${boardId}/tasks`, { method: "POST", json: input }),
-    /** Let the card-writer agent turn free text into a title and brief (streams its progress). */
-    draft: draftCard,
+    /**
+     * A card from free text, created in In progress with its agent started; the card writer
+     * writes its title and brief in the background before the run starts.
+     */
+    createFromText: (boardId: string, input: { text: string; position?: number }) =>
+      request<Task>(`/boards/${boardId}/tasks`, { method: "POST", json: input }),
     get: (id: string) => request<TaskDetail>(`/tasks/${id}`),
     update: (
       id: string,
@@ -392,6 +356,11 @@ export const api = {
     system: () => request<SystemStats>("/stats/system"),
     /** AI provider quota + usage via omp; `refresh` bypasses the 60s server cache. */
     ai: (refresh = false) => request<AiStats>(`/stats/ai${refresh ? "?refresh=1" : ""}`),
+    /** Analyze CPU, memory and storage (processes, cleanable data, recommendations). */
+    analyze: () => request<MaintenanceReport>("/stats/maintenance"),
+    /** Clean up storage, end processes, free server memory or stop a card. */
+    maintain: (action: MaintenanceAction) =>
+      request<MaintenanceResult>("/stats/maintenance", { method: "POST", json: action }),
   },
   fs: {
     /** List sub-folders of `path` (default: WORKSPACE_DIR). */

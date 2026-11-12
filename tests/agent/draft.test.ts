@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { chooseDraftModel, parseDraftReply } from "@/lib/agent/draft";
-import { ATTACH_BRIEF_MIN, ORCHESTRATE_LINE, TITLE_MAX, draftToCard, fallbackDraft } from "@/lib/card-draft";
+import { BRIEF_NOTE, DESCRIPTION_MAX, ORCHESTRATE_LINE, TITLE_MAX, draftToCard, fallbackDraft } from "@/lib/card-draft";
 
 const open = new Map([
   ["c1", "Build the API"],
@@ -87,15 +87,22 @@ describe("draftToCard", () => {
   const draft = { title: " Fix it ", description: "## Goal\n\nFix it.", orchestrate: false, waitFor: [{ id: "c1", title: "Build the API" }] };
 
   it("adds omp's orchestrate keyword only when the card should be orchestrated", () => {
-    expect(draftToCard(draft, "fix it").description).toBe("## Goal\n\nFix it.");
-    expect(draftToCard({ ...draft, orchestrate: true }, "fix it").description).toBe(`## Goal\n\nFix it.\n\n${ORCHESTRATE_LINE}`);
+    expect(draftToCard(draft, false).description).toBe("## Goal\n\nFix it.");
+    expect(draftToCard({ ...draft, orchestrate: true }, false).description).toBe(`## Goal\n\nFix it.\n\n${ORCHESTRATE_LINE}`);
     expect(ORCHESTRATE_LINE.startsWith("orchestrate")).toBe(true);
   });
 
-  it("attaches long original text the description does not hold, and maps waitFor to blockedBy", () => {
-    const long = "word ".repeat(ATTACH_BRIEF_MIN / 5 + 1).trim();
-    expect(draftToCard(draft, long)).toEqual({ title: "Fix it", description: "## Goal\n\nFix it.", blockedBy: ["c1"], brief: long });
-    expect(draftToCard({ ...draft, description: long }, long).brief).toBeUndefined();
-    expect(draftToCard(draft, "short text").brief).toBeUndefined();
+  it("points to the attached original text and maps waitFor to blockedBy", () => {
+    expect(draftToCard(draft, true)).toEqual({
+      title: "Fix it",
+      description: `## Goal\n\nFix it.\n\n${BRIEF_NOTE}`,
+      blockedBy: ["c1"],
+    });
+  });
+
+  it("keeps the description within the API limit with both extra lines", () => {
+    const card = draftToCard({ ...draft, description: "x".repeat(DESCRIPTION_MAX), orchestrate: true }, true);
+    expect(card.description.length).toBeLessThanOrEqual(DESCRIPTION_MAX);
+    expect(card.description.endsWith(`${ORCHESTRATE_LINE}\n\n${BRIEF_NOTE}`)).toBe(true);
   });
 });

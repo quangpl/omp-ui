@@ -94,6 +94,13 @@ export interface Repository {
   /** Create tables/collections/indexes. Idempotent. */
   init(): Promise<void>;
   close(): Promise<void>;
+  /**
+   * Reclaim free pages on disk (SQLite: checkpoint + truncate the WAL, then VACUUM). Only file-backed
+   * drivers implement it; server databases manage their own storage.
+   */
+  compact?(): Promise<void>;
+  /** Bytes `compact()` would free (free pages + write-ahead log); implemented with `compact`. */
+  compactableBytes?(): Promise<number>;
 
   getSetting(key: string): Promise<string | null>;
   setSetting(key: string, value: string): Promise<void>;

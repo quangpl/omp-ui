@@ -96,7 +96,7 @@ const g = globalThis as unknown as {
   __ompUiAiStatsInFlight?: unknown;
   __ompUiOmpInfo?: unknown;
   __ompUiSkills?: unknown;
-  __ompUiDrafts?: number;
+  __ompUiDrafts?: unknown;
 };
 
 let current: TestEnv | null = null;

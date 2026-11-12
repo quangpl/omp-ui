@@ -61,7 +61,7 @@ import {
   type Run,
   type Task,
 } from "@/lib/types";
-import type { BoardStreamListener } from "@/hooks/use-board";
+import { type BoardStreamListener, useQueueDrafting } from "@/hooks/use-board";
 import { AgentLog } from "@/components/board/agent-log";
 import { StatusDot } from "@/components/board/board-column";
 import { CommentThread } from "@/components/board/comment-thread";
@@ -356,6 +356,7 @@ function TaskDetailBody({
     tab === "changes" && (task?.agentState === "running" || task?.agentState === "queued"),
   );
   useEffect(() => onWideChange(tab === "changes"), [tab, onWideChange]);
+  const drafting = useQueueDrafting(taskId) && task?.agentState === "queued";
 
   if (!task) {
     return (
@@ -564,7 +565,7 @@ function TaskDetailBody({
               <StatusDot status={task.status} />
               {STATUS_LABELS[task.status]}
             </span>
-            <AgentStateBadge state={task.agentState} retryAt={task.retryAt} />
+            <AgentStateBadge state={task.agentState} retryAt={task.retryAt} drafting={drafting} />
             {task.pushedAt && (
               <span
                 title={`Pushed to main ${formatDateTime(task.pushedAt)}`}

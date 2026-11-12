@@ -9,7 +9,6 @@ import {
   RefreshCw,
   Settings2,
   Trash2,
-  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -39,8 +38,7 @@ export interface BoardMenuActions {
   duplicate: (task: Task) => Promise<void>;
   /** Asks for confirmation before deleting. */
   requestDelete: (task: Task) => void;
-  /** `start` presets "Start agent now"; omitted, the board's auto-run decides. */
-  newCard: (start?: boolean) => void;
+  newCard: () => void;
   refresh: () => void;
   openSettings: () => void;
 }
@@ -64,18 +62,11 @@ async function copy(text: string, what: string) {
 
 function NewCardItems({ actions }: { actions: BoardMenuActions }) {
   return (
-    <>
-      <ContextMenuItem onSelect={() => actions.newCard()}>
-        <Plus />
-        New card…
-        <ContextMenuShortcut>N</ContextMenuShortcut>
-      </ContextMenuItem>
-      <ContextMenuItem onSelect={() => actions.newCard(true)}>
-        <Zap />
-        New card &amp; start agent…
-        <ContextMenuShortcut>⇧N</ContextMenuShortcut>
-      </ContextMenuItem>
-    </>
+    <ContextMenuItem onSelect={() => actions.newCard()}>
+      <Plus />
+      New card…
+      <ContextMenuShortcut>N</ContextMenuShortcut>
+    </ContextMenuItem>
   );
 }
 

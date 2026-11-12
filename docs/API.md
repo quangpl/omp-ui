@@ -34,6 +34,8 @@ The `ADMIN_PASSWORD` env var, when set, is applied at server boot (overwrites th
 | --- | --- | --- |
 | GET | `/stats/system` | `SystemStats`: host (hostname, OS, uptime, Node), CPU (model, cores, load average, usage % sampled over ~200 ms), memory, disk of the `DATA_DIR` filesystem (`null` if unavailable), server process (pid, uptime, RSS, heap) and app counts (boards, tasks per status, agents running/queued). Bytes are bytes, durations seconds |
 | GET | `/stats/ai?refresh=1` | `AiStats`: provider quota from `omp usage --json` and token/cost usage from `omp stats --json`. Cached 60 s server-side; `refresh=1` bypasses the cache |
+| GET | `/stats/maintenance` | `MaintenanceReport` (~1 s): top CPU/memory processes plus every agent-related one, each tagged (`server`, `card-agent`, `helper`, `orphan-agent` for untracked omp agents of this `DATA_DIR` whose parent died, `agent-spawned`, `omp`, `user`, `system`) with `killable`; memory (available, swap, server heap, idle helper agents); storage cleanup items with estimated bytes and `risk` (`safe`/`review`), other large folders (read-only) and recommendations |
+| POST | `/stats/maintenance` | `{ kind: "cleanup", ids }` (ids from `CLEANUP_IDS`: leftovers of deleted cards/projects, worktrees of shipped cards, old run configs, drafts and change summaries, rotated logs, SQLite compaction, Docker prunes) · `{ kind: "kill", pids }` (SIGTERM, SIGKILL after 3 s, with killable children; never the server or its ancestors, never a running card's agent) · `{ kind: "release-memory" }` (close idle helper agents, full GC) · `{ kind: "stop-card", taskId }` → `MaintenanceResult { results: { id, ok, message, freedBytes }[], freedBytes }` |
 
 `AiStats.quota` and `AiStats.usage` each carry `available: boolean` and a plain-language `error` (e.g. `"omp is not installed"`, `"omp usage took too long to respond"`); a failing `omp` command never fails the request. Each quota limit has `usedFraction` (0–1), `windowLabel` (e.g. `"5 Hour"`) and `resetsAt` (ISO). Timestamps are ISO strings.
 
@@ -74,8 +76,7 @@ A board is one project. `workdir` is the main folder (omp runs there); `extraFol
 | PATCH | `/boards/:id` | `Partial<{ name, workdir, extraFolders, model, autoRun, worktrees }>` | `Board` |
 | DELETE | `/boards/:id` | – | `{ ok: true }` (stops its agents, cascades, removes its shared files and every card's files and workspace) |
 | GET | `/boards/:id/tasks` | – | `Task[]` |
-| POST | `/boards/:id/tasks` | `{ title, description?, status?, position?, blockedBy?, brief? }` | `Task` (201). Creating directly in `in_progress` with autoRun starts the agent. `brief`: see [Card writer](#card-writer) |
-| POST | `/boards/:id/tasks/draft` | `{ text }` | `200 application/x-ndjson` stream of `DraftStreamEvent` lines; creates nothing. See [Card writer](#card-writer) |
+| POST | `/boards/:id/tasks` | `{ title, description?, status?, position?, blockedBy? }` or `{ text, position? }` | `Task` (201). Creating directly in `in_progress` with autoRun starts the agent. `text`: a card from free text, see [Card writer](#card-writer) |
 | GET | `/boards/:id/files` | – | `SharedFiles` of the board (shared with every card's agent) |
 | POST | `/boards/:id/files?name=<file>` | raw file bytes | `SharedFiles` (201); replaces a file of the same name; max 100 MB |
 | GET | `/boards/:id/files/<name>` | – | the file (`?download=1` forces a download) |
@@ -128,11 +129,12 @@ Git never prompts: commands run without a terminal (`GIT_TERMINAL_PROMPT=0`, SSH
 
 ### Card writer
 
-The new-card form turns free text into a card with a read-only `omp --mode rpc` agent (steered to answer after 8 lookups, 16 for long requests), then creates it with `POST /boards/:id/tasks`.
+Cards from free text are written by a read-only `omp --mode rpc` agent (steered to answer after 8 lookups, 16 for long requests) in the background; nobody waits for it.
 
-- `POST /boards/:id/tasks/draft` with `{ text }` (1–2,000,000 characters) → `200 application/x-ndjson`, one `DraftStreamEvent` JSON object per line: `{ "type": "activity", "text" }` while the agent works, then exactly one `{ "type": "draft", "draft": CardDraft, "model": string | null }` or `{ "type": "error", "message" }`. `CardDraft` = `{ title, description, orchestrate, waitFor: [{ id, title }] }`. Closing the request stops the agent. `429` when half the server's logical cores (at least 4, at most 16) drafts are already running server-wide.
-- Nothing is created by the draft call. To create the card, `POST /boards/:id/tasks` with the draft's `title` and `description` (when `orchestrate` is true, append the orchestration line that makes omp split the work across parallel subagents) and the `waitFor` ids as `blockedBy`.
-- `POST /boards/:id/tasks` accepts an optional `brief` (string, the original free text, 1–2,000,000 characters): it is saved as the card file `brief.md` before the agent starts, and the description gets a line pointing the agent to it. The web UI sends it when the text is 2,000+ characters and differs from the description.
+- `POST /boards/:id/tasks` with `{ text, position? }` (`text`: 1–2,000,000 characters) → `Task` (201) at once: in `in_progress` with its run queued (whatever the board's `autoRun`), titled from the text's first line with the text as its description. Text of 2,000+ characters is also saved as the card file `brief.md`, and the description gets a line pointing the agent to it.
+- A short single line (up to 100 characters) is the title as typed: its run starts without the card writer.
+- Otherwise the run is held (`QueueEntry.drafting`, `queue.updated.drafting`) while the card writer works; its progress lines are sent live as `task.activity` events. When it is done, the card gets the written title and Markdown brief (plus the orchestration line that makes omp split the work across parallel subagents, when the work calls for it) and `blockedBy` gains the open cards it must wait for; a title or description changed meanwhile is kept. Then the run starts.
+- If the card writer fails, the card keeps the text as typed, gets an agent comment saying so, and runs. Stopping or deleting the card stops its card writer. Up to half the server's logical cores (at least 4, at most 16) cards are written at once; more wait their turn. After a server restart a card still being written runs as it is.
 
 ### Code changes
 
@@ -144,7 +146,7 @@ The new-card form turns free text into a card with a read-only `omp --mode rpc` 
 
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
-| GET | `/queue` | – | `QueueSnapshot`: `limit` (the effective limit, `concurrency.limit`), `concurrency` (see below), `running` and `queued` (start order) `QueueEntry`s, each with the blocking cards that are not Done yet (`waitingFor`), `planning` (held until the planner has ordered its project's queued cards) and `planNote` (the planner's one-line reason, or `null`); `planning` lists the projects being planned right now (`{ boardId, boardName }[]`) |
+| GET | `/queue` | – | `QueueSnapshot`: `limit` (the effective limit, `concurrency.limit`), `concurrency` (see below), `running` and `queued` (start order) `QueueEntry`s, each with the blocking cards that are not Done yet (`waitingFor`), `planning` (held until the planner has ordered its project's queued cards), `drafting` (held while the card writer writes the card) and `planNote` (the planner's one-line reason, or `null`); `planning` lists the projects being planned right now (`{ boardId, boardName }[]`) |
 | POST | `/queue` | `{ taskId, position }` | `QueueSnapshot` after moving a queued card (`position` 0 starts next); 409 if the card is not queued |
 
 Queued cards start in queue order as slots free up, skipping cards whose `blockedBy` cards are not all Done; a card reaching Done re-checks the queue.
@@ -172,7 +174,7 @@ Both act on every project folder (`workdir` + `extraFolders`), or only on `folde
 - Agent fails → card stays in **In progress** with `agentState: "error"` and an agent comment explaining the error. With `autoRetry` on, the run is retried automatically in the same omp session after 15 s, 30 s, 1 min, 2 min, 4 min … (at most 10 min apart) while `task.autoRetries` (retries used) is below `maxAutoRetries`; `task.retryAt` is when the next one starts (null when none is scheduled). A success, `POST /tasks/:id/run` or a feedback comment resets `autoRetries` to 0; Stop or moving the card out of In progress cancels a pending retry. The UI shows such a card as **Retrying**.
 - Server restart (boot recovery, on the first API call — the supervisor's health probe makes that immediate): runs left `running` are marked `aborted`; queued cards are queued again; with `autoRetry` on, cards that were running and failed In progress cards resume (each using one retry, so a card whose run keeps taking the server down stops once its budget is used up) and pending retries keep their `retryAt`. With `autoRetry` off, cards that were running end with `agentError: "Interrupted by server restart"`.
 - Comment on a **Done** card (or an idle In-progress card) → card reopens to **In progress** and the agent resumes the same omp session with the feedback.
-- Comment while the agent is **running** → feedback is steered into the live session.
+- Comment while the agent is **running** → feedback is steered into the live session as an RPC `prompt` with `streamingBehavior: "steer"` (like omp's interactive input, so magic keywords such as `orchestrate` apply; large feedback gets the `orchestrate` keyword added; keywords in another card agent's message are neutralized).
 - Move to **To do**/**Done** manually while running → agent is stopped.
 - The web UI never sets an arbitrary status: cards move by themselves as their agent works, and the only status-affecting controls are its quick actions — **Start**/**Resume**/**Retry** = `POST /tasks/:id/run`, **Stop** = `POST /tasks/:id/stop`, **Revert to To do** = `PATCH /tasks/:id` with `{ status: "todo" }`. Done cards not pushed yet also get **Push to main** = `POST /tasks/:id/git/push` (no status change). Dragging in the UI only reorders within a column (PATCH `position`). API clients can still PATCH any `status`.
 

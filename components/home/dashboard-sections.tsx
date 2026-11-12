@@ -17,7 +17,6 @@ import {
   SettingsIcon,
   TriangleAlertIcon,
   XIcon,
-  ZapIcon,
 } from "lucide-react";
 import { openCommandPalette } from "@/components/command-palette";
 import { openKeyboardHelp } from "@/components/keyboard-help";
@@ -198,21 +197,13 @@ export function QuickActions({ onCreateProject }: { onCreateProject: () => void 
         />
         <QuickAction
           index={1}
-          icon={<ZapIcon />}
-          label="Card & start"
-          hint="Run the agent right away"
-          keys={["⇧", "N"]}
-          onClick={() => openNewCard({ start: true })}
-        />
-        <QuickAction
-          index={2}
           icon={<FolderPlusIcon />}
           label="Add project"
           hint="Server folder or Git repo"
           onClick={onCreateProject}
         />
         <QuickAction
-          index={3}
+          index={2}
           icon={<CommandIcon />}
           label="Jump to…"
           hint="Projects, cards, commands"
@@ -220,7 +211,7 @@ export function QuickActions({ onCreateProject }: { onCreateProject: () => void 
           onClick={openCommandPalette}
         />
         <QuickAction
-          index={4}
+          index={3}
           icon={<KeyboardIcon />}
           label="Shortcuts"
           hint="Every key in one place"
@@ -335,15 +326,8 @@ export function GettingStarted({
     },
     {
       title: "Run an agent",
-      body: "Press Start on a card (or R on a focused card) — boards with auto-run start on their own.",
+      body: "A new card starts its agent on its own. Press Start (or R on a focused card) to run a card again.",
       done: setup.hasRun,
-      action: (
-        <Button size="sm" variant="outline" className="h-11 md:h-7" onClick={() => openNewCard({ start: true })}>
-          <ZapIcon />
-          Card &amp; start
-          <KeyHint keys={["⇧", "N"]} />
-        </Button>
-      ),
     },
     {
       title: "Ship a change",

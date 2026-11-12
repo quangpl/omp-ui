@@ -12,11 +12,12 @@ import {
   MessageSquare,
   MessageSquareDot,
   RotateCw,
+  Sparkles,
   TriangleAlert,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useBoardTasks, useQueuePosition } from "@/hooks/use-board";
+import { useBoardTasks, useQueueDrafting, useQueuePosition } from "@/hooks/use-board";
 import { questionPreview } from "@/lib/question";
 import { formatDateTime } from "@/components/board/format";
 import { cn } from "@/lib/utils";
@@ -88,14 +89,28 @@ export function AgentStateBadge({
   state,
   queuePosition = -1,
   retryAt = null,
+  drafting = false,
   className,
 }: {
   state: AgentState;
   queuePosition?: number;
   /** Failed card with an automatic retry scheduled (Task.retryAt). */
   retryAt?: string | null;
+  /** Queued card the card writer is still writing (`useQueueDrafting`). */
+  drafting?: boolean;
   className?: string;
 }) {
+  if (state === "queued" && drafting) {
+    return (
+      <Badge
+        className={cn("gap-1 bg-violet-500/10 text-violet-700 dark:bg-violet-400/15 dark:text-violet-300", className)}
+        title="The card agent is writing the title and brief; the agent starts right after"
+      >
+        <Sparkles className="animate-pulse" />
+        Writing card
+      </Badge>
+    );
+  }
   if (state === "queued") {
     return (
       <Badge variant="secondary" className={cn("gap-1", className)}>
@@ -194,6 +209,7 @@ export const TaskCard = memo(function TaskCard({
     .map((line) => line.trim())
     .find(Boolean);
   const queuePosition = useQueuePosition(task.id);
+  const drafting = useQueueDrafting(task.id) && task.agentState === "queued";
   // Only cards with dependencies re-render when other cards change.
   const boardTasks = useBoardTasks(task.blockedBy.length > 0 && !done);
   const waitingFor = done
@@ -252,7 +268,7 @@ export const TaskCard = memo(function TaskCard({
             {selected && <span className="sr-only"> (selected)</span>}
           </span>
         </span>
-        {task.agentState === "running" && activity ? (
+        {(task.agentState === "running" || drafting) && activity ? (
           <span
             className="mt-1 block truncate font-mono text-[11px] leading-4 text-muted-foreground"
             title={activity}
@@ -267,7 +283,12 @@ export const TaskCard = memo(function TaskCard({
         {/* Meta row: agent state and flags on the left, conversation and age on the right. */}
         <span className="mt-2.5 flex min-h-5 items-center gap-2">
           <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-            <AgentStateBadge state={task.agentState} queuePosition={queuePosition} retryAt={task.retryAt} />
+            <AgentStateBadge
+              state={task.agentState}
+              queuePosition={queuePosition}
+              retryAt={task.retryAt}
+              drafting={drafting}
+            />
             {waitingFor.length > 0 && (
               <Tooltip>
                 <TooltipTrigger asChild>
