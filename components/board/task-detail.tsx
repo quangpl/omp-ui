@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ArrowUp,
+  CircleHelp,
   Ellipsis,
   MessageSquare,
   Paperclip,
@@ -12,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { RichText } from "@/components/board/rich-text";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -45,6 +48,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ApiRequestError, api } from "@/lib/api-client";
+import { cn } from "@/lib/utils";
 import {
   STATUS_LABELS,
   type Board,
@@ -414,6 +418,25 @@ function TaskDetailBody({
     }
   };
 
+  /** Posts the answer as feedback, then starts the agent (a comment alone doesn't from To do). */
+  const answerQuestion = async (body: string) => {
+    if (!(await send(body))) return false;
+    try {
+      upsertTask(await api.tasks.run(task.id));
+    } catch (err) {
+      toast.error("Couldn't start the agent", { description: errorMessage(err) });
+    }
+    return true;
+  };
+
+  const dismissQuestion = async () => {
+    try {
+      upsertTask(await api.tasks.update(task.id, { question: null }));
+    } catch (err) {
+      toast.error("Couldn't dismiss the question", { description: errorMessage(err) });
+    }
+  };
+
   const setResolved = async (comment: Comment, resolved: boolean) => {
     const since = performance.now();
     try {
@@ -517,6 +540,10 @@ function TaskDetailBody({
               {task.agentError || "The last run ended with an error."}
             </AlertDescription>
           </Alert>
+        )}
+
+        {task.question && (
+          <QuestionPanel question={task.question} onAnswer={answerQuestion} onDismiss={dismissQuestion} />
         )}
 
         {shipVisible && (
@@ -625,6 +652,90 @@ function ThreadSkeleton() {
   );
 }
 
+/** The question the agent left for the user, with an inline answer composer. */
+function QuestionPanel({
+  question,
+  onAnswer,
+  onDismiss,
+}: {
+  question: string;
+  /** Sends the answer as feedback and resumes the agent; resolves true when it was sent. */
+  onAnswer: (body: string) => Promise<boolean>;
+  /** Clears the question without answering. */
+  onDismiss: () => Promise<void>;
+}) {
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    const text = body.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    const ok = await onAnswer(text);
+    setBusy(false);
+    if (ok) setBody("");
+  };
+
+  return (
+    <section
+      aria-label="Agent question"
+      className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3"
+    >
+      <div className="flex items-center gap-2">
+        <CircleHelp aria-hidden className="size-4 shrink-0 text-amber-700 dark:text-amber-300" />
+        <h3 className="flex-1 text-sm font-semibold text-amber-900 dark:text-amber-200">
+          The agent has a question
+        </h3>
+        <Button
+          variant="ghost"
+          disabled={busy}
+          onClick={() => void onDismiss()}
+          title="Hide the question without answering"
+          className="h-8 px-2 text-xs text-muted-foreground"
+        >
+          Dismiss
+        </Button>
+      </div>
+      <RichText text={question} className="mt-2 text-sm" />
+      <form
+        className="mt-3 flex items-end gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        <Textarea
+          value={body}
+          rows={1}
+          disabled={busy}
+          placeholder="Type your answer…"
+          aria-label="Answer"
+          className="max-h-40 min-h-11 resize-none bg-background text-base md:text-base"
+          onChange={(event) => setBody(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              void submit();
+            }
+          }}
+        />
+        <Button
+          type="submit"
+          disabled={!body.trim() || busy}
+          className="h-11 shrink-0 md:h-9"
+          title="Send the answer and let the agent continue (Ctrl/⌘+Enter)"
+        >
+          <ArrowUp />
+          Answer
+        </Button>
+      </form>
+      <p className="mt-1.5 text-xs text-muted-foreground">
+        Your answer is sent as feedback and the agent continues with it.
+      </p>
+    </section>
+  );
+}
+
 function TitleEditor({ task, onSave }: { task: Task; onSave: (title: string) => Promise<boolean> }) {
   const [draft, setDraft] = useState(task.title);
   const editingRef = useRef(false);
@@ -649,8 +760,12 @@ function TitleEditor({ task, onSave }: { task: Task; onSave: (title: string) => 
       rows={1}
       value={draft}
       maxLength={500}
-      aria-label="Card title"
-      className="min-h-0 resize-none border-transparent bg-transparent px-1.5 py-1 text-lg leading-snug font-semibold shadow-none hover:border-input md:text-lg dark:bg-transparent"
+      aria-label={task.pushedAt ? "Card title (pushed to main)" : "Card title"}
+      title={task.pushedAt ? `Pushed to main ${new Date(task.pushedAt).toLocaleString()}` : undefined}
+      className={cn(
+        "min-h-0 resize-none border-transparent bg-transparent px-1.5 py-1 text-lg leading-snug font-semibold shadow-none hover:border-input md:text-lg dark:bg-transparent",
+        task.pushedAt && "line-through decoration-2",
+      )}
       onFocus={() => {
         editingRef.current = true;
       }}

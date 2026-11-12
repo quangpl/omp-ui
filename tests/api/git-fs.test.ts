@@ -87,9 +87,11 @@ async function boardGit(boardId: string) {
   });
 }
 
-async function taskComments(taskId: string): Promise<Comment[]> {
-  const res = await api<{ comments: Comment[] }>(taskRoute, "GET", `/tasks/${taskId}`, { params: { id: taskId } });
-  return res.body.comments;
+async function taskDetail(taskId: string): Promise<{ task: Task; comments: Comment[] }> {
+  const res = await api<{ task: Task; comments: Comment[] }>(taskRoute, "GET", `/tasks/${taskId}`, {
+    params: { id: taskId },
+  });
+  return res.body;
 }
 
 afterAll(teardown);
@@ -178,6 +180,7 @@ describe("git status and quick actions", () => {
     expect((await gitAction("pr", MISSING_ID)).status).toBe(404);
     // Nothing was committed by the rejected requests.
     expect((await boardGit(board.id)).body[0].changedFiles).toBe(2);
+    expect((await taskDetail(task.id)).task.pushedAt).toBeNull();
   });
 
   it(
@@ -216,7 +219,10 @@ describe("git status and quick actions", () => {
       expect(comment.body).toContain("Push to main");
       expect(comment.body).toContain("Pushed to main in app/");
       expect(comment.body).toContain("Pushed to main in lib/");
-      expect((await taskComments(task.id)).map((c) => c.id)).toContain(comment.id);
+      const detail = await taskDetail(task.id);
+      expect(detail.comments.map((c) => c.id)).toContain(comment.id);
+      // A clean push marks the card as pushed (struck-through title).
+      expect(detail.task.pushedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 
       const status = await boardGit(board.id);
       expect(status.body[0]).toMatchObject({ dirty: false, ahead: 0 });
@@ -351,6 +357,7 @@ describe("git status and quick actions", () => {
       expect(result.commit).toMatch(SHA);
       expect(remoteHead(repo.bare, "main").sha).toBe(theirs);
       expect(res.body.comment.body).toContain("Couldn't push diverged/");
+      expect((await taskDetail(divergedTask.id)).task.pushedAt).toBeNull();
     },
     GIT_TIMEOUT,
   );

@@ -49,9 +49,11 @@ export type UpdateTaskInput = Partial<
     | "position"
     | "agentState"
     | "agentError"
+    | "question"
     | "sessionFile"
     | "lastRunId"
     | "blockedBy"
+    | "pushedAt"
   >
 >;
 

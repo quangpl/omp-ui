@@ -4,9 +4,11 @@ import type {
   AppSettings,
   Board,
   BoardWithCounts,
+  CardDraft,
   Comment,
   AiStats,
   Dashboard,
+  DraftStreamEvent,
   FsBrowseResult,
   GitActionResult,
   GitBranches,
@@ -21,6 +23,20 @@ import type {
   TaskStatus,
   TaskWorkspace,
 } from "@/lib/types";
+import type {
+  ComposeAction,
+  ComposeDeploySpec,
+  ComposeFile,
+  ContainerAction,
+  DockerContainerStats,
+  DockerJobEvent,
+  DockerOverview,
+  HubRepository,
+  HubTag,
+  PruneKind,
+  RunContainerSpec,
+  TemplateCatalog,
+} from "@/lib/docker-types";
 
 /** Thrown for non-2xx responses. `status` 401 means the session expired. */
 export class ApiRequestError extends Error {
@@ -34,7 +50,8 @@ export class ApiRequestError extends Error {
 
 const BASE = "/api/v1";
 
-async function request<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
+/** Fetch an API path; resolves with the response when it is 2xx, else throws `ApiRequestError`. */
+async function send(path: string, init: RequestInit & { json?: unknown } = {}): Promise<Response> {
   const { json, headers, ...rest } = init;
   const res = await fetch(BASE + path, {
     credentials: "same-origin",
@@ -56,7 +73,50 @@ async function request<T>(path: string, init: RequestInit & { json?: unknown } =
     }
     throw new ApiRequestError(message, res.status);
   }
-  return (await res.json()) as T;
+  return res;
+}
+
+async function request<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
+  return (await (await send(path, init)).json()) as T;
+}
+
+/** Progress hooks for a card-agent draft: `signal` stops the agent, `onActivity` gets its progress lines. */
+export interface DraftProgress {
+  signal?: AbortSignal;
+  onActivity?: (line: string) => void;
+}
+
+/**
+ * POST /boards/:id/tasks/draft: the card-writer agent turns `text` into a card. Rejects with the
+ * agent's error.
+ */
+async function draftCard(
+  boardId: string,
+  text: string,
+  options: DraftProgress = {},
+): Promise<{ draft: CardDraft; model: string | null }> {
+  const res = await send(`/boards/${boardId}/tasks/draft`, { method: "POST", json: { text }, signal: options.signal });
+  if (!res.body) throw new ApiRequestError("The server sent no answer", 502);
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffer += value ?? "";
+      const lines = buffer.split("\n");
+      buffer = done ? "" : (lines.pop() ?? "");
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line) as DraftStreamEvent;
+        if (event.type === "activity") options.onActivity?.(event.text);
+        else if (event.type === "draft") return { draft: event.draft, model: event.model };
+        else throw new ApiRequestError(event.message, 502);
+      }
+      if (done) throw new ApiRequestError("The card agent stopped without an answer", 502);
+    }
+  } finally {
+    reader.cancel().catch(() => undefined);
+  }
 }
 
 export interface TokenResponse {
@@ -77,6 +137,42 @@ export interface SystemInfo {
 }
 
 export type FileScope = "tasks" | "boards";
+
+/** Outcome of a streamed docker job; `ok: false` carries docker's error in `message`. */
+export interface DockerJobResult {
+  ok: boolean;
+  message: string;
+  id?: string;
+}
+
+/** POST/DELETE a docker job route and read its NDJSON `DockerJobEvent`s until `done`. */
+async function dockerJob(
+  path: string,
+  init: RequestInit & { json?: unknown },
+  onLine?: (line: string) => void,
+): Promise<DockerJobResult> {
+  const res = await send(path, init);
+  if (!res.body) throw new ApiRequestError("The server sent no answer", 502);
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffer += value ?? "";
+      const lines = buffer.split("\n");
+      buffer = done ? "" : (lines.pop() ?? "");
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line) as DockerJobEvent;
+        if (event.type === "log") onLine?.(event.line);
+        else return { ok: event.ok, message: event.message, id: event.id };
+      }
+      if (done) return { ok: false, message: "The connection closed before docker finished" };
+    }
+  } finally {
+    reader.cancel().catch(() => undefined);
+  }
+}
 
 export const api = {
   auth: {
@@ -132,8 +228,12 @@ export const api = {
         status?: TaskStatus;
         position?: number;
         blockedBy?: string[];
+        /** The free text the card was written from; saved on the card as `brief.md`. */
+        brief?: string;
       },
     ) => request<Task>(`/boards/${boardId}/tasks`, { method: "POST", json: input }),
+    /** Let the card-writer agent turn free text into a title and brief (streams its progress). */
+    draft: draftCard,
     get: (id: string) => request<TaskDetail>(`/tasks/${id}`),
     update: (
       id: string,
@@ -143,6 +243,8 @@ export const api = {
         status: TaskStatus;
         position: number;
         blockedBy: string[];
+        /** Only null is accepted: dismisses the agent's question. */
+        question: null;
       }>,
     ) => request<Task>(`/tasks/${id}`, { method: "PATCH", json: patch }),
     remove: (id: string) => request<{ ok: true }>(`/tasks/${id}`, { method: "DELETE" }),
@@ -222,6 +324,49 @@ export const api = {
     /** Commit to a new branch, push, and open a PR (GitHub) / MR (GitLab). */
     pr: (taskId: string, input: { title?: string; body?: string; folders?: string[] } = {}) =>
       request<GitActionResult>(`/tasks/${taskId}/git/pr`, { method: "POST", json: input }),
+  },
+  docker: {
+    overview: () => request<DockerOverview>("/docker"),
+    stats: () => request<DockerContainerStats[]>("/docker/stats"),
+    inspect: (id: string) => request<Record<string, unknown>>(`/docker/containers/${encodeURIComponent(id)}`),
+    containerAction: (id: string, action: ContainerAction) =>
+      request<{ ok: true }>(`/docker/containers/${encodeURIComponent(id)}`, { method: "POST", json: { action } }),
+    removeContainer: (id: string, volumes = false) =>
+      request<{ ok: true }>(`/docker/containers/${encodeURIComponent(id)}${volumes ? "?volumes=1" : ""}`, {
+        method: "DELETE",
+      }),
+    containerLogs: (id: string, tail = 300) =>
+      request<{ logs: string }>(`/docker/containers/${encodeURIComponent(id)}/logs?tail=${tail}`),
+    /** `docker run -d`; streams pull/run output to `onLine`. */
+    run: (spec: RunContainerSpec, onLine?: (line: string) => void) =>
+      dockerJob("/docker/run", { method: "POST", json: spec }, onLine),
+    pull: (image: string, onLine?: (line: string) => void) =>
+      dockerJob("/docker/images", { method: "POST", json: { image } }, onLine),
+    removeImage: (ref: string, force = false) =>
+      request<{ ok: true }>(`/docker/images?ref=${encodeURIComponent(ref)}${force ? "&force=1" : ""}`, {
+        method: "DELETE",
+      }),
+    removeVolume: (name: string) =>
+      request<{ ok: true }>(`/docker/volumes/${encodeURIComponent(name)}`, { method: "DELETE" }),
+    removeNetwork: (id: string) =>
+      request<{ ok: true }>(`/docker/networks/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    prune: (kind: PruneKind) => request<{ message: string }>("/docker/prune", { method: "POST", json: { kind } }),
+    composeFile: (name: string) => request<ComposeFile>(`/docker/compose/${encodeURIComponent(name)}`),
+    composeLogs: (name: string, tail = 300) =>
+      request<{ logs: string }>(`/docker/compose/${encodeURIComponent(name)}/logs?tail=${tail}`),
+    /** Create or redeploy an OMP UI compose project (`up -d`). */
+    deployCompose: (spec: ComposeDeploySpec, onLine?: (line: string) => void) =>
+      dockerJob("/docker/compose", { method: "POST", json: spec }, onLine),
+    composeAction: (name: string, action: ComposeAction, onLine?: (line: string) => void) =>
+      dockerJob(`/docker/compose/${encodeURIComponent(name)}`, { method: "POST", json: { action } }, onLine),
+    removeCompose: (name: string, volumes: boolean, onLine?: (line: string) => void) =>
+      dockerJob(`/docker/compose/${encodeURIComponent(name)}${volumes ? "?volumes=1" : ""}`, { method: "DELETE" }, onLine),
+    templates: (refresh = false) => request<TemplateCatalog>(`/docker/templates${refresh ? "?refresh=1" : ""}`),
+    templateCompose: (id: string) =>
+      request<{ yaml: string }>(`/docker/templates/${encodeURIComponent(id)}/compose`),
+    search: (q: string, registry: "dockerhub" | "quay" = "dockerhub") =>
+      request<HubRepository[]>(`/docker/registry/search?q=${encodeURIComponent(q)}&registry=${registry}`),
+    tags: (repo: string) => request<HubTag[]>(`/docker/registry/tags?repo=${encodeURIComponent(repo)}`),
   },
 };
 

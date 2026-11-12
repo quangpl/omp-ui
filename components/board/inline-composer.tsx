@@ -1,42 +1,58 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { Plus, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Loader2, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import type { DraftProgress } from "@/lib/api-client";
+import { isPlainTitle } from "@/lib/card-draft";
+
+/** Create a card from the composer's text; resolves true when it was created. */
+export type QuickCreate = (text: string, progress: DraftProgress) => Promise<boolean>;
 
 /**
  * Trello-style "Add a card" composer: Enter adds (and stays open for the next card),
- * Shift+Enter inserts a newline, Esc cancels.
+ * Shift+Enter inserts a newline, Esc cancels. A short line is the title as typed; longer text
+ * goes through the card agent first (its progress shows here; Esc stops it).
  */
 export function InlineComposer({
   onSubmit,
   onAdded,
 }: {
-  onSubmit: (title: string) => Promise<boolean>;
+  onSubmit: QuickCreate;
   onAdded?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [title, setTitle] = useState("");
+  const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  /** Card agent progress while it writes the card; null when it isn't running. */
+  const [activity, setActivity] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const close = () => {
     setOpen(false);
-    setTitle("");
+    setText("");
   };
 
   const submit = async () => {
-    const value = title.trim();
+    const value = text.trim();
     if (!value || busy) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy(true);
-    const ok = await onSubmit(value);
+    if (!isPlainTitle(value)) setActivity("Writing the card…");
+    const ok = await onSubmit(value, { signal: controller.signal, onActivity: setActivity });
+    if (abortRef.current === controller) abortRef.current = null;
     setBusy(false);
+    setActivity(null);
     if (ok) {
-      setTitle("");
+      setText("");
       onAdded?.();
     }
-    inputRef.current?.focus();
+    requestAnimationFrame(() => inputRef.current?.focus());
   };
 
   if (!open) {
@@ -63,42 +79,49 @@ export function InlineComposer({
       <Textarea
         ref={inputRef}
         autoFocus
-        value={title}
-        disabled={busy}
+        value={text}
+        readOnly={busy}
         rows={2}
-        placeholder="Enter a title for this card…"
-        aria-label="Card title"
+        placeholder="Type a title, or describe the task in your own words…"
+        aria-label="New card text"
         className="max-h-48 min-h-16 resize-none bg-card shadow-xs"
-        onChange={(event) => setTitle(event.target.value)}
+        onChange={(event) => setText(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
             void submit();
           } else if (event.key === "Escape") {
             event.preventDefault();
-            close();
+            if (abortRef.current) abortRef.current.abort();
+            else close();
           }
         }}
         onBlur={() => {
-          if (!title.trim() && !busy) close();
+          if (!text.trim() && !busy) close();
         }}
       />
+      {activity !== null && (
+        <p role="status" className="flex items-center gap-1.5 px-0.5 text-xs text-muted-foreground">
+          <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden />
+          <span className="truncate">{activity}</span>
+        </p>
+      )}
       <div className="flex items-center gap-1.5">
         <Button
           type="submit"
           size="lg"
-          disabled={!title.trim() || busy}
+          disabled={!text.trim() || busy}
           onMouseDown={(event) => event.preventDefault()}
         >
-          Add card
+          {activity !== null ? "Writing card…" : "Add card"}
         </Button>
         <Button
           type="button"
           variant="ghost"
           size="icon-lg"
-          aria-label="Cancel"
+          aria-label={busy ? "Stop" : "Cancel"}
           onMouseDown={(event) => event.preventDefault()}
-          onClick={close}
+          onClick={() => (abortRef.current ? abortRef.current.abort() : close())}
         >
           <X />
         </Button>

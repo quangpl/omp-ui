@@ -70,10 +70,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   position REAL NOT NULL,
   agent_state TEXT NOT NULL DEFAULT 'idle' CHECK (agent_state IN ('idle', 'queued', 'running', 'error')),
   agent_error TEXT,
+  question TEXT,
   session_file TEXT,
   last_run_id TEXT,
   blocked_by TEXT NOT NULL DEFAULT '[]',
   created_by_task_id TEXT,
+  pushed_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -162,10 +164,12 @@ function toTask(r: Row): Task {
     position: num(r.position),
     agentState: str(r.agent_state) as AgentState,
     agentError: strOrNull(r.agent_error),
+    question: strOrNull(r.question),
     sessionFile: strOrNull(r.session_file),
     lastRunId: strOrNull(r.last_run_id),
     blockedBy: parseFolderList(r.blocked_by),
     createdByTaskId: strOrNull(r.created_by_task_id),
+    pushedAt: strOrNull(r.pushed_at),
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
     commentCount: num(r.comment_count),
@@ -269,6 +273,8 @@ export class SqliteRepository implements Repository {
     this.addMissingColumns("tasks", [
       ["blocked_by", "TEXT NOT NULL DEFAULT '[]'"],
       ["created_by_task_id", "TEXT"],
+      ["question", "TEXT"],
+      ["pushed_at", "TEXT"],
     ]);
     this.addMissingColumns("comments", [["from_task_id", "TEXT"]]);
   }
@@ -449,9 +455,11 @@ export class SqliteRepository implements Repository {
       ["position", patch.position],
       ["agent_state", patch.agentState],
       ["agent_error", patch.agentError],
+      ["question", patch.question],
       ["session_file", patch.sessionFile],
       ["last_run_id", patch.lastRunId],
       ["blocked_by", patch.blockedBy === undefined ? undefined : JSON.stringify(patch.blockedBy)],
+      ["pushed_at", patch.pushedAt],
       ["updated_at", nowIso()],
     ]);
     const res = this.db.prepare(`UPDATE tasks SET ${sql} WHERE id = ?`).run(...params, id);

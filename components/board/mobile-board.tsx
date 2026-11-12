@@ -204,6 +204,10 @@ export function MobileBoard({
               task={task}
               activity={activity[task.id]}
               onOpen={() => onOpen(task.id)}
+              onAnswer={() => {
+                void actions.revertToTodo(task.id);
+                onOpen(task.id);
+              }}
               actions={
                 <QuickActions task={task} onOpen={() => onOpen(task.id)} actions={actions} />
               }

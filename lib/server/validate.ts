@@ -1,6 +1,7 @@
 // Strict input validation for API route bodies. Every parser throws HttpError(400) on bad input.
 import fs from "node:fs";
 import path from "node:path";
+import { BRIEF_MAX, DESCRIPTION_MAX, TITLE_MAX } from "@/lib/card-draft";
 import type { Repository } from "@/lib/db/types";
 import { HttpError } from "@/lib/server/http";
 import { TASK_STATUSES, type Board, type Task, type TaskStatus } from "@/lib/types";
@@ -22,15 +23,26 @@ export function parseBoardName(value: unknown): string {
 }
 
 export function parseTitle(value: unknown): string {
-  return text(value, "title", 1, 200);
+  return text(value, "title", 1, TITLE_MAX);
 }
 
 export function parseDescription(value: unknown): string {
-  return text(value, "description", 0, 20000);
+  return text(value, "description", 0, DESCRIPTION_MAX);
+}
+
+/** Free text a card is made from (the new-card form's request). */
+export function parseBrief(value: unknown, field = "text"): string {
+  return text(value, field, 1, BRIEF_MAX);
 }
 
 export function parseCommentBody(value: unknown): string {
   return text(value, "body", 1, 10000);
+}
+
+/** Users can only clear a card's question (dismiss); the agent sets it when a run ends. */
+export function parseQuestionClear(value: unknown): null {
+  if (value !== null) throw new HttpError(400, "question can only be cleared (set it to null)");
+  return null;
 }
 
 /** `--model` selector; empty/null means "use the default". */

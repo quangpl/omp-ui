@@ -63,11 +63,15 @@ interface TaskDoc {
   position: number;
   agentState: AgentState;
   agentError: string | null;
+  /** Missing on documents created before agent questions. */
+  question?: string | null;
   sessionFile: string | null;
   lastRunId: string | null;
   /** Missing on documents created before card dependencies. */
   blockedBy?: string[];
   createdByTaskId?: string | null;
+  /** Missing on documents created before "pushed" cards. */
+  pushedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -142,10 +146,12 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     position: d.position,
     agentState: d.agentState,
     agentError: d.agentError ?? null,
+    question: d.question ?? null,
     sessionFile: d.sessionFile ?? null,
     lastRunId: d.lastRunId ?? null,
     blockedBy: parseFolderList(d.blockedBy),
     createdByTaskId: d.createdByTaskId ?? null,
+    pushedAt: d.pushedAt ?? null,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
     commentCount: stats?.total ?? 0,
@@ -208,9 +214,11 @@ const TASK_PATCH_KEYS = [
   "position",
   "agentState",
   "agentError",
+  "question",
   "sessionFile",
   "lastRunId",
   "blockedBy",
+  "pushedAt",
 ] as const satisfies readonly (keyof UpdateTaskInput)[];
 const RUN_PATCH_KEYS = ["status", "summary", "error", "endedAt"] as const satisfies readonly (keyof UpdateRunInput)[];
 
@@ -430,10 +438,12 @@ export class MongoRepository implements Repository {
       position,
       agentState: "idle",
       agentError: null,
+      question: null,
       sessionFile: null,
       lastRunId: null,
       blockedBy: input.blockedBy ?? [],
       createdByTaskId: input.createdByTaskId ?? null,
+      pushedAt: null,
       createdAt: now,
       updatedAt: now,
     };

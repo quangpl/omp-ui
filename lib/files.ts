@@ -34,6 +34,12 @@ export async function ensureFilesFolder(scope: FileScope, id: string): Promise<s
   return folder;
 }
 
+/** Write `content` to `name` in the folder (created if missing), replacing an existing file. */
+export async function writeTextFile(scope: FileScope, id: string, name: string, content: string): Promise<void> {
+  await ensureFilesFolder(scope, id);
+  await fs.writeFile(resolveFile(scope, id, name), content);
+}
+
 /** Every regular file under the folder (recursive, hidden entries skipped), newest first. */
 export async function listFiles(scope: FileScope, id: string): Promise<SharedFiles> {
   const folder = filesFolder(scope, id);
