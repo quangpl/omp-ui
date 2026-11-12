@@ -112,21 +112,36 @@ test("board: FAB adds a card that starts on its own, the detail drawer steers th
     await expectTouchTarget(tab, `column tab ${await tab.textContent()}`);
   }
 
-  // FAB → new-card drawer.
+  // FAB → the dedicated new-card page (a keyboard plus a bottom sheet leaves no room on a phone).
   const fab = page.getByRole("button", { name: "New card" });
   await expectTouchTarget(fab, "New card FAB");
   await fab.click();
-  const newCard = page.getByRole("dialog", { name: "New card" });
-  await expect(newCard).toHaveAttribute("data-vaul-drawer-direction", "bottom");
-  await newCard.getByLabel("What should the agent do?", { exact: true }).fill(title);
-  await newCard.getByRole("button", { name: "Create card" }).click();
-  await expect(newCard).toBeHidden({ timeout: AGENT_TIMEOUT });
+  await expect(page).toHaveURL(/\/b\/[^/]+\/new\?from=board$/);
+  await expect(page.getByRole("heading", { name: "New card" })).toBeVisible();
+  const prompt = page.getByLabel("What should the agent do?", { exact: true });
+  const create = page.getByRole("button", { name: "Create card" });
+  await expect(prompt).toBeVisible();
+  await expect(create).toBeDisabled();
+  // The whole form fits on screen: no vertical page scroll, Create card reachable without scrolling.
+  const viewport = page.viewportSize()!;
+  const { scrollHeight, innerHeight } = await page.evaluate(() => ({
+    scrollHeight: document.scrollingElement!.scrollHeight,
+    innerHeight: window.innerHeight,
+  }));
+  expect(scrollHeight).toBeLessThanOrEqual(innerHeight + 1);
+  const createBox = await create.boundingBox();
+  expect(createBox, "Create card has no layout box").not.toBeNull();
+  expect(createBox!.y + createBox!.height).toBeLessThanOrEqual(viewport.height);
+  await expectTouchTarget(create, "Create card");
+  await prompt.fill(title);
+  await expect(create).toBeEnabled();
+  await create.click();
 
-  // A new card skips To do: it lands in In progress and its agent starts by itself.
+  // Back on the board, which opens on In progress: a new card skips To do and its agent starts by itself.
+  await expect(page).toHaveURL(/\/b\/[^/?]+$/, { timeout: AGENT_TIMEOUT });
   await expect(page.getByRole("tab", { name: columnTabName("To do", 0) })).toBeVisible();
   const panel = page.getByRole("tabpanel");
   const inProgressTab = page.getByRole("tab", { name: columnTabName("In progress", 1) });
-  await inProgressTab.click();
   await expect(inProgressTab).toHaveAttribute("aria-selected", "true");
   const card = cardButton(panel, title);
   await expect(card).toContainText("Working", { timeout: AGENT_TIMEOUT });
@@ -141,7 +156,6 @@ test("board: FAB adds a card that starts on its own, the detail drawer steers th
   await expect(page).toHaveURL(/[?&]task=[^&]+/);
   const detail = page.getByRole("dialog", { name: title });
   await expect(detail).toHaveAttribute("data-vaul-drawer-direction", "bottom");
-  const viewport = page.viewportSize()!;
   // Wait for the slide-in animation to settle at the bottom edge.
   await expect
     .poll(async () => {
@@ -177,4 +191,22 @@ test("board: FAB adds a card that starts on its own, the detail drawer steers th
   const doneTab = page.getByRole("tab", { name: columnTabName("Done", 1) });
   await doneTab.click();
   await expect(cardButton(panel, title)).toBeVisible();
+});
+
+test("board: Cancel on the new-card page returns to the board without creating a card", async ({ page, request }) => {
+  const board = await createProjectViaApi(request, uniqueName("phone-cancel"));
+
+  await page.goto(`/b/${board.id}`);
+  await expect(page.getByRole("tab", { name: columnTabName("To do", 0) })).toHaveAttribute("aria-selected", "true");
+
+  await page.getByRole("button", { name: "New card" }).click();
+  await expect(page).toHaveURL(/\/b\/[^/]+\/new\?from=board$/);
+  await page.getByLabel("What should the agent do?", { exact: true }).fill(uniqueName("Never created"));
+  await page.getByRole("button", { name: /cancel/i }).click();
+
+  // Straight back to the board (no `/new`), still on To do, and every column is empty.
+  await expect(page).toHaveURL(new RegExp(`/b/${board.id}$`));
+  await expect(page.getByRole("tab", { name: columnTabName("To do", 0) })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: columnTabName("In progress", 0) })).toBeVisible();
+  await expect(page.getByRole("tab", { name: columnTabName("Done", 0) })).toBeVisible();
 });

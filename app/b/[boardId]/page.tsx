@@ -22,6 +22,7 @@ import { useBoard, useGitStatus } from "@/hooks/use-board";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { isTypingTarget } from "@/lib/hotkeys";
+import { newCardHref, takeMobileColumnHint } from "@/lib/new-card-route";
 import { TASK_STATUSES, type Board, type Task, type TaskStatus } from "@/lib/types";
 
 export default function BoardPage() {
@@ -94,6 +95,13 @@ function BoardScreen() {
     if (!selectedTaskId) pushedRef.current = false;
   }, [selectedTaskId]);
 
+  // Back from the phone "New card" page: show the column the new card landed in. Read after
+  // mount (sessionStorage is client-only); declared before the deep-link sync so `?task=` wins.
+  useEffect(() => {
+    const hint = takeMobileColumnHint(boardId);
+    if (hint) setMobileColumn(hint);
+  }, [boardId]);
+
   // A deep-linked card on a phone: show the column it lives in behind the drawer.
   const syncedDeepLinkRef = useRef(false);
   const selectedTask = selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) : undefined;
@@ -131,8 +139,15 @@ function BoardScreen() {
 
   const create = async (text: string) => (await controller.createFromText(text)) !== null;
 
+  // Phones get the full "New card" page (the board stays right behind it in history); desktop
+  // the dialog. Whether it's a phone is decided at click time.
+  const openNewCard = useCallback(() => {
+    if (isMobile) router.push(newCardHref(boardId, { fromBoard: true }));
+    else setNewCard(true);
+  }, [isMobile, router, boardId]);
+
   // `N` and every "New card…" menu item land here while this board is open.
-  useNewCardTarget(boardId, () => setNewCard(true));
+  useNewCardTarget(boardId, openNewCard);
 
   const { createTask, revertToTodo, runAgent, stopAgent, reload } = controller;
   const refreshGit = git.refresh;
@@ -157,14 +172,27 @@ function BoardScreen() {
         await createTask({ title: `${task.title} (copy)`, description: task.description, start: false });
       },
       requestDelete: setDeleting,
-      newCard: () => setNewCard(true),
+      newCard: openNewCard,
       refresh: () => {
         void reload();
         void refreshGit();
       },
       openSettings: () => setSettingsOpen(true),
     }),
-    [boardId, openTask, revertToTodo, runAgent, stopAgent, canPush, prNoun, pushTarget, createTask, reload, refreshGit],
+    [
+      boardId,
+      openTask,
+      revertToTodo,
+      runAgent,
+      stopAgent,
+      canPush,
+      prNoun,
+      pushTarget,
+      createTask,
+      openNewCard,
+      reload,
+      refreshGit,
+    ],
   );
 
   if (!board) {
@@ -207,7 +235,7 @@ function BoardScreen() {
               <TooltipTrigger asChild>
                 <Button
                   className="h-9 gap-1.5 transition-transform active:scale-[0.97] max-md:hidden max-lg:w-9 max-lg:px-0 motion-reduce:active:scale-100"
-                  onClick={() => setNewCard(true)}
+                  onClick={openNewCard}
                 >
                   <Plus />
                   <span className="max-lg:sr-only">Add card</span>
@@ -235,18 +263,13 @@ function BoardScreen() {
           menuActions={menuActions}
           reorderTask={controller.reorderTask}
           onQuickCreate={create}
-          onAdd={() => setNewCard(true)}
+          onAdd={openNewCard}
           mobileColumn={mobileColumn}
           onMobileColumnChange={setMobileColumn}
         />
       </main>
 
-      <NewTaskDialog
-        open={newCard}
-        onOpenChange={setNewCard}
-        isMobile={isMobile}
-        onCreate={create}
-      />
+      <NewTaskDialog open={newCard} onOpenChange={setNewCard} onCreate={create} />
 
       <DeleteCardDialog
         title={deleting?.title ?? ""}
