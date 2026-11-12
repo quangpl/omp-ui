@@ -41,6 +41,31 @@ const COMPOSE_DBS = {
   mongo: { label: "MongoDB", url: () => "mongodb://mongo:27017/omp_ui" },
   postgres: { label: "PostgreSQL", url: (env) => `postgres://omp_ui:${encodeURIComponent(env.POSTGRES_PASSWORD)}@postgres:5432/omp_ui` },
 };
+/**
+ * Credential variables omp, git, gh and glab read from the environment. The server and its
+ * agents inherit them from this shell; docker-compose.yml passes the same names through.
+ * doctor reports which are set — by name only, never the value.
+ */
+const CREDENTIAL_ENV_KEYS = [
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "OPENAI_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "OPENROUTER_API_KEY",
+  "GROQ_API_KEY",
+  "XAI_API_KEY",
+  "MISTRAL_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "CEREBRAS_API_KEY",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_PROFILE",
+  "AZURE_OPENAI_API_KEY",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GITLAB_TOKEN",
+];
 
 function dbKindFromUrl(url = "") {
   return Object.keys(DATABASES).find((k) => DATABASES[k].valid.test(url)) ?? "sqlite";
@@ -240,7 +265,13 @@ function parsePort(value, source = "port") {
   return n;
 }
 
-/** Effective config: inherited env < .env (authoritative) < explicit overrides. */
+/**
+ * Effective config: inherited env < .env (authoritative) < explicit overrides.
+ * The inherited env is this shell's full environment — provider API keys, GH_TOKEN,
+ * SSH_AUTH_SOCK, proxies, HOME (→ ~/.omp, ~/.claude, ~/.gitconfig, ~/.ssh, gh/glab logins) —
+ * so the server and its agents use the credentials this machine already has. Keep them
+ * out of .env: .env only overrides what it sets.
+ */
 function loadConfig(overrides = {}) {
   const file = readEnvFile();
   const env = { ...process.env, ...(file ?? {}) };
@@ -350,6 +381,28 @@ function toolVersion(cmd, args = ["--version"]) {
   if (!which(cmd)) return null;
   const out = capture(cmd, args);
   return out ? out.split("\n")[0].trim() : "installed";
+}
+
+/** True when a file has more than an empty placeholder ("" or "{}") / a directory has entries. */
+function hasContent(p) {
+  try {
+    const st = fs.statSync(p);
+    return st.isDirectory() ? fs.readdirSync(p).length > 0 : st.size > 4;
+  } catch {
+    return false;
+  }
+}
+
+/** Providers omp has a signed-in account for (`omp usage --json`), or null when omp cannot tell. */
+function ompProviders(ompPath) {
+  const out = capture(ompPath, ["usage", "--json"], { timeout: 10_000, maxBuffer: 16 * 1024 * 1024 });
+  try {
+    const reports = JSON.parse(out ?? "").reports;
+    if (!Array.isArray(reports)) return null;
+    return [...new Set(reports.map((r) => r?.provider).filter((p) => typeof p === "string" && p))];
+  } catch {
+    return null;
+  }
 }
 
 /** Run a command attached to this terminal; resolves with its exit code. */
@@ -484,6 +537,7 @@ async function waitForHealth(cfg, { pid, timeoutMs = 90_000 } = {}) {
 }
 
 function tailLines(file, n) {
+  if (n <= 0) return "";
   let fd;
   try {
     fd = fs.openSync(file, "r");
@@ -696,28 +750,40 @@ async function initProject(values, { fromUp = false } = {}) {
     log.warn(`Node.js ${MIN_NODE}+ is required to run OMP UI (found ${process.versions.node}).`);
   }
 
-  let password = values.password ?? process.env.ADMIN_PASSWORD ?? "";
+  // With an existing .env (--force), every value not given by a flag or wizard answer is kept.
+  let password = values.password ?? (existing.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || "");
   let generated = false;
-  if (password) validatePassword(password);
-  else if (tty) password = await askNewPassword();
-  else {
-    password = randomBytes(12).toString("base64url");
-    generated = true;
+  if (values.password !== undefined || (password && !existing.ADMIN_PASSWORD)) validatePassword(password);
+  if (!password) {
+    if (tty) password = await askNewPassword();
+    else {
+      password = randomBytes(12).toString("base64url");
+      generated = true;
+    }
   }
 
-  const port = parsePort(values.port ?? (wizard ? await ask("Port", "3000") : "3000"));
+  const defaultPort = existing.PORT || process.env.PORT || "3000";
+  const port = parsePort(values.port ?? (wizard ? await ask("Port", defaultPort) : defaultPort));
 
+  const existingKind = existing.DATABASE_URL ? dbKindFromUrl(existing.DATABASE_URL) : "sqlite";
   const dbUrlFlag = values["db-url"] ?? values["mongo-url"];
   let db = values.db ?? (dbUrlFlag ? dbKindFromUrl(dbUrlFlag) : undefined);
-  if (!db) db = wizard ? await ask("Database: sqlite, mongodb or postgres?", "sqlite") : "sqlite";
+  if (!db) db = wizard ? await ask("Database: sqlite, mongodb or postgres?", existingKind) : existingKind;
   const kind = DB_ALIASES[db.trim().toLowerCase()];
   if (!kind) throw new CliError(`Unknown database "${db}" (use sqlite, mongodb or postgres).`);
 
-  let dataDir = values["data-dir"] ?? (wizard ? await ask("Data directory", "./data") : "./data");
+  const existingDataDir = existing.DATA_DIR || "./data";
+  let dataDir = values["data-dir"] ?? (wizard ? await ask("Data directory", existingDataDir) : existingDataDir);
   dataDir = dataDir.replace(/[\\/]+$/, "") || ".";
 
   const driver = DATABASES[kind];
-  let databaseUrl = dbUrlFlag ?? driver.url(dataDir);
+  // Keep the current URL for the same driver, unless it is the derived SQLite default
+  // (then it follows a changed data directory).
+  const keepUrl =
+    kind === existingKind &&
+    existing.DATABASE_URL &&
+    !(kind === "sqlite" && existing.DATABASE_URL === DATABASES.sqlite.url(existingDataDir.replace(/[\\/]+$/, "") || "."));
+  let databaseUrl = dbUrlFlag ?? (keepUrl ? existing.DATABASE_URL : driver.url(dataDir));
   if (!dbUrlFlag && wizard && kind !== "sqlite") databaseUrl = await ask(`${driver.label} URL`, databaseUrl);
   if (!driver.valid.test(databaseUrl)) {
     throw new CliError(`Invalid ${driver.label} URL "${databaseUrl}".`, {
@@ -726,15 +792,16 @@ async function initProject(values, { fromUp = false } = {}) {
   }
 
   const detected = resolveOmp("omp");
-  const defaultOmp = detected && !detected.onPath ? detected.path : "omp";
+  const defaultOmp = existing.OMP_PATH || (detected && !detected.onPath ? detected.path : "omp");
   const ompPath = values["omp-path"] ?? (wizard ? await ask("omp executable", defaultOmp) : defaultOmp);
 
-  const defaultWorkspace = existing.WORKSPACE_DIR || path.join(os.homedir(), "omp-workspace");
+  const defaultWorkspace = existing.WORKSPACE_DIR || process.env.WORKSPACE_DIR || path.join(os.homedir(), "omp-workspace");
   const workspaceDir = expandHome(
     values.workspace ?? (wizard ? await ask("Projects folder", defaultWorkspace) : defaultWorkspace),
   );
 
-  const maxAgentsRaw = values["max-agents"] ?? (wizard ? await ask("Max concurrent agents", "2") : "2");
+  const defaultMaxAgents = existing.MAX_AGENTS || "2";
+  const maxAgentsRaw = values["max-agents"] ?? (wizard ? await ask("Max concurrent agents", defaultMaxAgents) : defaultMaxAgents);
   const maxAgents = Number(maxAgentsRaw);
   if (!Number.isInteger(maxAgents) || maxAgents < 1 || maxAgents > 16) {
     throw new CliError(`Invalid max agents "${maxAgentsRaw}" (expected 1-16).`);
@@ -784,7 +851,8 @@ async function initProject(values, { fromUp = false } = {}) {
 
   log.ok(`Wrote ${rel(ENV_FILE)} ${c.dim("(chmod 600)")}`);
   if (generated) {
-    console.log(`\n  ${c.bold("Admin password:")} ${c.green(password)}`);
+    const banner = "=".repeat(60);
+    console.log(`\n${banner}\n  OMP UI ADMIN PASSWORD (generated): ${c.green(c.bold(password))}\n${banner}`);
     log.hint("Generated because none was given — save it now, or change it with: omp-ui passwd\n");
   }
   if (kind !== "sqlite") log.info(`Using ${driver.label} at ${databaseUrl}`);
@@ -797,7 +865,9 @@ async function initProject(values, { fromUp = false } = {}) {
 async function ensureDeps({ quiet = false } = {}) {
   if (depsInstalled()) return false;
   log.step("Installing dependencies");
+  // Without NODE_ENV=production, so the build tools (devDependencies) get installed too.
   const env = { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" };
+  delete env.NODE_ENV;
   if (which("pnpm")) {
     await runOrFail("pnpm install", "pnpm", ["install", "--frozen-lockfile"], { env });
   } else if (which("corepack")) {
@@ -823,6 +893,7 @@ async function buildApp() {
   log.ok("Build complete");
 }
 
+/** Environment of the server process: the full inherited environment plus .env (see loadConfig). */
 function serverEnv(cfg) {
   return { ...cfg.env, NODE_ENV: "production", PORT: String(cfg.port), HOST: cfg.host };
 }
@@ -836,13 +907,45 @@ async function assertPortFree(cfg) {
   );
 }
 
+/** Who started the running server: "pm2", "fg" (start -f) or "cli" (background). */
+function serverOwner(cfg) {
+  return readText(statePaths(cfg).pid).split("\n")[1]?.trim() || "cli";
+}
+
+/** Pid of a pm2-supervised server, or null. */
+function pm2ManagedPid(cfg) {
+  const pid = runningPid(statePaths(cfg).pid, SERVER_MARK);
+  return pid && serverOwner(cfg) === "pm2" ? pid : null;
+}
+
+/** Refuse to fight pm2: it would restart whatever we stop. */
+function assertNotPm2(cfg, action) {
+  const pid = pm2ManagedPid(cfg);
+  if (pid) {
+    throw new CliError(`OMP UI is managed by pm2 (pid ${pid}).`, { hint: `Run: omp-ui pm2 ${action}` });
+  }
+}
+
 async function startServer(cfg, { foreground = false } = {}) {
   requireNode();
   const paths = statePaths(cfg);
+  const underPm2 = process.env.pm_id !== undefined;
   const existing = runningPid(paths.pid, SERVER_MARK);
   if (existing) {
-    log.info(`Already running ${c.dim(`(pid ${existing})`)}`);
-    return { pid: existing, health: await getHealth(cfg), already: true };
+    const owner = serverOwner(cfg);
+    if (foreground && underPm2 && owner === "pm2") {
+      // Left over from a previous pm2 run whose supervisor was killed: replace it.
+      log.warn(`Stopping a leftover server from a previous pm2 run (pid ${existing})`);
+      await terminate(existing);
+      rmQuiet(paths.pid);
+    } else if (foreground) {
+      throw new CliError(`OMP UI is already running (pid ${existing}${owner === "pm2" ? ", managed by pm2" : ""}).`, {
+        hint: owner === "pm2" ? "Use: omp-ui pm2 restart" : "Stop it first: omp-ui stop",
+      });
+    } else {
+      log.info(`Already running ${c.dim(`(pid ${existing}${owner === "pm2" ? ", managed by pm2" : ""})`)}`);
+      return { pid: existing, health: await getHealth(cfg), already: true };
+    }
   }
   if (!fs.existsSync(STANDALONE_SERVER)) {
     throw new CliError("No production build found.", { hint: "Run: omp-ui up   (or: omp-ui build)" });
@@ -853,8 +956,8 @@ async function startServer(cfg, { foreground = false } = {}) {
 
   if (foreground) {
     const child = spawn(process.execPath, [STANDALONE_SERVER], { cwd: ROOT, env: serverEnv(cfg), stdio: "inherit" });
-    fs.writeFileSync(paths.pid, `${child.pid}\n`);
-    log.info(`Serving at ${c.cyan(localUrl(cfg))} ${c.dim("(Ctrl+C to stop)")}`);
+    fs.writeFileSync(paths.pid, `${child.pid}\n${underPm2 ? "pm2" : "fg"}\n`);
+    log.info(`Serving at ${c.cyan(localUrl(cfg))} ${c.dim(underPm2 ? "(supervised by pm2)" : "(Ctrl+C to stop)")}`);
     const forward = (sig) => () => {
       if (sig === "SIGINT" && process.stdin.isTTY) return;
       child.kill(sig);
@@ -900,7 +1003,8 @@ async function startServer(cfg, { foreground = false } = {}) {
   return { pid: child.pid, health };
 }
 
-async function stopServer(cfg) {
+async function stopServer(cfg, { allowPm2 = false } = {}) {
+  if (!allowPm2) assertNotPm2(cfg, "stop");
   const paths = statePaths(cfg);
   const pid = runningPid(paths.pid, SERVER_MARK);
   if (!pid) {
@@ -915,6 +1019,81 @@ async function stopServer(cfg) {
   return true;
 }
 
+// ─── pm2 ────────────────────────────────────────────────────────────────────
+
+const PM2_APP = "omp-ui";
+const ECOSYSTEM_FILE = path.join(ROOT, "ecosystem.config.cjs");
+/** Must match out_file in ecosystem.config.cjs. */
+const PM2_OUT_LOG = path.join(ROOT, "data", "pm2-out.log");
+
+/** Global pm2 if installed, else `npx -y pm2`. */
+function pm2Command() {
+  if (which("pm2")) return ["pm2", []];
+  if (which("npx")) return ["npx", ["-y", "pm2"]];
+  throw new CliError("pm2 is not installed.", { hint: "Install it: npm i -g pm2" });
+}
+
+async function pm2(args, { allowFail = false } = {}) {
+  const [cmd, pre] = pm2Command();
+  const code = await run(cmd, [...pre, ...args]);
+  if (code !== 0 && !allowFail) throw new CliError(`pm2 ${args[0]} failed (exit ${code}).`);
+  return code;
+}
+
+/** pm2 status of the omp-ui app ("online", "stopped", "errored", …) or null when pm2 does not know it. */
+function pm2AppStatus() {
+  const [cmd, pre] = pm2Command();
+  const out = capture(cmd, [...pre, "jlist"], { timeout: 120_000 });
+  const json = out
+    ?.split("\n")
+    .reverse()
+    .find((l) => l.trim().startsWith("[") && !l.trim().startsWith("[PM2]"));
+  if (!json) return null;
+  try {
+    const app = JSON.parse(json).find((a) => a.name === PM2_APP);
+    return app ? (app.pm2_env?.status ?? "unknown") : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The generated admin password banner from a first run under pm2, if any. */
+function pm2GeneratedPassword() {
+  const m = /OMP UI ADMIN PASSWORD \(generated\): (\S+)/.exec(tailLines(PM2_OUT_LOG, 400).replace(/\x1b\[[0-9;]*m/g, ""));
+  return m?.[1] ?? null;
+}
+
+async function pm2WaitAndReport() {
+  const cfg = loadConfig();
+  log.info(`Waiting for the server… ${c.dim("(a first run installs and builds — follow with: omp-ui pm2 logs)")}`);
+  const health = await waitForHealth(cfg, { timeoutMs: 15 * 60_000 });
+  if (!health) {
+    throw new CliError("OMP UI did not come up under pm2.", { hint: "See: omp-ui pm2 logs" });
+  }
+  log.ok(`Running under pm2 ${c.dim(`(v${health.version} · ${health.db})`)}`);
+  printUrls(cfg, { tunnelUrl: tunnelInfo(cfg)?.url });
+  const generated = pm2GeneratedPassword();
+  if (generated && readEnvFile()?.ADMIN_PASSWORD === generated) {
+    console.log(`  ${c.bold("Admin password (generated):")} ${c.green(generated)} ${c.dim("— change it with: omp-ui passwd")}\n`);
+  }
+  console.log(c.bold("pm2"));
+  console.log(`  ${c.dim("·")} Logs: ${c.cyan("omp-ui pm2 logs")}   Status: ${c.cyan("omp-ui pm2 status")}   Stop: ${c.cyan("omp-ui pm2 stop")}`);
+  console.log(`  ${c.dim("·")} Start on boot: ${c.cyan("omp-ui pm2 save")} then ${c.cyan("omp-ui pm2 startup")}\n`);
+}
+
+/** Start (or restart) the omp-ui pm2 app, taking over from a background server. */
+async function pm2Start() {
+  const cfg = loadConfig();
+  if (runningPid(statePaths(cfg).pid, SERVER_MARK) && serverOwner(cfg) !== "pm2") {
+    log.info("Stopping the background server so pm2 can take over");
+    await stopServer(cfg);
+  }
+  const known = pm2AppStatus() !== null;
+  log.step(known ? "Restarting OMP UI under pm2" : "Starting OMP UI under pm2");
+  await pm2(known ? ["restart", PM2_APP] : ["start", ECOSYSTEM_FILE]);
+  await pm2WaitAndReport();
+}
+
 function printUrls(cfg, { tunnelUrl } = {}) {
   const label = (s) => c.dim(s.padEnd(9));
   console.log("");
@@ -927,7 +1106,7 @@ function printUrls(cfg, { tunnelUrl } = {}) {
 function printNextSteps() {
   console.log(c.bold("Next steps"));
   console.log(`  1. Open the URL and sign in with your admin password`);
-  console.log(`  2. Create a board for a project folder, add cards, drag one to ${c.bold("In progress")}`);
+  console.log(`  2. Create a project (folder or Git repo), add cards, move one to ${c.bold("In progress")}`);
   console.log(`  ${c.dim("·")} Phone on the same Wi-Fi: open the Network URL → Share → Add to Home Screen`);
   console.log(`  ${c.dim("·")} Share over the internet: ${c.cyan("omp-ui public")}`);
   console.log(`  ${c.dim("·")} Logs: ${c.cyan("omp-ui logs -f")}   Status: ${c.cyan("omp-ui status")}   Stop: ${c.cyan("omp-ui stop")}`);
@@ -1071,17 +1250,28 @@ function composeDbProfile(values) {
 }
 
 /**
- * Create the host paths docker-compose.yml bind-mounts, so Docker does not create
- * them as root-owned directories (a directory named ~/.gitconfig would break git).
+ * Create the host paths docker-compose.yml bind-mounts for the credentials it shares, so
+ * Docker does not create them as root-owned directories (a directory named ~/.gitconfig
+ * would break git, one named ~/.claude.json would break Claude).
  */
 function prepareHostMounts() {
   const home = os.homedir();
-  const omp = expandHome(readEnvFile()?.OMP_HOME || "~/.omp");
-  fs.mkdirSync(omp, { recursive: true });
-  fs.mkdirSync(path.join(home, ".config", "gh"), { recursive: true });
-  if (!fs.existsSync(path.join(home, ".ssh"))) fs.mkdirSync(path.join(home, ".ssh"), { mode: 0o700 });
-  const gitconfig = path.join(home, ".gitconfig");
-  if (!fs.existsSync(gitconfig)) fs.writeFileSync(gitconfig, "", { mode: 0o644 });
+  fs.mkdirSync(expandHome(readEnvFile()?.OMP_HOME || "~/.omp"), { recursive: true });
+  for (const dir of [".claude", ".config/git", ".config/gh", ".config/glab-cli"]) {
+    fs.mkdirSync(path.join(home, dir), { recursive: true });
+  }
+  for (const dir of [".ssh", ".aws"]) {
+    if (!fs.existsSync(path.join(home, dir))) fs.mkdirSync(path.join(home, dir), { mode: 0o700 });
+  }
+  const files = [
+    [".gitconfig", "", 0o644],
+    [".git-credentials", "", 0o600],
+    [".claude.json", "{}\n", 0o600],
+  ];
+  for (const [name, content, mode] of files) {
+    const file = path.join(home, name);
+    if (!fs.existsSync(file)) fs.writeFileSync(file, content, { mode });
+  }
 }
 
 /** Make sure .env exists and carries the compose-specific settings. */
@@ -1148,7 +1338,8 @@ async function dockerUp(values) {
   printUrls(cfg, { tunnelUrl });
   if (tunnelUrl) printSecurityReminder();
   console.log(c.bold("Next steps"));
-  console.log(`  ${c.dim("·")} Sign omp in to a provider (once): ${c.cyan("docker compose exec -u omp omp-ui omp")}`);
+  console.log(`  ${c.dim("·")} omp, Claude, git, gh and glab sign-ins come from this machine ${c.dim("(omp-ui doctor lists them)")}`);
+  console.log(`  ${c.dim("·")} Not signed in to omp yet? ${c.cyan("omp")} here, or ${c.cyan("docker compose exec -u omp omp-ui omp")}`);
   console.log(`  ${c.dim("·")} Projects folder ${c.cyan(cfg.env.WORKSPACE_DIR || "./workspace")} is ${c.cyan("/workspace")} inside the container`);
   console.log(`  ${c.dim("·")} Logs: ${c.cyan("omp-ui docker logs")}   Stop: ${c.cyan("omp-ui docker down")}\n`);
 }
@@ -1187,7 +1378,8 @@ async function deployRemote(values) {
   const profiles = values.public ? "--profile public " : "";
   const remote = [
     `cd ${rdir}`,
-    "mkdir -p data workspace ~/.omp ~/.config/gh && mkdir -p -m 700 ~/.ssh && touch ~/.gitconfig",
+    "mkdir -p data workspace ~/.omp ~/.claude ~/.config/git ~/.config/gh ~/.config/glab-cli && mkdir -p -m 700 ~/.ssh ~/.aws && touch ~/.gitconfig",
+    "{ [ -e ~/.claude.json ] || echo '{}' > ~/.claude.json; } && { [ -e ~/.git-credentials ] || (umask 077 && : > ~/.git-credentials); }",
     `export WORKSPACE_DIR="$PWD/workspace"`,
     `if docker compose version >/dev/null 2>&1; then docker compose ${profiles}up -d --build; else docker-compose ${profiles}up -d --build; fi`,
   ].join(" && ");
@@ -1229,11 +1421,25 @@ const COMMANDS = {
       public: { type: "boolean", desc: "Also open a public tunnel (cloudflared/ngrok)" },
       rebuild: { type: "boolean", desc: "Force a fresh production build" },
       open: { type: "boolean", short: "o", desc: "Open the browser when ready" },
+      pm2: { type: "boolean", desc: "Hand the server to pm2 (restarts on crash, can start on boot)" },
+      foreground: { type: "boolean", short: "f", desc: "Stay attached instead of running in the background (used by pm2)" },
     },
-    examples: ["omp-ui up", "omp-ui up --port 8080 --public", "ADMIN_PASSWORD='s3cret-pass' omp-ui up"],
+    examples: [
+      "omp-ui up",
+      "omp-ui up --port 8080 --public",
+      "omp-ui up --pm2",
+      "ADMIN_PASSWORD='s3cret-pass' omp-ui up",
+    ],
     async run(values) {
       requireNode();
+      if (values.pm2 && values.foreground) throw new CliError("Choose either --pm2 or --foreground.");
+      if (values.public && (values.pm2 || values.foreground)) {
+        throw new CliError("--public only works in the default background mode.", {
+          hint: "Open the link separately once it runs: omp-ui public",
+        });
+      }
       const prevPort = fs.existsSync(ENV_FILE) ? loadConfig().port : null;
+      if (prevPort !== null && !values.pm2 && !values.foreground) assertNotPm2(loadConfig(), "restart");
       if (prevPort === null) {
         log.step("First run — creating .env");
         await initProject({ password: values.password, port: values.port, yes: true }, { fromUp: true });
@@ -1242,19 +1448,37 @@ const COMMANDS = {
       }
       let cfg = loadConfig();
       await ensureDeps();
+
+      if (values.pm2 && pm2ManagedPid(cfg)) {
+        // pm2's own `up --foreground` rebuilds if needed after the restart.
+        await pm2Start();
+        return;
+      }
+
       const state = values.rebuild ? "forced" : buildState();
       const runningBefore = runningPid(statePaths(cfg).pid, SERVER_MARK);
+      // Under pm2, a pm2-owned server still running is a leftover of our previous incarnation.
+      const allowPm2 = Boolean(values.foreground && process.env.pm_id !== undefined);
       if (state !== "fresh") {
         if (runningBefore) {
           log.info(state === "stale" ? "Sources changed — rebuilding" : "Rebuilding");
-          await stopServer(cfg);
+          await stopServer(cfg, { allowPm2 });
         }
         await buildApp();
       } else if (runningBefore && prevPort !== null && cfg.port !== prevPort) {
         log.info(`Port changed — restarting on ${cfg.port}`);
-        await stopServer(loadConfig({ PORT: prevPort }));
+        await stopServer(loadConfig({ PORT: prevPort }), { allowPm2 });
       }
       cfg = loadConfig();
+
+      if (values.pm2) {
+        await pm2Start();
+        return;
+      }
+      if (values.foreground) {
+        await startServer(cfg, { foreground: true });
+        return;
+      }
       const { health } = await startServer(cfg);
       const tunnelUrl = values.public ? await tunnelStart(cfg) : tunnelInfo(cfg)?.url;
       if (!values.public) printUrls(cfg, { tunnelUrl });
@@ -1277,7 +1501,7 @@ const COMMANDS = {
       "max-agents": { type: "string", arg: "<n>", desc: "Max concurrent agents (default 2)" },
       workspace: { type: "string", arg: "<dir>", desc: "Projects folder (default ~/omp-workspace)" },
       yes: { type: "boolean", short: "y", desc: "Accept defaults for anything not given" },
-      force: { type: "boolean", desc: "Overwrite an existing .env (keeps AUTH_SECRET)" },
+      force: { type: "boolean", desc: "Redo setup on an existing .env (unchanged values are kept)" },
     },
     examples: [
       "omp-ui init",
@@ -1311,6 +1535,7 @@ const COMMANDS = {
     options: {},
     async run() {
       const cfg = loadConfig();
+      assertNotPm2(cfg, "stop");
       await tunnelStop(cfg, { quiet: true });
       await stopServer(cfg);
     },
@@ -1322,6 +1547,7 @@ const COMMANDS = {
     options: { port: PORT_OPT },
     async run(values) {
       const before = loadConfig();
+      assertNotPm2(before, "restart");
       applyPortFlag(values);
       await stopServer(before);
       const cfg = loadConfig();
@@ -1358,6 +1584,7 @@ const COMMANDS = {
             {
               running: Boolean(pid),
               pid,
+              managedBy: pid ? serverOwner(cfg) : null,
               startedAt: startedAt?.toISOString() ?? null,
               url: localUrl(cfg),
               lan: lanUrls(cfg),
@@ -1370,8 +1597,9 @@ const COMMANDS = {
         );
       } else {
         const row = (k, v) => console.log(`  ${c.dim(k.padEnd(9))}${v}`);
+        const byPm2 = pid && serverOwner(cfg) === "pm2";
         const state = pid
-          ? `${c.green("● running")} ${c.dim(`pid ${pid}${startedAt ? ` · up ${formatDuration(Date.now() - startedAt.getTime())}` : ""}`)}`
+          ? `${c.green(byPm2 ? "● running under pm2" : "● running")} ${c.dim(`pid ${pid}${startedAt ? ` · up ${formatDuration(Date.now() - startedAt.getTime())}` : ""}`)}`
           : health
             ? `${c.yellow("● running elsewhere")} ${c.dim("(not started by this CLI, e.g. Docker)")}`
             : c.red("● stopped");
@@ -1386,7 +1614,8 @@ const COMMANDS = {
           row("Health", c.red("unreachable"));
         }
         row("Public", tunnel?.url ? c.magenta(tunnel.url) : c.dim("off (omp-ui public)"));
-        row("Logs", c.dim(rel(paths.log)));
+        row("Logs", c.dim(byPm2 ? `${rel(PM2_OUT_LOG)} (omp-ui pm2 logs)` : rel(paths.log)));
+        if (byPm2) row("Manage", c.dim("omp-ui pm2 stop | restart | logs | status"));
         console.log("");
       }
       if (!pid && !health) process.exitCode = 3;
@@ -1501,7 +1730,12 @@ const COMMANDS = {
       updateEnvFile({ ADMIN_PASSWORD: pw });
       log.ok("Admin password saved to .env");
       const cfg = loadConfig();
-      if (runningPid(statePaths(cfg).pid, SERVER_MARK)) {
+      if (pm2ManagedPid(cfg)) {
+        log.info("Restarting under pm2 to apply it…");
+        await pm2(["restart", PM2_APP]);
+        await waitForHealth(cfg, { timeoutMs: 120_000 });
+        log.ok("New password is active — all previous sessions were signed out");
+      } else if (runningPid(statePaths(cfg).pid, SERVER_MARK)) {
         log.info("Restarting to apply it…");
         await stopServer(cfg);
         await startServer(cfg);
@@ -1532,6 +1766,61 @@ const COMMANDS = {
           process.exitCode = 3;
         }
       } else throw new CliError(`Unknown action "${action}".`, { hint: "Use: omp-ui public [start|stop|status]" });
+    },
+  },
+
+  pm2: {
+    summary: "Keep it running with pm2 (restarts on crash, starts on boot)",
+    usage: "omp-ui pm2 [start|stop|restart|logs|status|save|startup|delete]",
+    positionals: true,
+    options: {
+      lines: { type: "string", short: "n", arg: "<lines>", desc: "Lines of history (logs, default 100)" },
+    },
+    description:
+      "Uses pm2 if installed, otherwise `npx -y pm2`. Config: ecosystem.config.cjs.\nLogs: data/pm2-out.log and data/pm2-error.log. Without an action: status.",
+    examples: ["omp-ui pm2 start", "omp-ui pm2 logs", "omp-ui pm2 save && omp-ui pm2 startup"],
+    async run(values, positionals) {
+      const [action = "status", ...rest] = positionals;
+      switch (action) {
+        case "start":
+          return pm2Start();
+        case "restart":
+          await pm2(["restart", PM2_APP]);
+          return pm2WaitAndReport();
+        case "stop":
+          return pm2(["stop", PM2_APP]);
+        case "delete":
+          return pm2(["delete", PM2_APP]);
+        case "logs":
+          return pm2(["logs", PM2_APP, "--lines", String(values.lines ?? 100), ...rest]);
+        case "status": {
+          await pm2(["describe", PM2_APP], { allowFail: true });
+          const health = await getHealth(loadConfig());
+          console.log(health ? `${c.green("✓")} Healthy ${c.dim(`v${health.version} · ${health.db}`)}` : `${c.red("✗")} Not answering at ${localUrl(loadConfig())}`);
+          return;
+        }
+        case "save":
+          await pm2(["save"]);
+          log.hint("Restored at boot once `omp-ui pm2 startup` is set up.");
+          return;
+        case "startup": {
+          if (!which("pm2")) {
+            throw new CliError("Starting on boot needs pm2 installed globally.", { hint: "Install it: npm i -g pm2 — then: omp-ui pm2 startup" });
+          }
+          if (!IS_WIN && process.getuid?.() === 0) {
+            log.info(`Run this yourself to register pm2 at boot: ${c.cyan("pm2 startup && pm2 save")}`);
+            return;
+          }
+          // As a normal user pm2 only prints the (sudo) command to run — it changes nothing itself.
+          await pm2(["startup"], { allowFail: true });
+          log.hint("Run the command printed above, then: omp-ui pm2 save");
+          return;
+        }
+        default:
+          throw new CliError(`Unknown pm2 action "${action}".`, {
+            hint: "Use: omp-ui pm2 [start|stop|restart|logs|status|save|startup|delete]",
+          });
+      }
     },
   },
 
@@ -1649,17 +1938,20 @@ const COMMANDS = {
       const gh = toolVersion("gh");
       if (!gh) row("info", "GitHub CLI", c.dim("gh not installed (optional, for GitHub PRs) — https://cli.github.com"));
       else {
-        const authed = Boolean(process.env.GH_TOKEN || cfg.env.GH_TOKEN) || spawnSync("gh", ["auth", "status"], { stdio: "ignore", timeout: 15_000 }).status === 0;
+        const authed = Boolean(cfg.env.GH_TOKEN || cfg.env.GITHUB_TOKEN) || spawnSync("gh", ["auth", "status"], { stdio: "ignore", timeout: 15_000 }).status === 0;
         row(authed ? "ok" : "warn", "GitHub CLI", authed ? `${gh} · signed in` : `${gh} · not signed in — run: gh auth login (or set GH_TOKEN)`);
       }
       const glab = toolVersion("glab");
       if (!glab) row("info", "GitLab CLI", c.dim("glab not installed (optional, for GitLab MRs) — https://gitlab.com/gitlab-org/cli"));
       else {
-        const authed = Boolean(process.env.GITLAB_TOKEN || cfg.env.GITLAB_TOKEN) || spawnSync("glab", ["auth", "status"], { stdio: "ignore", timeout: 15_000 }).status === 0;
+        const authed = Boolean(cfg.env.GITLAB_TOKEN) || spawnSync("glab", ["auth", "status"], { stdio: "ignore", timeout: 15_000 }).status === 0;
         row(authed ? "ok" : "warn", "GitLab CLI", authed ? `${glab} · signed in` : `${glab} · not signed in — run: glab auth login (or set GITLAB_TOKEN)`);
       }
       const workspace = path.resolve(ROOT, expandHome(cfg.env.WORKSPACE_DIR || path.join(os.homedir(), "omp-workspace")));
       row(fs.existsSync(workspace) ? "ok" : "warn", "Projects folder", fs.existsSync(workspace) ? workspace : `${workspace} missing — it is created on first use`);
+
+      const pm2Global = toolVersion("pm2");
+      row(pm2Global || which("npx") ? "ok" : "info", "pm2", pm2Global ? `v${pm2Global}` : which("npx") ? c.dim("not installed globally — `npx -y pm2` is used (npm i -g pm2 for boot start)") : c.dim("not installed (optional) — npm i -g pm2"));
 
       const pnpm = toolVersion("pnpm");
       row(pnpm ? "ok" : "info", "pnpm", pnpm ? `v${pnpm}` : c.dim("not found (corepack/npm used instead)"));
@@ -1681,7 +1973,8 @@ const COMMANDS = {
         row(port === "free" ? "ok" : "fail", "Port", port === "free" ? `${cfg.port} free` : `${cfg.port} ${port === "denied" ? "not permitted" : "in use by another process"} — change PORT in .env`);
       }
       if (health) {
-        row("ok", "Server", `${pid ? `pid ${pid}` : "running (external/Docker)"} · v${health.version} · ${localUrl(cfg)}`);
+        const owner = pid ? (serverOwner(cfg) === "pm2" ? `pid ${pid} under pm2` : `pid ${pid}`) : "running (external/Docker)";
+        row("ok", "Server", `${owner} · v${health.version} · ${localUrl(cfg)}`);
         row("ok", "Database", `${health.db} reachable`);
       } else if (pid) {
         row("fail", "Server", `pid ${pid} is running but /api/v1/health does not answer — omp-ui logs`);
@@ -1692,6 +1985,60 @@ const COMMANDS = {
       }
       const tunnel = tunnelInfo(cfg);
       row(tunnel ? "ok" : "info", "Public tunnel", tunnel ? (tunnel.url ?? `pid ${tunnel.pid}`) : c.dim("off"));
+
+      console.log(`\n${c.bold("Credentials")} ${c.dim("inherited from this machine by the server, its agents and Docker (values never shown)")}`);
+      const home = os.homedir();
+      const providers = omp ? ompProviders(omp.path) : null;
+      if (providers?.length) row("ok", "omp sign-in", providers.join(", "));
+      else if (omp) row("info", "omp sign-in", c.dim("no subscription sign-in reported by `omp usage` (API keys below also work)"));
+
+      const claude = [
+        hasContent(path.join(home, ".claude")) && "~/.claude",
+        hasContent(path.join(home, ".claude.json")) && "~/.claude.json",
+        ...["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"].filter((k) => cfg.env[k]),
+      ].filter(Boolean);
+      row(claude.length ? "ok" : "info", "Claude", claude.length ? claude.join(", ") : c.dim("no ~/.claude, ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN (optional)"));
+
+      const envKeys = CREDENTIAL_ENV_KEYS.filter((k) => cfg.env[k]);
+      row(envKeys.length ? "ok" : "info", "Env credentials", envKeys.length ? envKeys.join(", ") : c.dim("none set (omp, gh and glab sign-ins are enough)"));
+
+      if (git) {
+        const name = capture("git", ["config", "--get", "user.name"], { cwd: home });
+        const email = capture("git", ["config", "--get", "user.email"], { cwd: home });
+        row(name && email ? "ok" : "warn", "Git identity", name && email ? `${name} <${email}>` : 'user.name/user.email not set — git config --global user.name "…" (and user.email)');
+        // Only the helper's command name (e.g. "store", "gh", "osxkeychain"), never its arguments.
+        const helpers = (capture("git", ["config", "--get-regexp", "^credential\\..*helper$"], { cwd: home, shell: false }) ?? "")
+          .split("\n")
+          .map((line) => {
+            const space = line.indexOf(" ");
+            return space < 0 ? "" : line.slice(space + 1).trim().replace(/^!\s*/, "").split(/\s+/)[0];
+          })
+          .filter(Boolean)
+          .map((h) => path.basename(h));
+        const gitCreds = [...new Set(helpers)].map((h) => `helper ${h}`);
+        if (hasContent(path.join(home, ".git-credentials"))) gitCreds.push("~/.git-credentials");
+        row(gitCreds.length ? "ok" : "info", "Git credentials", gitCreds.length ? gitCreds.join(", ") : c.dim("no credential helper or ~/.git-credentials (SSH keys or GH_TOKEN/GITLAB_TOKEN also work)"));
+      }
+
+      const ssh = [];
+      let sshUsable = false;
+      if (cfg.env.SSH_AUTH_SOCK && which("ssh-add")) {
+        const r = spawnSync("ssh-add", ["-l"], { encoding: "utf8", timeout: 5000, env: cfg.env });
+        const keys = `${r.stdout ?? ""}`.split("\n").filter(Boolean).length;
+        if (r.status === 0) ssh.push(`agent with ${keys} key${keys === 1 ? "" : "s"}`);
+        else if (r.status === 1) ssh.push("agent (no keys loaded)");
+        else ssh.push("agent not reachable");
+        sshUsable ||= r.status === 0;
+      }
+      let keyFiles = [];
+      try {
+        keyFiles = fs.readdirSync(path.join(home, ".ssh")).filter((f) => /^id_[^.]+$/.test(f));
+      } catch {
+        // no ~/.ssh
+      }
+      if (keyFiles.length) ssh.push(`~/.ssh/${keyFiles.join(", ~/.ssh/")}`);
+      sshUsable ||= keyFiles.length > 0;
+      row(sshUsable ? "ok" : "info", "SSH", ssh.length ? ssh.join(", ") : c.dim("no ssh-agent or ~/.ssh/id_* keys (needed only for SSH remotes)"));
 
       console.log("");
       if (failures) {
@@ -1719,7 +2066,7 @@ function printMainHelp() {
   const groups = [
     ["Start", ["up", "init", "start", "stop", "restart", "status", "logs", "open"]],
     ["Configure", ["passwd", "public", "doctor"]],
-    ["Deploy", ["docker", "deploy"]],
+    ["Deploy", ["pm2", "docker", "deploy"]],
     ["Develop", ["dev", "build", "version"]],
   ];
   const width = Math.max(...Object.keys(COMMANDS).map((k) => k.length)) + 2;
@@ -1787,7 +2134,7 @@ main(process.argv.slice(2)).then(
   (err) => {
     if (err instanceof CliError) {
       log.error(err.message);
-      if (err.hint) for (const line of err.hint.split("\n")) log.hint(line.trim());
+      if (err.hint) for (const line of err.hint.split("\n")) console.error(`  ${c.dim(line.trim())}`);
       process.exit(err.exitCode);
     }
     log.error(err?.stack ?? String(err));

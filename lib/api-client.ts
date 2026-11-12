@@ -171,7 +171,12 @@ export const api = {
  */
 export function subscribeEvents(
   onEvent: (event: ServerEvent) => void,
-  opts: { boardId?: string; onReconnect?: () => void } = {},
+  opts: {
+    boardId?: string;
+    onReconnect?: () => void;
+    /** "live" on every successful open (including the first); "reconnecting" on drop. */
+    onStatus?: (status: "live" | "reconnecting") => void;
+  } = {},
 ): () => void {
   const url = `${BASE}/events${opts.boardId ? `?boardId=${encodeURIComponent(opts.boardId)}` : ""}`;
   const source = new EventSource(url, { withCredentials: true });
@@ -183,8 +188,10 @@ export function subscribeEvents(
   };
   source.onerror = () => {
     dropped = true;
+    opts.onStatus?.("reconnecting");
   };
   source.onopen = () => {
+    opts.onStatus?.("live");
     if (dropped) {
       dropped = false;
       opts.onReconnect?.();

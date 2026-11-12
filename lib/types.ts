@@ -129,7 +129,21 @@ export type ServerEvent =
   | { type: "comment.updated"; comment: Comment; boardId: string }
   | { type: "comment.deleted"; commentId: string; taskId: string; boardId: string }
   | { type: "run.updated"; run: Run; boardId: string }
-  | { type: "run.event"; event: RunEvent; boardId: string };
+  | { type: "run.event"; event: RunEvent; boardId: string }
+  /**
+   * Live, NOT persisted: streaming assistant output while a message is being generated.
+   * `text` is the accumulated content of the current message so far (not just the delta), so a
+   * client that missed frames still renders correctly. Superseded by the persisted `run.event`
+   * (kind text/thinking) published at message end — clients drop the live block then.
+   */
+  | {
+      type: "run.delta";
+      runId: string;
+      taskId: string;
+      boardId: string;
+      kind: "text" | "thinking";
+      text: string;
+    };
 
 export interface ApiError {
   error: string;

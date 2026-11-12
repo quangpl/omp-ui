@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { childEnv } from "@/lib/child-env";
 import { json, withApi } from "@/lib/server/http";
 import { getAppSettings } from "@/lib/settings";
 import { APP_VERSION } from "@/lib/version";
@@ -19,18 +20,23 @@ const g = globalThis as unknown as {
 
 function probeOmp(ompPath: string): Promise<OmpInfo> {
   const { promise, resolve } = Promise.withResolvers<OmpInfo>();
-  execFile(ompPath, ["--version"], { timeout: 5000, windowsHide: true }, (err, stdout, stderr) => {
-    const code = err?.code;
-    if (code === "ENOENT" || code === "EACCES") {
-      resolve({ path: ompPath, installed: false, version: null });
-      return;
-    }
-    const output = `${stdout}\n${stderr}`.trim();
-    const version =
-      /\d+\.\d+\.\d+[0-9A-Za-z.+-]*/.exec(output)?.[0] ??
-      (err ? null : output.split("\n")[0]?.trim() || null);
-    resolve({ path: ompPath, installed: true, version });
-  });
+  execFile(
+    ompPath,
+    ["--version"],
+    { timeout: 5000, env: childEnv(), windowsHide: true },
+    (err, stdout, stderr) => {
+      const code = err?.code;
+      if (code === "ENOENT" || code === "EACCES") {
+        resolve({ path: ompPath, installed: false, version: null });
+        return;
+      }
+      const output = `${stdout}\n${stderr}`.trim();
+      const version =
+        /\d+\.\d+\.\d+[0-9A-Za-z.+-]*/.exec(output)?.[0] ??
+        (err ? null : output.split("\n")[0]?.trim() || null);
+      resolve({ path: ompPath, installed: true, version });
+    },
+  );
   return promise;
 }
 

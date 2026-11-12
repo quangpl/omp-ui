@@ -82,7 +82,7 @@ export default function BoardsPage() {
               </Button>
             </div>
           ) : boards === null ? (
-            <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3" aria-busy="true" aria-label="Loading projects">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3" aria-busy="true" aria-label="Loading projects">
               {Array.from({ length: 3 }, (_, i) => (
                 <div key={i} className="flex flex-col gap-4 rounded-xl border bg-card p-4">
                   <div className="space-y-2">
@@ -104,7 +104,7 @@ export default function BoardsPage() {
               <p className="mb-4 text-sm text-muted-foreground">
                 {boards.length} project{boards.length === 1 ? "" : "s"} · tap one to open its board
               </p>
-              <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3">
                 {boards.map((board) => (
                   <BoardCard
                     key={board.id}

@@ -202,7 +202,7 @@ export function FolderPicker({
       <div className="h-[42dvh] overflow-y-auto overscroll-contain md:h-80" aria-busy={loading}>
         {error ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-            <p className="text-sm text-destructive">{error}</p>
+            <p className="max-w-full text-sm [overflow-wrap:anywhere] text-destructive">{error}</p>
             <Button
               type="button"
               variant="outline"

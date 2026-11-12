@@ -24,5 +24,6 @@ export const POST = withApi<Params>(async ({ req, repo, manager, params }) => {
   const counted = await repo.getTask(task.id);
   if (counted) publish({ type: "task.updated", task: counted });
   await manager.onComment(counted ?? task, comment);
-  return json(comment, { status: 201 });
+  // The hook may already have resolved it (a fast run that finished): answer with the stored state.
+  return json((await repo.getComment(comment.id)) ?? comment, { status: 201 });
 });

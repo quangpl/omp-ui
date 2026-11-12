@@ -17,10 +17,10 @@ curl -fsSL https://omp.sh/install | sh   # install omp
 omp                                      # run once, sign in to a provider
 ```
 
-To use **Docker** instead (omp is included in the image):
+To use **Docker** instead (omp is included in the image, and your sign-ins are shared with it — see [Credentials](#credentials)):
 
 ```sh
-docker compose up -d                     # then open http://localhost:3000
+./omp-ui docker up                       # or: docker compose up -d — then open http://localhost:3000
 ```
 
 ## How it works
@@ -57,9 +57,30 @@ A card has two buttons. Each one acts on every project folder that has changes.
 To set up authentication, do one of the following:
 
 - Run `gh auth login` and/or `glab auth login` once.
-- Set `GH_TOKEN` / `GITLAB_TOKEN` in `.env`.
+- Export `GH_TOKEN` / `GITLAB_TOKEN` in your shell (or set them in `.env`).
 
-Pushing over SSH uses your normal `~/.ssh` keys. The Docker image includes git, gh and glab, and mounts your `~/.gitconfig`, `~/.ssh` (read-only) and `~/.config/gh`. Run `omp-ui doctor` to check your setup.
+Pushing over SSH uses your normal `~/.ssh` keys and ssh-agent. See [Credentials](#credentials) for everything OMP UI picks up from your machine.
+
+## Credentials
+
+OMP UI never asks for your AI or Git logins. It uses what this machine already has.
+
+- **Local (`omp-ui up` / `start`):** the server runs as you, with your full environment. Agents and git use your omp and Claude sign-ins, `~/.gitconfig`, saved Git credentials, `~/.ssh` keys and ssh-agent, the `gh` / `glab` logins, and any API keys or proxies in your environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GH_TOKEN`, `HTTPS_PROXY`, …). Values in `.env` only override; keep credentials out of it.
+- **Docker:** `docker-compose.yml` shares the same things with the container:
+
+  | From your computer | What it is |
+  | --- | --- |
+  | `~/.omp` | omp sign-ins and settings |
+  | `~/.claude`, `~/.claude.json` | Claude Code / Anthropic sign-in |
+  | `~/.gitconfig`, `~/.config/git`, `~/.git-credentials` (read-only) | Git identity, credential helpers, saved HTTPS logins |
+  | `~/.ssh` (read-only), `$SSH_AUTH_SOCK` | SSH keys and your ssh-agent |
+  | `~/.config/gh`, `~/.config/glab-cli` | GitHub CLI and GitLab CLI sign-ins |
+  | `~/.aws` (read-only) | AWS profiles (Bedrock) |
+  | Environment variables | `GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, `GITLAB_HOST`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `AWS_*`, `HTTP(S)_PROXY`, … (full list in `docker-compose.yml`) |
+
+  Docker turns a missing path into an empty root-owned folder. `omp-ui docker up` creates the missing ones first; before a plain `docker compose up`, run the commands listed in `docker-compose.yml`. Delete any line there you do not want to share. On Docker Desktop for macOS, start with `SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock` to share the ssh-agent.
+- OMP UI's own secrets (`ADMIN_PASSWORD`, `AUTH_SECRET`, `DATABASE_URL`, `POSTGRES_PASSWORD`, `OMP_UI_*`, …) are removed from the environment of agents and git commands.
+- `omp-ui doctor` lists what it found (names only, never values).
 
 ## CLI
 
@@ -74,8 +95,9 @@ Run `./omp-ui <command>`. Add `--help` to any command for details.
 | `open` | Open OMP UI in your browser |
 | `passwd` | Change the admin password |
 | `public` | Get a public `https://` link (cloudflared, or ngrok) · `public stop` |
-| `doctor` | Check that Node, omp, git, gh/glab, the port and the database are OK |
+| `doctor` | Check that Node, omp, git, gh/glab, the port and the database are OK, and list the credentials found |
 | `init` | Re-run setup (`--force` overwrites `.env`) |
+| `pm2 start` / `stop` / `restart` / `logs` / `status` / `save` / `startup` / `delete` | Run it under pm2. `omp-ui up --pm2` sets everything up first |
 | `docker up` / `down` / `logs` / `ps` | Run it in Docker (`--postgres` or `--mongo` adds a database) |
 | `deploy --host me@server` | Copy it to a server and start it there with Docker |
 | `dev` / `build` / `version` | For development |
@@ -97,6 +119,20 @@ To choose a database, either:
 
 In Docker, `omp-ui docker up --postgres` or `--mongo` runs a bundled database for you. Data is not migrated when you switch databases.
 
+## Run with PM2
+
+```sh
+npm i -g pm2                      # optional; without it, `npx -y pm2` is used
+pm2 start ecosystem.config.cjs    # or: omp-ui up --pm2
+pm2 save && pm2 startup           # start again after a reboot
+```
+
+This works on a fresh clone. The first run sets everything up and builds the app, which takes a few minutes. If you didn't set `ADMIN_PASSWORD`, the generated password is printed to `data/pm2-out.log` (search for `OMP UI ADMIN PASSWORD`). `omp-ui up --pm2` also shows it in your terminal.
+
+- Follow the logs with `omp-ui pm2 logs`.
+- While pm2 runs it, use `omp-ui pm2 stop` / `restart`. Plain `omp-ui stop` refuses so it doesn't fight pm2.
+- `omp-ui pm2 restart` rebuilds when the sources changed.
+
 ## Docker
 
 - `docker compose up -d` builds the image (Node 24 with omp, git, gh and glab) and runs it as an unprivileged user.
@@ -107,10 +143,10 @@ In Docker, `omp-ui docker up --postgres` or `--mongo` runs a bundled database fo
   | `./data` | `/data` | Database and logs |
   | `~/.omp` | `/home/omp/.omp` | omp sign-in |
   | `WORKSPACE_DIR` | `/workspace` | Your projects |
-  | `~/.gitconfig`, `~/.ssh`, `~/.config/gh` | same paths under `/home/omp` | Git identity, SSH keys, GitHub CLI sign-in |
+  | Your sign-ins and keys | under `/home/omp` | See [Credentials](#credentials) |
 
   The `WORKSPACE_DIR` default is `./workspace`. In the app, project folders are under `/workspace/…`.
-- If omp is not signed in yet, run: `docker compose exec -u omp omp-ui omp`.
+- If omp is not signed in on your computer yet, run `omp` there, or `docker compose exec -u omp omp-ui omp`.
 - `omp-ui docker up --postgres` (or `--mongo`) saves the choice to `.env`, so plain `docker compose up -d` keeps using it.
 - `omp-ui deploy --host me@server` copies the project, including `.env`, to `~/omp-ui` on the server and runs `docker compose up -d --build` there.
 - To pin versions: `docker compose build --build-arg OMP_VERSION=v18.19.0 --build-arg GLAB_VERSION=v1.130.0`.
@@ -138,7 +174,7 @@ In Docker, `omp-ui docker up --postgres` or `--mongo` runs a bundled database fo
 | `OMP_PATH` | `omp` | omp executable |
 | `MAX_AGENTS` | `2` | Agents running at once |
 | `OMP_EXTRA_ARGS` | – | Extra omp flags, e.g. `--thinking=high` |
-| `GH_TOKEN` / `GITLAB_TOKEN` | – | Git hosting tokens (instead of `gh` / `glab` login) |
+| `GH_TOKEN` / `GITLAB_TOKEN` | – | Git hosting tokens (instead of `gh` / `glab` login). Usually exported in your shell; see [Credentials](#credentials) |
 | `VINEXT_TRUST_PROXY` | – | `1` behind a reverse proxy |
 
 ## Security

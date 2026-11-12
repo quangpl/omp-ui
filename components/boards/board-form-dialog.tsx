@@ -205,7 +205,7 @@ export function BoardFormDialog({
   );
 
   const sourceView = (
-    <div className="grid gap-3">
+    <div className="grid grid-cols-1 gap-3">
       {[
         {
           icon: <FolderOpenIcon />,
@@ -398,7 +398,7 @@ export function BoardFormDialog({
       </div>
 
       {error && (
-        <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-sm break-words text-destructive">
+        <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-sm [overflow-wrap:anywhere] text-destructive">
           {error}
         </p>
       )}
@@ -470,7 +470,7 @@ export function BoardFormDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={close}>
-        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-md">
+        <DialogContent className="max-h-[90dvh] grid-cols-1 overflow-y-auto sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{header.title}</DialogTitle>
             <DialogDescription>{header.description}</DialogDescription>

@@ -102,6 +102,47 @@ function EventLine({ event }: { event: RunEvent }) {
   }
 }
 
+interface LiveOutput {
+  kind: "text" | "thinking";
+  /** Accumulated text of the message being written. */
+  text: string;
+}
+
+const Caret = () => (
+  <span
+    aria-hidden
+    className="ml-0.5 inline-block h-[1.1em] w-1.5 translate-y-[0.2em] animate-pulse rounded-[1px] bg-foreground/50"
+  />
+);
+
+/** The agent's in-progress message, updated from `run.delta` until the persisted event lands. */
+function LiveBlock({ live }: { live: LiveOutput }) {
+  if (live.kind === "thinking") {
+    return (
+      <div data-testid="live-output" aria-live="polite" className="text-xs text-muted-foreground italic">
+        <span className="inline-flex items-center gap-1.5 not-italic">
+          <Brain className="size-3.5" />
+          Thinking
+        </span>
+        <p className="mt-1 ml-1.5 line-clamp-2 border-l-2 pl-3 break-words">
+          {live.text.slice(-400)}
+          <Caret />
+        </p>
+      </div>
+    );
+  }
+  return (
+    <p
+      data-testid="live-output"
+      aria-live="polite"
+      className="text-sm leading-relaxed whitespace-pre-wrap break-words"
+    >
+      {live.text}
+      <Caret />
+    </p>
+  );
+}
+
 export function AgentLog({
   runs,
   subscribe,
@@ -131,6 +172,14 @@ export function AgentLog({
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [loadedRunId, setLoadedRunId] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  // Streaming preview of the message the agent is writing right now (selected run only).
+  const [live, setLive] = useState<LiveOutput | null>(null);
+  useEffect(() => {
+    setLive(null);
+  }, [runId]);
+  useEffect(() => {
+    if (!running) setLive(null);
+  }, [running]);
   const runIdRef = useRef(runId);
   runIdRef.current = runId;
   const lastSeqRef = useRef(0);
@@ -173,7 +222,12 @@ export function AgentLog({
         if (event.type === "stream.reconnected") {
           setReloadKey((key) => key + 1);
         } else if (event.type === "run.event" && event.event.runId === runIdRef.current) {
-          setEvents((prev) => mergeEvents(prev, [event.event]));
+          const persisted = event.event;
+          setEvents((prev) => mergeEvents(prev, [persisted]));
+          // The finished message replaces its streaming preview.
+          setLive((prev) => (prev && prev.kind === persisted.kind ? null : prev));
+        } else if (event.type === "run.delta" && event.runId === runIdRef.current) {
+          setLive({ kind: event.kind, text: event.text });
         }
       }),
     [subscribe],
@@ -217,7 +271,7 @@ export function AgentLog({
 
   useLayoutEffect(() => {
     if (visible && running && followRef.current) scrollToEnd();
-  }, [events, visible, running, scrollToEnd]);
+  }, [events, live, visible, running, scrollToEnd]);
 
   if (sortedRuns.length === 0) {
     return (
@@ -309,7 +363,6 @@ export function AgentLog({
           <div
             data-vaul-no-drag
             className="flex flex-col gap-2.5"
-            aria-live={running ? "polite" : undefined}
           >
             {loadedRunId !== runId && events.length === 0 ? (
               <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
@@ -321,7 +374,8 @@ export function AgentLog({
             ) : (
               events.map((event) => <EventLine key={event.seq} event={event} />)
             )}
-            {running && (
+            {running && live && <LiveBlock live={live} />}
+            {running && !live && (
               <div className="flex items-center gap-2 py-1 text-xs text-muted-foreground">
                 <span className="relative flex size-2">
                   <span className="absolute inline-flex size-full animate-ping rounded-full bg-sky-500 opacity-60" />

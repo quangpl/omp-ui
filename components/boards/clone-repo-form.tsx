@@ -107,7 +107,7 @@ export function CloneRepoForm({
       </div>
 
       {error && (
-        <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2.5 text-sm break-words text-destructive">
+        <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2.5 text-sm [overflow-wrap:anywhere] text-destructive">
           {error}
         </p>
       )}

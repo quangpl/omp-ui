@@ -52,6 +52,8 @@ interface TaskCardProps {
   activatorRef?: Ref<HTMLButtonElement>;
   dragAttributes?: DraggableAttributes;
   dragListeners?: DraggableSyntheticListeners;
+  /** Latest agent activity line; shown under the title while the agent runs. */
+  activity?: string;
   /** Always-visible quick actions row (mobile). */
   actions?: ReactNode;
   className?: string;
@@ -65,6 +67,7 @@ export function TaskCard({
   activatorRef,
   dragAttributes,
   dragListeners,
+  activity,
   actions,
   className,
 }: TaskCardProps) {
@@ -113,8 +116,17 @@ export function TaskCard({
             {task.title}
           </span>
         </span>
-        {preview && (
-          <span className="mt-1 block truncate text-xs text-muted-foreground">{preview}</span>
+        {task.agentState === "running" && activity ? (
+          <span
+            className="mt-1 block truncate font-mono text-[11px] text-muted-foreground"
+            title={activity}
+          >
+            {activity}
+          </span>
+        ) : (
+          preview && (
+            <span className="mt-1 block truncate text-xs text-muted-foreground">{preview}</span>
+          )
         )}
         {hasMeta && (
           <span className="mt-2.5 flex flex-wrap items-center gap-1.5">

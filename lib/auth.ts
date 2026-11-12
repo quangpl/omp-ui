@@ -253,12 +253,28 @@ export function ensureAuthBoot(): Promise<void> {
 const failures: Map<string, { count: number; resetAt: number }> = (g.__ompUiLoginFailures ??=
   new Map());
 
+/**
+ * Rate-limit bucket for a request. Route handlers don't see the socket address, so forwarding
+ * headers are the only per-client signal, and they are trusted only behind a declared reverse
+ * proxy (`VINEXT_TRUST_PROXY=1` or `VINEXT_TRUSTED_HOSTS`, same gate as vinext's server).
+ * Otherwise every client shares the "direct" bucket, so spoofed headers can't dodge the limit.
+ * Behind the proxy: `X-Real-IP` (set by the proxy), else the right-most `X-Forwarded-For` entry,
+ * i.e. the one the trusted proxy appended (left-most entries are client-controlled).
+ */
 export function clientIp(req: Request): string {
-  const forwarded = req.headers.get("x-forwarded-for");
-  const first = forwarded?.split(",")[0]?.trim();
-  if (first) return first;
+  const trustProxy =
+    process.env.VINEXT_TRUST_PROXY === "1" ||
+    (process.env.VINEXT_TRUSTED_HOSTS ?? "").split(",").some((h) => h.trim());
+  if (!trustProxy) return "direct";
   const real = req.headers.get("x-real-ip")?.trim();
-  return real || "local";
+  if (real) return real;
+  const forwarded = req.headers
+    .get("x-forwarded-for")
+    ?.split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .at(-1);
+  return forwarded || "direct";
 }
 
 function pruneFailures(now: number): void {

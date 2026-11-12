@@ -40,6 +40,8 @@ const KEYBOARD_CODES = { start: ["Space"], cancel: ["Escape"], end: ["Space", "E
 
 export interface KanbanBoardProps {
   columns: TasksByStatus;
+  /** Latest agent activity line per task id. */
+  activity: Record<string, string>;
   isMobile: boolean;
   onOpen: (taskId: string) => void;
   moveTask: (taskId: string, status: TaskStatus, position: number) => Promise<void>;
@@ -57,6 +59,7 @@ export function KanbanBoard(props: KanbanBoardProps) {
     return (
       <MobileBoard
         columns={props.columns}
+        activity={props.activity}
         active={props.mobileColumn}
         onActiveChange={props.onMobileColumnChange}
         onOpen={props.onOpen}
@@ -68,6 +71,7 @@ export function KanbanBoard(props: KanbanBoardProps) {
   return (
     <DesktopBoard
       columns={props.columns}
+      activity={props.activity}
       onOpen={props.onOpen}
       moveTask={props.moveTask}
       onQuickCreate={props.onQuickCreate}
@@ -77,10 +81,11 @@ export function KanbanBoard(props: KanbanBoardProps) {
 
 function DesktopBoard({
   columns,
+  activity,
   onOpen,
   moveTask,
   onQuickCreate,
-}: Pick<KanbanBoardProps, "columns" | "onOpen" | "moveTask" | "onQuickCreate">) {
+}: Pick<KanbanBoardProps, "columns" | "activity" | "onOpen" | "moveTask" | "onQuickCreate">) {
   const sensors = useSensors(
     useSensor(FinePointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 8 } }),
@@ -229,6 +234,7 @@ function DesktopBoard({
               const task = taskById.get(id);
               return task ? [task] : [];
             })}
+            activity={activity}
             onOpen={onOpen}
             onCreate={status === "todo" ? onQuickCreate : undefined}
           />

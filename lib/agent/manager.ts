@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { buildPrompt, buildSteerMessage } from "@/lib/agent/prompt";
 import { OmpRpcProcess, describeExit, type RpcExitInfo, type RpcFrame } from "@/lib/agent/rpc";
 import type { AgentManager } from "@/lib/agent/types";
+import { childEnv } from "@/lib/child-env";
 import { getRepo } from "@/lib/db";
 import type { Repository, UpdateTaskInput } from "@/lib/db/types";
 import { publish } from "@/lib/events";
@@ -17,6 +18,21 @@ const MAX_EVENT_TEXT = 50_000;
 const MAX_THINKING_TEXT = 2_000;
 const MAX_TOOL_TEXT = 300;
 const MAX_TOOL_ERROR_TEXT = 1_000;
+/** Live `run.delta` events: at most one per run+kind per window (leading + trailing). */
+const DELTA_THROTTLE_MS = 120;
+const MAX_THINKING_DELTA = 4_000;
+
+type DeltaKind = "text" | "thinking";
+
+/** Streaming accumulator for one kind of content of the assistant message in progress. */
+interface DeltaStream {
+  /** Accumulated text per content block index. */
+  blocks: Map<number, string>;
+  lastSentAt: number;
+  lastSentText: string;
+  /** Pending trailing publish. */
+  timer: NodeJS.Timeout | undefined;
+}
 
 /** In-memory state of one task's run, from dequeue until it is released. */
 interface ActiveRun {
@@ -37,6 +53,8 @@ interface ActiveRun {
   restartAfter: boolean;
   /** Streaming text of the assistant message in progress. */
   currentText: string;
+  /** Live (unpersisted) accumulators behind `run.delta` events. */
+  deltas: Record<DeltaKind, DeltaStream>;
   /** Text of the last completed assistant message that had any. */
   lastText: string;
   lastStopReason: string | null;
@@ -245,6 +263,7 @@ class OmpAgentManager implements AgentManager {
       closing: false,
       restartAfter: false,
       currentText: "",
+      deltas: { text: newDeltaStream(), thinking: newDeltaStream() },
       lastText: "",
       lastStopReason: null,
       lastError: null,
@@ -265,6 +284,7 @@ class OmpAgentManager implements AgentManager {
   /** Drop the run from the active set, close its process, and refill the free slot. */
   private release(run: ActiveRun): void {
     run.finished = true;
+    this.resetDeltas(run);
     if (this.active.get(run.taskId) === run) this.active.delete(run.taskId);
     if (run.proc && !run.closing) {
       run.closing = true;
@@ -383,6 +403,7 @@ class OmpAgentManager implements AgentManager {
       command: settings.ompPath,
       args,
       cwd: board.workdir,
+      env: childEnv(),
       autoConfirm: settings.approvalMode === "yolo",
     });
     run.proc = proc;
@@ -418,16 +439,27 @@ class OmpAgentManager implements AgentManager {
   private async onFrame(run: ActiveRun, frame: RpcFrame): Promise<void> {
     if (run.finished) return;
     switch (frame.type) {
+      case "message_start":
+        this.resetDeltas(run);
+        break;
       case "message_update": {
         const event = frame.assistantMessageEvent;
-        if (isObject(event) && event.type === "text_delta") {
-          run.currentText += asString(event.delta) ?? "";
+        if (!isObject(event)) break;
+        const delta = asString(event.delta) ?? "";
+        const index = asNumber(event.contentIndex) ?? 0;
+        if (event.type === "text_delta") {
+          run.currentText += delta;
+          this.onDelta(run, "text", index, delta);
+        } else if (event.type === "thinking_delta") {
+          this.onDelta(run, "thinking", index, delta);
         }
         break;
       }
       case "message_end": {
         if (isObject(frame.message) && frame.message.role === "assistant") {
           await this.onAssistantMessage(run, frame.message);
+        } else {
+          this.resetDeltas(run);
         }
         break;
       }
@@ -513,6 +545,10 @@ class OmpAgentManager implements AgentManager {
   private async onAssistantMessage(run: ActiveRun, message: Json): Promise<void> {
     const thinking = blockText(message.content, "thinking");
     const text = blockText(message.content, "text");
+    // Final live state first, so clients see it before the persisted run.event supersedes it.
+    this.flushDelta(run, "thinking", thinking);
+    this.flushDelta(run, "text", text);
+    this.resetDeltas(run);
     if (thinking) await this.event(run, "thinking", truncate(thinking, MAX_THINKING_TEXT));
     if (text) {
       await this.event(run, "text", text);
@@ -523,6 +559,60 @@ class OmpAgentManager implements AgentManager {
     run.lastError = assistantError(message) ?? null;
     if (run.lastStopReason === "error") {
       await this.event(run, "error", `Model error: ${run.lastError ?? "unknown error"}`);
+    }
+  }
+
+  // --- Live deltas -----------------------------------------------------------------------
+
+  private onDelta(run: ActiveRun, kind: DeltaKind, index: number, delta: string): void {
+    if (!delta) return;
+    const stream = run.deltas[kind];
+    stream.blocks.set(index, (stream.blocks.get(index) ?? "") + delta);
+    if (stream.timer) return; // the trailing publish will carry this delta
+    const wait = stream.lastSentAt + DELTA_THROTTLE_MS - Date.now();
+    if (wait <= 0) {
+      this.publishDelta(run, kind, joinBlocks(stream.blocks));
+      return;
+    }
+    stream.timer = setTimeout(() => {
+      stream.timer = undefined;
+      this.publishDelta(run, kind, joinBlocks(stream.blocks));
+    }, wait);
+  }
+
+  /** Publish the message's final content if it streamed and differs from the last delta. */
+  private flushDelta(run: ActiveRun, kind: DeltaKind, finalText: string): void {
+    const stream = run.deltas[kind];
+    clearTimeout(stream.timer);
+    stream.timer = undefined;
+    if (stream.blocks.size === 0) return;
+    this.publishDelta(run, kind, finalText || joinBlocks(stream.blocks));
+  }
+
+  private publishDelta(run: ActiveRun, kind: DeltaKind, accumulated: string): void {
+    if (run.finished || !run.runId) return;
+    const stream = run.deltas[kind];
+    const text = kind === "thinking" ? tail(accumulated, MAX_THINKING_DELTA) : accumulated;
+    if (!text || text === stream.lastSentText) return;
+    stream.lastSentAt = Date.now();
+    stream.lastSentText = text;
+    publish({
+      type: "run.delta",
+      runId: run.runId,
+      taskId: run.taskId,
+      boardId: run.boardId,
+      kind,
+      text,
+    });
+  }
+
+  /** Drop accumulated deltas and any pending trailing publish (throttle window is kept). */
+  private resetDeltas(run: ActiveRun): void {
+    for (const stream of Object.values(run.deltas)) {
+      clearTimeout(stream.timer);
+      stream.timer = undefined;
+      stream.blocks.clear();
+      stream.lastSentText = "";
     }
   }
 
@@ -810,6 +900,24 @@ function oneLineTrim(text: string): string {
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** Keeps the end of a growing text (live thinking shows its latest part). */
+function tail(text: string, max: number): string {
+  return text.length > max ? `…${text.slice(-(max - 1))}` : text;
+}
+
+function newDeltaStream(): DeltaStream {
+  return { blocks: new Map(), lastSentAt: 0, lastSentText: "", timer: undefined };
+}
+
+/** Streamed blocks rendered like the persisted event (`blockText`): trimmed, joined by blank lines. */
+function joinBlocks(blocks: Map<number, string>): string {
+  return [...blocks.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, value]) => value.trim())
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function isDirectory(path: string): Promise<boolean> {

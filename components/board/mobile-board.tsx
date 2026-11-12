@@ -91,6 +91,7 @@ function QuickActions({
 /** Phone layout: segmented column tabs, horizontal swipe between columns, FAB for new cards. */
 export function MobileBoard({
   columns,
+  activity,
   active,
   onActiveChange,
   onOpen,
@@ -98,6 +99,7 @@ export function MobileBoard({
   onAdd,
 }: {
   columns: TasksByStatus;
+  activity: Record<string, string>;
   active: TaskStatus;
   onActiveChange: (status: TaskStatus) => void;
   onOpen: (taskId: string) => void;
@@ -196,6 +198,7 @@ export function MobileBoard({
             <TaskCard
               key={task.id}
               task={task}
+              activity={activity[task.id]}
               onOpen={() => onOpen(task.id)}
               actions={
                 <QuickActions
