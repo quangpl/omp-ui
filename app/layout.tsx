@@ -9,12 +9,12 @@ import { cn } from "@/lib/utils";
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
-  title: { default: "OMP UI", template: "%s · OMP UI" },
-  description: "A simple kanban board to run and steer omp coding agents on your own server.",
-  applicationName: "OMP UI",
+  title: { default: "AgentMan", template: "%s · AgentMan" },
+  description: "Self-hosted kanban board for running and steering omp coding agents.",
+  applicationName: "AgentMan",
   manifest: "/manifest.webmanifest",
   icons: { icon: "/icon.svg", apple: "/icon.svg" },
-  appleWebApp: { capable: true, title: "OMP UI", statusBarStyle: "default" },
+  appleWebApp: { capable: true, title: "AgentMan", statusBarStyle: "default" },
 };
 
 export const viewport: Viewport = {

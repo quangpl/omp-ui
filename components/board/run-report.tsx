@@ -286,7 +286,7 @@ export function RunReport({
         )}
 
         {!tests && report.screenshots.length === 0 && report.artifacts.length === 0 && !report.outcomeText && (
-          <p className="text-xs text-muted-foreground">No test results or screenshots were reported for this run.</p>
+          <p className="text-xs text-muted-foreground">No test results or screenshots for this run.</p>
         )}
       </div>
     </section>

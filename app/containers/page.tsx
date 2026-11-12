@@ -347,8 +347,8 @@ export default function ContainersPage() {
       title: `Remove ${c.name}?`,
       description:
         c.state === "running"
-          ? "The container is stopped and deleted. Named volumes are kept."
-          : "The container is deleted. Named volumes are kept.",
+          ? "Stops and deletes the container. Named volumes are kept."
+          : "Deletes the container. Named volumes are kept.",
       confirmLabel: "Remove",
       destructive: true,
       option: "Also remove its anonymous volumes",
@@ -414,7 +414,7 @@ export default function ContainersPage() {
     if (action !== "down") return run();
     setConfirm({
       title: `Take ${project.name} down?`,
-      description: "Its containers and networks are removed. Volumes and the compose file are kept.",
+      description: "Removes its containers and networks. Volumes and the compose file are kept.",
       confirmLabel: "Down",
       destructive: true,
       onConfirm: run,
@@ -425,8 +425,8 @@ export default function ContainersPage() {
     setConfirm({
       title: project.managed ? `Delete the ${project.name} stack?` : `Take ${project.name} down?`,
       description: project.managed
-        ? "Its containers and networks are removed and its compose file is deleted from OMP UI's data folder."
-        : "Its containers and networks are removed. The compose file on disk is not touched.",
+        ? "Removes its containers and networks and deletes its compose file from AgentMan's data folder."
+        : "Removes its containers and networks. The compose file on disk is untouched.",
       confirmLabel: project.managed ? "Delete stack" : "Down",
       destructive: true,
       option: "Also delete its volumes (data is lost)",
@@ -506,7 +506,7 @@ export default function ContainersPage() {
                 retrying={refreshing}
                 onRetry={() => void manualRefresh()}
               >
-                The OMP UI server did not answer.
+                The AgentMan server did not respond.
               </ProblemPanel>
             ) : (
               <PageSkeleton />
@@ -519,13 +519,13 @@ export default function ContainersPage() {
               retrying={refreshing}
               onRetry={() => void manualRefresh()}
             >
-              OMP UI drives the <code className="font-mono text-xs">docker</code> CLI of the server it runs on (set{" "}
-              <code className="font-mono text-xs">DOCKER_BIN</code> to use another binary).
+              AgentMan uses the server's <code className="font-mono text-xs">docker</code> CLI. Set{" "}
+              <code className="font-mono text-xs">DOCKER_BIN</code> to use another binary.
             </ProblemPanel>
           ) : (
             <>
               {loadError && (
-                <Notice tone="error" title="Lost contact with the server, showing the last state">
+                <Notice tone="error" title="Lost contact with the server; showing last known state">
                   {loadError}
                 </Notice>
               )}
@@ -591,8 +591,8 @@ export default function ContainersPage() {
                           title: `Remove ${ref}?`,
                           description:
                             image.containers > 0
-                              ? "Containers still use this image; remove them first or force it."
-                              : "The image is deleted from this host. It can be pulled again.",
+                              ? "Containers still use this image. Remove them first, or force."
+                              : "Deletes the image from this host. You can pull it again.",
                           confirmLabel: "Remove",
                           destructive: true,
                           option: "Force (also untag images used by stopped containers)",
@@ -630,7 +630,7 @@ export default function ContainersPage() {
                       onRemove={(network) =>
                         setConfirm({
                           title: `Remove network ${network.name}?`,
-                          description: "Containers still attached to it must be disconnected first.",
+                          description: "Disconnect attached containers first.",
                           confirmLabel: "Remove",
                           destructive: true,
                           onConfirm: async () => {
@@ -649,7 +649,7 @@ export default function ContainersPage() {
                 <SectionHeader
                   id="catalog-heading"
                   title="App catalog"
-                  description="Built-in templates and the Portainer community catalog: single containers and compose stacks."
+                  description="Built-in templates plus the Portainer community catalog: containers and compose stacks."
                   actions={
                     <Button
                       variant="outline"

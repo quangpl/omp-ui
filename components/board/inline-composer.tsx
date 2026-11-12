@@ -73,7 +73,7 @@ export function InlineComposer({
         value={text}
         readOnly={busy}
         rows={2}
-        placeholder="Type a title, or describe the task in your own words…"
+        placeholder="Type a title or describe the task…"
         aria-label="Card title"
         className="max-h-48 min-h-16 resize-none bg-card shadow-xs"
         onChange={(event) => setText(event.target.value)}

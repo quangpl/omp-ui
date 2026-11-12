@@ -26,7 +26,7 @@ export const POST = withApi<Params>(async ({ req, params }) => {
   return jobResponse((send) => composeAction(name, action as ComposeAction, send));
 });
 
-/** `down` (`?volumes=1` also removes its volumes); OMP UI projects also lose their folder. NDJSON. */
+/** `down` (`?volumes=1` also removes its volumes); AgentMan projects also lose their folder. NDJSON. */
 export const DELETE = withApi<Params>(async ({ req, params }) => {
   const name = parseProjectName(params.name);
   const removeVolumes = new URL(req.url).searchParams.get("volumes") === "1";

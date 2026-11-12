@@ -240,7 +240,7 @@ export function ProjectCard({
                 {board.needsYouCount} need{board.needsYouCount === 1 ? "s" : ""} you
               </span>
             )}
-            <span title="Agent runs that succeeded, last 30 days (stopped runs not counted)">
+            <span title="Run success rate, last 30 days (stopped runs excluded)">
               {successRate === null ? (
                 "No runs in 30 days"
               ) : (

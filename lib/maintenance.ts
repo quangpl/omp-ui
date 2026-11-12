@@ -1,6 +1,6 @@
 // Server-only maintenance behind `GET|POST /api/v1/stats/maintenance`: analyze what uses CPU,
 // memory and disk, then free it. Processes come from /proc on Linux (two samples, so CPU is the
-// current rate) or `ps` elsewhere. Storage cleanup only touches OMP UI's own data under DATA_DIR
+// current rate) or `ps` elsewhere. Storage cleanup only touches AgentMan's own data under DATA_DIR
 // and Docker's prune commands; other big folders (omp sessions, tool caches) are reported, never
 // deleted.
 import { execFile } from "node:child_process";
@@ -268,7 +268,7 @@ function classify(list: RawProcess[]): Classified[] {
       tag = taskId ? "card-agent" : "helper";
     } else if (isOmp(p) && p.command.includes("--mode rpc") && configTaskId(p.command, runtimeDir)) {
       // An agent of this DATA_DIR this server does not run. Its parent died (re-parented to init)
-      // when the server that started it crashed; a live parent means another OMP UI instance.
+      // when the server that started it crashed; a live parent means another AgentMan instance.
       const parent = byPid.get(p.ppid);
       taskId = configTaskId(p.command, runtimeDir);
       tag = !parent || p.ppid <= 1 || INIT_NAMES[parent.name] === true ? "orphan-agent" : "omp";
@@ -355,7 +355,7 @@ async function killProcesses(pids: number[]): Promise<MaintenanceStepResult[]> {
     if (!target.killable) {
       const why =
         target.tag === "server"
-          ? "it runs OMP UI itself"
+          ? "it runs AgentMan itself"
           : target.tag === "card-agent"
             ? "it is a running card's agent — stop the card instead"
             : "it belongs to another user";
@@ -629,7 +629,7 @@ const TARGETS: Target[] = [
   {
     id: "orphan-card-files",
     label: "Files of deleted cards",
-    description: "Shared-file folders left behind by cards that no longer exist.",
+    description: "Shared-file folders of cards that no longer exist.",
     risk: "safe",
     async scan(ctx) {
       return sizedScan(await orphanFolders(["files", "tasks"], async (id) => (await ctx.repo.getTask(id)) !== null));
@@ -639,7 +639,7 @@ const TARGETS: Target[] = [
   {
     id: "orphan-board-files",
     label: "Files of deleted projects",
-    description: "Shared-file folders left behind by projects that no longer exist.",
+    description: "Shared-file folders of projects that no longer exist.",
     risk: "safe",
     async scan(ctx) {
       return sizedScan(await orphanFolders(["files", "boards"], async (id) => (await ctx.repo.getBoard(id)) !== null));
@@ -649,7 +649,7 @@ const TARGETS: Target[] = [
   {
     id: "orphan-workspaces",
     label: "Worktrees of deleted cards",
-    description: "Dedicated git worktrees whose card was deleted; their source repositories are pruned too.",
+    description: "Git worktrees of deleted cards; their source repos are pruned too.",
     risk: "safe",
     async scan(ctx) {
       return sizedScan(await orphanFolders(["workspaces"], async (id) => (await ctx.repo.getTask(id)) !== null));
@@ -662,8 +662,7 @@ const TARGETS: Target[] = [
   {
     id: "shipped-workspaces",
     label: "Worktrees of shipped cards",
-    description:
-      "Worktrees and branches of Done cards that were already pushed. A later run of the card starts a fresh worktree from the base branch.",
+    description: "Worktrees and branches of pushed Done cards. Rerunning a card starts a fresh worktree from the base branch.",
     risk: "review",
     async scan(ctx) {
       const tasks: Task[] = [];
@@ -694,7 +693,7 @@ const TARGETS: Target[] = [
   {
     id: "run-configs",
     label: "Old run configs",
-    description: "Per-card omp config files of cards that are not running; each run writes a fresh one.",
+    description: "omp config files of cards that aren't running; each run writes a new one.",
     risk: "safe",
     async scan(ctx) {
       const { running, queued } = ctx.manager.stats();
@@ -711,7 +710,7 @@ const TARGETS: Target[] = [
   {
     id: "drafts",
     label: "Leftover card drafts",
-    description: "Temporary request folders of the card writer older than an hour.",
+    description: "Card writer temp folders older than an hour.",
     risk: "safe",
     async scan() {
       const dir = path.join(dataDir(), "runtime", "drafts");
@@ -727,7 +726,7 @@ const TARGETS: Target[] = [
   {
     id: "diff-cache",
     label: "Old change summaries",
-    description: "Cached Changes-tab summaries not written for 7 days; they are regenerated when needed.",
+    description: "Changes-tab summaries unused for 7 days; regenerated on demand.",
     risk: "safe",
     async scan() {
       const dir = path.join(dataDir(), "runtime", "diff-summaries");
@@ -743,7 +742,7 @@ const TARGETS: Target[] = [
   {
     id: "rotated-logs",
     label: "Rotated logs",
-    description: "Previous server and tunnel logs (*.log.1); the current logs stay.",
+    description: "Old server and tunnel logs (*.log.1). Current logs are kept.",
     risk: "safe",
     async scan() {
       const dir = dataDir();
@@ -755,7 +754,7 @@ const TARGETS: Target[] = [
   {
     id: "database",
     label: "Compact the database",
-    description: "Checkpoint the SQLite write-ahead log and VACUUM, returning free pages to the disk.",
+    description: "Checkpoint the SQLite WAL and VACUUM to return free pages to disk.",
     risk: "safe",
     async scan(ctx) {
       if (!ctx.repo.compact || !ctx.repo.compactableBytes || dbFiles().length === 0) return null;
@@ -776,13 +775,13 @@ const TARGETS: Target[] = [
   dockerTarget(
     "containers",
     "Docker: stopped containers",
-    "Removes every stopped container, including ones you may want to start again.",
+    "Every stopped container, including ones you may want to restart.",
     "review",
   ),
   dockerTarget(
     "volumes",
     "Docker: unused anonymous volumes",
-    "Anonymous volumes no container uses. Their data is gone for good.",
+    "Anonymous volumes no container uses. Their data is deleted permanently.",
     "review",
   ),
 ];
@@ -843,7 +842,7 @@ function recommend(report: Omit<MaintenanceReport, "recommendations">): Maintena
       area: "memory",
       severity: "warning",
       title: `${orphans.length} orphaned agent${orphans.length === 1 ? "" : "s"} still running`,
-      detail: `omp agents left behind by an earlier server hold ${bytesText(rss)} of memory and do nothing useful.`,
+      detail: `omp agents left by an earlier server hold ${bytesText(rss)} of memory and do no work.`,
       action: { kind: "kill", pids: orphans.map((p) => p.pid) },
       actionLabel: "End them",
     });
@@ -873,7 +872,7 @@ function recommend(report: Omit<MaintenanceReport, "recommendations">): Maintena
       area: "memory",
       severity: "info",
       title: `Processes started by agents use ${bytesText(spawnedRss)}`,
-      detail: `${spawned.length} process${spawned.length === 1 ? "" : "es"} (dev servers, browsers…) have run for over an hour. End the ones you no longer need.`,
+      detail: `${spawned.length} process${spawned.length === 1 ? "" : "es"} (dev servers, browsers…) running for over an hour. End the ones you don't need.`,
       action: null,
       actionLabel: null,
     });
@@ -886,7 +885,7 @@ function recommend(report: Omit<MaintenanceReport, "recommendations">): Maintena
       area: "memory",
       severity: memUsed >= 0.95 ? "critical" : "warning",
       title: `Memory is ${Math.round(memUsed * 100)}% used`,
-      detail: "Close idle helper agents and end processes you don't need below.",
+      detail: "Close idle helper agents and end unneeded processes below.",
       action: memory.idleHelpers.count > 0 ? { kind: "release-memory" } : null,
       actionLabel: memory.idleHelpers.count > 0 ? "Free server memory" : null,
     });
@@ -896,7 +895,7 @@ function recommend(report: Omit<MaintenanceReport, "recommendations">): Maintena
       area: "memory",
       severity: "info",
       title: `${memory.idleHelpers.count} idle helper agent${memory.idleHelpers.count === 1 ? "" : "s"} hold ${bytesText(memory.idleHelpers.rssBytes)}`,
-      detail: "They are kept warm for quick card writing and advice; they start again when needed.",
+      detail: "Kept warm for fast card writing and advice; they restart on demand.",
       action: { kind: "release-memory" },
       actionLabel: "Free server memory",
     });
@@ -913,8 +912,8 @@ function recommend(report: Omit<MaintenanceReport, "recommendations">): Maintena
       title: `Disk is ${Math.round(diskUsed * 100)}% full`,
       detail:
         storage.safeBytes > 0
-          ? `Safe cleanup frees about ${bytesText(storage.safeBytes)}; review the larger folders below too.`
-          : "Little to clean in OMP UI's data; review the larger folders below.",
+          ? `Safe cleanup frees about ${bytesText(storage.safeBytes)}. Also review the larger folders below.`
+          : "Little to clean in AgentMan's data. Review the larger folders below.",
       action: safeIds.length > 0 ? { kind: "cleanup", ids: safeIds } : null,
       actionLabel: safeIds.length > 0 ? "Clean up safe items" : null,
     });
@@ -924,7 +923,7 @@ function recommend(report: Omit<MaintenanceReport, "recommendations">): Maintena
       area: "storage",
       severity: "info",
       title: `${bytesText(storage.safeBytes)} can be freed safely`,
-      detail: "Leftovers and caches OMP UI and Docker no longer need.",
+      detail: "Leftovers and caches AgentMan and Docker no longer need.",
       action: { kind: "cleanup", ids: safeIds },
       actionLabel: "Clean up safe items",
     });
@@ -934,7 +933,7 @@ function recommend(report: Omit<MaintenanceReport, "recommendations">): Maintena
   return out.sort((a, b) => rank[a.severity] - rank[b.severity]);
 }
 
-/** Full analysis: processes (sampled ~0.5 s), memory, OMP UI storage, Docker and recommendations. */
+/** Full analysis: processes (sampled ~0.5 s), memory, AgentMan storage, Docker and recommendations. */
 export async function analyzeSystem(repo: Repository, manager: AgentManager): Promise<MaintenanceReport> {
   const started = Date.now();
   const ctx = context(repo, manager);

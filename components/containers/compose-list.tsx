@@ -52,7 +52,7 @@ export function ComposeList({
         count={projects.length > 0 ? projects.length : undefined}
         description={
           projects.length > 0
-            ? `${upCount} up · stacks made here live in OMP UI's data folder; other projects on this host show too`
+            ? `${upCount} up · stacks created here live in AgentMan's data folder; other projects on this host are listed too`
             : undefined
         }
         actions={
@@ -77,7 +77,7 @@ export function ComposeList({
             </Button>
           }
         >
-          Start a stack from the launcher, the app catalog, or paste a compose file.
+          Start one from the launcher or app catalog, or paste a compose file.
         </EmptyState>
       ) : (
         <ul className="divide-y overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
@@ -111,7 +111,7 @@ export function ComposeList({
                       </button>
                       {p.managed && (
                         <Badge variant="secondary" className="font-normal">
-                          OMP UI
+                          AgentMan
                         </Badge>
                       )}
                     </div>

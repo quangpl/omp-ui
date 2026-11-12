@@ -174,14 +174,14 @@ export function BoardFormDialog({
 
   const header =
     view === "source"
-      ? { title: "New project", description: "Where is the code? Pick a folder on this server or clone a Git repository." }
+      ? { title: "New project", description: "Pick a folder on this server or clone a Git repository." }
       : view === "clone"
         ? {
             title: "Clone a Git repository",
             description:
               cloneTarget === "primary"
-                ? "It's downloaded into the workspace folder on the server."
-                : "It's downloaded next to your other projects and added to this one.",
+                ? "Clones into the workspace folder on the server."
+                : "Clones next to your other projects and adds it to this one.",
           }
         : editing
           ? { title: "Edit project", description: "Change the name, folders, or how the agent runs." }
@@ -213,13 +213,13 @@ export function BoardFormDialog({
         {
           icon: <FolderOpenIcon />,
           title: "Use a folder on the server",
-          body: "Pick a project that's already on this machine.",
+          body: "A project already on this machine.",
           onClick: () => setPicker({ open: true, target: "primary" }),
         },
         {
           icon: <GitBranchIcon />,
           title: "Clone a Git repository",
-          body: "Download a repo from GitHub, GitLab or any Git URL.",
+          body: "From GitHub, GitLab or any Git URL.",
           onClick: () => startClone("primary"),
         },
       ].map((option) => (
@@ -343,7 +343,7 @@ export function BoardFormDialog({
         )}
         {extraFolders.length === 0 && (
           <p className="text-xs text-muted-foreground">
-            Optional. For projects split across folders, like a frontend and a backend.
+            Optional. For projects split across folders, e.g. frontend and backend.
           </p>
         )}
       </div>
@@ -378,8 +378,8 @@ export function BoardFormDialog({
                 className="h-11 md:h-9"
               />
               <p className="text-xs text-muted-foreground">
-                Leave empty to let each card pick its model (Settings → Auto-select model), or to use the
-                default from Settings.
+                Leave empty to auto-select per card (Settings → Auto-select model) or use the Settings
+                default.
               </p>
             </div>
             <label
@@ -389,7 +389,7 @@ export function BoardFormDialog({
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium">Auto-run</span>
                 <span className="block text-xs text-muted-foreground">
-                  Start the agent as soon as a card is added
+                  Start the agent when a card is added
                 </span>
               </span>
               <Switch
@@ -406,8 +406,8 @@ export function BoardFormDialog({
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium">Dedicated workspace per card</span>
                 <span className="block text-xs text-muted-foreground">
-                  Each card&apos;s agent works in its own git worktree on branch omp/&lt;card&gt;, so
-                  several agents can work on the same repo at once. Ship from the card.
+                  Each card gets its own git worktree on branch omp/&lt;card&gt;, so agents can work
+                  on one repo in parallel. Ship from the card.
                 </span>
               </span>
               <Switch

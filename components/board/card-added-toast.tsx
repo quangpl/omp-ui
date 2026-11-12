@@ -33,7 +33,7 @@ export function toastCardAdded(
 function CardAddedToast({
   toastId,
   task,
-  heading = "Card added successfully",
+  heading = "Card added",
   boardName,
   onOpen,
 }: CardAddedToastOptions & {

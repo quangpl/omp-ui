@@ -41,7 +41,7 @@ export function DeleteBoardDialog({
       onDeleted?.(board.id);
       onOpenChange(false);
     } catch (err) {
-      toast.error(err instanceof Error && err.message ? err.message : "Could not delete the board.");
+      toast.error(err instanceof Error && err.message ? err.message : "Couldn't delete the project.");
     } finally {
       setDeleting(false);
     }

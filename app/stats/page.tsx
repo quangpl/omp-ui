@@ -444,7 +444,7 @@ function QuotaList({ quota, now }: { quota: AiStats["quota"]; now: number }) {
           <OmpMissingHint />
         ) : (
           <>
-            Try again in a moment. If it keeps failing, run{" "}
+            Retry in a moment. If it keeps failing, run{" "}
             <code className="font-mono text-xs">omp usage</code> on the server to see why.
           </>
         )}
@@ -491,7 +491,7 @@ function UsageByModel({ usage }: { usage: AiStats["usage"] }) {
   if (!totals || totals.requests === 0) {
     return (
       <EmptyState icon={<ChartColumnIcon />} title="No usage recorded yet">
-        Costs and token counts appear here once agents have run on this server.
+        Costs and token counts appear after agents run on this server.
       </EmptyState>
     );
   }
@@ -503,7 +503,7 @@ function UsageByModel({ usage }: { usage: AiStats["usage"] }) {
     <div className={cn(PANEL, "@container")}>
       <PanelHeader title="Usage by model" note={range ?? "All recorded omp sessions on this server."} />
       {models.length === 0 ? (
-        <p className="px-4 py-4 text-sm text-muted-foreground sm:px-5">No per-model breakdown was reported.</p>
+        <p className="px-4 py-4 text-sm text-muted-foreground sm:px-5">No per-model breakdown reported.</p>
       ) : (
         <>
           {/* Narrow: stacked rows. */}
@@ -734,7 +734,7 @@ function SystemSection({ system }: { system: SystemState }) {
         title="System"
         description={
           error && stats ? (
-            <span className="text-destructive">Can't reach the server, showing last values</span>
+            <span className="text-destructive">Can't reach the server; showing last values</span>
           ) : (
             "Live, updates every 5 seconds"
           )
@@ -764,7 +764,7 @@ function SystemDetails({ stats }: { stats: SystemStats }) {
     ["Uptime", formatDuration(host.uptimeSec)],
     ["CPU", cpu.model],
     ["Node", host.nodeVersion],
-    ["OMP UI", app.version],
+    ["AgentMan", app.version],
     ["Database", app.db === "mongodb" ? "MongoDB" : app.db === "postgres" ? "PostgreSQL" : "SQLite"],
     [
       "Server process",

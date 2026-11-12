@@ -4,7 +4,7 @@ import { readJson, withApi } from "@/lib/server/http";
 export const dynamic = "force-dynamic";
 
 /**
- * Create or redeploy an OMP UI compose project `{ name, yaml, env? }`: writes
+ * Create or redeploy an AgentMan compose project `{ name, yaml, env? }`: writes
  * DATA_DIR/compose/<name>/compose.yaml (+ .env), validates it, then `up -d`. Streams NDJSON.
  */
 export const POST = withApi(async ({ req }) => {

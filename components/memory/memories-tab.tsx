@@ -475,7 +475,7 @@ export function MemoriesTab({
           ) : items.length === 0 ? (
             searching ? (
               <EmptyState icon={<SearchXIcon />} title={`Nothing matches “${debouncedQuery}”`}>
-                Try fewer or different words. Keyword search matches exact terms; semantic matches need an embedding
+                Try fewer or different words. Keyword search matches exact terms; semantic search needs an embedding
                 provider (see Stats).
               </EmptyState>
             ) : filtered ? (

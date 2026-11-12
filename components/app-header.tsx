@@ -11,7 +11,7 @@ import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-/** The OMP UI mark: three kanban columns on an accent tile. Matches `public/icon.svg`. */
+/** The AgentMan mark: three kanban columns on an accent tile. Matches `public/icon.svg`. */
 export function LogoMark({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 32 32" aria-hidden="true" className={cn("size-7 shrink-0", className)}>

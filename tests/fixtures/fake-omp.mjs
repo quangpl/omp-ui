@@ -116,7 +116,7 @@ function helperReply(prompt) {
 /** A pooled helper worker (card writer, advisor, queue planner) rather than a card run. */
 const helper = argv.includes("--no-session");
 
-/** Environment variables whose values the "argv" entry records (credentials in, OMP UI secrets out). */
+/** Environment variables whose values the "argv" entry records (credentials in, AgentMan secrets out). */
 const LOGGED_ENV = [
   "HOME",
   "SSH_AUTH_SOCK",

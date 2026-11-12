@@ -140,7 +140,7 @@ export function OmpSettingsSection() {
       // Key-level edits: omp applies them over whatever the file holds now, so no version guard.
       const next = await api.ompConfig.update({ values });
       applySaved(next, { keepDraft: false, keepRaw: rawDirty });
-      toast.success("OMP settings saved", { description: "They apply to the next agent run." });
+      toast.success("OMP settings saved", { description: "Applies to the next agent run." });
     } catch (err) {
       toast.error(message(err, "Could not save omp's config."));
     } finally {
@@ -241,7 +241,7 @@ export function OmpSettingsSection() {
 
   const description = (
     <>
-      omp&apos;s own settings, shared by card runs and omp in your terminal. Changes apply to the next agent run.
+      omp&apos;s user config, used by card runs and omp in your terminal. Changes apply to the next agent run.
     </>
   );
   const reloadButton = (
@@ -353,7 +353,7 @@ export function OmpSettingsSection() {
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium">Advanced: edit config.yml</span>
                 <span className="mt-0.5 block text-xs text-pretty text-muted-foreground">
-                  Every omp setting, comments included. omp checks the file before it is saved.
+                  All omp settings, comments included. omp validates the file before saving.
                 </span>
               </span>
               {rawDirty && <Badge variant="secondary">Unsaved</Badge>}
@@ -393,7 +393,7 @@ export function OmpSettingsSection() {
                 )}
                 <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
                   <p className="hidden text-xs text-muted-foreground sm:mr-auto sm:block">
-                    <Kbd>Ctrl</Kbd> / <Kbd>⌘</Kbd> + <Kbd>Enter</Kbd> to save. The previous file is kept as{" "}
+                    <Kbd>Ctrl</Kbd> / <Kbd>⌘</Kbd> + <Kbd>Enter</Kbd> to save. Previous file kept as{" "}
                     <code className="font-mono">config.yml.bak</code>.
                   </p>
                   {rawDirty && (

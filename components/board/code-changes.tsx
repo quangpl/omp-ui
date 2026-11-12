@@ -252,8 +252,8 @@ export function CodeChanges({
           title="No code changes yet"
           detail={
             active
-              ? "The agent is working; files it changes show up here."
-              : `Files the agent changes in ${gitRepos.map((repo) => `${repo.name}/`).join(", ")} show up here for review.`
+              ? "The agent is working; changed files appear here."
+              : `Files the agent changes in ${gitRepos.map((repo) => `${repo.name}/`).join(", ")} appear here for review.`
           }
           action={<RefreshButton onClick={refresh} loading={loading} />}
         />
@@ -547,7 +547,7 @@ function TruncatedNotice({ repos }: { repos: RepoDiff[] }) {
       <SquareTerminal />
       <AlertTitle>Part of this diff isn't shown</AlertTitle>
       <AlertDescription className="flex min-w-0 flex-col gap-1.5">
-        <span>It is too large to show in full here. See all of it in a terminal:</span>
+        <span>Too large to show in full. View it in a terminal:</span>
         {repos.map((repo) => (
           <CommandLine key={repo.folder} command={repo.command} />
         ))}
@@ -868,7 +868,7 @@ function FileBody({ file, split, wrap }: { file: DiffFile; split: boolean; wrap:
         {file.truncated
           ? file.untracked
             ? "Large new file — not shown."
-            : "This file's diff is too large to show here. See the terminal command above."
+            : "Diff too large to show. Use the terminal command above."
           : file.status === "D"
             ? "Empty file deleted."
             : "No content changes (file mode only)."}
@@ -928,7 +928,7 @@ function FileBody({ file, split, wrap }: { file: DiffFile; split: boolean; wrap:
         )}
       </div>
       {file.truncated && (
-        <BodyNote>Diff cut short — it is too large to show in full. See the terminal command above.</BodyNote>
+        <BodyNote>Diff truncated. Use the terminal command above for the full diff.</BodyNote>
       )}
     </>
   );

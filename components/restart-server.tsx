@@ -182,7 +182,7 @@ export function RestartServerDialog() {
       setPhase({
         name: "failed",
         title: "The server did not stop",
-        message: "It is still running the old build. See the restart output below.",
+        message: "Still running the old build. See the restart output below.",
         log: latest?.log ?? null,
       });
       return;
@@ -246,15 +246,14 @@ export function RestartServerDialog() {
                 ) : (
                   <>
                     <p>
-                      Stops OMP UI, rebuilds it from the current sources and starts it again, so the latest
-                      changes go live. The app is unavailable for about a minute.
+                      Stops AgentMan, rebuilds it from the current sources and starts it again. The app is unavailable
+                      for about a minute.
                     </p>
                     {status.running > 0 && (
                       <p className="mt-2 font-medium text-amber-600 dark:text-amber-400">
                         {status.running} running agent{status.running === 1 ? " is" : "s are"} interrupted. With
-                        automatic retries on,{" "}
-                        {status.running === 1 ? "it resumes by itself" : "they resume by themselves"} after the
-                        restart; otherwise press Resume on the card.
+                        automatic retries on, {status.running === 1 ? "it resumes" : "they resume"} after the restart;
+                        otherwise press Resume on the card.
                       </p>
                     )}
                   </>
@@ -298,7 +297,7 @@ export function RestartServerDialog() {
           )}
           {busy && (
             <p className="text-xs text-muted-foreground sm:mr-auto">
-              This page reloads by itself when the new build answers.
+              This page reloads when the new build is up.
             </p>
           )}
           {failed && (

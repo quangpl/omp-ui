@@ -1,4 +1,4 @@
-# OMP UI REST API (v1)
+# AgentMan REST API (v1)
 
 Base path: `/api/v1`. JSON in/out. Errors: HTTP 4xx/5xx with `{ "error": "message" }`.
 Designed for the web UI and future mobile clients: a client only needs the **server URL** and the **admin password**.
@@ -41,7 +41,7 @@ The `ADMIN_PASSWORD` env var, when set, is applied at server boot (overwrites th
 
 ## OMP config
 
-omp's own user config file: `config.yml` in the agent folder that `omp config path` reports (the **Settings → OMP** page). Saves are checked with the omp CLI on a temporary copy, the previous file is kept at `backupPath` (`config.yml.bak`), and the file is replaced atomically (temp file + rename). OMP UI's `approvalMode`, board/default model and `autoModel` override the matching omp keys for its own runs.
+omp's own user config file: `config.yml` in the agent folder that `omp config path` reports (the **Settings → OMP** page). Saves are checked with the omp CLI on a temporary copy, the previous file is kept at `backupPath` (`config.yml.bak`), and the file is replaced atomically (temp file + rename). AgentMan's `approvalMode`, board/default model and `autoModel` override the matching omp keys for its own runs.
 
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
@@ -84,7 +84,7 @@ A board is one project. `workdir` is the main folder (omp runs there); `extraFol
 | GET | `/boards/:id/git` | – | `GitStatus[]`, one per project folder (`workdir` first, then `extraFolders`) |
 | GET | `/boards/:id/git/branches?folder=<abs>` | – | `GitBranches`: `current` (null when detached) and `branches` – local ones newest first, then `origin` branches without a local copy (`remoteOnly: true`). No fetch; reflects the last fetch. 400 if `folder` is not a project folder or not a git repository |
 | POST | `/boards/:id/git/branches` | `{ folder, branch }` | `GitStatus` of `folder` after checking out `branch` (a `remoteOnly` branch becomes a local branch tracking `origin`). Uncommitted changes carry over; if they would be overwritten git refuses and the 400 says so. 400 if the branch doesn't exist; 409 while any agent on the board is queued or running |
-| POST | `/boards/:id/git/push` | – | `{ results: GitRepoActionResult[] }`, one per project git repo – the header's quick push (tap the “N changes” chip). Commits each repo's changes as “Update from OMP UI (N files)” and pushes to its default branch, like “Push to main” but not tied to a card (no comment, no `pushedAt`). 400 if no project folder is a git repository; 409 while any agent on the board is queued or running (boards without dedicated workspaces) |
+| POST | `/boards/:id/git/push` | – | `{ results: GitRepoActionResult[] }`, one per project git repo – the header's quick push (tap the “N changes” chip). Commits each repo's changes as “Update from AgentMan (N files)” and pushes to its default branch, like “Push to main” but not tied to a card (no comment, no `pushedAt`). 400 if no project folder is a git repository; 409 while any agent on the board is queued or running (boards without dedicated workspaces) |
 
 Folder rules: `workdir` and every `extraFolders` entry must be an absolute path to an existing directory (400 names the bad folder). `extraFolders` holds at most 20 entries; entries are trimmed and de-duplicated, and any entry equal to `workdir` is dropped. Changing `workdir` to a folder that is listed in `extraFolders` removes it from `extraFolders`.
 
@@ -162,8 +162,8 @@ Both act on every project folder (`workdir` + `extraFolders`), or only on `folde
 - 409 while the task's agent is queued or running (“Wait for the agent to finish first.”). 400 if none of the folders is a git repository.
 - Folders that are not git repositories, or have nothing to commit or push, are returned with `skipped: true`.
 - **Push to main**: if there are uncommitted changes, `git add -A` + commit (message = `message` or the task title), then `git push origin HEAD:<default branch>`. The default branch comes from `origin/HEAD` (falling back to `main`/`master`). `url` links to the pushed commit on GitHub/GitLab, otherwise to the repository page. If the remote has newer commits or the branch is protected, that folder's `error` explains it and suggests Create PR. When at least one folder was pushed and none failed, the task's `pushedAt` is set to now (the UI strikes through the card's title).
-- **Create PR**: creates branch `omp/<task-slug>-<random>` from the current HEAD (the folder stays on that branch), commits uncommitted changes (message = PR title), `git push -u origin <branch>`, then opens a PR with `gh` (GitHub) or an MR with `glab` (GitLab) against the default branch. PR title defaults to the task title; body defaults to the task description + the latest agent summary + “Created from OMP UI”. Without the CLI (or if it fails, e.g. not signed in), the branch is still pushed and `url` is the provider's “new pull request” page, so the user can open it with one tap.
-- If no identity is configured for git on the server, commits are made as `OMP UI <omp-ui@localhost>`.
+- **Create PR**: creates branch `omp/<task-slug>-<random>` from the current HEAD (the folder stays on that branch), commits uncommitted changes (message = PR title), `git push -u origin <branch>`, then opens a PR with `gh` (GitHub) or an MR with `glab` (GitLab) against the default branch. PR title defaults to the task title; body defaults to the task description + the latest agent summary + “Created from AgentMan”. Without the CLI (or if it fails, e.g. not signed in), the branch is still pushed and `url` is the provider's “new pull request” page, so the user can open it with one tap.
+- If no identity is configured for git on the server, commits are made as `AgentMan <agentman@localhost>`.
 - Afterwards one resolved `agent` comment summarising the result in plain language (with links) is posted on the task and returned as `comment`; `comment.added` and `task.updated` are published.
 
 ### Agent rules (Trello flow)
@@ -202,7 +202,7 @@ Registry search and tag results are cached for 2 min; each registry request time
 
 ## Memory
 
-OMP UI fronts a local [agentmemory](https://github.com/rohitg00/agentmemory) server (`AGENTMEMORY_URL`, default `http://127.0.0.1:3111`) that gives card runs persistent memory (see README).
+AgentMan fronts a local [agentmemory](https://github.com/rohitg00/agentmemory) server (`AGENTMEMORY_URL`, default `http://127.0.0.1:3111`) that gives card runs persistent memory (see README).
 
 | Method | Path | Response |
 | --- | --- | --- |

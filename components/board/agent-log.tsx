@@ -540,7 +540,7 @@ export function AgentLog({
           <Terminal className="size-5" />
         </span>
         <p className="max-w-xs text-sm text-muted-foreground">
-          The agent hasn&apos;t run on this card yet. Press Start to run it.
+          No runs yet. Press Start to run the agent.
         </p>
       </div>
     );

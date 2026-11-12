@@ -418,7 +418,7 @@ export const api = {
     composeFile: (name: string) => request<ComposeFile>(`/docker/compose/${encodeURIComponent(name)}`),
     composeLogs: (name: string, tail = 300) =>
       request<{ logs: string }>(`/docker/compose/${encodeURIComponent(name)}/logs?tail=${tail}`),
-    /** Create or redeploy an OMP UI compose project (`up -d`). */
+    /** Create or redeploy an AgentMan compose project (`up -d`). */
     deployCompose: (spec: ComposeDeploySpec, onLine?: (line: string) => void) =>
       dockerJob("/docker/compose", { method: "POST", json: spec }, onLine),
     composeAction: (name: string, action: ComposeAction, onLine?: (line: string) => void) =>

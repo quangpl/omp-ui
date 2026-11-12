@@ -485,8 +485,8 @@ export function ShipActions({
       <ShipFrame>
         <p className="text-sm text-muted-foreground">
           {fromWorkspace
-            ? "This card's workspace has no git repositories, so there is nothing to ship."
-            : "This project's folders aren't git repositories, so there is nothing to ship."}
+            ? "No git repositories in this card's workspace; nothing to ship."
+            : "This project's folders aren't git repositories; nothing to ship."}
         </p>
       </ShipFrame>
     );
@@ -505,9 +505,9 @@ export function ShipActions({
   const hint = agentActive
     ? "Wait for the agent to finish before shipping."
     : noRemote
-      ? "Add a git remote (origin) to the project to push or open a pull request."
+      ? "Add a git remote (origin) to push or open a pull request."
       : !hasChanges
-        ? "No uncommitted or unpushed changes right now."
+        ? "No uncommitted or unpushed changes."
         : prOpensBrowser
           ? "Opens a pre-filled PR page in your browser"
           : `Commits all changes${repos.length > 1 ? ` in ${repos.length} folders` : ""}, then opens a ${prNoun} or pushes to ${pushTarget}.`;

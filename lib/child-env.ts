@@ -1,10 +1,10 @@
 // Environment for every child process the server starts (omp agents, git/gh/glab, omp usage/stats).
 // Children inherit the host user's environment verbatim — HOME, SSH_AUTH_SOCK, GH_TOKEN, provider
 // API keys, proxies, … — so omp, git, gh and glab use whatever credentials the user already has.
-// OMP UI's own secrets are stripped: an agent can read its environment.
+// AgentMan's own secrets are stripped: an agent can read its environment.
 import os from "node:os";
 
-/** OMP UI's own secrets; never passed to child processes. */
+/** AgentMan's own secrets; never passed to child processes. */
 export const SECRET_ENV_KEYS: readonly string[] = [
   "ADMIN_PASSWORD",
   "AUTH_SECRET",
@@ -14,12 +14,12 @@ export const SECRET_ENV_KEYS: readonly string[] = [
   "MONGODB_DB",
 ];
 
-/** Any key with this prefix is OMP UI configuration and is stripped too. */
+/** Any key with this prefix is AgentMan configuration and is stripped too. */
 const SECRET_ENV_PREFIX = "OMP_UI_";
 
 const SECRET_KEYS = new Set(SECRET_ENV_KEYS);
 
-/** A copy of `process.env` without OMP UI's secrets, with `extra` applied on top. */
+/** A copy of `process.env` without AgentMan's secrets, with `extra` applied on top. */
 export function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) {

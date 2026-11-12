@@ -32,7 +32,7 @@ export function isPinnedQuickAction(id: QuickActionId): boolean {
 const ACTIONS: Record<QuickActionId, QuickAction> = {
   start: { id: "start", label: "Start", hint: "Start the agent on this card", icon: Play, shortcut: "R", filled: true },
   resume: { id: "resume", label: "Resume", hint: "Resume the agent where it left off", icon: Play, shortcut: "R", filled: true },
-  retry: { id: "retry", label: "Retry", hint: "Run the agent again after the failure", icon: RotateCcw, shortcut: "R", filled: false },
+  retry: { id: "retry", label: "Retry", hint: "Run the agent again", icon: RotateCcw, shortcut: "R", filled: false },
   stop: { id: "stop", label: "Stop", hint: "Stop the agent; the card stays where it is", icon: Square, shortcut: "S", filled: true },
   revert: {
     id: "revert",
@@ -45,7 +45,7 @@ const ACTIONS: Record<QuickActionId, QuickAction> = {
   push: {
     id: "push",
     label: "Push to main",
-    hint: "Commit this card's changes and push them to the default branch",
+    hint: "Commit this card's changes and push to the default branch",
     icon: Upload,
     shortcut: "P",
     filled: false,

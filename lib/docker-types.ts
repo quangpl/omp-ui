@@ -41,7 +41,7 @@ export interface ComposeProject {
   /** Raw compose status, e.g. "running(2)" or "exited(1), running(1)". */
   status: string;
   configFiles: string[];
-  /** Created from OMP UI (its compose file lives under DATA_DIR/compose/<name>/). */
+  /** Created from AgentMan (its compose file lives under DATA_DIR/compose/<name>/). */
   managed: boolean;
   running: number;
   total: number;
@@ -235,7 +235,7 @@ export interface TemplateVolume {
 /** A one-click app: either a single container (`image`) or a compose stack (`compose`). */
 export interface ContainerTemplate {
   id: string;
-  /** "builtin" ships with OMP UI; "portainer" comes from the Portainer app catalog. */
+  /** "builtin" ships with AgentMan; "portainer" comes from the Portainer app catalog. */
   source: "builtin" | "portainer";
   kind: "container" | "compose";
   title: string;

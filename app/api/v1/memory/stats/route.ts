@@ -33,7 +33,7 @@ function count(value: number | null | undefined): number {
 
 /**
  * Store totals, search mode and facets (projects, memory kinds, agents, session statuses). The
- * project list also includes every omp-ui board (by its folder name, which is what agentmemory's
+ * project list also includes every AgentMan board (by its folder name, which is what agentmemory's
  * OMP extension files card runs under), so filters work before a board has memories.
  */
 export const GET = memoryRoute(async ({ repo }) => {

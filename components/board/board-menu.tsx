@@ -44,7 +44,7 @@ import { FilesPanel } from "@/components/files-panel";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 const SHARED_FILES_TITLE = "Shared files";
-const SHARED_FILES_DESCRIPTION = "Files here are shared with every card's agent on this project.";
+const SHARED_FILES_DESCRIPTION = "Shared with every card's agent in this project.";
 
 /** Board-wide shared files: dialog on desktop, bottom sheet on mobile. */
 function SharedFilesDialog({
@@ -164,8 +164,7 @@ export function BoardMenu({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete “{board.name}”?</AlertDialogTitle>
             <AlertDialogDescription>
-              All cards, comments and agent logs of this project are removed and running agents are
-              stopped. Files in <span className="font-mono break-all">{board.workdir}</span> are not
+              Removes all cards, comments and agent logs, and stops running agents. Files in <span className="font-mono break-all">{board.workdir}</span> are not
               touched.
             </AlertDialogDescription>
           </AlertDialogHeader>

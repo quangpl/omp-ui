@@ -67,10 +67,10 @@ export function MemorySetup({
   const body = error
     ? error
     : !installed
-      ? "Agent memory comes from agentmemory, a local memory server that OMP's agentmemory extension writes to during every card run. Install it once on the machine running OMP UI, then connect OMP in Settings."
+      ? "agentmemory is a local memory server. OMP's agentmemory extension writes to it during card runs. Install it on the AgentMan host, then connect OMP in Settings."
       : booting
-        ? "This takes a few seconds on the first start while agentmemory prepares its runtime."
-        : (status?.error ?? "agentmemory is installed but its REST API does not answer.");
+        ? "First start takes a few seconds while agentmemory prepares its runtime."
+        : (status?.error ?? "agentmemory is installed, but its REST API isn't responding.");
 
   return (
     <section className={cn(MEMORY_PANEL, "animate-card-in overflow-hidden")}>
@@ -116,17 +116,17 @@ export function MemorySetup({
                 {copied ? <CheckIcon className="size-4 shrink-0 text-success" /> : <CopyIcon className="size-4 shrink-0" />}
               </button>
               <p className="leading-relaxed text-muted-foreground">
-                Setup starts the server and offers a global install. Then use Connect OMP in Settings so card runs
+                This starts the server and offers a global install. Then click Connect OMP in Settings so card runs
                 capture and recall memories.
               </p>
             </>
           ) : (
             <>
-              <p className="font-medium">What you get once it runs</p>
+              <p className="font-medium">Once it's running</p>
               <ul className="space-y-2 leading-relaxed text-muted-foreground">
-                <li>Every card run's decisions, edits and fixes, searchable across projects.</li>
+                <li>Decisions, edits and fixes from every card run, searchable across projects.</li>
                 <li>Recall: agents get relevant past memories before each prompt.</li>
-                <li>Sessions linked back to the cards that produced them.</li>
+                <li>Sessions linked to the cards that produced them.</li>
               </ul>
               {status?.url && <p className="font-mono text-xs text-muted-foreground">{status.url}</p>}
             </>

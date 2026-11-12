@@ -1,4 +1,4 @@
-// Keep the agentmemory server (https://github.com/rohitg00/agentmemory) running next to OMP UI.
+// Keep the agentmemory server (https://github.com/rohitg00/agentmemory) running next to AgentMan.
 // Used by `omp-ui up` and bin/supervisor.mjs (plain Node, no build step; mirrors the start logic of
 // lib/server/agentmemory.ts, which serves Settings → Memory).
 //
@@ -18,7 +18,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 const DEFAULT_URL = "http://127.0.0.1:3111";
 const DEFAULT_PORT = 3111;
 const PACKAGE_PATH = ["@agentmemory", "agentmemory"];
-/** OMP UI's own secrets, never handed to the memory daemon (same list as lib/child-env.ts). */
+/** AgentMan's own secrets, never handed to the memory daemon (same list as lib/child-env.ts). */
 const SECRET_ENV_KEYS = ["ADMIN_PASSWORD", "AUTH_SECRET", "DATABASE_URL", "COMPOSE_DATABASE_URL", "POSTGRES_PASSWORD", "MONGODB_DB"];
 
 export function agentmemoryMode(env = process.env) {
@@ -103,7 +103,7 @@ function systemdUnitEnabled(env) {
   return String(r.stdout ?? "").trim().split("\n")[0] === "enabled";
 }
 
-/** Run a launcher detached (the daemon must outlive OMP UI); resolves with its exit code and output tail. */
+/** Run a launcher detached (the daemon must outlive AgentMan); resolves with its exit code and output tail. */
 function launch(command, args, env) {
   const { promise, resolve } = Promise.withResolvers();
   let output = "";

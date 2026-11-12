@@ -693,12 +693,12 @@ function TaskDetailBody({
           {board.worktrees && <WorkspaceSection task={task} onRemoved={workspaceGit.refresh} />}
           <DetailSection icon={Paperclip} title="Files">
             <p className="text-xs text-muted-foreground">
-              The agent can read these files and saves its outputs and screenshots here.
+              The agent reads these files and saves its outputs and screenshots here.
             </p>
             <FilesPanel
               scope="tasks"
               id={task.id}
-              emptyHint="No files yet. Add files for the agent, or let it save its results here."
+              emptyHint="No files yet. Add files for the agent or let it save results here."
             />
           </DetailSection>
         </div>
@@ -771,7 +771,7 @@ function TaskDetailBody({
 
         <footer className="flex flex-wrap items-center justify-between gap-3 border-t bg-muted/20 px-4 py-4 md:px-5">
           <p className="min-w-0 flex-1 text-xs text-muted-foreground">
-            Deleting removes the card with its feedback and agent logs.
+            Deletes the card, its feedback and agent logs.
           </p>
           <Button variant="destructive" className="h-11 max-md:w-full md:h-8" onClick={() => setDeleteOpen(true)}>
             <Trash2 />
@@ -924,14 +924,14 @@ function QuestionPanel({
           type="submit"
           disabled={!body.trim() || busy}
           className="h-11 shrink-0 md:h-9"
-          title="Send the answer and let the agent continue (Ctrl/⌘+Enter)"
+          title="Send answer; the agent continues (Ctrl/⌘+Enter)"
         >
           <ArrowUp />
           Answer
         </Button>
       </form>
       <p className="mt-1.5 text-xs text-muted-foreground">
-        Your answer is sent as feedback and the agent continues with it.
+        Sent as feedback; the agent continues with it.
       </p>
     </section>
   );

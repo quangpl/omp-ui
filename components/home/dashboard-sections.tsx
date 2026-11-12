@@ -311,10 +311,10 @@ export function GettingStarted({
   );
 
   const steps: Step[] = [
-    { title: "Create a project", body: "A folder on the server or a cloned Git repository.", done: true },
+    { title: "Create a project", body: "A server folder or a cloned Git repo.", done: true },
     {
       title: "Write your first card",
-      body: "One card per task. Brief it like a teammate: goal, constraints, what “done” means.",
+      body: "One card per task. State the goal, constraints and what “done” means.",
       done: setup.hasCard,
       action: (
         <Button size="sm" className="h-11 md:h-7" onClick={() => openNewCard()}>
@@ -326,12 +326,12 @@ export function GettingStarted({
     },
     {
       title: "Run an agent",
-      body: "A new card starts its agent on its own. Press Start (or R on a focused card) to run a card again.",
+      body: "New cards start their agent automatically. To rerun, press Start (or R on a focused card).",
       done: setup.hasRun,
     },
     {
       title: "Ship a change",
-      body: "Read the agent's summary on the Done card, then Push to main (P) or open a pull request from its Ship panel.",
+      body: "Read the summary on the Done card, then Push to main (P) or open a PR from its Ship panel.",
       done: setup.hasPush,
       action: toPush
         ? linkButton(cardHref(toPush), "Review & push")
@@ -341,7 +341,7 @@ export function GettingStarted({
     },
     {
       title: "Review the settings",
-      body: "Concurrent agents, default model, approval mode, automatic retries and browser access.",
+      body: "Concurrent agents, default model, approval mode, auto-retries and browser access.",
       done: setup.settingsSaved,
       action: linkButton("/settings", "Settings", ["G", "S"]),
     },
@@ -349,7 +349,7 @@ export function GettingStarted({
       title: "Connect Docker",
       body: setup.dockerAvailable
         ? "Docker is reachable."
-        : "Docker isn't reachable from the server. Install it or start its daemon to run services from Containers.",
+        : "The server can't reach Docker. Install or start it to run services from Containers.",
       done: setup.dockerAvailable,
       optional: true,
       action: linkButton("/containers", "Containers", ["G", "D"]),

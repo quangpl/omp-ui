@@ -15,7 +15,7 @@ import {
 export const dynamic = "force-dynamic";
 
 /**
- * Agent sessions agentmemory recorded, newest first, each linked to its omp-ui card when one ran
+ * Agent sessions agentmemory recorded, newest first, each linked to its AgentMan card when one ran
  * it. Query: `project`, `status` (active|completed|abandoned), `q`, `limit` (≤ 100), `cursor`.
  */
 export const GET = memoryRoute(async ({ req, repo }) => {

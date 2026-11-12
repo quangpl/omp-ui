@@ -212,7 +212,7 @@ describe("git status and quick actions", () => {
       expect(pushed.sha).not.toBe(appBefore);
       expect(pushed.subject).toBe("Add greeting");
       // No git identity configured on the "server": the documented fallback is used.
-      expect(pushed.author).toBe("OMP UI <omp-ui@localhost>");
+      expect(pushed.author).toBe("AgentMan <agentman@localhost>");
       expect(git(app.work, "status", "--porcelain")).toBe("");
 
       // Clean tree but unpushed commit: pushed without a new commit.
@@ -367,7 +367,7 @@ describe("git status and quick actions", () => {
       expect(res.body.results.map((r) => r.folder)).toEqual([web.work, api2.work]);
       for (const [result, repo] of [[res.body.results[0], web], [res.body.results[1], api2]] as const) {
         expect(result).toMatchObject({ branch: "main", error: null, skipped: false });
-        expect(remoteHead(repo.bare, "main")).toMatchObject({ sha: result.commit, subject: "Update from OMP UI (3 files)" });
+        expect(remoteHead(repo.bare, "main")).toMatchObject({ sha: result.commit, subject: "Update from AgentMan (3 files)" });
       }
       expect((await boardGit(quick.id)).body.slice(0, 2).every((s) => !s.dirty && s.ahead === 0)).toBe(true);
 

@@ -340,7 +340,7 @@ export function QueueButton() {
           <DrawerContent className="data-[vaul-drawer-direction=bottom]:max-h-[85dvh]">
             <DrawerHeader className="text-left">
               <DrawerTitle className="text-lg">Agent queue</DrawerTitle>
-              <DrawerDescription>Agents running and waiting to start, across all projects.</DrawerDescription>
+              <DrawerDescription>Running and queued agents across all projects.</DrawerDescription>
             </DrawerHeader>
             <div className="overflow-y-auto overscroll-contain px-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
               {panel}

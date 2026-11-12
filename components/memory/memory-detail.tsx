@@ -54,7 +54,7 @@ function DetailSkeleton() {
 }
 
 /**
- * Full record behind a list row: content, metadata, linked sessions (with their omp-ui cards),
+ * Full record behind a list row: content, metadata, linked sessions (with their AgentMan cards),
  * related memories, and Forget. Renders inside the wide layout's side column or a phone sheet.
  */
 export function MemoryDetailPanel({
@@ -326,8 +326,7 @@ export function MemoryDetailPanel({
           <AlertDialogHeader>
             <AlertDialogTitle>Forget this {item.layer === "memory" ? "memory" : "observation"}?</AlertDialogTitle>
             <AlertDialogDescription>
-              It is deleted from agentmemory for every agent, and future recalls will not see it. This cannot be
-              undone.
+              Deletes it from agentmemory for every agent; future recalls won't see it. This can't be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -15,7 +15,7 @@ test.describe("authentication", () => {
   test("an unauthenticated visit to / redirects to the login page", async ({ page }) => {
     await page.goto("/");
     await expect(page).toHaveURL(/\/login$/);
-    await expect(page.getByRole("heading", { name: "Sign in to OMP UI" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to AgentMan" })).toBeVisible();
     await expect(page.getByLabel("Password", { exact: true })).toBeVisible();
   });
 
@@ -32,7 +32,7 @@ test.describe("authentication", () => {
 
   test("the correct password lands on Projects", async ({ page }) => {
     await login(page);
-    await expect(page).toHaveTitle(/OMP UI/);
+    await expect(page).toHaveTitle(/AgentMan/);
     await expect(page.getByRole("heading", { name: "Projects", level: 1 })).toBeAttached();
     await expect(
       page.getByRole("banner").getByRole("button", { name: "New project" }),
@@ -165,7 +165,7 @@ test.describe("settings and stats", () => {
     await page.waitForURL((url) => url.pathname === "/settings");
 
     // The omp probe can take up to its 5 s timeout against the fake binary.
-    await expect(page.getByText("OMP UI version")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("AgentMan version")).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText("SQLite", { exact: true })).toBeVisible();
     await expect(page.getByRole("definition").filter({ hasText: FAKE_OMP_PATH })).toBeVisible();
     // Agent settings reflect the server's omp path too.

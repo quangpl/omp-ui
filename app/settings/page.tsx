@@ -61,7 +61,7 @@ const APPROVAL_MODES: { value: ApprovalMode; label: string; hint: string }[] = [
   {
     value: "always-ask",
     label: "Always ask",
-    hint: "Every tool that changes something needs approval, so agents can do very little unattended.",
+    hint: "Any tool that changes something needs approval. Unattended agents can do very little.",
   },
 ];
 
@@ -75,12 +75,12 @@ const BROWSER_OPTIONS: { value: BrowserMode; label: string; hint: string }[] = [
   {
     value: "visible",
     label: "Visible window on the server",
-    hint: "The browser window opens on the server's desktop, so you can watch it work.",
+    hint: "Opens a browser window on the server's desktop so you can watch it.",
   },
   {
     value: "relay",
     label: "Your Chrome via omp browser-relay",
-    hint: "Agents use your own Chrome (logins included); run “omp browser-relay” on the server first.",
+    hint: "Agents use your Chrome, logins included. Run “omp browser-relay” on the server first.",
   },
 ];
 
@@ -276,7 +276,7 @@ function AgentSettingsSection() {
       id="agent"
       icon={<CpuIcon />}
       title="Agent"
-      description="How omp is launched for every board."
+      description="How omp runs for every board."
     >
       {loadError ? (
         <SettingsPanel className="flex flex-col items-start gap-3 p-4 sm:flex-row sm:items-center sm:p-5">
@@ -383,7 +383,7 @@ function AgentSettingsSection() {
               <SettingsField
                 label="Default model"
                 htmlFor="default-model"
-                hint="Used when a board has no model of its own. Leave empty for omp's default."
+                hint="Fallback for boards without a model. Leave empty for omp's default."
               >
                 <Input
                   id="default-model"
@@ -403,9 +403,9 @@ function AgentSettingsSection() {
                 title="Auto-select model per card"
                 description={
                   <>
-                    On boards without a model, each run picks one from the card: omp's <code>smol</code> role for
-                    small edits, <code>slow</code> for debugging, performance, security and architecture work,{" "}
-                    <code>designer</code> (if configured) for UI work, the default model otherwise.
+                    On boards without a model, pick one per card from omp&apos;s roles: <code>smol</code> for small
+                    edits; <code>slow</code> for debugging, performance, security and architecture;{" "}
+                    <code>designer</code> (if set) for UI; otherwise the default model.
                   </>
                 }
               >
@@ -450,7 +450,7 @@ function AgentSettingsSection() {
                 <SettingsToggle
                   htmlFor="smart-queue"
                   title="Smart queue"
-                  description="When you add several cards, an agent orders them and links the ones that depend on each other, so independent cards run in parallel and the rest wait for what they build on."
+                  description="When you add several cards, an agent orders them and links dependencies. Independent cards run in parallel; the rest wait on what they depend on."
                 >
                   <Switch
                     id="smart-queue"
@@ -463,7 +463,7 @@ function AgentSettingsSection() {
                 <SettingsToggle
                   htmlFor="auto-retry"
                   title="Retry failed runs automatically"
-                  description="A failed or interrupted run resumes its agent session after 15 s, 30 s, 1 min… and cards left working, queued or failed resume when the server restarts. A success or a manual run resets the count."
+                  description="Failed or interrupted runs resume their agent session after 15 s, 30 s, 1 min… Working, queued and failed cards resume when the server restarts. A success or manual run resets the count."
                 >
                   <Switch
                     id="auto-retry"
@@ -594,7 +594,7 @@ function SystemInfoSection() {
         <div className="space-y-4">
           <SettingsPanel>
             <dl className="divide-y">
-              <InfoRow label="OMP UI version">
+              <InfoRow label="AgentMan version">
                 <dd className="font-mono text-xs tabular-nums">{info.version}</dd>
               </InfoRow>
               <InfoRow label="Database">
@@ -666,7 +666,7 @@ function SecuritySection() {
     if (!current) return setError("Enter your current password.");
     if (next.length < MIN_PASSWORD) return setError(`Use at least ${MIN_PASSWORD} characters.`);
     if (next !== confirm) return setError("New passwords don't match.");
-    if (next === current) return setError("Pick a password different from the current one.");
+    if (next === current) return setError("New password must differ from the current one.");
 
     setError(null);
     setSaving(true);
@@ -688,7 +688,7 @@ function SecuritySection() {
       id="security"
       icon={<KeyRoundIcon />}
       title="Security"
-      description="Change the admin password. Every other signed-in device is signed out."
+      description="Change the admin password. Signs out every other device."
     >
       <form onSubmit={onSubmit} noValidate>
         <SettingsPanel>
@@ -766,7 +766,7 @@ function ApiAccessSection() {
       setCopied(true);
       toast.success("Server URL copied");
     } catch {
-      toast.error("Couldn't copy. Select the URL and copy it manually.");
+      toast.error("Couldn't copy. Copy the URL manually.");
     }
   }
 
@@ -804,16 +804,16 @@ function ApiAccessSection() {
           <div className="flex gap-2.5 rounded-lg bg-muted/60 p-3 text-sm text-muted-foreground">
             <InfoIcon className="mt-0.5 size-4 shrink-0" />
             <p className="min-w-0">
-              A mobile or API client signs in with this URL and the admin password:{" "}
+              Clients sign in with this URL and the admin password:{" "}
               <code className="rounded bg-background px-1 py-0.5 font-mono text-xs break-all text-foreground">
                 POST /api/v1/auth/login
               </code>{" "}
-              returns a token to send as{" "}
+              returns a token; send it as{" "}
               <code className="rounded bg-background px-1 py-0.5 font-mono text-xs break-all text-foreground">
                 Authorization: Bearer &lt;token&gt;
               </code>
-              . Full reference: <code className="font-mono text-xs text-foreground">docs/API.md</code> in the
-              OMP UI repository.
+              . Reference: <code className="font-mono text-xs text-foreground">docs/API.md</code> in the AgentMan
+              repository.
             </p>
           </div>
         </SettingsGroup>

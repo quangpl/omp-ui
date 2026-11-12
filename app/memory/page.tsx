@@ -25,8 +25,8 @@ export default function MemoryPage() {
         </Button>
       </TooltipTrigger>
       <TooltipContent className="max-w-64">
-        agentmemory&apos;s own viewer at {status.viewerUrl}. It listens on the server host&apos;s loopback, so it
-        opens only from that machine (or through an SSH tunnel).
+        agentmemory&apos;s built-in viewer at {status.viewerUrl}. Bound to the server host&apos;s loopback: open it
+        from that machine or through an SSH tunnel.
       </TooltipContent>
     </Tooltip>
   ) : null;

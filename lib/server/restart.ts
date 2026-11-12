@@ -30,10 +30,10 @@ function readText(file: string): string | null {
 /** Who manages this process (from the CLI's pid file, `<pid>\n[pm2|fg]`), or why the button cannot restart it. */
 function detectMode(): { mode: RestartMode | null; reason: string | null } {
   if (process.env.NODE_ENV === "development") {
-    return { mode: null, reason: "Dev mode reloads changes by itself — restart `omp-ui dev` in its terminal." };
+    return { mode: null, reason: "Dev mode hot-reloads. To restart, rerun `omp-ui dev` in its terminal." };
   }
   if (!fs.existsSync(cliPath())) {
-    return { mode: null, reason: "The omp-ui CLI (bin/omp-ui.mjs) is not next to this server." };
+    return { mode: null, reason: "The omp-ui CLI (bin/omp-ui.mjs) is missing next to this server." };
   }
   const [pid, owner = ""] = (readText(path.join(dataDir(), "omp-ui.pid")) ?? "").split("\n");
   // The CLI records the pid of bin/supervisor.mjs, which runs this server.
@@ -46,7 +46,7 @@ function detectMode(): { mode: RestartMode | null; reason: string | null } {
   }
   const by = owner.trim();
   if (by === "fg") {
-    return { mode: null, reason: "It runs attached to a terminal (`omp-ui start -f`) — restart it there." };
+    return { mode: null, reason: "Runs attached to a terminal (`omp-ui start -f`). Restart it there." };
   }
   return { mode: by === "pm2" ? "pm2" : "cli", reason: null };
 }

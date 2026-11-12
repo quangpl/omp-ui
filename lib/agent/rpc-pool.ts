@@ -48,7 +48,7 @@ function idleWorkers(): IdleWorker[] {
 
 /** An idle worker started with the same arguments and environment, else a new one (not ready yet: `waitReady`). */
 export function acquireWorker(spec: WorkerSpec): WorkerLease {
-  // Helpers neither recall nor capture agentmemory: their prompts are OMP UI's own, not the user's work.
+  // Helpers neither recall nor capture agentmemory: their prompts are AgentMan's own, not the user's work.
   const workerEnv = helperMemoryEnv(spec.env);
   const env = createHash("sha1").update(JSON.stringify(Object.entries(workerEnv))).digest("hex");
   const key = JSON.stringify([spec.command, spec.cwd, spec.args, env]);

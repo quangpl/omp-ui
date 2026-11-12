@@ -167,7 +167,7 @@ function run(
   execFile(
     command,
     args,
-    // Instance 0 reuses ./data/state_store.db of its cwd: run from home, never from OMP UI's folder.
+    // Instance 0 reuses ./data/state_store.db of its cwd: run from home, never from AgentMan's folder.
     { cwd: os.homedir(), env: childEnv({ CI: "1" }), timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
     (err, stdout, stderr) => {
       const code = err ? (("code" in err ? err.code : undefined) ?? (err.killed ? "TIMEOUT" : 1)) : 0;
@@ -281,7 +281,7 @@ export function memoryEnabledMode(): MemoryEnabledMode {
   return "auto";
 }
 
-/** OMP UI talks to agentmemory (starts it, tags card sessions) unless AGENTMEMORY_ENABLED=false. */
+/** AgentMan talks to agentmemory (starts it, tags card sessions) unless AGENTMEMORY_ENABLED=false. */
 export function agentmemoryEnabled(): boolean {
   return memoryEnabledMode() !== "false";
 }
@@ -379,7 +379,7 @@ async function serverState(): Promise<
     return {
       ...down,
       reachable: true,
-      error: "agentmemory rejected the bearer secret: set AGENTMEMORY_SECRET for OMP UI to the server's secret",
+      error: "agentmemory rejected the bearer secret: set AGENTMEMORY_SECRET for AgentMan to the server's secret",
     };
   }
   const state = health.body?.status || health.body?.health?.status || "";
@@ -532,7 +532,7 @@ export async function startMemoryServer(ompPath: string): Promise<MemoryStatus> 
   const { url } = agentmemoryConfig();
   if (!(await serverState()).healthy) {
     if (!isLoopbackUrl(url)) {
-      throw new HttpError(409, `AGENTMEMORY_URL points at ${url}; OMP UI only starts a local server`);
+      throw new HttpError(409, `AGENTMEMORY_URL points at ${url}; AgentMan only starts a local server`);
     }
     let launcher: Launcher;
     if (await systemdUnitEnabled()) {
@@ -558,7 +558,7 @@ export async function connectOmp(ompPath: string): Promise<MemoryStatus> {
   const cli = await findCli(true);
   if (!cli) throw notInstalled();
   // The connector finds omp's agent dir from the same env (PI_CODING_AGENT_DIR, OMP_PROFILE, …)
-  // that `omp config path` and OMP UI's agents use.
+  // that `omp config path` and AgentMan's agents use.
   const result = await run(cli.command, [...cli.prefix, "connect", "omp", "--with-mcp"], CONNECT_TIMEOUT_MS);
   if (result.code !== 0) {
     throw new HttpError(502, `agentmemory connect omp failed:\n${cleanOutput(result.output)}`);
@@ -573,7 +573,7 @@ export async function connectOmp(ompPath: string): Promise<MemoryStatus> {
  * extension files captures and scopes recall by that env, else by the git root (or cwd) basename —
  * which for a card running in a worktree is the worktree's folder, not the project. This is what an
  * omp session in the board's own folder resolves to, so cards, their worktrees and the user's own
- * omp sessions share one project. An explicit AGENTMEMORY_PROJECT_NAME in OMP UI's environment wins.
+ * omp sessions share one project. An explicit AGENTMEMORY_PROJECT_NAME in AgentMan's environment wins.
  */
 export async function memoryProjectName(boardWorkdir: string): Promise<string> {
   const explicit = process.env.AGENTMEMORY_PROJECT_NAME?.trim();

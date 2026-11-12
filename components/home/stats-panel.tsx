@@ -136,7 +136,7 @@ export function StatsPanel({ stats }: { stats: DashboardStats }) {
         </div>
         {week.runs === 0 && week.shipped === 0 && week.created === 0 ? (
           <p className="border-t px-3 py-3 text-xs text-pretty text-muted-foreground">
-            No activity this week. Start a card and its runs, success rate and shipped work show up here.
+            No activity this week. Start a card to see runs, success rate and shipped work.
           </p>
         ) : (
           <dl className="grid grid-cols-2 gap-px border-t bg-border [&>*:last-child:nth-child(odd)]:col-span-2">

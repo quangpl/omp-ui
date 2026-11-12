@@ -671,7 +671,7 @@ export function CommandPalette() {
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
         <DialogDescription className="sr-only">
-          Run a card action, jump to a card or project, or run an action
+          Jump to a card or project, or run an action
         </DialogDescription>
         <div className="flex items-center gap-2 border-b px-3">
           <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />

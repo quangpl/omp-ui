@@ -99,7 +99,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
   },
   {
     title: "Selection & quick actions",
-    note: "Quick actions apply to the selected cards, or to the focused card when nothing is selected.",
+    note: "Quick actions apply to the selected cards, or the focused card if none are selected.",
     shortcuts: [
       { label: "Toggle selection of the focused card", keys: ["X"] },
       { label: "Extend selection up", keys: ["⇧+↑", "⇧+K"] },
