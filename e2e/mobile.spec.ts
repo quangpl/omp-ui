@@ -90,7 +90,7 @@ test("bottom tabs navigate the top-level sections and are hidden on a board", as
   await expect(tabs).toBeVisible();
 });
 
-test("board: FAB adds a card, Start runs it, the detail drawer steers the agent to Done", async ({
+test("board: FAB adds a card that starts on its own, the detail drawer steers the agent to Done", async ({
   page,
   request,
 }) => {
@@ -119,32 +119,22 @@ test("board: FAB adds a card, Start runs it, the detail drawer steers the agent 
   const newCard = page.getByRole("dialog", { name: "New card" });
   await expect(newCard).toHaveAttribute("data-vaul-drawer-direction", "bottom");
   await newCard.getByLabel("What should the agent do?", { exact: true }).fill(title);
-  // Auto-run boards start new cards right away; park this one in To do to try the Start action.
-  const startNow = newCard.getByRole("switch", { name: /Start agent now/ });
-  await expect(startNow).toBeChecked();
-  await startNow.click();
   await newCard.getByRole("button", { name: "Create card" }).click();
   await expect(newCard).toBeHidden({ timeout: AGENT_TIMEOUT });
 
-  await expect(page.getByRole("tab", { name: columnTabName("To do", 1) })).toBeVisible();
-  const panel = page.getByRole("tabpanel");
-  await expect(cardButton(panel, title)).toBeVisible();
-
-  // Quick actions are thumb-sized.
-  const start = panel.getByRole("button", { name: "Start", exact: true });
-  await expectTouchTarget(start, "Start quick action");
-  await expectTouchTarget(panel.getByRole("button", { name: `More actions for ${title}` }), "More actions");
-
-  // Start runs the agent: the card moves to In progress by itself and the agent starts working.
-  await start.click();
+  // A new card skips To do: it lands in In progress and its agent starts by itself.
   await expect(page.getByRole("tab", { name: columnTabName("To do", 0) })).toBeVisible();
+  const panel = page.getByRole("tabpanel");
   const inProgressTab = page.getByRole("tab", { name: columnTabName("In progress", 1) });
   await inProgressTab.click();
   await expect(inProgressTab).toHaveAttribute("aria-selected", "true");
   const card = cardButton(panel, title);
   await expect(card).toContainText("Working", { timeout: AGENT_TIMEOUT });
-  // While the agent works, the primary quick action is Stop.
-  await expect(panel.getByRole("button", { name: "Stop", exact: true })).toBeVisible();
+  // While the agent works, the primary quick action is Stop; quick actions are thumb-sized.
+  const stop = panel.getByRole("button", { name: "Stop", exact: true });
+  await expect(stop).toBeVisible();
+  await expectTouchTarget(stop, "Stop quick action");
+  await expectTouchTarget(panel.getByRole("button", { name: `More actions for ${title}` }), "More actions");
 
   // Card detail opens as a bottom drawer.
   await card.click();

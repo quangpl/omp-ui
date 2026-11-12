@@ -238,7 +238,7 @@ export class SqliteRepository implements Repository {
   private readonly db: DatabaseSync;
   private readonly statements = new Map<string, StatementSync>();
 
-  constructor(file: string) {
+  constructor(private readonly file: string) {
     if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
     this.db = new DatabaseSync(file);
   }
@@ -300,6 +300,26 @@ export class SqliteRepository implements Repository {
   async close(): Promise<void> {
     this.statements.clear();
     if (this.db.isOpen) this.db.close();
+  }
+
+  async compactableBytes(): Promise<number> {
+    const row = this.db
+      .prepare("SELECT freelist_count * page_size AS bytes FROM pragma_freelist_count(), pragma_page_size()")
+      .get() as { bytes: number } | undefined;
+    const free = Number(row?.bytes ?? 0);
+    let wal = 0;
+    try {
+      wal = fs.statSync(`${this.file}-wal`).size;
+    } catch {
+      // No WAL file (in-memory database or nothing written yet).
+    }
+    return free + wal;
+  }
+
+  async compact(): Promise<void> {
+    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    this.db.exec("VACUUM");
+    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   }
 
   // ---------------------------------------------------------------- settings

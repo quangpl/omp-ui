@@ -10,7 +10,7 @@ import { BoardMenu } from "@/components/board/board-menu";
 import type { BoardMenuActions } from "@/components/board/card-context-menu";
 import { ConnectionPill } from "@/components/board/connection-status";
 import { BoardBodySkeleton, KanbanBoard } from "@/components/board/kanban-board";
-import { NewTaskDialog, type NewTaskInput } from "@/components/board/new-task-form";
+import { NewTaskDialog } from "@/components/board/new-task-form";
 import { GitIndicator, canShip, shipLabels, shipTask } from "@/components/board/ship-actions";
 import { DeleteCardDialog, TaskDetail } from "@/components/board/task-detail";
 import { useNewCardTarget } from "@/components/new-card";
@@ -55,8 +55,8 @@ function BoardScreen() {
   const { board, columns, tasks, loading, error, subscribe } = controller;
   useDocumentTitle(board?.name);
   const git = useGitStatus(boardId, subscribe);
-  /** Open "New card" form; `start` presets "Start agent now" (else the board's auto-run). */
-  const [newCard, setNewCard] = useState<{ start?: boolean } | null>(null);
+  /** "New card" form open. */
+  const [newCard, setNewCard] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deleting, setDeleting] = useState<Task | null>(null);
   const [mobileColumn, setMobileColumn] = useState<TaskStatus>("todo");
@@ -129,10 +129,10 @@ function BoardScreen() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selectedTaskId, columns, switchTask]);
 
-  const create = async (input: NewTaskInput) => (await controller.createTask(input)) !== null;
+  const create = async (text: string) => (await controller.createFromText(text)) !== null;
 
-  // `N` / `Shift+N` and every "New card…" menu item land here while this board is open.
-  useNewCardTarget(boardId, ({ start }) => setNewCard({ start }));
+  // `N` and every "New card…" menu item land here while this board is open.
+  useNewCardTarget(boardId, () => setNewCard(true));
 
   const { createTask, revertToTodo, runAgent, stopAgent, reload } = controller;
   const refreshGit = git.refresh;
@@ -157,7 +157,7 @@ function BoardScreen() {
         await createTask({ title: `${task.title} (copy)`, description: task.description, start: false });
       },
       requestDelete: setDeleting,
-      newCard: (start) => setNewCard({ start }),
+      newCard: () => setNewCard(true),
       refresh: () => {
         void reload();
         void refreshGit();
@@ -207,7 +207,7 @@ function BoardScreen() {
               <TooltipTrigger asChild>
                 <Button
                   className="h-9 gap-1.5 transition-transform active:scale-[0.97] max-md:hidden max-lg:w-9 max-lg:px-0 motion-reduce:active:scale-100"
-                  onClick={() => setNewCard({})}
+                  onClick={() => setNewCard(true)}
                 >
                   <Plus />
                   <span className="max-lg:sr-only">Add card</span>
@@ -234,19 +234,17 @@ function BoardScreen() {
           isMobile={isMobile}
           menuActions={menuActions}
           reorderTask={controller.reorderTask}
-          onQuickCreate={async (text, progress) => (await controller.createFromText(text, progress)) !== null}
-          onAdd={() => setNewCard({})}
+          onQuickCreate={create}
+          onAdd={() => setNewCard(true)}
           mobileColumn={mobileColumn}
           onMobileColumnChange={setMobileColumn}
         />
       </main>
 
       <NewTaskDialog
-        open={newCard !== null}
-        onOpenChange={(open) => !open && setNewCard(null)}
+        open={newCard}
+        onOpenChange={setNewCard}
         isMobile={isMobile}
-        boardId={boardId}
-        defaultStart={newCard?.start ?? board.autoRun}
         onCreate={create}
       />
 

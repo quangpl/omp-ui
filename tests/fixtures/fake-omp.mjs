@@ -5,7 +5,10 @@
 //   FAKE_OMP_LOG          JSON-lines file; every process appends {pid, kind, ...} entries:
 //                         "argv" (argv, cwd, sorted envKeys and allowlisted env values at startup),
 //                         "command" (each stdin command),
-//                         "ui_response" (each extension_ui_response), "steer" (steered messages).
+//                         "ui_response" (each extension_ui_response), "steer" (steered messages: RPC
+//                         `steer`, or `prompt` with streamingBehavior while a run is active, logged with
+//                         via: "prompt" and the streamingBehavior; like omp, an idle `prompt` with
+//                         streamingBehavior starts a prompt).
 //   FAKE_OMP_SCENARIO     Default prompt behaviour: success | question | error | crash | slow | confirm |
 //                         stream | orchestrate | board_tools.
 //                         "question" succeeds with a summary that ends in a question for the user.
@@ -539,6 +542,22 @@ function emitChunked(frame) {
   }
 }
 
+/** A message steered into the active run (RPC `steer`, or `prompt` with streamingBehavior). */
+function steer(message, details = {}) {
+  log("steer", { message, ...details });
+  if (!run) return;
+  run.steers.push(message);
+  run.onSteer?.();
+  if (run.scenario === "slow") {
+    const current = run;
+    setImmediate(() => {
+      if (run === current) {
+        completeSuccessfully(`Fake summary: addressed ${current.steers.length} steered message(s).`);
+      }
+    });
+  }
+}
+
 async function handle(command) {
   if (command.type === "extension_ui_response") {
     log("ui_response", { response: command });
@@ -608,6 +627,11 @@ async function handle(command) {
       return;
     case "prompt":
       if (run) {
+        if (command.streamingBehavior === "steer" || command.streamingBehavior === "followUp") {
+          respond(command);
+          steer(command.message, { via: "prompt", streamingBehavior: command.streamingBehavior });
+          return;
+        }
         fail(command, "Agent is already streaming; pass streamingBehavior");
         return;
       }
@@ -616,19 +640,7 @@ async function handle(command) {
       return;
     case "steer":
       respond(command);
-      log("steer", { message: command.message });
-      if (run) {
-        run.steers.push(command.message);
-        run.onSteer?.();
-        if (run.scenario === "slow") {
-          const current = run;
-          setImmediate(() => {
-            if (run === current) {
-              completeSuccessfully(`Fake summary: addressed ${current.steers.length} steered message(s).`);
-            }
-          });
-        }
-      }
+      steer(command.message);
       return;
     case "abort":
       respond(command);

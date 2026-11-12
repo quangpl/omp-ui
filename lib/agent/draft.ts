@@ -38,7 +38,7 @@ const ANSWER_NOW = "That is enough looking around. Reply now with only the card 
 const INLINE_MAX = 60_000;
 /** Open cards offered as "Run after" candidates (newest first). */
 const MAX_OPEN_CARDS = 40;
-/** Drafts running at once across the server: half the cores, at least 4, at most 16. */
+/** Drafts running at once across the server: half the cores, at least 4, at most 16; more wait their turn. */
 const MAX_CONCURRENT_DRAFTS = Math.max(4, Math.min(16, Math.floor(availableParallelism() / 2)));
 /** Installed skills listed for the card writer to suggest, and how much of each description. */
 const MAX_PROMPT_SKILLS = 60;
@@ -62,23 +62,58 @@ export interface DraftResult {
   model: string | null;
 }
 
-const g = globalThis as unknown as { __ompUiDrafts?: number };
+interface DraftSlots {
+  running: number;
+  /** Drafts waiting for a slot, first come first served. */
+  waiting: (() => void)[];
+}
 
-/** Reserve one of the server-wide draft slots; null when all are busy. Call the result to release. */
-export function acquireDraftSlot(): (() => void) | null {
-  const running = g.__ompUiDrafts ?? 0;
-  if (running >= MAX_CONCURRENT_DRAFTS) return null;
-  g.__ompUiDrafts = running + 1;
+const g = globalThis as unknown as { __ompUiDrafts?: DraftSlots };
+
+/** Wait for one of the server-wide draft slots; rejects when `signal` aborts first. Call the result to release. */
+async function acquireDraftSlot(signal: AbortSignal, onWait: () => void): Promise<() => void> {
+  const slots = (g.__ompUiDrafts ??= { running: 0, waiting: [] });
+  if (slots.running >= MAX_CONCURRENT_DRAFTS) onWait();
+  while (slots.running >= MAX_CONCURRENT_DRAFTS) {
+    signal.throwIfAborted();
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    const wake = () => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const onAbort = () => {
+      const index = slots.waiting.indexOf(wake);
+      if (index !== -1) slots.waiting.splice(index, 1);
+      reject(signal.reason);
+    };
+    slots.waiting.push(wake);
+    signal.addEventListener("abort", onAbort, { once: true });
+    await promise;
+  }
+  slots.running++;
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    g.__ompUiDrafts = Math.max(0, (g.__ompUiDrafts ?? 1) - 1);
+    slots.running--;
+    slots.waiting.shift()?.();
   };
 }
 
-/** Run the card writer on `text` and return the card it wrote. Rejects on failure or abort. */
+/**
+ * Run the card writer on `text` and return the card it wrote, once one of the server-wide draft
+ * slots is free. Rejects on failure or abort.
+ */
 export async function draftCard(options: DraftOptions): Promise<DraftResult> {
+  const release = await acquireDraftSlot(options.signal, () => options.onActivity("Waiting for a free card agent…"));
+  try {
+    return await writeDraft(options);
+  } finally {
+    release();
+  }
+}
+
+async function writeDraft(options: DraftOptions): Promise<DraftResult> {
   const { text, board, tasks, settings, signal, onActivity } = options;
   const workdir = board.workdir;
   const env = childEnv();

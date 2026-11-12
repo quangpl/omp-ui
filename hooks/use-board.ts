@@ -12,8 +12,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ApiRequestError, type DraftProgress, api, subscribeEvents } from "@/lib/api-client";
-import { type DraftCardInput, draftToCard, fallbackDraft, isPlainTitle } from "@/lib/card-draft";
+import { ApiRequestError, api, subscribeEvents } from "@/lib/api-client";
 import { SUBAGENT_STATUS_LABELS, parseSubagent } from "@/lib/subagents";
 import {
   TASK_STATUSES,
@@ -34,6 +33,8 @@ export type TasksByStatus = Record<TaskStatus, Task[]>;
 export interface QueueIds {
   running: string[];
   queued: string[];
+  /** Queued cards the card writer is still writing (their run starts after). */
+  drafting: string[];
 }
 
 // In-tab shared state. A board page opens one SSE connection (`useBoard`); other components
@@ -62,17 +63,27 @@ function sameIds(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((id, i) => id === b[i]);
 }
 
-const EMPTY_QUEUE: QueueIds = { running: [], queued: [] };
+const EMPTY_QUEUE: QueueIds = { running: [], queued: [], drafting: [] };
 const queueStore = createStore<QueueIds>(EMPTY_QUEUE);
 
 /** Publish the latest agent queue (GET /queue or a `queue.updated` event) to every reader in this tab. */
 export function publishQueue(queue: QueueIds | QueueSnapshot): void {
   const next: QueueIds =
     "limit" in queue
-      ? { running: queue.running.map((e) => e.taskId), queued: queue.queued.map((e) => e.taskId) }
-      : { running: queue.running, queued: queue.queued };
+      ? {
+          running: queue.running.map((e) => e.taskId),
+          queued: queue.queued.map((e) => e.taskId),
+          drafting: queue.queued.filter((e) => e.drafting).map((e) => e.taskId),
+        }
+      : queue;
   const current = queueStore.get();
-  if (sameIds(current.running, next.running) && sameIds(current.queued, next.queued)) return;
+  if (
+    sameIds(current.running, next.running) &&
+    sameIds(current.queued, next.queued) &&
+    sameIds(current.drafting, next.drafting)
+  ) {
+    return;
+  }
   queueStore.set(next);
 }
 
@@ -87,6 +98,15 @@ export function useQueuePosition(taskId: string): number {
     queueStore.subscribe,
     () => queueStore.get().queued.indexOf(taskId),
     () => -1,
+  );
+}
+
+/** True while the card writer is still writing this queued card. */
+export function useQueueDrafting(taskId: string): boolean {
+  return useSyncExternalStore(
+    queueStore.subscribe,
+    () => queueStore.get().drafting.includes(taskId),
+    () => false,
   );
 }
 
@@ -161,8 +181,6 @@ export interface NewCardInput {
   start?: boolean;
   /** Cards this one waits for ("Run after"). */
   blockedBy?: string[];
-  /** The free text the card was written from; saved on the card as `brief.md`. */
-  brief?: string;
 }
 
 /**
@@ -182,7 +200,6 @@ export async function createCard(
       title: input.title,
       description: input.description || undefined,
       blockedBy: input.blockedBy?.length ? input.blockedBy : undefined,
-      brief: input.brief,
       status: start ? "in_progress" : "todo",
       position: options.position,
     });
@@ -201,6 +218,26 @@ export async function createCard(
     }
   }
   return task;
+}
+
+/**
+ * Create a card from free text: it lands in In progress right away and its agent starts once the
+ * card writer has written its title and brief (in the background). Toasts and resolves `null`
+ * when the card couldn't be created.
+ */
+export async function createCardFromText(
+  boardId: string,
+  text: string,
+  options: { position?: number; onCreated?: (task: Task) => void } = {},
+): Promise<Task | null> {
+  try {
+    const task = await api.tasks.createFromText(boardId, { text, position: options.position });
+    options.onCreated?.(task);
+    return task;
+  } catch (err) {
+    toast.error("Couldn't create card", { description: message(err) });
+    return null;
+  }
 }
 
 interface PendingMove {
@@ -229,10 +266,10 @@ export interface BoardController {
   /** Create a card; toasts and resolves `null` on failure, calls `onCardAdded` on success. */
   createTask: (input: NewCardInput) => Promise<Task | null>;
   /**
-   * Inline "Add a card": a short line is the title as typed, longer text goes through the card
-   * agent first. Toasts and resolves `null` on failure (not when `progress.signal` aborts it).
+   * A card from free text, in In progress with its agent started; the card writer writes its title
+   * and brief in the background. Toasts and resolves `null` on failure.
    */
-  createFromText: (text: string, progress?: DraftProgress) => Promise<Task | null>;
+  createFromText: (text: string) => Promise<Task | null>;
   /** Start / stop a card's agent; toasts on failure. */
   runAgent: (taskId: string) => Promise<void>;
   stopAgent: (taskId: string) => Promise<void>;
@@ -265,7 +302,7 @@ function activityLine(kind: string, text: string): string | null {
 }
 
 export interface UseBoardOptions {
-  /** Every card this controller creates (dialog, inline composer, "Add as typed", duplicate). */
+  /** Every card this controller creates (dialog, inline composer, duplicate). */
   onCardAdded?: (task: Task) => void;
 }
 
@@ -405,8 +442,11 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
           case "run.delta":
             noteActivity(event.taskId, activityLine(event.kind, event.text));
             break;
+          case "task.activity":
+            noteActivity(event.taskId, event.text);
+            break;
           case "queue.updated":
-            publishQueue({ running: event.running, queued: event.queued });
+            publishQueue({ running: event.running, queued: event.queued, drafting: event.drafting });
             break;
         }
         emit(event);
@@ -524,23 +564,15 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
   );
 
   const createFromText = useCallback(
-    async (text: string, progress: DraftProgress = {}): Promise<Task | null> => {
-      const value = text.trim();
-      if (isPlainTitle(value)) return createTask({ title: value });
-      let card: DraftCardInput;
-      try {
-        card = draftToCard((await api.tasks.draft(boardId, value, progress)).draft, value);
-      } catch (err) {
-        if (progress.signal?.aborted) return null;
-        toast.error("The card agent couldn't write this card", {
-          description: message(err),
-          action: { label: "Add as typed", onClick: () => void createTask(draftToCard(fallbackDraft(value), value)) },
-        });
-        return null;
-      }
-      return createTask(card);
+    async (text: string): Promise<Task | null> => {
+      const task = await createCardFromText(boardId, text, {
+        position: endPosition("in_progress"),
+        onCreated: upsertTask,
+      });
+      if (task) onCardAddedRef.current?.(task);
+      return task;
     },
-    [boardId, createTask],
+    [boardId, endPosition, upsertTask],
   );
 
   const runAgent = useCallback(

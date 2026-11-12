@@ -48,7 +48,7 @@ test("a card added in To do on an auto-run board moves to In progress and its ag
   await expect(todo.getByText("No cards yet.")).toBeVisible();
 });
 
-test("new card from free text: the card agent writes the title and brief, the user reviews it", async ({
+test("new card from free text: it lands in In progress at once, the card agent writes it in the background", async ({
   page,
   request,
 }) => {
@@ -65,40 +65,37 @@ test("new card from free text: the card agent writes the title and brief, the us
   await page.goto(`/b/${board.id}`);
   await page.getByRole("button", { name: "Add card", exact: true }).click();
   const newCard = page.getByRole("dialog", { name: "New card" });
+  // No switches to set: every new card starts, and the card agent decides on parallel subagents.
+  await expect(newCard.getByRole("switch")).toHaveCount(0);
   await newCard.getByLabel("What should the agent do?", { exact: true }).fill(text);
-  await newCard.getByRole("button", { name: "Review first" }).click();
-
-  // The agent's card, ready to edit: title, brief, parallel subagents, and the card it waits for.
-  const title = newCard.getByLabel("Title", { exact: true });
-  await expect(title).toHaveValue(firstLine, { timeout: AGENT_TIMEOUT });
-  await expect(newCard.getByLabel("Description", { exact: true })).toHaveValue(`## Goal\n\n${text}`);
-  await expect(newCard.getByRole("switch", { name: /Parallel subagents/ })).toBeChecked();
-  await expect(newCard.getByRole("button", { name: `Don't wait for ${blocker.title}` })).toBeVisible();
-  const edited = `${firstLine} (edited)`;
-  await title.fill(edited);
-  await newCard.getByRole("switch", { name: /Start agent now/ }).click();
   await newCard.getByRole("button", { name: "Create card" }).click();
   await expect(newCard).toBeHidden();
 
-  const todo = column(page, "To do");
-  await expect(cardButton(todo, edited)).toBeVisible();
+  // The card agent's card: the brief, parallel subagents, and the card it waits for.
+  const inProgress = column(page, "In progress");
+  await expect(cardButton(inProgress, firstLine)).toContainText("Waiting for 1", { timeout: AGENT_TIMEOUT });
   const tasks = (await (
     await request.get(`/api/v1/boards/${board.id}/tasks`, {
       headers: { authorization: `Bearer ${await apiToken(request)}` },
     })
   ).json()) as Task[];
-  const created = tasks.find((t) => t.title === edited);
+  const created = tasks.find((t) => t.title === firstLine);
+  expect(created?.status).toBe("in_progress");
   expect(created?.blockedBy).toEqual([blocker.id]);
+  expect(created?.description).toContain(`## Goal\n\n${text}`);
   expect(created?.description).toContain("orchestrate: split this work into parallel subagent tasks");
 
-  // When the agent fails, the text is used as typed and can be created anyway.
+  // When the card agent fails, the text as typed runs anyway, with a note on the card.
   await page.getByRole("button", { name: "Add card", exact: true }).click();
   const failing = uniqueName("[fake-draft:fail] fix the login redirect");
   await newCard.getByLabel("What should the agent do?", { exact: true }).fill(`${failing}\nIt loops forever.`);
-  await newCard.getByRole("button", { name: "Review first" }).click();
-  await expect(newCard.getByText("The card agent couldn't write this card")).toBeVisible({ timeout: AGENT_TIMEOUT });
-  await expect(newCard.getByLabel("Title", { exact: true })).toHaveValue(failing);
-  await expect(newCard.getByRole("button", { name: "Try the agent again" })).toBeVisible();
+  await newCard.getByRole("button", { name: "Create card" }).click();
+  await expect(newCard).toBeHidden();
+  const done = column(page, "Done");
+  await expect(cardButton(done, failing)).toBeVisible({ timeout: AGENT_TIMEOUT });
+  await cardButton(done, failing).click();
+  const detail = page.getByRole("dialog", { name: failing });
+  await expect(detail.getByText(/The card agent couldn't write this card/)).toBeVisible();
 });
 
 test("card lifecycle: edit, feedback, agent run to Done, log, reopen by comment", async ({

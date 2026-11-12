@@ -66,7 +66,7 @@ function useQueueSnapshot() {
     const unsubscribe = subscribeEvents(
       (event) => {
         if (event.type === "queue.updated") {
-          publishQueue({ running: event.running, queued: event.queued });
+          publishQueue({ running: event.running, queued: event.queued, drafting: event.drafting });
           schedule();
         } else if (event.type === "task.updated" || event.type === "task.deleted") {
           schedule();
@@ -133,6 +133,7 @@ function QueueRow({
         )}
         <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
           <span className="truncate">{entry.boardName}</span>
+          {queued && entry.drafting && <span className="shrink-0 italic">Writing the card…</span>}
           {planning && <span className="shrink-0 italic">Planning…</span>}
           {waiting > 0 && (
             <span className="inline-flex shrink-0 items-center gap-1 text-violet-700 dark:text-violet-300">

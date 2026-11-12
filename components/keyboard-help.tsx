@@ -45,7 +45,6 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
     shortcuts: [
       { label: "Command palette", keys: ["Mod+K", "/"] },
       { label: "New card", keys: ["N", "C"] },
-      { label: "New card, start agent now", keys: ["⇧+N", "⇧+C"] },
       { label: "Keyboard shortcuts (this sheet)", keys: ["?"] },
       { label: "Toggle sidebar", keys: ["Mod+B"] },
     ],

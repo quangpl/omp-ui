@@ -11,6 +11,13 @@ export interface AgentManager {
    * No-op if already queued/running. Throws if the task does not exist.
    */
   start(taskId: string): Promise<Task>;
+  /**
+   * `start()`, but the queued run is held until `prepare` settles (the card writer turning the
+   * card's free text into its title and brief). A failed `prepare` is logged and the run starts
+   * anyway; stop() and deletion abort its signal. A server restart drops the hold: the card is
+   * queued again and runs as it is.
+   */
+  startPrepared(taskId: string, prepare: (signal: AbortSignal) => Promise<void>): Promise<Task>;
   /** Abort the running/queued agent; task stays in its column, agentState -> "idle". */
   stop(taskId: string): Promise<Task | null>;
   /**

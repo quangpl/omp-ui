@@ -142,10 +142,10 @@ describe("buildPrompt (resumed session)", () => {
   });
 });
 
-describe("buildPrompt orchestration keyword", () => {
-  // omp's magic-keyword match: a standalone, lowercase "orchestrate".
-  const KEYWORD = /(?<![\p{L}\p{N}_./\\-])orchestrate(?![\p{L}\p{N}_/\\-])(?!\.[\p{L}\p{N}_-])(?!\()/u;
+// omp's magic-keyword match: a standalone, lowercase "orchestrate".
+const KEYWORD = /(?<![\p{L}\p{N}_./\\-])orchestrate(?![\p{L}\p{N}_/\\-])(?!\.[\p{L}\p{N}_-])(?!\()/u;
 
+describe("buildPrompt orchestration keyword", () => {
   it("leaves small tasks to a single agent", () => {
     expect(buildPrompt(task, board, [], false)).not.toMatch(KEYWORD);
     expect(buildPrompt(task, board, [comment("Use the brand colors")], true)).not.toMatch(KEYWORD);
@@ -202,6 +202,24 @@ describe("buildSteerMessage", () => {
     const message = buildSteerMessage(comment("API is ready", { fromTaskId: "t9" }), "Build the API");
 
     expect(message).toContain('New message from the agent working on card "Build the API" (t9):');
+  });
+
+  it("asks for orchestration on large user feedback only", () => {
+    const list = buildSteerMessage(comment("Also:\n- Cart page\n- Checkout flow\n- Order history\n- Admin dashboard"));
+    expect(list).toMatch(KEYWORD);
+    expect(list).toContain("\nThis task spans several pieces of work: orchestrate it");
+    expect(buildSteerMessage(comment("Do the remaining fixes in parallel."))).toMatch(KEYWORD);
+    expect(buildSteerMessage(comment("Use the brand colors"))).not.toMatch(KEYWORD);
+  });
+
+  it("defuses magic keywords in another card's agent message", () => {
+    const body = "Please orchestrate the API work and ultrathink about edge cases.\n- a\n- b\n- c\n- d";
+    const message = buildSteerMessage(comment(body, { fromTaskId: "t9" }), "Build the API");
+
+    expect(message).not.toMatch(KEYWORD);
+    expect(message).not.toMatch(/(?<![\p{L}\p{N}_./\\-])ultrathink(?![\p{L}\p{N}_/\\-])/u);
+    expect(message).not.toContain("This task spans several pieces of work");
+    expect(message.replaceAll("\u200b", "")).toContain(body);
   });
 });
 

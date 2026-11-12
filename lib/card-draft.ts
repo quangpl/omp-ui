@@ -1,5 +1,5 @@
 // Free text → card. Limits shared by the new-card form and the API, the no-agent fallback
-// (first line → title, the text → description), and turning a reviewed draft into a new card.
+// (first line → title, the text → description), and turning the card writer's draft into card fields.
 import type { CardDraft } from "@/lib/types";
 
 /** Longest card title the API accepts. */
@@ -8,11 +8,13 @@ export const TITLE_MAX = 200;
 export const DESCRIPTION_MAX = 20_000;
 /** Longest free text a new card accepts (characters). */
 export const BRIEF_MAX = 2_000_000;
-/** Text at least this long is also kept on the card, word for word, when its description differs. */
+/** Text at least this long is also kept on the card, word for word, as `BRIEF_FILE`. */
 export const ATTACH_BRIEF_MIN = 2_000;
 /** Name of that copy among the card's files. */
 export const BRIEF_FILE = "brief.md";
-/** One line up to this long is used as the title as typed (the inline composer skips the agent). */
+/** Added to the description of a card that has its text attached as `BRIEF_FILE`. */
+export const BRIEF_NOTE = `The user's full original request, word for word, is in ${BRIEF_FILE} among this card's files.`;
+/** One line up to this long is used as the title as typed (the card writer is skipped). */
 export const PLAIN_TITLE_MAX = 100;
 /** Length the fallback cuts a title to. */
 const FALLBACK_TITLE_MAX = 80;
@@ -53,29 +55,26 @@ export function fallbackDraft(text: string): CardDraft {
   return { title, description, orchestrate: false, waitFor: [] };
 }
 
-/** What POST /boards/:id/tasks gets for a reviewed draft (plus status/position from the caller). */
-export interface DraftCardInput {
+/** Title, description and "Run after" cards of a new card. */
+export interface CardFields {
   title: string;
   description: string;
   blockedBy: string[];
-  /** The original text, saved on the card as `brief.md` (set when the description doesn't hold all of it). */
-  brief?: string;
 }
 
 /**
- * Card fields for `draft` made from `text`: the orchestrate line when asked for, and the original
- * text attached when it is long and the description is not simply that text.
+ * Card fields for `draft`: its description plus the orchestrate line when asked for and
+ * `BRIEF_NOTE` when the original text is `attached`, within `DESCRIPTION_MAX`.
  */
-export function draftToCard(draft: CardDraft, text: string): DraftCardInput {
-  const room = DESCRIPTION_MAX - (draft.orchestrate ? ORCHESTRATE_LINE.length + 2 : 0);
-  const base = clip(draft.description.trim(), room);
-  const description = draft.orchestrate ? [base, ORCHESTRATE_LINE].filter(Boolean).join("\n\n") : base;
-  const original = text.trim();
-  const attach = original.length >= ATTACH_BRIEF_MIN && base !== original;
+export function draftToCard(
+  draft: CardDraft,
+  attached: boolean,
+): CardFields {
+  const extras = [draft.orchestrate ? ORCHESTRATE_LINE : "", attached ? BRIEF_NOTE : ""].filter(Boolean);
+  const room = DESCRIPTION_MAX - extras.reduce((total, line) => total + line.length + 2, 0);
   return {
     title: draft.title.trim(),
-    description,
+    description: [clip(draft.description.trim(), room), ...extras].filter(Boolean).join("\n\n"),
     blockedBy: draft.waitFor.map((card) => card.id),
-    ...(attach ? { brief: original } : {}),
   };
 }

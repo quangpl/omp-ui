@@ -102,7 +102,8 @@ export class OmpRpcProcess extends EventEmitter<RpcEvents> {
   readonly command: string;
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly autoConfirm: boolean;
-  private readonly commandTimeoutMs: number;
+  /** Timeout for non-prompt commands (ms); callers reuse it for prompts that must answer promptly. */
+  readonly commandTimeoutMs: number;
   private readonly pending = new Map<string, Pending>();
   private nextId = 1;
   private stdoutBuffer = "";
@@ -540,6 +541,15 @@ function liveProcesses(): Set<OmpRpcProcess> {
 /** Synchronously signal every live omp child. */
 export function killAllOmpProcesses(signal: NodeJS.Signals = "SIGTERM"): void {
   for (const proc of liveProcesses()) proc.kill(signal);
+}
+
+/** Pids of the omp children this server runs (card agents and helpers). */
+export function liveOmpPids(): Set<number> {
+  const pids = new Set<number>();
+  for (const proc of liveProcesses()) {
+    if (!proc.exited && proc.pid !== undefined) pids.add(proc.pid);
+  }
+  return pids;
 }
 
 function registerShutdownHooks(): void {

@@ -14,7 +14,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { toastCardAdded } from "@/components/board/card-added-toast";
-import { NewTaskDialog, type NewTaskInput } from "@/components/board/new-task-form";
+import { NewTaskDialog } from "@/components/board/new-task-form";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -23,7 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { createCard } from "@/hooks/use-board";
+import { createCardFromText } from "@/hooks/use-board";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/lib/api-client";
 import { isTypingTarget } from "@/lib/hotkeys";
@@ -33,8 +33,6 @@ import type { BoardWithCounts } from "@/lib/types";
 export interface NewCardRequest {
   /** Project to create the card in; defaults to the open board, else the last one used. */
   boardId?: string;
-  /** Preset "Start agent now"; defaults to the project's auto-run. */
-  start?: boolean;
 }
 
 type NewCardHandler = (request: NewCardRequest) => void;
@@ -48,7 +46,7 @@ const NewCardContext = createContext<NewCardContextValue | null>(null);
 
 const LAST_BOARD_KEY = "omp-ui:last-board";
 
-/** True for the "new card" shortcut: plain `N` or `C` (`Shift+N` / `Shift+C` start the agent right away). */
+/** True for the "new card" shortcut: `N` or `C`. */
 export function isNewCardShortcut(event: KeyboardEvent): boolean {
   if (event.defaultPrevented || event.repeat || event.isComposing) return false;
   if (event.ctrlKey || event.metaKey || event.altKey) return false;
@@ -57,7 +55,7 @@ export function isNewCardShortcut(event: KeyboardEvent): boolean {
 }
 
 /**
- * App-wide "New card": the `N` / `Shift+N` hotkey and `openNewCard()` from any context menu.
+ * App-wide "New card": the `N` hotkey and `openNewCard()` from any context menu.
  * The open board page registers itself and handles requests for its board; everywhere else a
  * dialog with a project picker creates the card.
  */
@@ -86,7 +84,7 @@ export function NewCardProvider({ children }: { children: ReactNode }) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!isNewCardShortcut(event)) return;
       event.preventDefault();
-      openNewCard({ start: event.shiftKey || undefined });
+      openNewCard();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -158,12 +156,12 @@ function GlobalNewCardDialog({
 
   const board = boards?.find((b) => b.id === boardId);
 
-  const create = async (input: NewTaskInput) => {
+  const create = async (text: string) => {
     if (!board) {
       toast.error("Pick a project for the card first");
       return false;
     }
-    const task = await createCard(board, input);
+    const task = await createCardFromText(board.id, text);
     if (!task) return false;
     localStorage.setItem(LAST_BOARD_KEY, board.id);
     toastCardAdded(task, {
@@ -210,8 +208,6 @@ function GlobalNewCardDialog({
       open={open}
       onOpenChange={(next) => !next && onClose()}
       isMobile={isMobile}
-      boardId={board?.id ?? null}
-      defaultStart={request?.start ?? board?.autoRun ?? false}
       projectField={projectField}
       onCreate={create}
     />

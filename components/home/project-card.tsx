@@ -170,13 +170,6 @@ export function ProjectCard({
                     <PanelsTopLeftIcon />
                     Open board
                   </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onSelect={() => openNewCard({ boardId: board.id, start: true })}
-                    className="min-h-11 gap-2.5 px-2.5 md:min-h-8"
-                  >
-                    <ZapIcon />
-                    New card &amp; start agent
-                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onSelect={() => onEdit(board)} className="min-h-11 gap-2.5 px-2.5 md:min-h-8">
                     <PencilIcon />
@@ -299,11 +292,6 @@ export function ProjectCard({
           <PlusIcon />
           New card…
           <ContextMenuShortcut>N</ContextMenuShortcut>
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => openNewCard({ boardId: board.id, start: true })}>
-          <ZapIcon />
-          New card &amp; start agent…
-          <ContextMenuShortcut>⇧N</ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => onEdit(board)}>

@@ -192,17 +192,34 @@ function projectFolders(board: Board): string | null {
   return `Project folders: primary ${board.workdir}, plus ${extra.join(", ")}. You may read and change files in any of them as the task requires.`;
 }
 
-/** Message steered into a live session when the user (or another card's agent) comments while the agent runs. */
+/**
+ * Message steered into a live session when the user (or another card's agent) comments while the
+ * agent runs. omp handles it like chat input, so its magic keywords apply: large user feedback asks
+ * for orchestration, while keywords in another agent's message are defused so they can't switch
+ * modes on the receiving agent.
+ */
 export function buildSteerMessage(comment: Comment, senderTitle?: string | null): string {
-  return [
-    comment.fromTaskId
+  const fromAgent = Boolean(comment.fromTaskId);
+  const lines = [
+    fromAgent
       ? `New message from the agent working on card "${senderTitle ?? comment.fromTaskId}" (${comment.fromTaskId}):`
       : "New feedback from the user on this task:",
     "",
-    comment.body.trim(),
+    fromAgent ? defuseMagicKeywords(comment.body.trim()) : comment.body.trim(),
     "",
     "Take it into account in your current work and mention how you addressed it in your final summary.",
-  ].join("\n");
+  ];
+  if (!fromAgent && needsOrchestration(null, [comment])) lines.push(ORCHESTRATE_INSTRUCTION);
+  return lines.join("\n");
+}
+
+/** omp's magic keywords, matched like omp does: standalone, lowercase, not part of a path, file name or call. */
+const MAGIC_KEYWORDS =
+  /(?<![\p{L}\p{N}_./\\-])(?:orchestrate|ultrathink|chillax|workflowz|jevify)(?![\p{L}\p{N}_/\\-])(?!\.[\p{L}\p{N}_-])(?!\()/gu;
+
+/** Breaks each magic keyword with a zero-width space so the text reads the same but omp ignores it. */
+function defuseMagicKeywords(text: string): string {
+  return text.replace(MAGIC_KEYWORDS, (word) => `${word.slice(0, 5)}\u200b${word.slice(5)}`);
 }
 
 function collaborationLines(task: Task, context: RunContext): string[] {

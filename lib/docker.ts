@@ -713,6 +713,62 @@ export async function removeNetwork(name: string): Promise<void> {
   await dockerOrThrow(["network", "rm", name]);
 }
 
+const DOCKER_SIZE_UNITS: Record<string, number> = { b: 1, kb: 1e3, mb: 1e6, gb: 1e9, tb: 1e12 };
+
+/** Docker's human sizes ("212.8MB", "40.96kB", "0B") → bytes; null when unparseable. */
+export function parseDockerSize(text: string): number | null {
+  const m = /^([\d.]+)\s*([kmgt]?b)/i.exec(text.trim());
+  const unit = m && DOCKER_SIZE_UNITS[m[2]!.toLowerCase()];
+  return m && unit ? Math.round(Number.parseFloat(m[1]!) * unit) : null;
+}
+
+export type DockerReclaimable =
+  | { ok: true; kinds: Record<PruneKind, { bytes: number | null; count: number }> }
+  | { ok: false; error: string };
+
+/**
+ * What each `prune -f` would remove: stopped containers, dangling images, anonymous unused
+ * volumes (Docker 23+ keeps named ones), unused networks and the build cache.
+ */
+export async function dockerReclaimable(): Promise<DockerReclaimable> {
+  const [df, images, volumes, networks] = await Promise.all([
+    docker(["system", "df", "--format", "{{json .}}"], { timeout: 30_000 }),
+    docker(["images", "-f", "dangling=true", "--format", "{{.Size}}"]),
+    docker(["volume", "ls", "-q", "-f", "dangling=true"]),
+    docker(["network", "ls", "-q", "-f", "dangling=true"]),
+  ]);
+  if (!df.ok) return { ok: false, error: df.error ?? "docker failed" };
+  const rows = new Map(
+    jsonLines<{ Type?: string; TotalCount?: string; Active?: string; Reclaimable?: string }>(df.stdout).map((r) => [
+      r.Type ?? "",
+      r,
+    ]),
+  );
+  const count = (value: string | undefined) => Number.parseInt(value ?? "0", 10) || 0;
+  const containers = rows.get("Containers");
+  const cache = rows.get("Build Cache");
+  const imageSizes = images.ok ? images.stdout.split("\n").filter((l) => l.trim()) : [];
+  const anonymousVolumes = volumes.ok
+    ? volumes.stdout.split("\n").filter((name) => /^[0-9a-f]{64}$/.test(name.trim()))
+    : [];
+  return {
+    ok: true,
+    kinds: {
+      containers: {
+        bytes: parseDockerSize(containers?.Reclaimable ?? ""),
+        count: Math.max(0, count(containers?.TotalCount) - count(containers?.Active)),
+      },
+      images: {
+        bytes: imageSizes.reduce((sum, size) => sum + (parseDockerSize(size) ?? 0), 0),
+        count: imageSizes.length,
+      },
+      volumes: { bytes: null, count: anonymousVolumes.length },
+      networks: { bytes: null, count: networks.ok ? networks.stdout.split("\n").filter((l) => l.trim()).length : 0 },
+      builder: { bytes: parseDockerSize(cache?.Reclaimable ?? ""), count: count(cache?.TotalCount) },
+    },
+  };
+}
+
 export async function prune(kind: PruneKind): Promise<string> {
   const args =
     kind === "containers"

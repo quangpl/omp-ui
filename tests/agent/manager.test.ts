@@ -46,6 +46,9 @@ interface LogEntry {
   cwd?: string;
   command?: { type: string; id?: string; message?: string };
   message?: string;
+  /** "steer" entries: set when the message came as a `prompt` with streamingBehavior. */
+  via?: string;
+  streamingBehavior?: string;
   /** "helper" entries (advisor, queue planner): the prompt a helper worker got. */
   prompt?: string;
 }
@@ -653,6 +656,8 @@ describe("AgentManager feedback", () => {
     const steers = readLog().filter((e) => e.kind === "steer" && e.pid === pid);
     expect(steers).toHaveLength(1);
     expect(steers[0]?.message).toContain("Also update the README");
+    // Sent like CLI input mid-run, so omp applies magic keywords (the RPC `steer` command skips them).
+    expect(steers[0]).toMatchObject({ via: "prompt", streamingBehavior: "steer" });
 
     const run = await latestRun(task.id);
     expect(done.lastRunId).toBe(run.id);

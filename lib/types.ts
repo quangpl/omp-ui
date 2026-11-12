@@ -257,8 +257,13 @@ export type ServerEvent =
   | { type: "run.event"; event: RunEvent; boardId: string }
   /** Files of a card (`taskId`) or the board's shared files (`taskId` null) changed. */
   | { type: "files.updated"; boardId: string; taskId: string | null }
-  /** The agent queue changed: running and queued task ids, queued in start order. */
-  | { type: "queue.updated"; running: string[]; queued: string[] }
+  /**
+   * The agent queue changed: running and queued task ids, queued in start order. `drafting`:
+   * queued cards held while the card writer turns their free text into a title and brief.
+   */
+  | { type: "queue.updated"; running: string[]; queued: string[]; drafting: string[] }
+  /** Live, NOT persisted: progress line of the card writer while it writes a queued card. */
+  | { type: "task.activity"; taskId: string; boardId: string; text: string }
   /** Live, NOT persisted: subagent progress between its persisted `agent` events. */
   | { type: "run.agent"; runId: string; taskId: string; boardId: string; agent: SubagentSnapshot }
   /**
@@ -281,8 +286,8 @@ export interface ApiError {
 }
 
 /**
- * A card the card-writer agent made from free text (POST /boards/:id/tasks/draft): what the user
- * reviews and creates. `description` never contains the `orchestrate` keyword; `orchestrate` adds it.
+ * The card the card writer made from a card's free text (POST /boards/:id/tasks with `text`).
+ * `description` never contains the `orchestrate` keyword; `orchestrate` adds it.
  */
 export interface CardDraft {
   title: string;
@@ -292,12 +297,6 @@ export interface CardDraft {
   /** Open cards on the board this one must wait for ("Run after"). */
   waitFor: { id: string; title: string }[];
 }
-
-/** One NDJSON line streamed by POST /boards/:id/tasks/draft; ends with `draft` or `error`. */
-export type DraftStreamEvent =
-  | { type: "activity"; text: string }
-  | { type: "draft"; draft: CardDraft; model: string | null }
-  | { type: "error"; message: string };
 
 /** A file shared on a card or on a board (GET /tasks/:id/files, GET /boards/:id/files). */
 export interface SharedFile {
@@ -346,6 +345,8 @@ export interface QueueEntry {
   waitingFor: string[];
   /** Held until the smart-queue planner has ordered its project's queued cards. */
   planning: boolean;
+  /** Held while the card writer turns the card's free text into its title and brief. */
+  drafting: boolean;
   /** Why the smart-queue planner put the card where it is (one line); null when not planned. */
   planNote: string | null;
 }
@@ -649,6 +650,156 @@ export interface SystemStats {
     agentsRunning: number;
     agentsQueued: number;
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Maintenance: GET /stats/maintenance (analyze) and POST /stats/maintenance (clean up / free)
+
+/**
+ * What a process is to OMP UI:
+ * - server: this server or one of its ancestors (supervisor, pm2…); never ended from the UI
+ * - card-agent: a running card's omp agent (stop the card instead)
+ * - helper: a pooled omp helper (card writer, advisor…) of this server
+ * - orphan-agent: an omp agent of this DATA_DIR that this server no longer tracks (left by a crash)
+ * - agent-spawned: started by an omp process (dev servers, browsers, test runners…)
+ * - omp: another omp process (your own sessions, daemons)
+ * - user: any other process of the server's user
+ * - system: a process of another user (not killable)
+ */
+export type ProcessTag =
+  | "server"
+  | "card-agent"
+  | "helper"
+  | "orphan-agent"
+  | "agent-spawned"
+  | "omp"
+  | "user"
+  | "system";
+
+export interface ProcessInfo {
+  pid: number;
+  ppid: number;
+  user: string;
+  /** Executable name, e.g. "node", "omp", "chrome". */
+  name: string;
+  /** Full command line (truncated). */
+  command: string;
+  /** Share of one core over the sample window (can exceed 100 on several cores). */
+  cpuPercent: number;
+  rssBytes: number;
+  /** Seconds since the process started; null when unknown. */
+  elapsedSec: number | null;
+  tag: ProcessTag;
+  /** card-agent / orphan-agent: the card it runs for, when known. */
+  taskId: string | null;
+  taskTitle: string | null;
+  taskBoardId: string | null;
+  /** Owned by the server's user and not protected: POST { action: "kill" } accepts it. */
+  killable: boolean;
+}
+
+/** Storage the cleanup can free. Docker ids map to `docker <kind> prune -f`. */
+export const CLEANUP_IDS = [
+  "orphan-card-files",
+  "orphan-board-files",
+  "orphan-workspaces",
+  "shipped-workspaces",
+  "run-configs",
+  "drafts",
+  "diff-cache",
+  "rotated-logs",
+  "database",
+  "docker-images",
+  "docker-builder",
+  "docker-containers",
+  "docker-volumes",
+  "docker-networks",
+] as const;
+export type CleanupId = (typeof CLEANUP_IDS)[number];
+
+export interface CleanupItem {
+  id: CleanupId;
+  label: string;
+  description: string;
+  /** Bytes the cleanup should free (an estimate for Docker and the database); null when unknown. */
+  bytes: number | null;
+  /** Files, folders or objects it would remove. */
+  count: number;
+  /** "safe": regenerated or unused data, included in "Clean up all safe items"; "review": may remove something you still want. */
+  risk: "safe" | "review";
+  /** Nothing to do (count 0 / bytes 0) or not applicable on this setup. */
+  empty: boolean;
+}
+
+/** Space used outside OMP UI's own data; shown for context, never deleted from the UI. */
+export interface StorageUsage {
+  label: string;
+  path: string;
+  bytes: number | null;
+  note: string;
+}
+
+export type MaintenanceAction =
+  | { kind: "cleanup"; ids: CleanupId[] }
+  | { kind: "kill"; pids: number[] }
+  | { kind: "release-memory" }
+  | { kind: "stop-card"; taskId: string };
+
+export interface MaintenanceRecommendation {
+  id: string;
+  area: "cpu" | "memory" | "storage";
+  severity: "info" | "warning" | "critical";
+  title: string;
+  detail: string;
+  /** One-click fix; null when it needs a look first. */
+  action: MaintenanceAction | null;
+  actionLabel: string | null;
+}
+
+export interface MaintenanceReport {
+  generatedAt: string;
+  /** How long the analysis took. */
+  durationMs: number;
+  /** Process list could not be read (unsupported platform…); null when it worked. */
+  processError: string | null;
+  /** Top CPU and memory users plus every agent-related process. */
+  processes: ProcessInfo[];
+  cpu: { cores: number; usagePercent: number; loadAvg: [number, number, number] };
+  memory: {
+    totalBytes: number;
+    /** Memory the OS can hand out without swapping (MemAvailable on Linux). */
+    availableBytes: number;
+    swapTotalBytes: number | null;
+    swapUsedBytes: number | null;
+    server: { rssBytes: number; heapUsedBytes: number; heapTotalBytes: number; externalBytes: number };
+    /** Warm omp helper workers waiting for the next call. */
+    idleHelpers: { count: number; rssBytes: number };
+  };
+  storage: {
+    disk: SystemStats["disk"];
+    dataDir: string;
+    dataBytes: number | null;
+    cleanup: CleanupItem[];
+    /** Sum of non-empty "safe" cleanup items. */
+    safeBytes: number;
+    other: StorageUsage[];
+    dockerError: string | null;
+  };
+  recommendations: MaintenanceRecommendation[];
+}
+
+export interface MaintenanceStepResult {
+  /** A cleanup id, `kill:<pid>`, `release-memory` or `stop-card:<id>`. */
+  id: string;
+  ok: boolean;
+  message: string;
+  /** Bytes freed on disk or in memory, when measurable. */
+  freedBytes: number | null;
+}
+
+export interface MaintenanceResult {
+  results: MaintenanceStepResult[];
+  freedBytes: number;
 }
 
 export interface AiQuotaLimit {

@@ -170,7 +170,7 @@ export function LiveAgents({
             <p className="text-xs text-muted-foreground">Start a card and its agent shows up here with what it is doing.</p>
             <button
               type="button"
-              onClick={() => openNewCard({ start: true })}
+              onClick={() => openNewCard()}
               className={cn(
                 "mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-md text-sm font-medium text-primary hover:underline md:min-h-0",
                 FOCUS_RING,
@@ -178,8 +178,8 @@ export function LiveAgents({
               )}
             >
               <ZapIcon className="size-3.5" aria-hidden="true" />
-              New card &amp; start
-              <Kbd className="hidden md:inline-flex">⇧N</Kbd>
+              New card
+              <Kbd className="hidden md:inline-flex">N</Kbd>
             </button>
           </div>
         ) : (

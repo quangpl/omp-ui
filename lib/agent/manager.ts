@@ -157,6 +157,8 @@ class OmpAgentManager implements AgentManager {
   private readonly planNotes = new Map<string, string>();
   /** Failed cards waiting for their automatic retry → its timer. */
   private readonly retryTimers = new Map<string, NodeJS.Timeout>();
+  /** Queued cards held until their preparation (the card writer) settles → its abort. */
+  private readonly preparing = new Map<string, AbortController>();
 
   /** Agents allowed at once, as of the latest pump (part of the `queue.updated` dedupe key). */
   private limit = 0;
@@ -188,7 +190,8 @@ class OmpAgentManager implements AgentManager {
         title: task.title,
         state,
         waitingFor: state === "queued" ? await this.pendingBlockers(task) : [],
-        planning: state === "queued" && this.isHeld(taskId),
+        planning: state === "queued" && this.awaitsPlan(taskId),
+        drafting: state === "queued" && this.preparing.has(taskId),
         planNote: this.planNotes.get(taskId) ?? null,
       };
     };
@@ -226,6 +229,37 @@ class OmpAgentManager implements AgentManager {
   /** A person (or another card's agent) runs the card: it gets a fresh automatic-retry budget. */
   start(taskId: string): Promise<Task> {
     return this.queueRun(taskId, false);
+  }
+
+  async startPrepared(taskId: string, prepare: (signal: AbortSignal) => Promise<void>): Promise<Task> {
+    if (this.isTracked(taskId)) return this.start(taskId);
+    const controller = new AbortController();
+    this.preparing.set(taskId, controller);
+    let task: Task;
+    try {
+      task = await this.start(taskId);
+    } catch (err) {
+      this.endPreparing(taskId, controller);
+      throw err;
+    }
+    // Stopped or deleted while it was being queued.
+    if (controller.signal.aborted) return task;
+    void prepare(controller.signal)
+      .catch((err: unknown) => {
+        if (!controller.signal.aborted) console.error(`[agent] preparing task ${taskId} failed; running it as it is:`, err);
+      })
+      .finally(() => this.endPreparing(taskId, controller));
+    return task;
+  }
+
+  /** Releases the card's preparation hold (aborting `prepare` when it is still running). */
+  private endPreparing(taskId: string, controller?: AbortController): void {
+    const current = this.preparing.get(taskId);
+    if (!current || (controller && current !== controller)) return;
+    this.preparing.delete(taskId);
+    current.abort();
+    this.publishQueue();
+    void this.pump();
   }
 
   /** `auto`: an automatic retry or a restart resume, which keeps counting the card's retries. */
@@ -276,6 +310,7 @@ class OmpAgentManager implements AgentManager {
   }
 
   async stop(taskId: string): Promise<Task | null> {
+    this.endPreparing(taskId);
     this.cancelRetry(taskId);
     const wasClaiming = this.claiming.delete(taskId);
     if (this.removeFromQueue(taskId) || wasClaiming) {
@@ -373,6 +408,7 @@ class OmpAgentManager implements AgentManager {
   }
 
   async onTaskDeleted(taskId: string): Promise<void> {
+    this.endPreparing(taskId);
     this.cancelRetry(taskId);
     this.claiming.delete(taskId);
     if (this.removeFromQueue(taskId)) this.leftQueue(taskId);
@@ -543,8 +579,13 @@ class OmpAgentManager implements AgentManager {
     this.dropIdlePlan(boardId);
   }
 
-  /** The card waits for its board's pending or in-flight plan before it may launch. */
+  /** The card waits for its preparation or its board's smart-queue plan before it may launch. */
   private isHeld(taskId: string): boolean {
+    return this.preparing.has(taskId) || this.awaitsPlan(taskId);
+  }
+
+  /** The card waits for its board's pending or in-flight plan. */
+  private awaitsPlan(taskId: string): boolean {
     const boardId = this.plannable.get(taskId);
     return boardId !== undefined && this.unplanned.has(taskId) && this.plans.has(boardId);
   }
@@ -662,13 +703,14 @@ class OmpAgentManager implements AgentManager {
   private publishQueue(): void {
     const running = [...this.active.keys()];
     const queued = [...this.claiming, ...this.queue];
+    const drafting = queued.filter((id) => this.preparing.has(id));
     // Planning state is part of the key: the UI re-reads the snapshot when a plan starts or ends.
     const held = queued.filter((id) => this.isHeld(id));
     // So is the limit: an automatic one changes with the machine's free resources.
-    const key = JSON.stringify([running, queued, [...this.plans.keys()], held, this.limit]);
+    const key = JSON.stringify([running, queued, drafting, [...this.plans.keys()], held, this.limit]);
     if (key === this.lastQueue) return;
     this.lastQueue = key;
-    publish({ type: "queue.updated", running, queued });
+    publish({ type: "queue.updated", running, queued, drafting });
   }
 
   private async pump(): Promise<void> {
@@ -1238,7 +1280,19 @@ class OmpAgentManager implements AgentManager {
       if (run.feedbackIds.has(comment.id)) return;
       try {
         const sender = comment.fromTaskId ? await this.repo.getTask(comment.fromTaskId) : null;
-        await run.proc.send({ type: "steer", message: buildSteerMessage(comment, sender?.title) });
+        // Steered like typing into the omp CLI mid-run: a `prompt` with streamingBehavior "steer" runs
+        // magic-keyword detection (`orchestrate`, `ultrathink`, …), which the RPC `steer` command skips.
+        // Its own id keeps it apart from run.promptId, so its response cannot complete or fail the run;
+        // unlike the run's prompt it is answered right away, so it gets the normal command timeout.
+        await run.proc.send(
+          {
+            id: `steer-${comment.id}`,
+            type: "prompt",
+            message: buildSteerMessage(comment, sender?.title),
+            streamingBehavior: "steer",
+          },
+          { timeoutMs: run.proc.commandTimeoutMs },
+        );
       } catch (err) {
         if (run.finished) {
           const task = await this.repo.getTask(run.taskId);

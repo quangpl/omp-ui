@@ -22,7 +22,6 @@ import {
   Settings,
   Square,
   Sun,
-  Zap,
 } from "lucide-react";
 import { StatusDot } from "@/components/board/board-column";
 import { errorMessage } from "@/components/board/format";
@@ -465,14 +464,6 @@ export function CommandPalette() {
         keys: ["N"],
         icon: <Plus className="size-4" />,
         run: () => openNewCard(),
-      },
-      {
-        id: "action:new-card-start",
-        group: "Actions",
-        label: "New card, start agent now",
-        keys: ["⇧", "N"],
-        icon: <Zap className="size-4" />,
-        run: () => openNewCard({ start: true }),
       },
       {
         id: "action:theme",
