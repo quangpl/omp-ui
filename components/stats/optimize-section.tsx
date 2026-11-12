@@ -20,17 +20,20 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmDialog, type ConfirmRequest } from "@/components/containers/dialogs";
+import { RadialGauge } from "@/components/stats/charts";
 import {
   EmptyState,
-  Meter,
   Notice,
   PANEL,
   PanelHeader,
   SectionHeader,
+  TONE_TEXT,
+  type Tone,
   errorMessage,
   formatBytes,
   formatDuration,
   formatPercent,
+  toneForFraction,
 } from "@/components/stats/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -71,10 +74,22 @@ const AGENT_RANK: Partial<Record<ProcessTag, number>> = {
 };
 
 const SEVERITY = {
-  critical: { icon: OctagonAlertIcon, className: "text-destructive" },
-  warning: { icon: TriangleAlertIcon, className: "text-amber-600 dark:text-amber-400" },
-  info: { icon: InfoIcon, className: "text-primary" },
+  critical: { icon: OctagonAlertIcon, className: "text-destructive", chip: "bg-destructive/10", rule: "bg-destructive" },
+  warning: {
+    icon: TriangleAlertIcon,
+    className: "text-amber-600 dark:text-amber-400",
+    chip: "bg-amber-500/15",
+    rule: "bg-amber-500",
+  },
+  info: { icon: InfoIcon, className: "text-primary", chip: "bg-primary/10", rule: "bg-primary/60" },
 } as const;
+
+/** Small caps-like label used for vitals and column headers. */
+const MICRO = "text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground";
+
+/** Transform-only bar fill; values update in place without layout shift. */
+const BAR_FILL =
+  "h-full origin-left rounded-full transition-transform duration-700 ease-(--ease-out-smooth) motion-reduce:transition-none";
 
 type ProcessView = "cpu" | "memory" | "agents";
 
@@ -214,11 +229,12 @@ export function OptimizeSection() {
   return (
     <section
       aria-labelledby="optimize"
-      className="min-w-0 animate-card-in space-y-4"
+      className="min-w-0 scroll-mt-20 animate-card-in space-y-4"
       style={{ "--stagger": 6 } as React.CSSProperties}
     >
       <SectionHeader
         id="optimize"
+        index="03"
         icon={<WandSparklesIcon />}
         title="Optimize"
         description={
@@ -256,7 +272,7 @@ export function OptimizeSection() {
         <div className={cn("space-y-4 transition-opacity", analyzing && "opacity-60")} aria-busy={analyzing}>
           <Summary report={report} />
           <Recommendations report={report} busy={busy} onRun={runRecommendation} />
-          <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
+          <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
             <ProcessesPanel
               report={report}
               view={view}
@@ -289,79 +305,107 @@ export function OptimizeSection() {
   );
 }
 
+
 // ---------------------------------------------------------------------------------------------
 
-function SummaryTile({
+function Vital({
   icon,
   label,
   fraction,
   value,
+  available = true,
   lines,
 }: {
   icon: React.ReactNode;
   label: string;
   fraction: number;
   value: string;
-  lines: React.ReactNode[];
+  available?: boolean;
+  lines: [string, string];
 }) {
+  const tone: Tone = available ? toneForFraction(fraction) : "muted";
   return (
-    <div className={cn(PANEL, "space-y-2 px-4 py-3.5 sm:px-5")}>
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="flex items-center gap-2 text-sm font-medium [&_svg]:size-4 [&_svg]:text-muted-foreground">
+    <div className="flex min-w-0 items-center gap-4 px-4 py-4 sm:px-5">
+      <RadialGauge
+        fraction={available ? fraction : 0}
+        size={64}
+        thickness={6}
+        tone={tone}
+        label={`${label} usage`}
+        className="shrink-0"
+      >
+        <span
+          className={cn(
+            "text-[13px] leading-none font-semibold tracking-tighter tabular-nums",
+            tone === "primary" ? "text-foreground" : TONE_TEXT[tone],
+          )}
+        >
+          {value}
+        </span>
+      </RadialGauge>
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className={cn(MICRO, "flex items-center gap-1.5 [&_svg]:size-3.5 [&_svg]:shrink-0")}>
           {icon}
           {label}
-        </span>
-        <span className="text-xl font-semibold tracking-tight tabular-nums">{value}</span>
-      </div>
-      <Meter fraction={fraction} label={`${label} usage`} />
-      {lines.map((line, i) => (
-        <p key={i} className="truncate text-xs text-muted-foreground tabular-nums">
-          {line}
         </p>
-      ))}
+        <p className="truncate text-sm tabular-nums" title={lines[0]}>
+          {lines[0]}
+        </p>
+        <p className="truncate text-xs text-muted-foreground tabular-nums" title={lines[1]}>
+          {lines[1]}
+        </p>
+      </div>
     </div>
   );
 }
+
+/** One panel split into three vitals: stacked when narrow, side by side once the panel is wide. */
+const VITALS_GRID = "grid divide-y @3xl:grid-cols-3 @3xl:divide-x @3xl:divide-y-0";
 
 function Summary({ report }: { report: MaintenanceReport }) {
   const { cpu, memory, storage, processes } = report;
   const topCpu = [...processes].sort((a, b) => b.cpuPercent - a.cpuPercent)[0];
   const memUsed = memory.totalBytes > 0 ? 1 - memory.availableBytes / memory.totalBytes : 0;
   const disk = storage.disk;
+  const diskKnown = !!disk && disk.totalBytes > 0;
+  const diskUsed = diskKnown ? disk.usedBytes / disk.totalBytes : 0;
   return (
-    <div className="grid gap-4 sm:grid-cols-3">
-      <SummaryTile
-        icon={<CpuIcon />}
-        label="CPU"
-        fraction={cpu.usagePercent / 100}
-        value={formatPercent(cpu.usagePercent / 100)}
-        lines={[
-          `${cpu.cores} cores · load ${cpu.loadAvg.map((n) => n.toFixed(2)).join(" ")}`,
-          topCpu ? `Busiest: ${topCpu.name} ${topCpu.cpuPercent.toFixed(0)}%` : "No process data",
-        ]}
-      />
-      <SummaryTile
-        icon={<MemoryStickIcon />}
-        label="Memory"
-        fraction={memUsed}
-        value={formatPercent(memUsed)}
-        lines={[
-          `${formatBytes(memory.availableBytes)} available of ${formatBytes(memory.totalBytes)}`,
-          memory.swapTotalBytes
-            ? `Swap ${formatBytes(memory.swapUsedBytes ?? 0)} / ${formatBytes(memory.swapTotalBytes)}`
-            : "No swap",
-        ]}
-      />
-      <SummaryTile
-        icon={<HardDriveIcon />}
-        label="Disk"
-        fraction={disk && disk.totalBytes > 0 ? disk.usedBytes / disk.totalBytes : 0}
-        value={disk && disk.totalBytes > 0 ? formatPercent(disk.usedBytes / disk.totalBytes) : "—"}
-        lines={[
-          disk ? `${formatBytes(disk.freeBytes)} free of ${formatBytes(disk.totalBytes)}` : "Not available",
-          storage.safeBytes > 0 ? `${formatBytes(storage.safeBytes)} can be freed safely` : "Nothing safe to free",
-        ]}
-      />
+    <div className={cn(PANEL, "@container")}>
+      <div className={VITALS_GRID}>
+        <Vital
+          icon={<CpuIcon />}
+          label="CPU"
+          fraction={cpu.usagePercent / 100}
+          value={formatPercent(cpu.usagePercent / 100)}
+          lines={[
+            `${cpu.cores} cores · load ${cpu.loadAvg.map((n) => n.toFixed(2)).join(" ")}`,
+            topCpu ? `Busiest: ${topCpu.name} ${topCpu.cpuPercent.toFixed(0)}%` : "No process data",
+          ]}
+        />
+        <Vital
+          icon={<MemoryStickIcon />}
+          label="Memory"
+          fraction={memUsed}
+          value={formatPercent(memUsed)}
+          lines={[
+            `${formatBytes(memory.availableBytes)} available of ${formatBytes(memory.totalBytes)}`,
+            memory.swapTotalBytes
+              ? `Swap ${formatBytes(memory.swapUsedBytes ?? 0)} / ${formatBytes(memory.swapTotalBytes)}`
+              : "No swap",
+          ]}
+        />
+        <Vital
+          icon={<HardDriveIcon />}
+          label="Disk"
+          fraction={diskUsed}
+          available={diskKnown}
+          value={diskKnown ? formatPercent(diskUsed) : "—"}
+          lines={[
+            disk ? `${formatBytes(disk.freeBytes)} free of ${formatBytes(disk.totalBytes)}` : "Not available",
+            storage.safeBytes > 0 ? `${formatBytes(storage.safeBytes)} can be freed safely` : "Nothing safe to free",
+          ]}
+        />
+      </div>
     </div>
   );
 }
@@ -377,9 +421,12 @@ function Recommendations({
 }) {
   if (report.recommendations.length === 0) {
     return (
-      <div className={cn(PANEL, "flex items-center gap-3 px-4 py-3 text-sm sm:px-5")}>
-        <CircleCheckIcon className="size-4 shrink-0 text-success" />
-        <span>
+      <div className={cn(PANEL, "relative flex items-center gap-3 px-4 py-3.5 text-sm sm:px-5")}>
+        <span aria-hidden className="absolute inset-y-3 left-0 w-[3px] rounded-r-full bg-success" />
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-success/10 text-success">
+          <CircleCheckIcon className="size-4" />
+        </span>
+        <span className="min-w-0 text-pretty">
           <span className="font-medium">Looking good.</span>{" "}
           <span className="text-muted-foreground">No leftovers or pressure on CPU, memory or disk.</span>
         </span>
@@ -389,12 +436,18 @@ function Recommendations({
   return (
     <ul className={cn(PANEL, "divide-y")} aria-label="Recommendations">
       {report.recommendations.map((rec) => {
-        const { icon: Icon, className } = SEVERITY[rec.severity];
+        const { icon: Icon, className, chip, rule } = SEVERITY[rec.severity];
         return (
-          <li key={rec.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 sm:px-5">
-            <Icon className={cn("size-4 shrink-0", className)} />
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium">{rec.title}</p>
+          <li
+            key={rec.id}
+            className="relative grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-2.5 px-4 py-3.5 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center sm:px-5"
+          >
+            <span aria-hidden className={cn("absolute inset-y-3 left-0 w-[3px] rounded-r-full", rule)} />
+            <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg", chip, className)}>
+              <Icon className="size-4" />
+            </span>
+            <div className="min-w-0 space-y-0.5">
+              <p className="text-sm font-medium text-balance">{rec.title}</p>
               <p className="text-xs text-pretty text-muted-foreground">{rec.detail}</p>
             </div>
             {rec.action && rec.actionLabel && (
@@ -403,7 +456,7 @@ function Recommendations({
                 variant={rec.severity === "info" ? "outline" : "default"}
                 disabled={busy !== null}
                 onClick={() => onRun(rec)}
-                className="h-11 gap-1.5 md:h-8"
+                className="col-start-2 h-11 gap-1.5 justify-self-start active:scale-[0.98] sm:col-start-3 sm:justify-self-end md:h-8"
               >
                 {busy === rec.id && <Loader2Icon className="animate-spin" />}
                 {rec.actionLabel}
@@ -415,6 +468,13 @@ function Recommendations({
     </ul>
   );
 }
+
+/** Column widths shared by the process header and rows so they line up. */
+const PROC_METRIC = "w-16 shrink-0 text-right sm:w-20";
+const PROC_UPTIME = "w-14 shrink-0 text-right max-sm:hidden";
+const PROC_ACTION = "flex w-11 shrink-0 justify-end sm:w-20";
+/** Row action: icon-only (44 px touch target) on phones, icon + label from `sm` up. */
+const PROC_BUTTON = "h-11 gap-1.5 px-2 active:scale-[0.98] max-sm:w-11 md:h-8";
 
 function ProcessesPanel({
   report,
@@ -445,18 +505,20 @@ function ProcessesPanel({
           .slice(0, TOP_ROWS);
 
   return (
-    <div className={PANEL}>
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b px-4 py-3 sm:px-5">
+    <div className={cn(PANEL, "min-w-0")}>
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b px-4 py-3 sm:px-5">
         <h3 className="text-sm font-medium">Processes</h3>
-        <Tabs value={view} onValueChange={(v) => onView(v as ProcessView)}>
-          <TabsList>
-            <TabsTrigger value="cpu" className="px-2.5">
-              Top CPU
+        <Tabs value={view} onValueChange={(v) => onView(v as ProcessView)} className="max-sm:w-full">
+          <TabsList className="max-sm:w-full">
+            <TabsTrigger value="cpu" className="min-w-0 px-2.5">
+              <span className="sm:hidden">CPU</span>
+              <span className="max-sm:hidden">Top CPU</span>
             </TabsTrigger>
-            <TabsTrigger value="memory" className="px-2.5">
-              Top memory
+            <TabsTrigger value="memory" className="min-w-0 px-2.5">
+              <span className="sm:hidden">Memory</span>
+              <span className="max-sm:hidden">Top memory</span>
             </TabsTrigger>
-            <TabsTrigger value="agents" className="px-2.5">
+            <TabsTrigger value="agents" className="min-w-0 px-2.5">
               Agents
               <span className="text-xs text-muted-foreground tabular-nums">{agents.length}</span>
             </TabsTrigger>
@@ -469,26 +531,34 @@ function ProcessesPanel({
           <Notice title="Process list unavailable">{report.processError}</Notice>
         </div>
       ) : rows.length === 0 ? (
-        <p className="px-4 py-6 text-center text-sm text-muted-foreground sm:px-5">
+        <p className="px-4 py-8 text-center text-sm text-muted-foreground sm:px-5">
           {view === "agents" ? "No agent processes are running." : "No processes found."}
         </p>
       ) : (
-        <ul className="divide-y">
-          {rows.map((p) => (
-            <ProcessRow
-              key={p.pid}
-              process={p}
-              highlight={view === "cpu" ? "cpu" : "memory"}
-              busy={busy}
-              onKill={() => onKill(p)}
-              onStopCard={() => onStopCard(p)}
-            />
-          ))}
-        </ul>
+        <>
+          <div aria-hidden className={cn(MICRO, "flex min-w-0 items-center gap-3 border-b px-4 py-2 sm:px-5")}>
+            <span className="min-w-0 flex-1">Process</span>
+            <span className={PROC_METRIC}>{view === "cpu" ? "CPU" : "Memory"}</span>
+            <span className={PROC_UPTIME}>Uptime</span>
+            <span className={PROC_ACTION} />
+          </div>
+          <ul className="divide-y">
+            {rows.map((p) => (
+              <ProcessRow
+                key={p.pid}
+                process={p}
+                highlight={view === "cpu" ? "cpu" : "memory"}
+                busy={busy}
+                onKill={() => onKill(p)}
+                onStopCard={() => onStopCard(p)}
+              />
+            ))}
+          </ul>
+        </>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t bg-muted/30 px-4 py-3 sm:px-5">
-        <p className="min-w-0 text-xs text-muted-foreground tabular-nums">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-b-2xl border-t bg-muted/30 px-4 py-3 sm:px-5">
+        <p className="min-w-0 text-xs text-pretty text-muted-foreground tabular-nums">
           AgentMan server {formatBytes(memory.server.rssBytes)} (heap {formatBytes(memory.server.heapUsedBytes)}) ·{" "}
           {memory.idleHelpers.count} idle helper agent{memory.idleHelpers.count === 1 ? "" : "s"}
           {memory.idleHelpers.count > 0 && ` (${formatBytes(memory.idleHelpers.rssBytes)})`}
@@ -498,7 +568,7 @@ function ProcessesPanel({
           variant="outline"
           disabled={busy !== null}
           onClick={onReleaseMemory}
-          className="h-11 gap-1.5 md:h-8"
+          className="h-11 gap-1.5 active:scale-[0.98] max-sm:w-full md:h-8"
         >
           {busy === "release-memory" ? <Loader2Icon className="animate-spin" /> : <MemoryStickIcon />}
           Free server memory
@@ -524,17 +594,21 @@ function ProcessRow({
   const tag = TAGS[p.tag];
   const killing = busy?.startsWith("kill:") && busy.slice(5).split(",").includes(String(p.pid));
   return (
-    <li className="flex items-center gap-3 px-4 py-2.5 sm:px-5">
+    <li className="flex min-w-0 items-center gap-3 px-4 py-2.5 transition-colors hover:bg-muted/40 sm:px-5">
       <div className="min-w-0 flex-1 space-y-0.5">
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-sm font-medium">{p.name}</span>
-          <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{p.pid}</span>
-          {tag && <Badge className={cn("shrink-0", tag.className)}>{tag.label}</Badge>}
+          <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">{p.pid}</span>
+          {tag && <Badge className={cn("shrink-0 max-sm:hidden", tag.className)}>{tag.label}</Badge>}
         </div>
+        {tag && <Badge className={cn("sm:hidden", tag.className)}>{tag.label}</Badge>}
         <p className="truncate font-mono text-[11px] text-muted-foreground" title={p.command}>
           {p.taskId && p.taskTitle && p.taskBoardId ? (
             <>
-              <Link href={`/b/${encodeURIComponent(p.taskBoardId)}?task=${encodeURIComponent(p.taskId)}`} className="font-sans text-foreground underline-offset-4 hover:underline">
+              <Link
+                href={`/b/${encodeURIComponent(p.taskBoardId)}?task=${encodeURIComponent(p.taskId)}`}
+                className="font-sans text-foreground underline-offset-4 hover:underline"
+              >
                 {p.taskTitle}
               </Link>
               {" · "}
@@ -543,25 +617,29 @@ function ProcessRow({
           {p.command}
         </p>
       </div>
-      <div className="hidden shrink-0 text-right text-xs text-muted-foreground tabular-nums sm:block">
-        <p className={cn(highlight === "cpu" && "font-medium text-foreground")}>{p.cpuPercent.toFixed(1)}% CPU</p>
-        <p className={cn(highlight === "memory" && "font-medium text-foreground")}>{formatBytes(p.rssBytes)}</p>
+      <div className={cn(PROC_METRIC, "text-xs text-muted-foreground tabular-nums")}>
+        <p className={cn(highlight === "cpu" ? "font-medium text-foreground" : "max-sm:hidden")}>
+          {p.cpuPercent.toFixed(1)}%<span className="max-sm:hidden"> CPU</span>
+        </p>
+        <p className={cn(highlight === "memory" ? "font-medium text-foreground" : "max-sm:hidden")}>
+          {formatBytes(p.rssBytes)}
+        </p>
       </div>
-      <div className="w-14 shrink-0 text-right text-xs text-muted-foreground tabular-nums max-sm:hidden">
+      <div className={cn(PROC_UPTIME, "text-xs text-muted-foreground tabular-nums")}>
         {p.elapsedSec !== null ? formatDuration(p.elapsedSec) : "—"}
       </div>
-      <div className="flex w-20 shrink-0 justify-end">
+      <div className={PROC_ACTION}>
         {p.tag === "card-agent" && p.taskId ? (
           <Button
             size="sm"
             variant="ghost"
             disabled={busy !== null}
             onClick={onStopCard}
-            className="h-11 gap-1.5 px-2 md:h-8"
+            className={PROC_BUTTON}
             aria-label={`Stop the card ${p.taskTitle ?? ""}`}
           >
             <SquareIcon />
-            Stop
+            <span className="max-sm:hidden">Stop</span>
           </Button>
         ) : p.killable ? (
           <Button
@@ -569,11 +647,11 @@ function ProcessRow({
             variant="ghost"
             disabled={busy !== null}
             onClick={onKill}
-            className="h-11 gap-1.5 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive md:h-8"
+            className={cn(PROC_BUTTON, "text-destructive hover:bg-destructive/10 hover:text-destructive")}
             aria-label={`End ${p.name} (${p.pid})`}
           >
             {killing ? <Loader2Icon className="animate-spin" /> : <XIcon />}
-            End
+            <span className="max-sm:hidden">End</span>
           </Button>
         ) : null}
       </div>
@@ -599,11 +677,12 @@ function StoragePanel({
   const picked = storage.cleanup.filter((c) => selected.has(c.id));
   const pending = storage.cleanup.filter((c) => !c.empty);
   const clean = storage.cleanup.filter((c) => c.empty);
+  const largestPending = Math.max(1, ...pending.map((c) => c.bytes ?? 0));
   const largest = Math.max(1, ...storage.other.map((o) => o.bytes ?? 0));
 
   return (
-    <div className="space-y-4">
-      <div className={PANEL}>
+    <div className="min-w-0 space-y-4">
+      <div className={cn(PANEL, "min-w-0")}>
         <PanelHeader
           title="Storage cleanup"
           note={storage.dataBytes !== null ? `AgentMan data ${formatBytes(storage.dataBytes)}` : undefined}
@@ -611,7 +690,7 @@ function StoragePanel({
         <ul className="divide-y">
           {pending.map((item) => (
             <li key={item.id}>
-              <label className="flex cursor-pointer items-start gap-3 px-4 py-2.5 hover:bg-muted/40 sm:px-5">
+              <label className="flex min-w-0 cursor-pointer items-start gap-3 px-4 py-3 transition-colors hover:bg-muted/40 has-[:checked]:bg-primary/[0.04] sm:px-5">
                 <input
                   type="checkbox"
                   className="mt-0.5 size-4 shrink-0 accent-primary"
@@ -620,15 +699,21 @@ function StoragePanel({
                   onChange={() => onToggle(item.id)}
                 />
                 <span className="min-w-0 flex-1 space-y-0.5">
-                  <span className="flex items-center gap-2">
+                  <span className="flex min-w-0 items-center gap-2">
                     <span className="truncate text-sm font-medium">{item.label}</span>
                     {item.risk === "review" && (
                       <Badge className="shrink-0 bg-amber-500/15 text-amber-700 dark:text-amber-400">Review</Badge>
                     )}
                   </span>
                   <span className="block text-xs text-pretty text-muted-foreground">{item.description}</span>
+                  <span aria-hidden className="mt-1.5 block h-1 w-full overflow-hidden rounded-full bg-muted">
+                    <span
+                      className={cn(BAR_FILL, "block", item.risk === "review" ? "bg-amber-500/70" : "bg-primary/70")}
+                      style={{ transform: `scaleX(${(item.bytes ?? 0) / largestPending})` }}
+                    />
+                  </span>
                 </span>
-                <span className="shrink-0 text-right text-xs tabular-nums">
+                <span className="w-16 shrink-0 text-right text-xs tabular-nums">
                   <span className="block font-medium">{item.bytes ? formatBytes(item.bytes) : "—"}</span>
                   <span className="block text-muted-foreground">
                     {item.count} item{item.count === 1 ? "" : "s"}
@@ -638,7 +723,7 @@ function StoragePanel({
             </li>
           ))}
           {clean.length > 0 && (
-            <li className="flex items-start gap-3 px-4 py-2.5 text-xs text-muted-foreground sm:px-5">
+            <li className="flex items-start gap-3 px-4 py-3 text-xs text-muted-foreground sm:px-5">
               <CircleCheckIcon className="mt-px size-4 shrink-0 text-success" />
               <span className="min-w-0 text-pretty">
                 <span className="font-medium text-foreground">Nothing to clean:</span>{" "}
@@ -648,17 +733,17 @@ function StoragePanel({
           )}
         </ul>
         {storage.dockerError && (
-          <p className="border-t px-4 py-2.5 text-xs text-muted-foreground sm:px-5">
+          <p className="border-t px-4 py-2.5 text-xs text-pretty text-muted-foreground sm:px-5">
             Docker cleanup unavailable: {storage.dockerError}
           </p>
         )}
-        <div className="flex flex-wrap items-center justify-end gap-2 border-t bg-muted/30 px-4 py-3 sm:px-5">
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 rounded-b-2xl border-t bg-muted/30 px-4 py-3 sm:px-5">
           <Button
             size="sm"
             variant="outline"
             disabled={picked.length === 0 || busy !== null}
             onClick={() => onClean("selected", picked)}
-            className="h-11 gap-1.5 md:h-8"
+            className="h-11 gap-1.5 tabular-nums active:scale-[0.98] max-sm:flex-1 md:h-8"
           >
             {busy === "selected" && <Loader2Icon className="animate-spin" />}
             Clean selected{picked.length > 0 && ` (${picked.length})`}
@@ -667,7 +752,7 @@ function StoragePanel({
             size="sm"
             disabled={safe.length === 0 || busy !== null}
             onClick={() => onClean("safe", safe)}
-            className="h-11 gap-1.5 md:h-8"
+            className="h-11 gap-1.5 tabular-nums active:scale-[0.98] max-sm:flex-1 md:h-8"
           >
             {busy === "safe" ? <Loader2Icon className="animate-spin" /> : <WandSparklesIcon />}
             Clean up safe items{storage.safeBytes > 0 && ` · ${formatBytes(storage.safeBytes)}`}
@@ -676,20 +761,22 @@ function StoragePanel({
       </div>
 
       {storage.other.length > 0 && (
-        <div className={PANEL}>
+        <div className={cn(PANEL, "min-w-0")}>
           <PanelHeader title="Other large folders" note="For reference; not cleaned here" />
           <ul className="divide-y">
             {storage.other.map((o) => (
-              <li key={o.path} className="space-y-1.5 px-4 py-2.5 sm:px-5">
-                <div className="flex items-baseline justify-between gap-3">
-                  <span className="truncate text-sm font-medium" title={o.path}>
+              <li key={o.path} className="space-y-1.5 px-4 py-3 transition-colors hover:bg-muted/40 sm:px-5">
+                <div className="flex min-w-0 items-baseline justify-between gap-3">
+                  <span className="min-w-0 truncate text-sm font-medium" title={o.path}>
                     {o.label}
                   </span>
-                  <span className="shrink-0 text-xs tabular-nums">{o.bytes !== null ? formatBytes(o.bytes) : "—"}</span>
+                  <span className="shrink-0 text-xs font-medium tabular-nums">
+                    {o.bytes !== null ? formatBytes(o.bytes) : "—"}
+                  </span>
                 </div>
-                <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
+                <div aria-hidden className="h-1 w-full overflow-hidden rounded-full bg-muted">
                   <div
-                    className="h-full origin-left rounded-full bg-muted-foreground/40"
+                    className={cn(BAR_FILL, "bg-muted-foreground/40")}
                     style={{ transform: `scaleX(${(o.bytes ?? 0) / largest})` }}
                   />
                 </div>
@@ -708,25 +795,41 @@ function StoragePanel({
 function OptimizeSkeleton() {
   return (
     <div className="space-y-4" aria-busy="true">
-      <div className="grid gap-4 sm:grid-cols-3">
-        {[0, 1, 2].map((i) => (
-          <div key={i} className={cn(PANEL, "space-y-2.5 px-4 py-3.5 sm:px-5")}>
-            <div className="flex justify-between gap-4">
-              <Skeleton className="h-4 w-20" />
-              <Skeleton className="h-5 w-12" />
+      <div className={cn(PANEL, "@container")}>
+        <div className={VITALS_GRID}>
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="flex items-center gap-4 px-4 py-4 sm:px-5">
+              <Skeleton className="size-16 shrink-0 rounded-full" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <Skeleton className="h-3 w-14" />
+                <Skeleton className="h-4 w-40 max-w-full" />
+                <Skeleton className="h-3 w-28" />
+              </div>
             </div>
-            <Skeleton className="h-2 w-full rounded-full" />
-            <Skeleton className="h-3 w-32" />
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
+      <div className={cn(PANEL, "flex items-center gap-3 px-4 py-3.5 sm:px-5")}>
+        <Skeleton className="size-8 shrink-0 rounded-lg" />
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <Skeleton className="h-4 w-48 max-w-full" />
+          <Skeleton className="h-3 w-64 max-w-full" />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
         {[0, 1].map((i) => (
           <div key={i} className={cn(PANEL, "divide-y")}>
+            <div className="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
+              <Skeleton className="h-4 w-24" />
+              <Skeleton className="h-8 w-40" />
+            </div>
             {[0, 1, 2, 3, 4].map((j) => (
               <div key={j} className="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
-                <Skeleton className="h-4 w-36" />
-                <Skeleton className="h-4 w-16" />
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <Skeleton className="h-4 w-36 max-w-full" />
+                  <Skeleton className="h-3 w-52 max-w-full" />
+                </div>
+                <Skeleton className="h-4 w-14 shrink-0" />
               </div>
             ))}
           </div>

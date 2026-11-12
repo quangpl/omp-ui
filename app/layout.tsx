@@ -1,12 +1,13 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import { Geist } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 import { cookies } from "next/headers";
 import { AppShell } from "@/components/app-shell";
 import { Providers } from "@/components/providers";
 import { cn } from "@/lib/utils";
 
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
+const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
 
 export const metadata: Metadata = {
   title: { default: "AgentMan", template: "%s · AgentMan" },
@@ -31,7 +32,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   // Persisted by the sidebar itself (components/ui/sidebar.tsx); expanded unless collapsed before.
   const sidebarOpen = (await cookies()).get("sidebar_state")?.value !== "false";
   return (
-    <html lang="en" className={cn("font-sans", geist.variable)} suppressHydrationWarning>
+    <html lang="en" className={cn("font-sans", geist.variable, geistMono.variable)} suppressHydrationWarning>
       <body>
         <Providers>
           <AppShell defaultOpen={sidebarOpen}>{children}</AppShell>
