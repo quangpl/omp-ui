@@ -40,6 +40,21 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
     if (typeof body.autoModel !== "boolean") throw new HttpError(400, "autoModel must be a boolean");
     patch.autoModel = body.autoModel;
   }
+  if (body.smartQueue !== undefined) {
+    if (typeof body.smartQueue !== "boolean") throw new HttpError(400, "smartQueue must be a boolean");
+    patch.smartQueue = body.smartQueue;
+  }
+  if (body.autoRetry !== undefined) {
+    if (typeof body.autoRetry !== "boolean") throw new HttpError(400, "autoRetry must be a boolean");
+    patch.autoRetry = body.autoRetry;
+  }
+  if (body.maxAutoRetries !== undefined) {
+    const n = body.maxAutoRetries;
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 0 || n > 20) {
+      throw new HttpError(400, "maxAutoRetries must be an integer between 0 and 20");
+    }
+    patch.maxAutoRetries = n;
+  }
   if (body.browser !== undefined) {
     const mode = body.browser;
     if (typeof mode !== "string" || !(BROWSER_MODES as readonly string[]).includes(mode)) {

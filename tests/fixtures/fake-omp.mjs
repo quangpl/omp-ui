@@ -23,10 +23,16 @@
 //   FAKE_OMP_PROTOCOLS    Comma-separated supportedProtocolVersions advertised in ready (default "1,2").
 //   FAKE_OMP_MODEL_ROLES  JSON object `omp config get modelRoles --json` reports (default {});
 //                         "fail" makes that command exit 1. Logged as a "config" entry, not "argv".
+//   FAKE_OMP_PLAN         Reply text of the queue planner (print mode, prompt starting with "You are the
+//                         queue planner"); default {"order":[],"cards":[]}; "fail" exits 1 without an answer.
+//   FAKE_OMP_SKILLS       JSON array of {name, description} that `omp skill list --json` reports as
+//                         {"skills": [...]} (default []). Logged as a "skill" entry, not "argv".
+//   FAKE_OMP_DRAFT        Reply text of the card writer (an RPC prompt starting with "You are the card
+//                         writer"; see cardWriter), used verbatim instead of the card it writes.
 //
 // Test-only commands (answered like real commands): fake_echo {value, delayMs}, fake_crash,
 // fake_chunked {size}, fake_bad_chunk.
-import { appendFileSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -53,6 +59,13 @@ if (argv[0] === "config") {
   process.exit(0);
 }
 
+if (argv[0] === "skill") {
+  log("skill", { argv });
+  const skills = JSON.parse(process.env.FAKE_OMP_SKILLS || "[]");
+  process.stdout.write(`${JSON.stringify({ skills }, null, 2)}\n`, () => process.exit(0));
+  await new Promise(() => undefined);
+}
+
 // Print mode (`-p --mode json`, the advisor): reads the prompt from stdin, logs it as a "print"
 // entry (not "argv"), and answers with one assistant message chosen by a `[fake-advisor:<mode>]`
 // marker in the prompt (the card's text is part of it):
@@ -61,10 +74,21 @@ if (argv[0] === "config") {
 //   answer       triage: answers the question and sends the agent back to work (followUp); the
 //                followUp carries "[fake:question] [fake-advisor:answer]", so the next run asks again.
 //   fail         exits 1 without an answer.
+// A queue planner prompt ("You are the queue planner…") is answered with FAKE_OMP_PLAN instead.
 if (argv.includes("-p")) {
   let prompt = "";
   for await (const chunk of process.stdin) prompt += chunk;
   log("print", { argv, cwd: process.cwd(), prompt });
+  const answer = (text) => {
+    const message = { role: "assistant", content: [{ type: "text", text }], stopReason: "stop", timestamp: Date.now() };
+    process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`, () => process.exit(0));
+  };
+  if (prompt.startsWith("You are the queue planner")) {
+    const plan = process.env.FAKE_OMP_PLAN || '{"order":[],"cards":[]}';
+    if (plan === "fail") process.stderr.write("fake omp: planner exploded\n", () => process.exit(1));
+    else answer(plan);
+    await new Promise(() => undefined);
+  }
   const mode = /\[fake-advisor:([a-z_]+)\]/.exec(prompt)?.[1] ?? "";
   if (mode === "fail") {
     process.stderr.write("fake omp: advisor exploded\n", () => process.exit(1));
@@ -86,9 +110,7 @@ if (argv.includes("-p")) {
   } else {
     reply = { answers: [], userQuestion: questions, followUp: null };
   }
-  const text = JSON.stringify(reply);
-  const message = { role: "assistant", content: [{ type: "text", text }], stopReason: "stop", timestamp: Date.now() };
-  process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`, () => process.exit(0));
+  answer(JSON.stringify(reply));
   await new Promise(() => undefined);
 }
 
@@ -393,12 +415,71 @@ async function boardTools(message) {
   completeSuccessfully(`Tool results: ${JSON.stringify(results)}`);
 }
 
+/**
+ * The card writer (a prompt starting with "You are the card writer…"): takes the request between
+ * the <request> and </request> lines, or reads the file the prompt says it "is saved in", reports
+ * one tool call, then answers with FAKE_OMP_DRAFT or a card: the request's first line (without
+ * markdown markers and [fake-draft:…] markers) as the title, "## Goal" plus the request as the
+ * description, `parallel` when the request says "parallel", and every open-card id the request
+ * mentions as waitFor. A `[fake-draft:<mode>]` marker in the request changes that:
+ *   fail         exits 1 without an answer.
+ *   slow         reports the tool call, then never answers (until killed).
+ *   lookaround   keeps reporting tool calls (up to 100) until steered, then answers.
+ *   prose        wraps the card in prose and a ```json fence.
+ *   notitle      answers with an empty title.
+ */
+async function cardWriter(prompt) {
+  const savedIn = /is saved in (\S+?)\.(?=\s|$)/.exec(prompt)?.[1];
+  const request = savedIn
+    ? readFileSync(savedIn, "utf8")
+    : (/^<request>\n([\s\S]*?)\n<\/request>$/m.exec(prompt)?.[1] ?? "");
+  const modes = [...request.matchAll(/\[fake-draft:([a-z]+)\]/g)].map((m) => m[1]);
+  if (modes.includes("fail")) {
+    process.stderr.write("fake omp: card writer exploded\n", () => process.exit(1));
+    return;
+  }
+  const lookup = (n) =>
+    emit({ type: "tool_execution_start", toolCallId: `t${n}`, toolName: "grep", args: { pattern: "card" }, intent: n === 1 ? "Finding the files involved" : `Lookup ${n}` });
+  lookup(1);
+  if (modes.includes("slow")) return;
+  if (modes.includes("lookaround")) {
+    const current = run;
+    const { promise, resolve } = Promise.withResolvers();
+    current.onSteer = resolve;
+    for (let n = 2; n <= 100 && run === current && !current.steers.length; n++) {
+      lookup(n);
+      await Promise.race([promise, new Promise((r) => setTimeout(r, 10))]);
+    }
+    if (run !== current) return;
+  }
+  const firstLine = request.split("\n").find((line) => line.trim()) ?? "";
+  const title = firstLine
+    .replace(/\[fake-draft:[a-z]+\]/g, "")
+    .trim()
+    .replace(/^(?:#+|[-*>]|\d+\.)\s*/, "")
+    .trim();
+  const uuid = /^- ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) — /gm;
+  const json = JSON.stringify({
+    title: modes.includes("notitle") ? "" : title,
+    description: `## Goal\n\n${request.trim()}`,
+    parallel: /\bparallel\b/i.test(request),
+    waitFor: [...prompt.matchAll(uuid)].map((m) => m[1]).filter((id) => request.includes(id)),
+  });
+  const text = process.env.FAKE_OMP_DRAFT || (modes.includes("prose") ? `Here is the card:\n\`\`\`json\n${json}\n\`\`\`\nDone.` : json);
+  finishRun(assistant(text, "stop"));
+}
+
 async function startPrompt(command) {
-  const scenario = scenarioOf(command.message);
+  const cardWriterPrompt = String(command.message ?? "").startsWith("You are the card writer");
+  const scenario = cardWriterPrompt ? "card_writer" : scenarioOf(command.message);
   run = { scenario, steers: [] };
   respond(command, { agentInvoked: true });
   emit({ type: "agent_start" });
   emit({ type: "turn_start" });
+  if (cardWriterPrompt) {
+    await cardWriter(command.message);
+    return;
+  }
 
   switch (scenario) {
     case "success":
@@ -526,6 +607,7 @@ async function handle(command) {
       log("steer", { message: command.message });
       if (run) {
         run.steers.push(command.message);
+        run.onSteer?.();
         if (run.scenario === "slow") {
           const current = run;
           setImmediate(() => {

@@ -18,6 +18,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useBoard, useGitStatus } from "@/hooks/use-board";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { isTypingTarget } from "@/lib/hotkeys";
 import { TASK_STATUSES, type Board, type Task, type TaskStatus } from "@/lib/types";
@@ -45,6 +46,7 @@ function BoardScreen() {
 
   const controller = useBoard(boardId);
   const { board, columns, tasks, loading, error, subscribe } = controller;
+  useDocumentTitle(board?.name);
   const git = useGitStatus(boardId, subscribe);
   /** Open "New card" form; `start` presets "Start agent now" (else the board's auto-run). */
   const [newCard, setNewCard] = useState<{ start?: boolean } | null>(null);

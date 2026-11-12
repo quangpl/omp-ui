@@ -4,6 +4,7 @@ import { ThemeProvider } from "next-themes";
 import { CommandPalette } from "@/components/command-palette";
 import { KeyboardHelpDialog } from "@/components/keyboard-help";
 import { NewCardProvider } from "@/components/new-card";
+import { RestartServerDialog } from "@/components/restart-server";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -15,6 +16,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
           {children}
           <CommandPalette />
           <KeyboardHelpDialog />
+          <RestartServerDialog />
         </NewCardProvider>
         <Toaster
           position="top-center"

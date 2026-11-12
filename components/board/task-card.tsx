@@ -11,6 +11,7 @@ import {
   LoaderCircle,
   MessageSquare,
   MessageSquareDot,
+  RotateCw,
   TriangleAlert,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -27,10 +28,13 @@ import type { AgentState, Task } from "@/lib/types";
 export function AgentStateBadge({
   state,
   queuePosition = -1,
+  retryAt = null,
   className,
 }: {
   state: AgentState;
   queuePosition?: number;
+  /** Failed card with an automatic retry scheduled (Task.retryAt). */
+  retryAt?: string | null;
   className?: string;
 }) {
   if (state === "queued") {
@@ -51,6 +55,17 @@ export function AgentStateBadge({
       >
         <LoaderCircle className="animate-spin" />
         Working
+      </Badge>
+    );
+  }
+  if (state === "error" && retryAt) {
+    return (
+      <Badge
+        className={cn("gap-1 bg-amber-500/10 text-amber-700 dark:bg-amber-400/15 dark:text-amber-300", className)}
+        title={`Failed — retrying automatically at ${new Date(retryAt).toLocaleTimeString()}`}
+      >
+        <RotateCw />
+        Retrying
       </Badge>
     );
   }
@@ -184,7 +199,7 @@ export const TaskCard = memo(function TaskCard({
         )}
         {hasMeta && (
           <span className="mt-2.5 flex flex-wrap items-center gap-1.5">
-            <AgentStateBadge state={task.agentState} queuePosition={queuePosition} />
+            <AgentStateBadge state={task.agentState} queuePosition={queuePosition} retryAt={task.retryAt} />
             {waitingFor.length > 0 && (
               <Tooltip>
                 <TooltipTrigger asChild>

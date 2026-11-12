@@ -54,6 +54,8 @@ export type UpdateTaskInput = Partial<
     | "lastRunId"
     | "blockedBy"
     | "pushedAt"
+    | "autoRetries"
+    | "retryAt"
   >
 >;
 

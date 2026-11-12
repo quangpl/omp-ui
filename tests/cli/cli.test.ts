@@ -596,6 +596,25 @@ describe("server lifecycle: start / status / logs / passwd / restart / stop", ()
     if (process.platform === "linux") expect(serverPids(project.root)).toEqual([pid]);
   });
 
+  it.runIf(process.platform === "linux")(
+    "the supervisor restarts a server that crashed",
+    async () => {
+      const [server] = serverPids(project.root, { children: true });
+      expect(server).toBeGreaterThan(0);
+      process.kill(server!, "SIGKILL");
+      await waitUntil(() => !isAlive(server!));
+
+      await waitUntil(() => {
+        const pids = serverPids(project.root, { children: true });
+        return pids.length === 1 && pids[0] !== server;
+      }, 30_000);
+      await waitUntil(async () => (await health(port))?.ok === true, 60_000);
+      expect(project.readPid()).toBe(pid);
+      expect(fs.readFileSync(project.logFile, "utf8")).toContain("server exited unexpectedly (signal SIGKILL");
+    },
+    LIFECYCLE_TIMEOUT,
+  );
+
   it("logs -n 5 prints the tail of the server log", async () => {
     const r = await project.run(["logs", "-n", "5"]);
     expect(r.code).toBe(0);

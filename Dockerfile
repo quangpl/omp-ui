@@ -115,4 +115,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/bin/docker-entrypoint.sh"]
-CMD ["node", "server.js"]
+# bin/supervisor.mjs restarts the server when it crashes or its health check keeps failing (Docker
+# itself only reports "unhealthy"); `restart: unless-stopped` covers the supervisor.
+CMD ["node", "bin/supervisor.mjs", "node", "server.js"]

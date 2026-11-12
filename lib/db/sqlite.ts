@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   blocked_by TEXT NOT NULL DEFAULT '[]',
   created_by_task_id TEXT,
   pushed_at TEXT,
+  auto_retries INTEGER NOT NULL DEFAULT 0,
+  retry_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -170,6 +172,8 @@ function toTask(r: Row): Task {
     blockedBy: parseFolderList(r.blocked_by),
     createdByTaskId: strOrNull(r.created_by_task_id),
     pushedAt: strOrNull(r.pushed_at),
+    autoRetries: num(r.auto_retries),
+    retryAt: strOrNull(r.retry_at),
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
     commentCount: num(r.comment_count),
@@ -275,6 +279,8 @@ export class SqliteRepository implements Repository {
       ["created_by_task_id", "TEXT"],
       ["question", "TEXT"],
       ["pushed_at", "TEXT"],
+      ["auto_retries", "INTEGER NOT NULL DEFAULT 0"],
+      ["retry_at", "TEXT"],
     ]);
     this.addMissingColumns("comments", [["from_task_id", "TEXT"]]);
   }
@@ -460,6 +466,8 @@ export class SqliteRepository implements Repository {
       ["last_run_id", patch.lastRunId],
       ["blocked_by", patch.blockedBy === undefined ? undefined : JSON.stringify(patch.blockedBy)],
       ["pushed_at", patch.pushedAt],
+      ["auto_retries", patch.autoRetries],
+      ["retry_at", patch.retryAt],
       ["updated_at", nowIso()],
     ]);
     const res = this.db.prepare(`UPDATE tasks SET ${sql} WHERE id = ?`).run(...params, id);

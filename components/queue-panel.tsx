@@ -102,6 +102,8 @@ function QueueRow({
   onNavigate: () => void;
 }) {
   const queued = entry.state === "queued";
+  /** Held until the planner has ordered this card's project. */
+  const planning = queued && entry.planning;
   const waiting = entry.waitingFor.length;
   const iconButton = "size-11 shrink-0 text-muted-foreground md:size-8";
 
@@ -124,8 +126,14 @@ function QueueRow({
         <span className="block truncate text-sm font-medium" title={entry.title}>
           {entry.title}
         </span>
+        {entry.planNote && (
+          <span className="block truncate text-xs text-muted-foreground/80" title={entry.planNote}>
+            {entry.planNote}
+          </span>
+        )}
         <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
           <span className="truncate">{entry.boardName}</span>
+          {planning && <span className="shrink-0 italic">Planning…</span>}
           {waiting > 0 && (
             <span className="inline-flex shrink-0 items-center gap-1 text-violet-700 dark:text-violet-300">
               <HourglassIcon className="size-3" aria-hidden />
@@ -242,11 +250,22 @@ export function QueuePanel({
     { title: "Queued", entries: snapshot.queued },
   ];
 
+  /** Projects whose queued cards the planner is ordering right now. */
+  const planningProjects = snapshot.planning.map((p) => p.boardName).join(", ");
+
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-muted-foreground">
         {snapshot.limit} at a time · change it in Settings
       </p>
+      {snapshot.planning.length > 0 && (
+        <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground" role="status">
+          <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin" aria-hidden />
+          <span className="truncate" title={planningProjects}>
+            Planning run order for {planningProjects}…
+          </span>
+        </p>
+      )}
       {snapshot.running.length === 0 && snapshot.queued.length === 0 ? (
         <p className="py-6 text-center text-sm text-muted-foreground">No agents running or queued.</p>
       ) : (

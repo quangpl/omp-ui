@@ -480,7 +480,7 @@ function TaskDetailBody({
             <StatusDot status={task.status} />
             {STATUS_LABELS[task.status]}
           </span>
-          <AgentStateBadge state={task.agentState} />
+          <AgentStateBadge state={task.agentState} retryAt={task.retryAt} />
           <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
             {quickActions.map((action, index) => {
               const Icon = action.icon;
@@ -535,9 +535,18 @@ function TaskDetailBody({
         {task.agentState === "error" && (
           <Alert variant="destructive">
             <TriangleAlert />
-            <AlertTitle>Agent failed</AlertTitle>
+            <AlertTitle>
+              {task.retryAt ? `Agent failed — retrying automatically (retry ${task.autoRetries})` : "Agent failed"}
+            </AlertTitle>
             <AlertDescription className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words">
               {task.agentError || "The last run ended with an error."}
+              {task.retryAt && (
+                <span className="mt-1 block text-muted-foreground" title={formatDateTime(task.retryAt)}>
+                  Next attempt{" "}
+                  {Date.parse(task.retryAt) - Date.now() < 45_000 ? "in a few seconds" : formatRelative(task.retryAt)}
+                  ; Stop cancels it.
+                </span>
+              )}
             </AlertDescription>
           </Alert>
         )}

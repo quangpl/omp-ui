@@ -73,12 +73,12 @@ test("two sessions on one board see each other's card changes live", async ({ pa
     const todo = column(page, "To do");
     await page.getByRole("button", { name: "Add card", exact: true }).click();
     const newCard = page.getByRole("dialog", { name: "New card" });
-    await newCard.getByLabel("Title", { exact: true }).fill(title);
+    await newCard.getByLabel("What should the agent do?", { exact: true }).fill(title);
     const startNow = newCard.getByRole("switch", { name: /Start agent now/ });
     await expect(startNow).toBeChecked();
     await startNow.click();
     await newCard.getByRole("button", { name: "Create card" }).click();
-    await expect(newCard).toBeHidden();
+    await expect(newCard).toBeHidden({ timeout: AGENT_TIMEOUT });
     await expect(cardButton(todo, title)).toBeVisible();
     await expect(cardButton(column(other, "To do"), title)).toBeVisible();
 

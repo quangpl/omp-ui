@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 export const REPO_ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 export const CLI_SOURCE = path.join(REPO_ROOT, "bin", "omp-ui.mjs");
 export const WRAPPER_SOURCE = path.join(REPO_ROOT, "omp-ui");
+export const SUPERVISOR_SOURCE = path.join(REPO_ROOT, "bin", "supervisor.mjs");
 export const STANDALONE_SERVER = path.join(REPO_ROOT, "dist", "standalone", "server.js");
 export const PACKAGE_VERSION: string = JSON.parse(
   fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"),
@@ -102,6 +103,7 @@ export function createProject({ build = true }: { build?: boolean } = {}): TempP
 
   const cli = path.join(root, "bin", "omp-ui.mjs");
   fs.copyFileSync(CLI_SOURCE, cli);
+  fs.copyFileSync(SUPERVISOR_SOURCE, path.join(root, "bin", "supervisor.mjs"));
   const wrapper = path.join(root, "omp-ui");
   fs.copyFileSync(WRAPPER_SOURCE, wrapper);
   fs.chmodSync(wrapper, 0o755);
@@ -269,22 +271,33 @@ function killGroup(pid: number): void {
   }
 }
 
-/** Pids of standalone servers launched from `root` (Linux /proc scan; [] elsewhere). */
-export function serverPids(root: string): number[] {
+/** Command line and parent pid of a live process (Linux), or null once it is gone. */
+function procInfo(pid: number): { argv: string[]; ppid: number } | null {
+  try {
+    const argv = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+    // stat: "pid (comm) state ppid …"; comm may contain spaces, so parse after the last ")".
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    return { argv, ppid: Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Server instances launched from `root`: the pid of each bin/supervisor.mjs, which is what the
+ * pid file records (Linux /proc scan; [] elsewhere). `children: true` lists the server.js
+ * processes the supervisors run instead.
+ */
+export function serverPids(root: string, { children = false }: { children?: boolean } = {}): number[] {
   if (process.platform !== "linux") return [];
   const server = path.join(root, "dist", "standalone", "server.js");
-  const pids: number[] = [];
+  const matches = new Map<number, number>();
   for (const entry of fs.readdirSync("/proc")) {
     if (!/^\d+$/.test(entry)) continue;
-    try {
-      if (fs.readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0").includes(server)) {
-        pids.push(Number(entry));
-      }
-    } catch {
-      // process exited while scanning
-    }
+    const info = procInfo(Number(entry));
+    if (info?.argv.includes(server)) matches.set(Number(entry), info.ppid);
   }
-  return pids;
+  return [...matches].filter(([, ppid]) => matches.has(ppid) === children).map(([pid]) => pid);
 }
 
 /** A pid that certainly belonged to a process that has already exited. */

@@ -8,6 +8,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { api } from "@/lib/api-client";
 
 type Mode = "loading" | "setup" | "login";
@@ -23,6 +24,7 @@ function nextTarget(): string {
 }
 
 export default function LoginPage() {
+  useDocumentTitle("Sign in");
   const [mode, setMode] = useState<Mode>("loading");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
