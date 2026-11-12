@@ -4,3 +4,10 @@ node_modules
 next-env.d.ts
 /dist/
 .vinext/
+!.env.example
+tsconfig.tsbuildinfo
+/data/
+/workspace/
+/.e2e-data/
+/test-results/
+/playwright-report/

@@ -1,0 +1,25 @@
+# Dependencies & build output (rebuilt inside the image)
+node_modules
+dist
+.next
+.vinext
+*.tsbuildinfo
+
+# Runtime state & user projects (mounted as volumes)
+data
+workspace
+
+# Secrets & local config
+.env
+.env.*
+!.env.example
+
+# VCS, editors, OS
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+*.log
+npm-debug.log*
+pnpm-debug.log*

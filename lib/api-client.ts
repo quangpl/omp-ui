@@ -5,9 +5,14 @@ import type {
   Board,
   BoardWithCounts,
   Comment,
+  AiStats,
+  FsBrowseResult,
+  GitActionResult,
+  GitStatus,
   Run,
   RunEvent,
   ServerEvent,
+  SystemStats,
   Task,
   TaskStatus,
 } from "@/lib/types";
@@ -62,7 +67,7 @@ export interface TaskDetail {
 
 export interface SystemInfo {
   version: string;
-  db: "sqlite" | "mongodb";
+  db: "sqlite" | "mongodb" | "postgres";
   omp: { path: string; installed: boolean; version: string | null };
 }
 
@@ -86,11 +91,23 @@ export const api = {
   boards: {
     list: () => request<BoardWithCounts[]>("/boards"),
     get: (id: string) => request<Board>(`/boards/${id}`),
-    create: (input: { name: string; workdir: string; model?: string | null; autoRun?: boolean }) =>
+    create: (input: {
+      name: string;
+      workdir: string;
+      extraFolders?: string[];
+      model?: string | null;
+      autoRun?: boolean;
+    }) =>
       request<Board>("/boards", { method: "POST", json: input }),
     update: (
       id: string,
-      patch: Partial<{ name: string; workdir: string; model: string | null; autoRun: boolean }>,
+      patch: Partial<{
+        name: string;
+        workdir: string;
+        extraFolders: string[];
+        model: string | null;
+        autoRun: boolean;
+      }>,
     ) => request<Board>(`/boards/${id}`, { method: "PATCH", json: patch }),
     remove: (id: string) => request<{ ok: true }>(`/boards/${id}`, { method: "DELETE" }),
     tasks: (id: string) => request<Task[]>(`/boards/${id}/tasks`),
@@ -121,6 +138,29 @@ export const api = {
   runs: {
     events: (id: string, after = 0, limit = 500) =>
       request<RunEvent[]>(`/runs/${id}/events?after=${after}&limit=${limit}`),
+  },
+  stats: {
+    system: () => request<SystemStats>("/stats/system"),
+    /** AI provider quota + usage via omp; `refresh` bypasses the 60s server cache. */
+    ai: (refresh = false) => request<AiStats>(`/stats/ai${refresh ? "?refresh=1" : ""}`),
+  },
+  fs: {
+    /** List sub-folders of `path` (default: WORKSPACE_DIR). */
+    browse: (path?: string) =>
+      request<FsBrowseResult>(`/fs/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+  },
+  git: {
+    /** Clone a repository into WORKSPACE_DIR/<name>; returns the absolute folder path. */
+    clone: (input: { url: string; name?: string; branch?: string }) =>
+      request<{ path: string; output: string }>("/git/clone", { method: "POST", json: input }),
+    /** One entry per project folder (workdir first). */
+    status: (boardId: string) => request<GitStatus[]>(`/boards/${boardId}/git`),
+    /** Commit the task's changes and push straight to the default branch (all changed folders). */
+    push: (taskId: string, input: { message?: string; folders?: string[] } = {}) =>
+      request<GitActionResult>(`/tasks/${taskId}/git/push`, { method: "POST", json: input }),
+    /** Commit to a new branch, push, and open a PR (GitHub) / MR (GitLab). */
+    pr: (taskId: string, input: { title?: string; body?: string; folders?: string[] } = {}) =>
+      request<GitActionResult>(`/tasks/${taskId}/git/pr`, { method: "POST", json: input }),
   },
 };
 

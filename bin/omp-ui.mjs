@@ -1,0 +1,1796 @@
+#!/usr/bin/env node
+// omp-ui — one-command launcher and ops CLI for OMP UI.
+// Zero dependencies: only node: built-ins. Config lives in <project>/.env,
+// runtime state (pid, logs, tunnel) in DATA_DIR (default ./data).
+
+import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import fs from "node:fs";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import readline from "node:readline/promises";
+import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
+
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ENV_FILE = path.join(ROOT, ".env");
+const STANDALONE_SERVER = path.join(ROOT, "dist", "standalone", "server.js");
+const VITE_BIN = path.join(ROOT, "node_modules", "vite", "bin", "vite.js");
+const MIN_NODE = 24;
+const NODE_MAJOR = Number(process.versions.node.split(".")[0]);
+const IS_WIN = process.platform === "win32";
+const OMP_INSTALL_CMD = "curl -fsSL https://omp.sh/install | sh";
+const CLOUDFLARED_DOWNLOADS =
+  "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/";
+/** Database drivers: DATABASE_URL defaults for local installs and URL validation. */
+const DATABASES = {
+  sqlite: { label: "SQLite", url: (dataDir) => `sqlite:${dataDir}/omp-ui.db`, valid: /^(sqlite|file):/ },
+  mongodb: { label: "MongoDB", url: () => "mongodb://localhost:27017/omp_ui", valid: /^mongodb(\+srv)?:\/\// },
+  postgres: {
+    label: "PostgreSQL",
+    url: () => "postgres://postgres:postgres@localhost:5432/omp_ui",
+    valid: /^postgres(ql)?:\/\//,
+  },
+};
+const DB_ALIASES = { sqlite: "sqlite", sqlite3: "sqlite", mongo: "mongodb", mongodb: "mongodb", postgres: "postgres", postgresql: "postgres", pg: "postgres" };
+/** Compose services (profiles) that can back the Docker deployment. */
+const COMPOSE_DBS = {
+  mongo: { label: "MongoDB", url: () => "mongodb://mongo:27017/omp_ui" },
+  postgres: { label: "PostgreSQL", url: (env) => `postgres://omp_ui:${encodeURIComponent(env.POSTGRES_PASSWORD)}@postgres:5432/omp_ui` },
+};
+
+function dbKindFromUrl(url = "") {
+  return Object.keys(DATABASES).find((k) => DATABASES[k].valid.test(url)) ?? "sqlite";
+}
+const SERVER_MARK = ["server.js"];
+const TUNNEL_MARK = ["cloudflared", "ngrok"];
+const LOG_ROTATE_BYTES = 10 * 1024 * 1024;
+/** Paths whose changes require a rebuild of dist/standalone. */
+const BUILD_INPUTS = [
+  "app",
+  "components",
+  "hooks",
+  "lib",
+  "public",
+  "middleware.ts",
+  "proxy.ts",
+  "instrumentation.ts",
+  "next.config.ts",
+  "vite.config.ts",
+  "tsconfig.json",
+  "postcss.config.mjs",
+  "package.json",
+  "pnpm-lock.yaml",
+];
+
+// ─── Output ─────────────────────────────────────────────────────────────────
+
+const useColor = (() => {
+  if (process.env.NO_COLOR) return false;
+  if (process.env.FORCE_COLOR && process.env.FORCE_COLOR !== "0") return true;
+  return Boolean(process.stdout.isTTY) && process.env.TERM !== "dumb";
+})();
+const paint = (code) => (s) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : String(s));
+const c = {
+  bold: paint("1"),
+  dim: paint("2"),
+  red: paint("31"),
+  green: paint("32"),
+  yellow: paint("33"),
+  blue: paint("34"),
+  magenta: paint("35"),
+  cyan: paint("36"),
+};
+
+const log = {
+  info: (m) => console.log(`${c.cyan("›")} ${m}`),
+  ok: (m) => console.log(`${c.green("✓")} ${m}`),
+  warn: (m) => console.error(`${c.yellow("!")} ${m}`),
+  error: (m) => console.error(`${c.red("✗")} ${m}`),
+  step: (m) => console.log(`\n${c.bold(m)}`),
+  hint: (m) => console.log(`  ${c.dim(m)}`),
+};
+
+class CliError extends Error {
+  constructor(message, { hint, exitCode = 1 } = {}) {
+    super(message);
+    this.hint = hint;
+    this.exitCode = exitCode;
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function formatDuration(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s % 60}s`;
+  return `${s}s`;
+}
+
+function rel(p) {
+  const r = path.relative(process.cwd(), p);
+  return r && !r.startsWith("..") && !path.isAbsolute(r) ? r : p;
+}
+
+function rmQuiet(file) {
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    // already gone
+  }
+}
+
+function readText(file) {
+  try {
+    return fs.readFileSync(file, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+function packageVersion() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+// ─── .env handling ──────────────────────────────────────────────────────────
+
+const ENV_LINE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/;
+
+function parseEnvValue(raw) {
+  const v = raw.trim();
+  if (v.startsWith("'")) {
+    const end = v.indexOf("'", 1);
+    return end === -1 ? v.slice(1) : v.slice(1, end);
+  }
+  if (v.startsWith('"')) {
+    let out = "";
+    for (let i = 1; i < v.length; i++) {
+      const ch = v[i];
+      if (ch === "\\" && i + 1 < v.length) {
+        const next = v[++i];
+        out += next === "n" ? "\n" : next === "r" ? "\r" : next === "t" ? "\t" : next;
+        continue;
+      }
+      if (ch === '"') break;
+      out += ch;
+    }
+    return out;
+  }
+  const comment = v.search(/\s#/);
+  return (comment === -1 ? v : v.slice(0, comment)).trim();
+}
+
+function parseEnv(text) {
+  const out = {};
+  for (const line of text.split(/\r?\n/)) {
+    const m = ENV_LINE.exec(line);
+    if (m) out[m[1]] = parseEnvValue(m[2]);
+  }
+  return out;
+}
+
+/** Serialise a value so both this parser and `docker compose` read it back verbatim. */
+function formatEnvValue(value) {
+  const v = String(value);
+  if (/^[A-Za-z0-9_./:@%+,=-]*$/.test(v)) return v;
+  if (!v.includes("'") && !v.includes("\n")) return `'${v}'`;
+  return `"${v.replace(/[\\"$]/g, (ch) => `\\${ch}`).replace(/\n/g, "\\n")}"`;
+}
+
+function readEnvFile() {
+  try {
+    return parseEnv(fs.readFileSync(ENV_FILE, "utf8"));
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+function writeSecretFile(file, content) {
+  fs.writeFileSync(file, content, { mode: 0o600 });
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // non-POSIX filesystem
+  }
+}
+
+/** Set (string) or remove (null) keys in .env, preserving comments and order. */
+function updateEnvFile(updates) {
+  const lines = fs.existsSync(ENV_FILE) ? fs.readFileSync(ENV_FILE, "utf8").split(/\r?\n/) : [];
+  if (lines.length && lines.at(-1) === "") lines.pop();
+  const written = new Set();
+  const out = [];
+  for (const line of lines) {
+    const m = ENV_LINE.exec(line);
+    if (!m || !(m[1] in updates)) {
+      out.push(line);
+      continue;
+    }
+    const value = updates[m[1]];
+    if (value == null || written.has(m[1])) continue;
+    out.push(`${m[1]}=${formatEnvValue(value)}`);
+    written.add(m[1]);
+  }
+  for (const [key, value] of Object.entries(updates)) {
+    if (value != null && !written.has(key)) out.push(`${key}=${formatEnvValue(value)}`);
+  }
+  writeSecretFile(ENV_FILE, `${out.join("\n")}\n`);
+}
+
+// ─── Config ─────────────────────────────────────────────────────────────────
+
+function parsePort(value, source = "port") {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new CliError(`Invalid ${source}: "${value}" (expected 1-65535).`);
+  }
+  return n;
+}
+
+/** Effective config: inherited env < .env (authoritative) < explicit overrides. */
+function loadConfig(overrides = {}) {
+  const file = readEnvFile();
+  const env = { ...process.env, ...(file ?? {}) };
+  for (const [k, v] of Object.entries(overrides)) if (v != null) env[k] = String(v);
+  env.PORT ||= "3000";
+  env.HOST ||= "0.0.0.0";
+  env.DATA_DIR ||= "./data";
+  const port = parsePort(env.PORT, "PORT");
+  const host = env.HOST;
+  const dataDir = path.resolve(ROOT, env.DATA_DIR);
+  return { env, file, port, host, dataDir, hasEnvFile: file !== null };
+}
+
+function statePaths(cfg) {
+  const d = cfg.dataDir;
+  return {
+    pid: path.join(d, "omp-ui.pid"),
+    log: path.join(d, "omp-ui.log"),
+    tunnelPid: path.join(d, "tunnel.pid"),
+    tunnelUrl: path.join(d, "tunnel.url"),
+    tunnelLog: path.join(d, "tunnel.log"),
+  };
+}
+
+const WILDCARD_HOSTS = new Set(["", "0.0.0.0", "::", "[::]"]);
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+function urlHost(host) {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
+/** Base URL the CLI uses to talk to the local server. */
+function probeBase(cfg) {
+  const h = WILDCARD_HOSTS.has(cfg.host) || LOOPBACK_HOSTS.has(cfg.host) ? "127.0.0.1" : urlHost(cfg.host);
+  return `http://${h}:${cfg.port}`;
+}
+
+function localUrl(cfg) {
+  const h = WILDCARD_HOSTS.has(cfg.host) || LOOPBACK_HOSTS.has(cfg.host) ? "localhost" : urlHost(cfg.host);
+  return `http://${h}:${cfg.port}`;
+}
+
+function lanUrls(cfg) {
+  if (!WILDCARD_HOSTS.has(cfg.host)) return [];
+  const urls = [];
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    for (const a of addrs ?? []) {
+      if (a.family === "IPv4" && !a.internal) urls.push(`http://${a.address}:${cfg.port}`);
+    }
+  }
+  return [...new Set(urls)];
+}
+
+// ─── Processes & tools ──────────────────────────────────────────────────────
+
+function expandHome(p) {
+  return p === "~" ? os.homedir() : p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
+}
+
+function isExecutable(p) {
+  try {
+    if (!fs.statSync(p).isFile()) return false;
+    if (!IS_WIN) fs.accessSync(p, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Resolve a command on PATH (or an explicit path) to an absolute executable path. */
+function which(cmd) {
+  const target = expandHome(cmd);
+  if (target.includes("/") || (IS_WIN && target.includes("\\"))) {
+    const abs = path.resolve(ROOT, target);
+    return isExecutable(abs) ? abs : null;
+  }
+  const exts = IS_WIN ? ["", ...(process.env.PATHEXT || ".EXE;.CMD;.BAT").split(";")] : [""];
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const candidate = path.join(dir, target + ext);
+      if (isExecutable(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+/** Locate omp: configured path/name first, then the installer's default location. */
+function resolveOmp(ompPath = "omp") {
+  const found = which(ompPath);
+  if (found) return { path: found, onPath: true };
+  if (ompPath === "omp") {
+    const fallback = path.join(os.homedir(), ".local", "bin", IS_WIN ? "omp.exe" : "omp");
+    if (isExecutable(fallback)) return { path: fallback, onPath: false };
+  }
+  return null;
+}
+
+/** Run a command and return trimmed stdout (or null when it fails). */
+function capture(cmd, args, opts = {}) {
+  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 15_000, shell: IS_WIN, cwd: ROOT, ...opts });
+  if (r.error || r.status !== 0) return null;
+  return `${r.stdout ?? ""}`.trim() || `${r.stderr ?? ""}`.trim();
+}
+
+function toolVersion(cmd, args = ["--version"]) {
+  if (!which(cmd)) return null;
+  const out = capture(cmd, args);
+  return out ? out.split("\n")[0].trim() : "installed";
+}
+
+/** Run a command attached to this terminal; resolves with its exit code. */
+function run(cmd, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { cwd: ROOT, stdio: "inherit", shell: IS_WIN, ...opts });
+    const forward = (sig) => () => {
+      // Ctrl+C in a terminal already reaches the child via the process group.
+      if (sig === "SIGINT" && process.stdin.isTTY) return;
+      child.kill(sig);
+    };
+    const handlers = ["SIGINT", "SIGTERM", "SIGHUP"].map((sig) => [sig, forward(sig)]);
+    for (const [sig, h] of handlers) process.on(sig, h);
+    const done = () => {
+      for (const [sig, h] of handlers) process.off(sig, h);
+    };
+    child.once("error", (err) => {
+      done();
+      reject(err.code === "ENOENT" ? new CliError(`Command not found: ${cmd}`) : err);
+    });
+    child.once("exit", (code, signal) => {
+      done();
+      resolve(signal ? 128 + (os.constants.signals[signal] ?? 1) : (code ?? 0));
+    });
+  });
+}
+
+async function runOrFail(what, cmd, args, opts) {
+  const code = await run(cmd, args, opts);
+  if (code !== 0) throw new CliError(`${what} failed (exit ${code}).`);
+}
+
+function readPid(file) {
+  const pid = Number.parseInt(readText(file), 10);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+
+/** Guard against pid reuse: on Linux confirm the command line looks like ours. */
+function cmdlineMatches(pid, needles) {
+  if (process.platform !== "linux") return true;
+  try {
+    const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+    return needles.some((n) => cmd.includes(n));
+  } catch {
+    return false;
+  }
+}
+
+/** Live pid from a pid file, cleaning up stale files. */
+function runningPid(file, needles) {
+  const pid = readPid(file);
+  if (pid && isAlive(pid) && cmdlineMatches(pid, needles)) return pid;
+  if (pid) rmQuiet(file);
+  return null;
+}
+
+function sendSignal(pid, sig, group = false) {
+  try {
+    process.kill(group && !IS_WIN ? -pid : pid, sig);
+  } catch {
+    if (group) {
+      try {
+        process.kill(pid, sig);
+      } catch {
+        // already exited
+      }
+    }
+  }
+}
+
+/** SIGTERM, wait up to timeoutMs, then SIGKILL the whole process group. */
+async function terminate(pid, timeoutMs = 10_000) {
+  sendSignal(pid, "SIGTERM");
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isAlive(pid)) return "terminated";
+    await sleep(200);
+  }
+  sendSignal(pid, "SIGKILL", true);
+  for (let i = 0; i < 25 && isAlive(pid); i++) await sleep(100);
+  return "killed";
+}
+
+function portStatus(port, host) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once("error", (err) => resolve(err.code === "EACCES" ? "denied" : "in-use"));
+    srv.once("listening", () => srv.close(() => resolve("free")));
+    srv.listen({ port, host: WILDCARD_HOSTS.has(host) ? undefined : host, exclusive: true });
+  });
+}
+
+async function fetchJson(url, timeoutMs = 3000) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: { accept: "application/json" } });
+    const text = await res.text();
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      // not JSON
+    }
+    return { status: res.status, ok: res.ok, json };
+  } catch {
+    return null;
+  }
+}
+
+async function getHealth(cfg) {
+  const r = await fetchJson(`${probeBase(cfg)}/api/v1/health`);
+  return r?.ok && r.json?.ok ? r.json : null;
+}
+
+async function waitForHealth(cfg, { pid, timeoutMs = 90_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (pid && !isAlive(pid)) return null;
+    const h = await getHealth(cfg);
+    if (h) return h;
+    await sleep(400);
+  }
+  return null;
+}
+
+function tailLines(file, n) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+  } catch {
+    return "";
+  }
+  try {
+    const size = fs.fstatSync(fd).size;
+    const chunk = 64 * 1024;
+    let pos = size;
+    let data = Buffer.alloc(0);
+    while (pos > 0) {
+      const len = Math.min(chunk, pos);
+      pos -= len;
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, pos);
+      data = Buffer.concat([buf, data]);
+      let count = 0;
+      for (const b of data) if (b === 10) count++;
+      if (count > n) break;
+    }
+    const lines = data.toString("utf8").split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    const out = lines.slice(-n).join("\n");
+    return out ? `${out}\n` : "";
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function rotateLog(file) {
+  try {
+    if (fs.statSync(file).size > LOG_ROTATE_BYTES) fs.renameSync(file, `${file}.1`);
+  } catch {
+    // no log yet
+  }
+}
+
+function openInBrowser(url) {
+  const [cmd, args] =
+    process.platform === "darwin"
+      ? ["open", [url]]
+      : IS_WIN
+        ? ["cmd", ["/c", "start", "", url]]
+        : ["xdg-open", [url]];
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { stdio: "ignore", detached: true });
+    child.once("error", () => resolve(false));
+    child.once("spawn", () => {
+      child.unref();
+      resolve(true);
+    });
+  });
+}
+
+// ─── Prompts ────────────────────────────────────────────────────────────────
+
+const isInteractive = () => Boolean(process.stdin.isTTY && process.stdout.isTTY);
+
+async function ask(question, def = "") {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  rl.on("SIGINT", () => {
+    rl.close();
+    process.stdout.write("\n");
+    process.exit(130);
+  });
+  try {
+    const answer = (await rl.question(`${c.cyan("?")} ${question}${def ? c.dim(` (${def})`) : ""} `)).trim();
+    return answer || def;
+  } finally {
+    rl.close();
+  }
+}
+
+function askHidden(question) {
+  const { stdin, stdout } = process;
+  stdout.write(`${c.cyan("?")} ${question} `);
+  return new Promise((resolve) => {
+    let value = "";
+    const cleanup = () => {
+      stdin.off("data", onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+    };
+    const onData = (chunk) => {
+      if (chunk.startsWith("\x1b")) return; // arrow keys & other escape sequences
+      for (const ch of chunk) {
+        if (ch === "\r" || ch === "\n" || ch === "\x04") {
+          cleanup();
+          stdout.write("\n");
+          resolve(value);
+          return;
+        }
+        if (ch === "\x03") {
+          cleanup();
+          stdout.write("\n");
+          process.exit(130);
+        }
+        if (ch === "\x7f" || ch === "\b") {
+          value = [...value].slice(0, -1).join("");
+          continue;
+        }
+        if (ch >= " ") value += ch;
+      }
+    };
+    stdin.setEncoding("utf8");
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on("data", onData);
+  });
+}
+
+async function askNewPassword(label = "Admin password") {
+  for (;;) {
+    const first = await askHidden(`${label} ${c.dim("(min 8 chars, hidden)")}`);
+    if (first.length < 8) {
+      log.warn("Too short — use at least 8 characters.");
+      continue;
+    }
+    const again = await askHidden("Repeat password");
+    if (again !== first) {
+      log.warn("Passwords do not match, try again.");
+      continue;
+    }
+    return first;
+  }
+}
+
+async function readStdinLine() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  return Buffer.concat(chunks).toString("utf8").split(/\r?\n/)[0] ?? "";
+}
+
+function validatePassword(pw) {
+  if (pw.length < 8) throw new CliError("Admin password must be at least 8 characters.");
+  return pw;
+}
+
+// ─── Checks ─────────────────────────────────────────────────────────────────
+
+function requireNode() {
+  if (NODE_MAJOR < MIN_NODE) {
+    throw new CliError(`Node.js ${MIN_NODE}+ is required (found ${process.versions.node}).`, {
+      hint: "Install Node 24: https://nodejs.org/en/download  (or: nvm install 24)",
+    });
+  }
+}
+
+function warnIfOmpMissing(ompPath) {
+  const omp = resolveOmp(ompPath);
+  if (!omp) {
+    log.warn(`omp was not found (${ompPath}). Agents cannot run until it is installed:`);
+    log.hint(OMP_INSTALL_CMD);
+    log.hint("Then run `omp` once to sign in to a provider.");
+    return;
+  }
+  if (!fs.existsSync(path.join(os.homedir(), ".omp", "agent"))) {
+    log.warn("omp is installed but looks unconfigured — run `omp` once to sign in to a provider.");
+  }
+}
+
+function depsInstalled() {
+  return fs.existsSync(VITE_BIN) && fs.existsSync(path.join(ROOT, "node_modules", "vinext"));
+}
+
+function newestMtime(p) {
+  let st;
+  try {
+    st = fs.statSync(p);
+  } catch {
+    return 0;
+  }
+  if (!st.isDirectory()) return st.mtimeMs;
+  let max = st.mtimeMs;
+  for (const entry of fs.readdirSync(p, { withFileTypes: true })) {
+    if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+    max = Math.max(max, newestMtime(path.join(p, entry.name)));
+  }
+  return max;
+}
+
+/** "missing" | "stale" | "fresh" */
+function buildState() {
+  let built;
+  try {
+    built = fs.statSync(STANDALONE_SERVER).mtimeMs;
+  } catch {
+    return "missing";
+  }
+  return BUILD_INPUTS.some((p) => newestMtime(path.join(ROOT, p)) > built) ? "stale" : "fresh";
+}
+
+// ─── Actions ────────────────────────────────────────────────────────────────
+
+async function initProject(values, { fromUp = false } = {}) {
+  if (fs.existsSync(ENV_FILE) && !values.force) {
+    throw new CliError(".env already exists — refusing to overwrite it.", {
+      hint: "Use --force to recreate it, edit .env directly, or change the password with: omp-ui passwd",
+    });
+  }
+  const tty = isInteractive();
+  const wizard = tty && !values.yes && !fromUp;
+  const existing = readEnvFile() ?? {};
+
+  if (!fromUp) {
+    console.log(`\n${c.bold("OMP UI setup")} ${c.dim(`→ ${rel(ENV_FILE)}`)}\n`);
+  }
+  if (NODE_MAJOR < MIN_NODE) {
+    log.warn(`Node.js ${MIN_NODE}+ is required to run OMP UI (found ${process.versions.node}).`);
+  }
+
+  let password = values.password ?? process.env.ADMIN_PASSWORD ?? "";
+  let generated = false;
+  if (password) validatePassword(password);
+  else if (tty) password = await askNewPassword();
+  else {
+    password = randomBytes(12).toString("base64url");
+    generated = true;
+  }
+
+  const port = parsePort(values.port ?? (wizard ? await ask("Port", "3000") : "3000"));
+
+  const dbUrlFlag = values["db-url"] ?? values["mongo-url"];
+  let db = values.db ?? (dbUrlFlag ? dbKindFromUrl(dbUrlFlag) : undefined);
+  if (!db) db = wizard ? await ask("Database: sqlite, mongodb or postgres?", "sqlite") : "sqlite";
+  const kind = DB_ALIASES[db.trim().toLowerCase()];
+  if (!kind) throw new CliError(`Unknown database "${db}" (use sqlite, mongodb or postgres).`);
+
+  let dataDir = values["data-dir"] ?? (wizard ? await ask("Data directory", "./data") : "./data");
+  dataDir = dataDir.replace(/[\\/]+$/, "") || ".";
+
+  const driver = DATABASES[kind];
+  let databaseUrl = dbUrlFlag ?? driver.url(dataDir);
+  if (!dbUrlFlag && wizard && kind !== "sqlite") databaseUrl = await ask(`${driver.label} URL`, databaseUrl);
+  if (!driver.valid.test(databaseUrl)) {
+    throw new CliError(`Invalid ${driver.label} URL "${databaseUrl}".`, {
+      hint: "Expected sqlite:<path> | mongodb://… | mongodb+srv://… | postgres://… | postgresql://…",
+    });
+  }
+
+  const detected = resolveOmp("omp");
+  const defaultOmp = detected && !detected.onPath ? detected.path : "omp";
+  const ompPath = values["omp-path"] ?? (wizard ? await ask("omp executable", defaultOmp) : defaultOmp);
+
+  const defaultWorkspace = existing.WORKSPACE_DIR || path.join(os.homedir(), "omp-workspace");
+  const workspaceDir = expandHome(
+    values.workspace ?? (wizard ? await ask("Projects folder", defaultWorkspace) : defaultWorkspace),
+  );
+
+  const maxAgentsRaw = values["max-agents"] ?? (wizard ? await ask("Max concurrent agents", "2") : "2");
+  const maxAgents = Number(maxAgentsRaw);
+  if (!Number.isInteger(maxAgents) || maxAgents < 1 || maxAgents > 16) {
+    throw new CliError(`Invalid max agents "${maxAgentsRaw}" (expected 1-16).`);
+  }
+
+  const managed = {
+    PORT: String(port),
+    HOST: existing.HOST || "0.0.0.0",
+    DATA_DIR: dataDir,
+    DATABASE_URL: databaseUrl,
+    ADMIN_PASSWORD: password,
+    AUTH_SECRET: existing.AUTH_SECRET || randomBytes(32).toString("hex"),
+    OMP_PATH: ompPath,
+    MAX_AGENTS: String(maxAgents),
+    WORKSPACE_DIR: workspaceDir,
+  };
+  const kept = Object.entries(existing).filter(([k]) => !(k in managed));
+  const line = (k, v) => `${k}=${formatEnvValue(v)}`;
+  const content = [
+    `# OMP UI configuration — generated by \`omp-ui init\` on ${new Date().toISOString().slice(0, 10)}.`,
+    "# All variables are documented in .env.example. Keep this file private (chmod 600).",
+    "",
+    "# Server",
+    line("PORT", managed.PORT),
+    line("HOST", managed.HOST),
+    "",
+    "# Storage: sqlite:<path> | mongodb://… | mongodb+srv://… | postgres://… | postgresql://…",
+    line("DATA_DIR", managed.DATA_DIR),
+    line("DATABASE_URL", managed.DATABASE_URL),
+    "",
+    "# Auth — ADMIN_PASSWORD is applied at every boot (change it with `omp-ui passwd`)",
+    line("ADMIN_PASSWORD", managed.ADMIN_PASSWORD),
+    line("AUTH_SECRET", managed.AUTH_SECRET),
+    "",
+    "# Agents",
+    line("OMP_PATH", managed.OMP_PATH),
+    line("MAX_AGENTS", managed.MAX_AGENTS),
+    "",
+    "# Projects folder: folder-picker start point and where cloned repositories go",
+    line("WORKSPACE_DIR", managed.WORKSPACE_DIR),
+    ...(kept.length ? ["", "# Preserved from the previous .env", ...kept.map(([k, v]) => line(k, v))] : []),
+    "",
+  ].join("\n");
+  writeSecretFile(ENV_FILE, content);
+  fs.mkdirSync(path.resolve(ROOT, dataDir), { recursive: true });
+  fs.mkdirSync(path.resolve(ROOT, expandHome(workspaceDir)), { recursive: true });
+
+  log.ok(`Wrote ${rel(ENV_FILE)} ${c.dim("(chmod 600)")}`);
+  if (generated) {
+    console.log(`\n  ${c.bold("Admin password:")} ${c.green(password)}`);
+    log.hint("Generated because none was given — save it now, or change it with: omp-ui passwd\n");
+  }
+  if (kind !== "sqlite") log.info(`Using ${driver.label} at ${databaseUrl}`);
+  warnIfOmpMissing(ompPath);
+  if (!fromUp) {
+    console.log(`\n${c.bold("Next:")} ${c.cyan("omp-ui up")}`);
+  }
+}
+
+async function ensureDeps({ quiet = false } = {}) {
+  if (depsInstalled()) return false;
+  log.step("Installing dependencies");
+  const env = { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" };
+  if (which("pnpm")) {
+    await runOrFail("pnpm install", "pnpm", ["install", "--frozen-lockfile"], { env });
+  } else if (which("corepack")) {
+    await runOrFail("corepack pnpm install", "corepack", ["pnpm", "install", "--frozen-lockfile"], { env });
+  } else {
+    await runOrFail("npm install", "npm", ["install", "--no-audit", "--no-fund"], { env });
+  }
+  if (!depsInstalled()) throw new CliError("Dependencies were installed but vite/vinext are still missing.");
+  if (!quiet) log.ok("Dependencies installed");
+  return true;
+}
+
+async function buildApp() {
+  requireNode();
+  await ensureDeps();
+  log.step("Building OMP UI");
+  await runOrFail("Build", process.execPath, [VITE_BIN, "build"], { shell: false });
+  if (!fs.existsSync(STANDALONE_SERVER)) {
+    throw new CliError("Build finished but dist/standalone/server.js is missing.", {
+      hint: 'next.config.ts must set output: "standalone".',
+    });
+  }
+  log.ok("Build complete");
+}
+
+function serverEnv(cfg) {
+  return { ...cfg.env, NODE_ENV: "production", PORT: String(cfg.port), HOST: cfg.host };
+}
+
+async function assertPortFree(cfg) {
+  const state = await portStatus(cfg.port, cfg.host);
+  if (state === "free") return;
+  throw new CliError(
+    state === "denied" ? `No permission to listen on port ${cfg.port}.` : `Port ${cfg.port} is already in use.`,
+    { hint: "Choose another one: --port 3001 (saved to .env)" },
+  );
+}
+
+async function startServer(cfg, { foreground = false } = {}) {
+  requireNode();
+  const paths = statePaths(cfg);
+  const existing = runningPid(paths.pid, SERVER_MARK);
+  if (existing) {
+    log.info(`Already running ${c.dim(`(pid ${existing})`)}`);
+    return { pid: existing, health: await getHealth(cfg), already: true };
+  }
+  if (!fs.existsSync(STANDALONE_SERVER)) {
+    throw new CliError("No production build found.", { hint: "Run: omp-ui up   (or: omp-ui build)" });
+  }
+  if (!cfg.hasEnvFile) log.warn("No .env found — running with defaults. Create one with: omp-ui init");
+  await assertPortFree(cfg);
+  fs.mkdirSync(cfg.dataDir, { recursive: true });
+
+  if (foreground) {
+    const child = spawn(process.execPath, [STANDALONE_SERVER], { cwd: ROOT, env: serverEnv(cfg), stdio: "inherit" });
+    fs.writeFileSync(paths.pid, `${child.pid}\n`);
+    log.info(`Serving at ${c.cyan(localUrl(cfg))} ${c.dim("(Ctrl+C to stop)")}`);
+    const forward = (sig) => () => {
+      if (sig === "SIGINT" && process.stdin.isTTY) return;
+      child.kill(sig);
+    };
+    for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, forward(sig));
+    const code = await new Promise((resolve) => {
+      child.once("error", () => resolve(1));
+      child.once("exit", (exitCode, signal) => resolve(signal ? 0 : (exitCode ?? 0)));
+    });
+    rmQuiet(paths.pid);
+    process.exitCode = code;
+    return { pid: child.pid, foreground: true };
+  }
+
+  rotateLog(paths.log);
+  const fd = fs.openSync(paths.log, "a");
+  fs.writeSync(fd, `\n=== omp-ui start ${new Date().toISOString()} · port ${cfg.port} ===\n`);
+  const child = spawn(process.execPath, [STANDALONE_SERVER], {
+    cwd: ROOT,
+    env: serverEnv(cfg),
+    detached: true,
+    stdio: ["ignore", fd, fd],
+    windowsHide: true,
+  });
+  fs.closeSync(fd);
+  child.once("error", () => {});
+  child.unref();
+  fs.writeFileSync(paths.pid, `${child.pid}\n`);
+  log.info(`Starting server ${c.dim(`(pid ${child.pid})`)}…`);
+
+  const health = await waitForHealth(cfg, { pid: child.pid });
+  if (!health) {
+    const alive = isAlive(child.pid);
+    if (!alive) rmQuiet(paths.pid);
+    const tail = tailLines(paths.log, 25);
+    if (tail) console.error(`\n${c.dim(tail)}`);
+    throw new CliError(
+      alive ? "Server started but /api/v1/health did not respond in time." : "Server exited during startup.",
+      { hint: `Full log: ${rel(paths.log)}  (omp-ui logs)` },
+    );
+  }
+  log.ok(`Server is up ${c.dim(`(v${health.version} · ${health.db})`)}`);
+  return { pid: child.pid, health };
+}
+
+async function stopServer(cfg) {
+  const paths = statePaths(cfg);
+  const pid = runningPid(paths.pid, SERVER_MARK);
+  if (!pid) {
+    log.info("Server is not running");
+    return false;
+  }
+  log.info(`Stopping server ${c.dim(`(pid ${pid})`)}…`);
+  const how = await terminate(pid);
+  rmQuiet(paths.pid);
+  if (how === "killed") log.warn("Server did not exit within 10s — killed");
+  else log.ok("Server stopped");
+  return true;
+}
+
+function printUrls(cfg, { tunnelUrl } = {}) {
+  const label = (s) => c.dim(s.padEnd(9));
+  console.log("");
+  console.log(`  ${c.green("➜")} ${label("Local")}${c.cyan(c.bold(localUrl(cfg)))}`);
+  for (const url of lanUrls(cfg)) console.log(`  ${c.green("➜")} ${label("Network")}${c.cyan(url)}`);
+  if (tunnelUrl) console.log(`  ${c.green("➜")} ${label("Public")}${c.magenta(c.bold(tunnelUrl))}`);
+  console.log("");
+}
+
+function printNextSteps() {
+  console.log(c.bold("Next steps"));
+  console.log(`  1. Open the URL and sign in with your admin password`);
+  console.log(`  2. Create a board for a project folder, add cards, drag one to ${c.bold("In progress")}`);
+  console.log(`  ${c.dim("·")} Phone on the same Wi-Fi: open the Network URL → Share → Add to Home Screen`);
+  console.log(`  ${c.dim("·")} Share over the internet: ${c.cyan("omp-ui public")}`);
+  console.log(`  ${c.dim("·")} Logs: ${c.cyan("omp-ui logs -f")}   Status: ${c.cyan("omp-ui status")}   Stop: ${c.cyan("omp-ui stop")}`);
+  console.log("");
+}
+
+function printSecurityReminder() {
+  console.log(c.yellow(c.bold("Security")));
+  console.log(c.yellow("  Anyone with this URL reaches your login page — the admin password is the only lock."));
+  console.log(c.yellow("  Agents run shell commands on this machine. Use a strong password (omp-ui passwd)."));
+  console.log(c.dim("  Stop sharing: omp-ui public stop\n"));
+}
+
+// ─── Tunnel ─────────────────────────────────────────────────────────────────
+
+const TRYCLOUDFLARE_URL = /https:\/\/[a-z0-9]+(?:-[a-z0-9]+)+\.trycloudflare\.com/;
+
+async function ngrokUrl(port) {
+  const r = await fetchJson("http://127.0.0.1:4040/api/tunnels", 1500);
+  const tunnels = r?.json?.tunnels ?? [];
+  const match = tunnels.find(
+    (t) => String(t.public_url ?? "").startsWith("https://") && String(t.config?.addr ?? "").endsWith(`:${port}`),
+  );
+  return match?.public_url ?? null;
+}
+
+async function tunnelStart(cfg) {
+  const paths = statePaths(cfg);
+  const running = runningPid(paths.tunnelPid, TUNNEL_MARK);
+  if (running) {
+    const url = readText(paths.tunnelUrl);
+    log.info(`Tunnel already running ${c.dim(`(pid ${running})`)}`);
+    if (url) printUrls(cfg, { tunnelUrl: url });
+    printSecurityReminder();
+    return url;
+  }
+  if (!(await getHealth(cfg))) {
+    throw new CliError(`OMP UI is not reachable at ${localUrl(cfg)}.`, { hint: "Start it first: omp-ui up" });
+  }
+  const auth = await fetchJson(`${probeBase(cfg)}/api/v1/auth/status`);
+  if (auth?.json && auth.json.configured === false) {
+    throw new CliError("No admin password is configured — refusing to expose an unprotected server.", {
+      hint: "Set one first: omp-ui passwd",
+    });
+  }
+
+  fs.mkdirSync(cfg.dataDir, { recursive: true });
+  const target = probeBase(cfg);
+  const cloudflared = which("cloudflared");
+  const ngrok = cloudflared ? null : which("ngrok");
+  if (!cloudflared && !ngrok) {
+    throw new CliError("No tunnel tool found (cloudflared or ngrok).", {
+      hint: `Install cloudflared (free, no account needed): ${CLOUDFLARED_DOWNLOADS}\n  macOS: brew install cloudflared · then run: omp-ui public`,
+    });
+  }
+
+  const fd = fs.openSync(paths.tunnelLog, "w");
+  const [cmd, args, name] = cloudflared
+    ? [cloudflared, ["tunnel", "--url", target, "--no-autoupdate"], "cloudflared"]
+    : [ngrok, ["http", target, "--log", "stdout"], "ngrok"];
+  const child = spawn(cmd, args, { cwd: ROOT, detached: true, stdio: ["ignore", fd, fd], windowsHide: true });
+  fs.closeSync(fd);
+  child.once("error", () => {});
+  child.unref();
+  fs.writeFileSync(paths.tunnelPid, `${child.pid}\n`);
+  log.info(`Opening a public tunnel with ${name}…`);
+
+  let url = null;
+  const deadline = Date.now() + 45_000;
+  while (!url && Date.now() < deadline && isAlive(child.pid)) {
+    await sleep(500);
+    url = cloudflared ? (TRYCLOUDFLARE_URL.exec(readText(paths.tunnelLog))?.[0] ?? null) : await ngrokUrl(cfg.port);
+  }
+  if (!url) {
+    const alive = isAlive(child.pid);
+    if (alive) await terminate(child.pid, 3000);
+    rmQuiet(paths.tunnelPid);
+    const tail = tailLines(paths.tunnelLog, 15);
+    if (tail) console.error(`\n${c.dim(tail)}`);
+    throw new CliError(`${name} did not report a public URL.`, {
+      hint: ngrok ? "ngrok needs an account token: ngrok config add-authtoken <token>" : `Log: ${rel(paths.tunnelLog)}`,
+    });
+  }
+  fs.writeFileSync(paths.tunnelUrl, `${url}\n`);
+  log.ok(`Public tunnel is up ${c.dim(`(${name}, pid ${child.pid})`)}`);
+  printUrls(cfg, { tunnelUrl: url });
+  printSecurityReminder();
+  return url;
+}
+
+async function tunnelStop(cfg, { quiet = false } = {}) {
+  const paths = statePaths(cfg);
+  const pid = runningPid(paths.tunnelPid, TUNNEL_MARK);
+  rmQuiet(paths.tunnelUrl);
+  if (!pid) {
+    if (!quiet) log.info("No public tunnel is running");
+    return false;
+  }
+  await terminate(pid, 5000);
+  rmQuiet(paths.tunnelPid);
+  log.ok("Public tunnel stopped");
+  return true;
+}
+
+function tunnelInfo(cfg) {
+  const paths = statePaths(cfg);
+  const pid = runningPid(paths.tunnelPid, TUNNEL_MARK);
+  if (!pid) {
+    rmQuiet(paths.tunnelUrl);
+    return null;
+  }
+  return { pid, url: readText(paths.tunnelUrl) || null };
+}
+
+// ─── Docker ─────────────────────────────────────────────────────────────────
+
+function composeCommand() {
+  if (which("docker") && capture("docker", ["compose", "version"])) return ["docker", ["compose"]];
+  if (which("docker-compose")) return ["docker-compose", []];
+  throw new CliError("Docker with the Compose plugin is required.", {
+    hint: "Install Docker: https://docs.docker.com/get-docker/",
+  });
+}
+
+async function compose(args, opts = {}) {
+  const [cmd, pre] = composeCommand();
+  await runOrFail(`docker compose ${args[0] ?? ""}`.trim(), cmd, [...pre, ...args], { shell: false, ...opts });
+}
+
+/** Add `profile` to a comma-separated COMPOSE_PROFILES list, dropping `exclude`. */
+function setProfile(list, profile, exclude = []) {
+  const set = new Set(String(list ?? "").split(",").map((s) => s.trim()).filter((p) => p && !exclude.includes(p)));
+  set.add(profile);
+  return [...set].join(",");
+}
+
+/** "mongo" | "postgres" | null from the --mongo / --postgres flags. */
+function composeDbProfile(values) {
+  if (values.mongo && values.postgres) throw new CliError("Choose either --mongo or --postgres, not both.");
+  return values.mongo ? "mongo" : values.postgres ? "postgres" : null;
+}
+
+/**
+ * Create the host paths docker-compose.yml bind-mounts, so Docker does not create
+ * them as root-owned directories (a directory named ~/.gitconfig would break git).
+ */
+function prepareHostMounts() {
+  const home = os.homedir();
+  const omp = expandHome(readEnvFile()?.OMP_HOME || "~/.omp");
+  fs.mkdirSync(omp, { recursive: true });
+  fs.mkdirSync(path.join(home, ".config", "gh"), { recursive: true });
+  if (!fs.existsSync(path.join(home, ".ssh"))) fs.mkdirSync(path.join(home, ".ssh"), { mode: 0o700 });
+  const gitconfig = path.join(home, ".gitconfig");
+  if (!fs.existsSync(gitconfig)) fs.writeFileSync(gitconfig, "", { mode: 0o644 });
+}
+
+/** Make sure .env exists and carries the compose-specific settings. */
+async function prepareDockerEnv(values, { localMounts = true } = {}) {
+  if (!fs.existsSync(ENV_FILE)) {
+    log.step("First run — creating .env");
+    await initProject({ password: values.password, yes: true }, { fromUp: true });
+  }
+  const dbProfile = composeDbProfile(values);
+  if (dbProfile) {
+    const file = readEnvFile() ?? {};
+    const POSTGRES_PASSWORD = file.POSTGRES_PASSWORD || randomBytes(18).toString("hex");
+    const others = Object.keys(COMPOSE_DBS).filter((p) => p !== dbProfile);
+    updateEnvFile({
+      COMPOSE_PROFILES: setProfile(file.COMPOSE_PROFILES, dbProfile, others),
+      COMPOSE_DATABASE_URL: COMPOSE_DBS[dbProfile].url({ POSTGRES_PASSWORD }),
+      ...(dbProfile === "postgres" ? { POSTGRES_PASSWORD } : {}),
+    });
+    log.ok(
+      `Docker will use ${COMPOSE_DBS[dbProfile].label} ${c.dim("(COMPOSE_PROFILES/COMPOSE_DATABASE_URL saved to .env)")}`,
+    );
+  }
+  const cfg = loadConfig();
+  fs.mkdirSync(path.join(ROOT, "data"), { recursive: true });
+  fs.mkdirSync(path.resolve(ROOT, expandHome(cfg.env.WORKSPACE_DIR || "./workspace")), { recursive: true });
+  if (localMounts) prepareHostMounts();
+  return cfg;
+}
+
+async function composeTunnelUrl() {
+  const [cmd, pre] = composeCommand();
+  const deadline = Date.now() + 45_000;
+  while (Date.now() < deadline) {
+    const out = spawnSync(cmd, [...pre, "--profile", "public", "logs", "--no-color", "tunnel"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    const url = TRYCLOUDFLARE_URL.exec(`${out.stdout ?? ""}${out.stderr ?? ""}`)?.[0];
+    if (url) return url;
+    await sleep(1000);
+  }
+  return null;
+}
+
+async function dockerUp(values) {
+  const cfg = await prepareDockerEnv(values);
+  const args = [];
+  const dbProfile = composeDbProfile(values);
+  if (dbProfile) args.push("--profile", dbProfile);
+  if (values.public) args.push("--profile", "public");
+  args.push("up", "-d");
+  if (values.build) args.push("--build");
+  log.step("Starting OMP UI with Docker Compose");
+  await compose(args);
+  log.info("Waiting for the container to become healthy…");
+  const health = await waitForHealth(cfg, { timeoutMs: 180_000 });
+  if (!health) {
+    throw new CliError(`OMP UI did not respond on ${localUrl(cfg)}.`, { hint: "Check: omp-ui docker logs" });
+  }
+  log.ok(`OMP UI is up in Docker ${c.dim(`(v${health.version} · ${health.db})`)}`);
+  const tunnelUrl = values.public ? await composeTunnelUrl() : null;
+  if (values.public && !tunnelUrl) log.warn("Tunnel URL not found yet — check: omp-ui docker logs tunnel");
+  printUrls(cfg, { tunnelUrl });
+  if (tunnelUrl) printSecurityReminder();
+  console.log(c.bold("Next steps"));
+  console.log(`  ${c.dim("·")} Sign omp in to a provider (once): ${c.cyan("docker compose exec -u omp omp-ui omp")}`);
+  console.log(`  ${c.dim("·")} Projects folder ${c.cyan(cfg.env.WORKSPACE_DIR || "./workspace")} is ${c.cyan("/workspace")} inside the container`);
+  console.log(`  ${c.dim("·")} Logs: ${c.cyan("omp-ui docker logs")}   Stop: ${c.cyan("omp-ui docker down")}\n`);
+}
+
+function shq(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+/** Quote a remote path while letting the remote shell expand a leading ~/. */
+function remotePath(dir) {
+  if (dir === "~") return "~";
+  if (dir.startsWith("~/")) return `~/${shq(dir.slice(2))}`;
+  return shq(dir);
+}
+
+async function deployRemote(values) {
+  const host = values.host;
+  const dir = (values.dir ?? "omp-ui").replace(/\/+$/, "") || ".";
+  for (const tool of ["ssh", "rsync"]) {
+    if (!which(tool)) throw new CliError(`${tool} is required for remote deploys.`);
+  }
+  await prepareDockerEnv(values, { localMounts: false });
+  const cfg = loadConfig();
+  const rdir = remotePath(dir);
+
+  log.step(`Deploying to ${host}:${dir}`);
+  await runOrFail("ssh", "ssh", [host, `mkdir -p ${rdir}`], { shell: false });
+  const excludes = ["node_modules", "dist", "data", "workspace", ".git", ".next", ".vinext", "tsconfig.tsbuildinfo"];
+  await runOrFail(
+    "rsync",
+    "rsync",
+    ["-az", "--delete", ...excludes.flatMap((e) => ["--exclude", `/${e}`]), `${ROOT}/`, `${host}:${dir}/`],
+    { shell: false },
+  );
+  log.ok("Files synced");
+  const profiles = values.public ? "--profile public " : "";
+  const remote = [
+    `cd ${rdir}`,
+    "mkdir -p data workspace ~/.omp ~/.config/gh && mkdir -p -m 700 ~/.ssh && touch ~/.gitconfig",
+    `export WORKSPACE_DIR="$PWD/workspace"`,
+    `if docker compose version >/dev/null 2>&1; then docker compose ${profiles}up -d --build; else docker-compose ${profiles}up -d --build; fi`,
+  ].join(" && ");
+  await runOrFail("Remote docker compose", "ssh", [host, remote], { shell: false });
+
+  const server = host.includes("@") ? host.slice(host.indexOf("@") + 1) : host;
+  log.ok("Deployed");
+  console.log(`\n  ${c.green("➜")} ${c.cyan(c.bold(`http://${server}:${cfg.port}`))}\n`);
+  console.log(c.bold("Next steps"));
+  console.log(`  ${c.dim("·")} Sign omp in on the server (once): ${c.cyan(`ssh -t ${host} "cd ${dir} && docker compose exec -u omp omp-ui omp"`)}`);
+  console.log(`  ${c.dim("·")} Put a TLS reverse proxy in front for public access (see README)`);
+  if (values.public) console.log(`  ${c.dim("·")} Tunnel URL: ${c.cyan(`ssh ${host} "cd ${dir} && docker compose logs tunnel"`)}`);
+  console.log("");
+}
+
+// ─── Commands ───────────────────────────────────────────────────────────────
+
+const PORT_OPT = { type: "string", short: "p", arg: "<port>", desc: "Port to listen on (saved to .env)" };
+
+/** Persist --port to .env so every later command agrees on the port. */
+function applyPortFlag(values) {
+  if (values.port === undefined) return;
+  const port = String(parsePort(values.port));
+  if (fs.existsSync(ENV_FILE)) {
+    if (readEnvFile()?.PORT !== port) {
+      updateEnvFile({ PORT: port });
+      log.info(`Saved PORT=${port} to .env`);
+    }
+  }
+}
+
+const COMMANDS = {
+  up: {
+    summary: "Set everything up and start it — the only command you need",
+    usage: "omp-ui up [options]",
+    options: {
+      password: { type: "string", arg: "<pw>", desc: "Admin password for first-run setup (or env ADMIN_PASSWORD)" },
+      port: PORT_OPT,
+      public: { type: "boolean", desc: "Also open a public tunnel (cloudflared/ngrok)" },
+      rebuild: { type: "boolean", desc: "Force a fresh production build" },
+      open: { type: "boolean", short: "o", desc: "Open the browser when ready" },
+    },
+    examples: ["omp-ui up", "omp-ui up --port 8080 --public", "ADMIN_PASSWORD='s3cret-pass' omp-ui up"],
+    async run(values) {
+      requireNode();
+      const prevPort = fs.existsSync(ENV_FILE) ? loadConfig().port : null;
+      if (prevPort === null) {
+        log.step("First run — creating .env");
+        await initProject({ password: values.password, port: values.port, yes: true }, { fromUp: true });
+      } else {
+        applyPortFlag(values);
+      }
+      let cfg = loadConfig();
+      await ensureDeps();
+      const state = values.rebuild ? "forced" : buildState();
+      const runningBefore = runningPid(statePaths(cfg).pid, SERVER_MARK);
+      if (state !== "fresh") {
+        if (runningBefore) {
+          log.info(state === "stale" ? "Sources changed — rebuilding" : "Rebuilding");
+          await stopServer(cfg);
+        }
+        await buildApp();
+      } else if (runningBefore && prevPort !== null && cfg.port !== prevPort) {
+        log.info(`Port changed — restarting on ${cfg.port}`);
+        await stopServer(loadConfig({ PORT: prevPort }));
+      }
+      cfg = loadConfig();
+      const { health } = await startServer(cfg);
+      const tunnelUrl = values.public ? await tunnelStart(cfg) : tunnelInfo(cfg)?.url;
+      if (!values.public) printUrls(cfg, { tunnelUrl });
+      if (health && !values.public) printNextSteps();
+      if (values.open) await openInBrowser(localUrl(cfg));
+    },
+  },
+
+  init: {
+    summary: "Answer a few questions and save the settings to .env",
+    usage: "omp-ui init [options]",
+    options: {
+      password: { type: "string", arg: "<pw>", desc: "Admin password (min 8 chars)" },
+      port: { type: "string", short: "p", arg: "<port>", desc: "Port (default 3000)" },
+      db: { type: "string", arg: "<sqlite|mongodb|postgres>", desc: "Database driver (default sqlite)" },
+      "db-url": { type: "string", arg: "<url>", desc: "Database URL (mongodb://… or postgres://…; implies --db)" },
+      "mongo-url": { type: "string", arg: "<url>", desc: "Alias of --db-url for MongoDB" },
+      "data-dir": { type: "string", arg: "<dir>", desc: "Data directory (default ./data)" },
+      "omp-path": { type: "string", arg: "<path>", desc: "omp executable (default: omp on PATH)" },
+      "max-agents": { type: "string", arg: "<n>", desc: "Max concurrent agents (default 2)" },
+      workspace: { type: "string", arg: "<dir>", desc: "Projects folder (default ~/omp-workspace)" },
+      yes: { type: "boolean", short: "y", desc: "Accept defaults for anything not given" },
+      force: { type: "boolean", desc: "Overwrite an existing .env (keeps AUTH_SECRET)" },
+    },
+    examples: [
+      "omp-ui init",
+      "omp-ui init --password 'long-secret' --yes",
+      "omp-ui init --db postgres --db-url postgres://user:pass@localhost:5432/omp_ui",
+      "omp-ui init --db mongodb --db-url mongodb://localhost:27017/omp_ui",
+    ],
+    async run(values) {
+      await initProject(values);
+    },
+  },
+
+  start: {
+    summary: "Start the server in the background",
+    usage: "omp-ui start [options]",
+    options: {
+      port: PORT_OPT,
+      foreground: { type: "boolean", short: "f", desc: "Run attached to this terminal" },
+    },
+    async run(values) {
+      applyPortFlag(values);
+      const cfg = loadConfig({ PORT: values.port });
+      const result = await startServer(cfg, { foreground: values.foreground });
+      if (!result.foreground) printUrls(cfg, { tunnelUrl: tunnelInfo(cfg)?.url });
+    },
+  },
+
+  stop: {
+    summary: "Stop the server (and the public link, if any)",
+    usage: "omp-ui stop",
+    options: {},
+    async run() {
+      const cfg = loadConfig();
+      await tunnelStop(cfg, { quiet: true });
+      await stopServer(cfg);
+    },
+  },
+
+  restart: {
+    summary: "Restart the server",
+    usage: "omp-ui restart [options]",
+    options: { port: PORT_OPT },
+    async run(values) {
+      const before = loadConfig();
+      applyPortFlag(values);
+      await stopServer(before);
+      const cfg = loadConfig();
+      if (cfg.port !== before.port && tunnelInfo(before)) {
+        log.warn("Port changed — stopping the public tunnel (restart it with: omp-ui public)");
+        await tunnelStop(before, { quiet: true });
+      }
+      await startServer(cfg);
+      printUrls(cfg, { tunnelUrl: tunnelInfo(cfg)?.url });
+    },
+  },
+
+  status: {
+    summary: "Is it running? Shows the links, uptime and health",
+    usage: "omp-ui status [--json]",
+    options: { json: { type: "boolean", desc: "Print machine-readable JSON" } },
+    async run(values) {
+      const cfg = loadConfig();
+      const paths = statePaths(cfg);
+      const pid = runningPid(paths.pid, SERVER_MARK);
+      let startedAt = null;
+      if (pid) {
+        try {
+          startedAt = fs.statSync(paths.pid).mtime;
+        } catch {
+          // pid file vanished
+        }
+      }
+      const health = await getHealth(cfg);
+      const tunnel = tunnelInfo(cfg);
+      if (values.json) {
+        console.log(
+          JSON.stringify(
+            {
+              running: Boolean(pid),
+              pid,
+              startedAt: startedAt?.toISOString() ?? null,
+              url: localUrl(cfg),
+              lan: lanUrls(cfg),
+              health,
+              tunnel,
+            },
+            null,
+            2,
+          ),
+        );
+      } else {
+        const row = (k, v) => console.log(`  ${c.dim(k.padEnd(9))}${v}`);
+        const state = pid
+          ? `${c.green("● running")} ${c.dim(`pid ${pid}${startedAt ? ` · up ${formatDuration(Date.now() - startedAt.getTime())}` : ""}`)}`
+          : health
+            ? `${c.yellow("● running elsewhere")} ${c.dim("(not started by this CLI, e.g. Docker)")}`
+            : c.red("● stopped");
+        console.log(`\n${c.bold("OMP UI")}  ${state}`);
+        row("URL", c.cyan(localUrl(cfg)));
+        for (const url of lanUrls(cfg)) row("Network", c.cyan(url));
+        if (health) {
+          const a = health.agents ?? { running: [], queued: [] };
+          row("Health", `${c.green("ok")} ${c.dim(`v${health.version} · ${health.db} · agents ${a.running?.length ?? 0} running, ${a.queued?.length ?? 0} queued`)}`);
+          row("", c.dim(JSON.stringify(health)));
+        } else {
+          row("Health", c.red("unreachable"));
+        }
+        row("Public", tunnel?.url ? c.magenta(tunnel.url) : c.dim("off (omp-ui public)"));
+        row("Logs", c.dim(rel(paths.log)));
+        console.log("");
+      }
+      if (!pid && !health) process.exitCode = 3;
+    },
+  },
+
+  logs: {
+    summary: "Show the server log",
+    usage: "omp-ui logs [-f] [-n <lines>]",
+    options: {
+      follow: { type: "boolean", short: "f", desc: "Keep printing new lines" },
+      lines: { type: "string", short: "n", arg: "<lines>", desc: "Number of lines to show (default 100)" },
+    },
+    async run(values) {
+      const cfg = loadConfig();
+      const file = statePaths(cfg).log;
+      const n = Number(values.lines ?? 100);
+      if (!Number.isInteger(n) || n < 0) throw new CliError(`Invalid line count "${values.lines}".`);
+      if (!fs.existsSync(file)) {
+        throw new CliError(`No log file yet (${rel(file)}).`, { hint: "Start the server: omp-ui up" });
+      }
+      process.stdout.write(tailLines(file, n));
+      if (!values.follow) return;
+      let pos = fs.statSync(file).size;
+      for (;;) {
+        await sleep(500);
+        let size;
+        try {
+          size = fs.statSync(file).size;
+        } catch {
+          continue;
+        }
+        if (size < pos) pos = 0; // rotated or truncated
+        if (size === pos) continue;
+        const fd = fs.openSync(file, "r");
+        try {
+          const buf = Buffer.alloc(size - pos);
+          fs.readSync(fd, buf, 0, buf.length, pos);
+          process.stdout.write(buf);
+        } finally {
+          fs.closeSync(fd);
+        }
+        pos = size;
+      }
+    },
+  },
+
+  dev: {
+    summary: "Run in development mode with live reload",
+    usage: "omp-ui dev [options]",
+    options: { port: { type: "string", short: "p", arg: "<port>", desc: "Port (default: PORT from .env)" } },
+    async run(values) {
+      requireNode();
+      await ensureDeps();
+      const cfg = loadConfig({ PORT: values.port });
+      if (!cfg.hasEnvFile) log.warn("No .env found — running with defaults. Create one with: omp-ui init");
+      await assertPortFree(cfg);
+      fs.mkdirSync(cfg.dataDir, { recursive: true });
+      const env = { ...cfg.env, PORT: String(cfg.port), HOST: cfg.host };
+      delete env.NODE_ENV;
+      const hostArg = WILDCARD_HOSTS.has(cfg.host) ? "0.0.0.0" : cfg.host;
+      process.exitCode = await run(
+        process.execPath,
+        [VITE_BIN, "dev", "--port", String(cfg.port), "--strictPort", "--host", hostArg],
+        { env, shell: false },
+      );
+    },
+  },
+
+  build: {
+    summary: "Build the app (up does this for you)",
+    usage: "omp-ui build",
+    options: {},
+    async run() {
+      await buildApp();
+      const cfg = loadConfig();
+      if (runningPid(statePaths(cfg).pid, SERVER_MARK)) log.info(`Apply it with: ${c.cyan("omp-ui restart")}`);
+    },
+  },
+
+  open: {
+    summary: "Open OMP UI in your browser",
+    usage: "omp-ui open [--public]",
+    options: { public: { type: "boolean", desc: "Open the public tunnel URL instead" } },
+    async run(values) {
+      const cfg = loadConfig();
+      let url = localUrl(cfg);
+      if (values.public) {
+        url = tunnelInfo(cfg)?.url;
+        if (!url) throw new CliError("No public tunnel is running.", { hint: "Start one: omp-ui public" });
+      } else if (!(await getHealth(cfg))) {
+        log.warn(`Nothing answers at ${url} yet — start it with: omp-ui up`);
+      }
+      if (await openInBrowser(url)) log.ok(`Opened ${c.cyan(url)}`);
+      else log.info(`Open this URL: ${c.cyan(url)}`);
+    },
+  },
+
+  passwd: {
+    summary: "Change the admin password",
+    usage: "omp-ui passwd [password]",
+    positionals: true,
+    options: {},
+    description:
+      "Updates ADMIN_PASSWORD in .env; it is applied at the next boot and signs out every existing session.\nOmit the argument to be prompted (hidden) — or pipe it: echo 'new-pass' | omp-ui passwd",
+    async run(_values, positionals) {
+      if (!fs.existsSync(ENV_FILE)) throw new CliError("No .env found.", { hint: "Run: omp-ui init  (or: omp-ui up)" });
+      if (positionals.length > 1) throw new CliError("Too many arguments — quote passwords that contain spaces.");
+      let pw = positionals[0];
+      if (pw === undefined) pw = isInteractive() ? await askNewPassword("New admin password") : await readStdinLine();
+      validatePassword(pw);
+      updateEnvFile({ ADMIN_PASSWORD: pw });
+      log.ok("Admin password saved to .env");
+      const cfg = loadConfig();
+      if (runningPid(statePaths(cfg).pid, SERVER_MARK)) {
+        log.info("Restarting to apply it…");
+        await stopServer(cfg);
+        await startServer(cfg);
+        log.ok("New password is active — all previous sessions were signed out");
+      } else {
+        log.hint("Applied at next boot: omp-ui restart  (Docker: omp-ui docker up)");
+      }
+    },
+  },
+
+  public: {
+    summary: "Get a public https link to use it from anywhere",
+    usage: "omp-ui public [start|stop|status]",
+    positionals: true,
+    options: {},
+    description:
+      "Prefers cloudflared (free quick tunnel, https://<random>.trycloudflare.com), falls back to ngrok.\nThe URL changes every time the tunnel starts. `omp-ui stop` also closes the tunnel.",
+    async run(_values, positionals) {
+      const action = positionals[0] ?? "start";
+      const cfg = loadConfig();
+      if (action === "start") await tunnelStart(cfg);
+      else if (action === "stop") await tunnelStop(cfg);
+      else if (action === "status") {
+        const t = tunnelInfo(cfg);
+        if (t) console.log(`${c.green("● public")} ${c.magenta(t.url ?? "(URL unknown)")} ${c.dim(`pid ${t.pid}`)}`);
+        else {
+          console.log(c.dim("● not public (start with: omp-ui public)"));
+          process.exitCode = 3;
+        }
+      } else throw new CliError(`Unknown action "${action}".`, { hint: "Use: omp-ui public [start|stop|status]" });
+    },
+  },
+
+  docker: {
+    summary: "Run it in Docker: up, down, logs, build, ps",
+    usage: "omp-ui docker <up|down|logs|build|ps> [options] [services…]",
+    positionals: true,
+    options: {
+      mongo: { type: "boolean", desc: "Use the bundled MongoDB service (saved to .env as COMPOSE_PROFILES)" },
+      postgres: { type: "boolean", desc: "Use the bundled PostgreSQL service (saved to .env as COMPOSE_PROFILES)" },
+      public: { type: "boolean", desc: "Also run the cloudflared tunnel service (up)" },
+      build: { type: "boolean", desc: "Rebuild the image before starting (up)" },
+      password: { type: "string", arg: "<pw>", desc: "Admin password when .env does not exist yet (up)" },
+      follow: { type: "boolean", short: "f", desc: "Follow log output (logs)" },
+      lines: { type: "string", short: "n", arg: "<lines>", desc: "Lines of history (logs, default 200)" },
+    },
+    examples: [
+      "omp-ui docker up",
+      "omp-ui docker up --postgres --build",
+      "omp-ui docker up --mongo",
+      "omp-ui docker logs -f omp-ui",
+      "omp-ui docker down",
+    ],
+    async run(values, positionals) {
+      const [sub, ...services] = positionals;
+      const allProfiles = ["mongo", "postgres", "public"].flatMap((p) => ["--profile", p]);
+      switch (sub) {
+        case "up":
+          return dockerUp(values);
+        case "down":
+          return compose([...allProfiles, "down", ...services]);
+        case "logs":
+          return compose([
+            ...allProfiles,
+            "logs",
+            "--tail",
+            String(values.lines ?? 200),
+            ...(values.follow ? ["--follow"] : []),
+            ...services,
+          ]);
+        case "build":
+          if (composeDbProfile(values)) await prepareDockerEnv(values);
+          return compose(["build", ...services]);
+        case "ps":
+          return compose([...allProfiles, "ps", ...services]);
+        default:
+          throw new CliError(sub ? `Unknown docker command "${sub}".` : "Missing docker command.", {
+            hint: "Use: omp-ui docker <up|down|logs|build|ps>",
+          });
+      }
+    },
+  },
+
+  deploy: {
+    summary: "Put it on a server (Docker over ssh)",
+    usage: "omp-ui deploy [--host user@server] [--dir path]",
+    options: {
+      host: { type: "string", arg: "<user@server>", desc: "SSH target; omit to deploy on this machine" },
+      dir: { type: "string", arg: "<path>", desc: "Remote directory (default ~/omp-ui)" },
+      mongo: { type: "boolean", desc: "Use the bundled MongoDB service" },
+      postgres: { type: "boolean", desc: "Use the bundled PostgreSQL service" },
+      public: { type: "boolean", desc: "Also run the cloudflared tunnel service" },
+      password: { type: "string", arg: "<pw>", desc: "Admin password when .env does not exist yet" },
+    },
+    description:
+      "Without --host: same as `omp-ui docker up --build`.\nWith --host: rsyncs the project (minus node_modules, dist, data, workspace, .git — .env included)\nto the server and runs `docker compose up -d --build` there. The server needs Docker + rsync.",
+    examples: [
+      "omp-ui deploy",
+      "omp-ui deploy --host root@203.0.113.10",
+      "omp-ui deploy --host me@box --dir /srv/omp-ui --postgres",
+    ],
+    async run(values) {
+      if (values.host) return deployRemote(values);
+      return dockerUp({ ...values, build: true });
+    },
+  },
+
+  doctor: {
+    summary: "Check that everything is installed and working",
+    usage: "omp-ui doctor",
+    options: {},
+    async run() {
+      let failures = 0;
+      const row = (status, label, detail = "") => {
+        const icon = { ok: c.green("✓"), warn: c.yellow("!"), fail: c.red("✗"), info: c.dim("·") }[status];
+        if (status === "fail") failures++;
+        console.log(`${icon} ${label.padEnd(16)} ${detail}`);
+      };
+      console.log(`\n${c.bold("omp-ui doctor")} ${c.dim(ROOT)}\n`);
+
+      row(NODE_MAJOR >= MIN_NODE ? "ok" : "fail", "Node.js", NODE_MAJOR >= MIN_NODE ? `v${process.versions.node}` : `v${process.versions.node} — need ${MIN_NODE}+ (https://nodejs.org)`);
+
+      const cfg = loadConfig();
+      if (cfg.hasEnvFile) {
+        const mode = fs.statSync(ENV_FILE).mode & 0o777;
+        row(!IS_WIN && mode & 0o077 ? "warn" : "ok", ".env", !IS_WIN && mode & 0o077 ? `readable by others (mode ${mode.toString(8)}) — chmod 600 .env` : rel(ENV_FILE));
+        row(cfg.file.ADMIN_PASSWORD ? "ok" : "warn", "Admin password", cfg.file.ADMIN_PASSWORD ? "set in .env" : "not in .env — set one: omp-ui passwd");
+      } else {
+        row("warn", ".env", "missing — run: omp-ui init (or omp-ui up)");
+      }
+
+      const ompPath = cfg.env.OMP_PATH || "omp";
+      const omp = resolveOmp(ompPath);
+      if (!omp) row("fail", "omp", `not found (${ompPath}) — install: ${OMP_INSTALL_CMD}`);
+      else {
+        const v = capture(omp.path, ["--version"]);
+        if (!omp.onPath) row("warn", "omp", `${v ?? "installed"} at ${omp.path} — not on PATH; set OMP_PATH=${omp.path} in .env`);
+        else row(v ? "ok" : "warn", "omp", v ? `${v} ${c.dim(omp.path)}` : `${omp.path} did not answer --version`);
+      }
+      const ompAgentDir = path.join(os.homedir(), ".omp", "agent");
+      row(fs.existsSync(ompAgentDir) ? "ok" : "warn", "omp config", fs.existsSync(ompAgentDir) ? ompAgentDir : "~/.omp/agent missing — run `omp` once and sign in to a provider");
+
+      const git = toolVersion("git");
+      row(git ? "ok" : "fail", "git", git ?? "not found — install git (needed for Clone, PR/MR and Push)");
+      const gh = toolVersion("gh");
+      if (!gh) row("info", "GitHub CLI", c.dim("gh not installed (optional, for GitHub PRs) — https://cli.github.com"));
+      else {
+        const authed = Boolean(process.env.GH_TOKEN || cfg.env.GH_TOKEN) || spawnSync("gh", ["auth", "status"], { stdio: "ignore", timeout: 15_000 }).status === 0;
+        row(authed ? "ok" : "warn", "GitHub CLI", authed ? `${gh} · signed in` : `${gh} · not signed in — run: gh auth login (or set GH_TOKEN)`);
+      }
+      const glab = toolVersion("glab");
+      if (!glab) row("info", "GitLab CLI", c.dim("glab not installed (optional, for GitLab MRs) — https://gitlab.com/gitlab-org/cli"));
+      else {
+        const authed = Boolean(process.env.GITLAB_TOKEN || cfg.env.GITLAB_TOKEN) || spawnSync("glab", ["auth", "status"], { stdio: "ignore", timeout: 15_000 }).status === 0;
+        row(authed ? "ok" : "warn", "GitLab CLI", authed ? `${glab} · signed in` : `${glab} · not signed in — run: glab auth login (or set GITLAB_TOKEN)`);
+      }
+      const workspace = path.resolve(ROOT, expandHome(cfg.env.WORKSPACE_DIR || path.join(os.homedir(), "omp-workspace")));
+      row(fs.existsSync(workspace) ? "ok" : "warn", "Projects folder", fs.existsSync(workspace) ? workspace : `${workspace} missing — it is created on first use`);
+
+      const pnpm = toolVersion("pnpm");
+      row(pnpm ? "ok" : "info", "pnpm", pnpm ? `v${pnpm}` : c.dim("not found (corepack/npm used instead)"));
+      row(depsInstalled() ? "ok" : "warn", "Dependencies", depsInstalled() ? "installed" : "missing — omp-ui up installs them");
+      const build = buildState();
+      row(build === "fresh" ? "ok" : "warn", "Build", build === "fresh" ? "up to date" : build === "stale" ? "outdated — omp-ui up rebuilds" : "missing — omp-ui up builds it");
+      const docker = toolVersion("docker");
+      row(docker ? "ok" : "info", "Docker", docker ?? c.dim("not installed (optional)"));
+      const cloudflared = toolVersion("cloudflared");
+      const ngrok = toolVersion("ngrok", ["version"]);
+      row(cloudflared || ngrok ? "ok" : "info", "Tunnel tool", cloudflared ?? ngrok ?? c.dim(`none (optional) — ${CLOUDFLARED_DOWNLOADS}`));
+
+      const pid = runningPid(statePaths(cfg).pid, SERVER_MARK);
+      const health = await getHealth(cfg);
+      if (pid || health) {
+        row("ok", "Port", `${cfg.port} in use by OMP UI`);
+      } else {
+        const port = await portStatus(cfg.port, cfg.host);
+        row(port === "free" ? "ok" : "fail", "Port", port === "free" ? `${cfg.port} free` : `${cfg.port} ${port === "denied" ? "not permitted" : "in use by another process"} — change PORT in .env`);
+      }
+      if (health) {
+        row("ok", "Server", `${pid ? `pid ${pid}` : "running (external/Docker)"} · v${health.version} · ${localUrl(cfg)}`);
+        row("ok", "Database", `${health.db} reachable`);
+      } else if (pid) {
+        row("fail", "Server", `pid ${pid} is running but /api/v1/health does not answer — omp-ui logs`);
+        row("fail", "Database", "unknown (server unhealthy)");
+      } else {
+        row("info", "Server", c.dim("not running — omp-ui up"));
+        row("info", "Database", c.dim(`${dbKindFromUrl(cfg.env.DATABASE_URL)} (checked when the server runs)`));
+      }
+      const tunnel = tunnelInfo(cfg);
+      row(tunnel ? "ok" : "info", "Public tunnel", tunnel ? (tunnel.url ?? `pid ${tunnel.pid}`) : c.dim("off"));
+
+      console.log("");
+      if (failures) {
+        log.error(`${failures} problem${failures > 1 ? "s" : ""} found`);
+        process.exitCode = 1;
+      } else {
+        log.ok("All good");
+      }
+    },
+  },
+
+  version: {
+    summary: "Print the version",
+    usage: "omp-ui version",
+    options: {},
+    async run() {
+      console.log(`omp-ui ${packageVersion()} ${c.dim(`(node ${process.versions.node})`)}`);
+    },
+  },
+};
+
+// ─── Help ───────────────────────────────────────────────────────────────────
+
+function printMainHelp() {
+  const groups = [
+    ["Start", ["up", "init", "start", "stop", "restart", "status", "logs", "open"]],
+    ["Configure", ["passwd", "public", "doctor"]],
+    ["Deploy", ["docker", "deploy"]],
+    ["Develop", ["dev", "build", "version"]],
+  ];
+  const width = Math.max(...Object.keys(COMMANDS).map((k) => k.length)) + 2;
+  console.log(`\n${c.bold("omp-ui")} ${c.dim(packageVersion())} — run OMP coding agents from a kanban board\n`);
+  console.log(`${c.bold("Usage")}\n  omp-ui <command> [options]\n`);
+  for (const [title, names] of groups) {
+    console.log(c.bold(title));
+    for (const name of names) console.log(`  ${c.cyan(name.padEnd(width))}${COMMANDS[name].summary}`);
+    console.log("");
+  }
+  console.log(`${c.bold("Quick start")}\n  ${c.cyan("./omp-ui up")}   ${c.dim("set up, install, build, start — prints the URL")}\n`);
+  console.log(c.dim("Run `omp-ui <command> --help` for details. Config: .env · state & logs: DATA_DIR (./data)\n"));
+}
+
+function printCommandHelp(name) {
+  const cmd = COMMANDS[name];
+  console.log(`\n${c.bold(`omp-ui ${name}`)} — ${cmd.summary}\n`);
+  console.log(`${c.bold("Usage")}\n  ${cmd.usage}\n`);
+  if (cmd.description) console.log(`${cmd.description.split("\n").map((l) => `  ${l}`).join("\n")}\n`);
+  const opts = Object.entries({ ...cmd.options, help: { type: "boolean", short: "h", desc: "Show this help" } }).map(
+    ([long, o]) => [`${o.short ? `-${o.short}, ` : "    "}--${long}${o.arg ? ` ${o.arg}` : ""}`, o.desc],
+  );
+  const width = Math.max(...opts.map(([flag]) => flag.length)) + 2;
+  console.log(c.bold("Options"));
+  for (const [flag, desc] of opts) console.log(`  ${c.cyan(flag.padEnd(width))}${desc}`);
+  if (cmd.examples?.length) {
+    console.log(`\n${c.bold("Examples")}`);
+    for (const ex of cmd.examples) console.log(`  ${c.dim("$")} ${ex}`);
+  }
+  console.log("");
+}
+
+// ─── Entry ──────────────────────────────────────────────────────────────────
+
+async function main(argv) {
+  let [name, ...rest] = argv;
+  if (name === "-v" || name === "--version") name = "version";
+  if (!name || name === "-h" || name === "--help" || name === "help") {
+    if (rest[0] && COMMANDS[rest[0]]) printCommandHelp(rest[0]);
+    else printMainHelp();
+    return;
+  }
+  const cmd = COMMANDS[name];
+  if (!cmd) throw new CliError(`Unknown command "${name}".`, { hint: "See: omp-ui --help" });
+
+  const options = { help: { type: "boolean", short: "h" } };
+  for (const [long, o] of Object.entries(cmd.options)) {
+    options[long] = o.short ? { type: o.type, short: o.short } : { type: o.type };
+  }
+  let parsed;
+  try {
+    parsed = parseArgs({ args: rest, options, allowPositionals: Boolean(cmd.positionals), strict: true });
+  } catch (err) {
+    throw new CliError(err.message, { hint: `See: omp-ui ${name} --help` });
+  }
+  if (parsed.values.help) {
+    printCommandHelp(name);
+    return;
+  }
+  await cmd.run(parsed.values, parsed.positionals);
+}
+
+main(process.argv.slice(2)).then(
+  () => process.exit(process.exitCode ?? 0),
+  (err) => {
+    if (err instanceof CliError) {
+      log.error(err.message);
+      if (err.hint) for (const line of err.hint.split("\n")) log.hint(line.trim());
+      process.exit(err.exitCode);
+    }
+    log.error(err?.stack ?? String(err));
+    process.exit(1);
+  },
+);
