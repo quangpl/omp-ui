@@ -192,6 +192,21 @@ export interface GitStatus {
   prCliAvailable: boolean;
 }
 
+export interface GitBranch {
+  /** Branch name without `refs/heads/` / `origin/`. */
+  name: string;
+  /** Exists only on origin; switching to it creates a local branch tracking it. */
+  remoteOnly: boolean;
+}
+
+/** GET /boards/:id/git/branches?folder=<abs>: local branches (newest first), then origin-only ones. */
+export interface GitBranches {
+  folder: string;
+  /** Checked-out branch, or null on a detached HEAD. */
+  current: string | null;
+  branches: GitBranch[];
+}
+
 /** Outcome for one folder of a push / PR action. */
 export interface GitRepoActionResult {
   folder: string;
