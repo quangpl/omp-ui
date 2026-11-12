@@ -188,6 +188,12 @@ export interface AppSettings {
    * `slow` for hard problems, `designer` for UI work), falling back to `defaultModel`.
    */
   autoModel: boolean;
+  /**
+   * Smart queue: when several cards of a project wait in the agent queue, a planner agent orders
+   * them (prerequisites and quick unblockers first) and adds the "Runs after" links it finds, so
+   * independent cards run in parallel and dependent ones wait for what they build on.
+   */
+  smartQueue: boolean;
   /** What a card's agent may do with a web browser (omp's `browser` tool). */
   browser: BrowserMode;
 }
@@ -206,8 +212,17 @@ export const DEFAULT_SETTINGS: AppSettings = {
   approvalMode: "yolo",
   defaultModel: "",
   autoModel: true,
+  smartQueue: true,
   browser: "headless",
 };
+
+/** An installed omp skill (from `omp skill list`): pickable with "/" when composing a card. */
+export interface OmpSkill {
+  name: string;
+  description: string;
+  /** Where omp found it, e.g. "native:user" or a plugin name. */
+  source: string;
+}
 
 /** Server-sent events on GET /api/v1/events. */
 export type ServerEvent =
@@ -309,6 +324,10 @@ export interface QueueEntry {
   state: "running" | "queued";
   /** Blocking cards (Task.blockedBy) that are not Done yet; the run waits for them. */
   waitingFor: string[];
+  /** Held until the smart-queue planner has ordered its project's queued cards. */
+  planning: boolean;
+  /** Why the smart-queue planner put the card where it is (one line); null when not planned. */
+  planNote: string | null;
 }
 
 export interface QueueSnapshot {
@@ -317,6 +336,8 @@ export interface QueueSnapshot {
   running: QueueEntry[];
   /** Start order. */
   queued: QueueEntry[];
+  /** Projects whose queued cards the smart-queue planner is ordering right now. */
+  planning: { boardId: string; boardName: string }[];
 }
 
 /** A card with its project's name, for cross-project lists on the home dashboard. */

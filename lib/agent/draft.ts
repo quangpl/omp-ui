@@ -150,6 +150,7 @@ export function buildDraftPrompt(input: {
     "  ## Acceptance criteria — observable checks that prove it is done, including how to verify (tests, build, what to check in the UI).",
     "  ## Notes — assumptions you made where the request is ambiguous, and what is out of scope.",
     "  Keep every concrete detail of the request word for word: names, numbers, paths, URLs, error messages, code and logs (code and logs in fenced code blocks). Fix typos without changing the meaning. Never invent requirements the user did not ask for, and never drop one they did.",
+    "  When the request references OMP skills (`skill://<name>` tokens), keep each token verbatim in the description and add a line telling the agent to read those skills before starting the work.",
     "- orchestrate: true when the work splits into several independent parts that parallel subagents could do at the same time (several features, many pages or files, a codebase-wide change), or when the user asks for orchestration or parallel work; false for one focused change. Express it only through this field: never write the word orchestrate in the title or description.",
     `- waitFor: ids of open cards listed above that must be finished before this one can start — only when the request says it builds on them or comes after them. Otherwise [].`,
     "",
