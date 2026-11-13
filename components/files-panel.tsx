@@ -1,17 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  CheckIcon,
-  CopyIcon,
-  DownloadIcon,
-  FileIcon,
-  Loader2Icon,
-  Trash2Icon,
-  UploadIcon,
-} from "lucide-react";
+import { CheckIcon, CopyIcon, DownloadIcon, Loader2Icon, Trash2Icon, UploadIcon } from "lucide-react";
 import { toast } from "sonner";
-import { AttachmentViewer, formatSize, isPlainClick, openAttachment, type Attachment } from "@/components/attachment-viewer";
+import { AttachmentViewer, openAttachment } from "@/components/attachment-viewer";
+import {
+  attachmentKind,
+  formatSize,
+  isPlainClick,
+  KIND_ICON,
+  KIND_LABEL,
+  type Attachment,
+} from "@/components/viewer/common";
 import { errorMessage, formatDateTime, formatRelative } from "@/components/board/format";
 import {
   AlertDialog,
@@ -29,8 +29,6 @@ import { subscribeBoardStreams, useBoardStreams } from "@/hooks/use-board";
 import { api, subscribeEvents, type FileScope } from "@/lib/api-client";
 import type { ServerEvent, SharedFile, SharedFiles } from "@/lib/types";
 import { cn, copyText } from "@/lib/utils";
-
-const IMAGE_FILE = /\.(png|jpe?g|gif|webp)$/i;
 
 /**
  * Files shared on a card (`scope` "tasks") or on a whole project (`scope` "boards"): list,
@@ -159,6 +157,40 @@ export function FilesPanel({
 
   const hasFiles = (event: React.DragEvent) => event.dataTransfer.types.includes("Files");
 
+  /** ↑/↓ and Home/End move between rows' preview links; Space previews the focused file like a click. */
+  const onListKeyDown = (event: React.KeyboardEvent<HTMLUListElement>) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const links = Array.from(event.currentTarget.querySelectorAll<HTMLAnchorElement>("[data-file-link]"));
+    if (links.length === 0) return;
+    const target = event.target as HTMLElement;
+    const row = target.closest("li");
+    const current = links.findIndex((link) => row?.contains(link));
+    let next: number;
+    switch (event.key) {
+      case "ArrowDown":
+        next = current < 0 ? 0 : Math.min(links.length - 1, current + 1);
+        break;
+      case "ArrowUp":
+        next = current < 0 ? 0 : Math.max(0, current - 1);
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = links.length - 1;
+        break;
+      case " ":
+        if (!target.hasAttribute("data-file-link")) return;
+        event.preventDefault();
+        target.click();
+        return;
+      default:
+        return;
+    }
+    event.preventDefault();
+    links[next].focus();
+  };
+
   return (
     <div
       className={cn(
@@ -232,71 +264,80 @@ export function FilesPanel({
           {emptyHint ?? "No files yet. Upload or drop files here."}
         </p>
       ) : (
-        <ul className="divide-y rounded-lg border">
-          {data.files.map((file, index) => {
-            const href = attachments[index].url;
-            return (
-              <li key={file.name} className="flex min-h-14 items-center gap-3 py-1.5 pr-1 pl-2">
-                <a
-                  href={href}
-                  target="_blank"
-                  rel="noreferrer"
-                  title={`Preview ${file.name}`}
-                  onClick={(event) => {
-                    if (!isPlainClick(event)) return;
-                    event.preventDefault();
-                    openAttachment({ ...attachments[index], list: attachments, index });
-                  }}
-                  className="flex min-w-0 flex-1 items-center gap-3 rounded-md outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-                >
-                  {IMAGE_FILE.test(file.name) ? (
-                    <img
-                      src={href}
-                      alt=""
-                      loading="lazy"
-                      className="size-10 shrink-0 rounded-md border bg-muted object-cover"
-                    />
-                  ) : (
-                    <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                      <FileIcon className="size-4" aria-hidden />
+        <>
+          <ul className="divide-y rounded-lg border" onKeyDown={onListKeyDown}>
+            {data.files.map((file, index) => {
+              const attachment = attachments[index];
+              const href = attachment.url;
+              const kind = attachmentKind(attachment);
+              const KindIcon = KIND_ICON[kind];
+              return (
+                <li key={file.name} className="flex min-h-14 items-center gap-3 py-1.5 pr-1 pl-2">
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={`Preview ${file.name}`}
+                    data-file-link
+                    onClick={(event) => {
+                      if (!isPlainClick(event)) return;
+                      event.preventDefault();
+                      openAttachment({ ...attachment, list: attachments, index });
+                    }}
+                    className="flex min-w-0 flex-1 items-center gap-3 rounded-md outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                  >
+                    {kind === "image" ? (
+                      <img
+                        src={href}
+                        alt=""
+                        loading="lazy"
+                        className="size-10 shrink-0 rounded-md border bg-muted object-cover"
+                      />
+                    ) : (
+                      <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                        <KindIcon className="size-4" aria-hidden />
+                      </span>
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium" title={file.name}>
+                        {file.name}
+                      </span>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {formatSize(file.size)} · {KIND_LABEL[kind]} ·{" "}
+                        <time dateTime={file.modifiedAt} title={formatDateTime(file.modifiedAt)}>
+                          {formatRelative(file.modifiedAt)}
+                        </time>
+                      </span>
                     </span>
-                  )}
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium" title={file.name}>
-                      {file.name}
-                    </span>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      {formatSize(file.size)} ·{" "}
-                      <time dateTime={file.modifiedAt} title={formatDateTime(file.modifiedAt)}>
-                        {formatRelative(file.modifiedAt)}
-                      </time>
-                    </span>
-                  </span>
-                </a>
-                <Button
-                  asChild
-                  variant="ghost"
-                  size="icon"
-                  className="size-11 shrink-0 text-muted-foreground md:size-8"
-                >
-                  <a href={api.files.url(scope, id, file.name, true)} download aria-label={`Download ${file.name}`}>
-                    <DownloadIcon />
                   </a>
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setConfirming(file)}
-                  className="size-11 shrink-0 text-muted-foreground hover:text-destructive md:size-8"
-                  aria-label={`Delete ${file.name}`}
-                >
-                  <Trash2Icon />
-                </Button>
-              </li>
-            );
-          })}
-        </ul>
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="icon"
+                    className="size-11 shrink-0 text-muted-foreground md:size-8"
+                  >
+                    <a href={api.files.url(scope, id, file.name, true)} download aria-label={`Download ${file.name}`}>
+                      <DownloadIcon />
+                    </a>
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setConfirming(file)}
+                    className="size-11 shrink-0 text-muted-foreground hover:text-destructive md:size-8"
+                    aria-label={`Delete ${file.name}`}
+                  >
+                    <Trash2Icon />
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+          <p className="-mt-1.5 hidden text-xs text-muted-foreground/80 md:block">
+            ↑/↓ to move · Enter to preview · ←/→ in the viewer to switch files
+          </p>
+        </>
       )}
 
       {data && (

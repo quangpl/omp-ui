@@ -1,16 +1,17 @@
 "use client";
 
 import { type MouseEvent as ReactMouseEvent, type ReactNode, useMemo, useState } from "react";
-import { FileIcon, ImageIcon, ImageOffIcon } from "lucide-react";
+import { ImageOffIcon } from "lucide-react";
+import { openAttachment } from "@/components/attachment-viewer";
 import {
   appFileOf,
   attachmentKind,
   isPlainClick,
   isViewableUrl,
+  KIND_ICON,
   nameFromUrl,
-  openAttachment,
   type Attachment,
-} from "@/components/attachment-viewer";
+} from "@/components/viewer/common";
 import { cn } from "@/lib/utils";
 
 /**
@@ -172,7 +173,7 @@ function AttachmentChip({
   ctx: InlineContext;
   broken?: boolean;
 }) {
-  const Icon = broken ? ImageOffIcon : attachmentKind(attachment) === "image" ? ImageIcon : FileIcon;
+  const Icon = broken ? ImageOffIcon : KIND_ICON[attachmentKind(attachment)];
   return (
     <a
       href={attachment.url}

@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Bot, CircleCheck, MessageSquare, Undo2 } from "lucide-react";
-import { AttachmentViewer, appFileOf, type Attachment } from "@/components/attachment-viewer";
+import { AttachmentViewer } from "@/components/attachment-viewer";
+import { appFileOf, type Attachment } from "@/components/viewer/common";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

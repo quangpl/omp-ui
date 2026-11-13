@@ -1,14 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
-  FileIcon,
-  ImageOffIcon,
+  ListIcon,
   MessageSquareQuoteIcon,
   XIcon,
   ZoomInIcon,
@@ -17,19 +16,47 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  appFileOf,
+  attachmentKind,
+  fetchErrorMessage,
+  formatSize,
+  KIND_ICON,
+  KIND_LABEL,
+  MAX_TEXT_BYTES,
+  PaneSkeleton,
+  useFileBytes,
+  ViewerFallback,
+  WithFileBytes,
+  type Attachment,
+  type AttachmentKind,
+  type PaneProps,
+} from "@/components/viewer/common";
 import { cn, copyText } from "@/lib/utils";
 
-/** A file or link the viewer can show: an app shared file or any URL. */
-export interface Attachment {
-  url: string;
-  name: string;
-  mime?: string | null;
-  /** Bytes, when known (shared files list). */
-  size?: number | null;
-}
-
-export type AttachmentKind = "image" | "video" | "audio" | "pdf" | "text" | "other";
+// Preview panes load on demand so the parsers only ship when such a file is opened.
+const MarkdownPane = lazy(() => import("@/components/viewer/text-panes").then((m) => ({ default: m.MarkdownPane })));
+const CsvPane = lazy(() => import("@/components/viewer/text-panes").then((m) => ({ default: m.CsvPane })));
+const NotebookPane = lazy(() => import("@/components/viewer/text-panes").then((m) => ({ default: m.NotebookPane })));
+const DocumentPane = lazy(() =>
+  import("@/components/viewer/office-panes").then((m) => ({ default: m.DocumentPane })),
+);
+const SpreadsheetPane = lazy(() =>
+  import("@/components/viewer/office-panes").then((m) => ({ default: m.SpreadsheetPane })),
+);
+const PresentationPane = lazy(() =>
+  import("@/components/viewer/office-panes").then((m) => ({ default: m.PresentationPane })),
+);
+const EbookPane = lazy(() => import("@/components/viewer/office-panes").then((m) => ({ default: m.EbookPane })));
+const ArchivePane = lazy(() => import("@/components/viewer/archive-pane").then((m) => ({ default: m.ArchivePane })));
 
 export interface OpenAttachmentRequest extends Attachment {
   /** Sibling attachments for ←/→ navigation; must contain this one (matched by URL). */
@@ -41,85 +68,26 @@ export interface OpenAttachmentRequest extends Attachment {
 }
 
 const OPEN_EVENT = "omp-ui:open-attachment";
-/** Text larger than this is never fetched into the viewer; it offers a download instead. */
-const MAX_TEXT_BYTES = 2 * 1024 * 1024;
-const SIZE_UNITS = ["KB", "MB", "GB", "TB"];
-
-const IMAGE_EXT = /\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i;
-const VIDEO_EXT = /\.(mp4|webm|mov|m4v|ogv)$/i;
-const AUDIO_EXT = /\.(mp3|wav|ogg|oga|m4a|flac|aac|opus)$/i;
-const TEXT_EXT =
-  /\.(txt|md|markdown|log|json|jsonl|ndjson|csv|tsv|ya?ml|toml|ini|cfg|conf|env|xml|html?|css|scss|less|[cm]?[jt]sx?|py|rb|go|rs|java|kt|swift|c|h|cc|cpp|hpp|cs|php|sh|bash|zsh|fish|sql|graphql|diff|patch|lock|svg)$/i;
-/** `/api/v1/tasks/<id>/files/<path>` or `/api/v1/boards/<id>/files/<path>`, optionally absolute. */
-const APP_FILE = /^(?:https?:\/\/[^/\s]+)?\/api\/v1\/(tasks|boards)\/([A-Za-z0-9_-]+)\/files\/([^?#\s]+)/;
-
-/** "512 B", "1.2 KB", "34 MB"… */
-export function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < SIZE_UNITS.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${SIZE_UNITS[unit]}`;
-}
-
-/** A file shared through this app (card or board files), if `url` points at one on this origin. */
-export function appFileOf(url: string): { scope: "tasks" | "boards"; id: string; name: string } | null {
-  const match = APP_FILE.exec(url);
-  if (!match) return null;
-  if (/^https?:/i.test(url) && (typeof window === "undefined" || new URL(url).host !== window.location.host)) {
-    return null;
-  }
-  let name = match[3];
-  try {
-    name = name.split("/").map(decodeURIComponent).join("/");
-  } catch {
-    // Keep the raw path when it is not valid percent-encoding.
-  }
-  return { scope: match[1] as "tasks" | "boards", id: match[2], name };
-}
-
-/** File name shown for a URL: its last path segment. */
-export function nameFromUrl(url: string): string {
-  const path = url.split(/[?#]/)[0].replace(/\/+$/, "");
-  const last = path.slice(path.lastIndexOf("/") + 1) || path;
-  try {
-    return decodeURIComponent(last);
-  } catch {
-    return last;
-  }
-}
-
-export function attachmentKind(attachment: Pick<Attachment, "url" | "name" | "mime">): AttachmentKind {
-  const mime = attachment.mime?.toLowerCase() ?? "";
-  const name = attachment.name || nameFromUrl(attachment.url);
-  if (mime === "application/pdf" || /\.pdf$/i.test(name)) return "pdf";
-  // App-served SVGs are downloads (never rendered on this origin), so show their source.
-  if (/\.svg$/i.test(name) && appFileOf(attachment.url)) return "text";
-  if (mime.startsWith("image/") || IMAGE_EXT.test(name)) return "image";
-  if (mime.startsWith("video/") || VIDEO_EXT.test(name)) return "video";
-  if (mime.startsWith("audio/") || AUDIO_EXT.test(name)) return "audio";
-  if (mime.startsWith("text/") || mime === "application/json" || TEXT_EXT.test(name)) return "text";
-  return "other";
-}
-
-/** Whether a link should open in the viewer: app shared files, and media/PDF links anywhere. */
-export function isViewableUrl(url: string): boolean {
-  if (appFileOf(url)) return true;
-  const kind = attachmentKind({ url, name: nameFromUrl(url) });
-  return kind === "image" || kind === "video" || kind === "audio" || kind === "pdf";
-}
-
-/** Plain left click (no modifier): the viewer handles it; otherwise the browser opens the link. */
-export function isPlainClick(event: ReactMouseEvent): boolean {
-  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
-}
 
 /** Mounted viewers, newest last; only the newest one answers `openAttachment`. */
 const hosts: number[] = [];
 let nextHostId = 0;
+
+/** Bytes sniffed for NUL characters when deciding whether a file is text. */
+const SNIFF_NUL_BYTES = 8000;
+/** Bytes that must be valid UTF-8 for an unknown file to be shown as text. */
+const SNIFF_UTF8_BYTES = 64 * 1024;
+
+/** Swipe gesture: minimum horizontal travel (px), dominance over vertical travel, maximum duration (ms). */
+const SWIPE_MIN_DX = 60;
+const SWIPE_RATIO = 1.5;
+const SWIPE_MAX_MS = 600;
+/** Touches starting this close to the bottom of a video/audio element are on its controls. */
+const MEDIA_CONTROLS_PX = 64;
+
+/** Keys inside these elements belong to them (seeking, typing, menu/tab navigation), not the viewer. */
+const OWN_KEYS_SELECTOR =
+  "video, audio, input, textarea, select, [contenteditable='true'], [role='menu'], [role='tablist'], [role='radiogroup']";
 
 /**
  * Open the attachment in the dialog viewer. Without a mounted `AttachmentViewer` it falls back to
@@ -133,6 +101,22 @@ export function openAttachment(request: OpenAttachmentRequest): void {
   window.dispatchEvent(new CustomEvent<OpenAttachmentRequest>(OPEN_EVENT, { detail: request }));
 }
 
+/** Shared files force a save dialog with `?download=1`; other URLs download as they are. */
+function downloadUrlOf(href: string): string {
+  return appFileOf(href) ? `${href.split(/[?#]/)[0]}?download=1` : href;
+}
+
+/** Start a download of `url` through a temporary `<a download>`. */
+function triggerDownload(url: string): void {
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "";
+  anchor.rel = "noopener";
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
 interface ViewerState {
   list: Attachment[];
   index: number;
@@ -140,10 +124,16 @@ interface ViewerState {
 }
 
 /**
- * Lightbox dialog for attachments: images (fit / 100% zoom, drag to pan), video, audio, PDF,
- * text and code (fetched up to 2 MB), anything else as metadata with a download. ←/→ move
- * between the attachments of the same list; Esc closes. Several may be mounted; the newest
- * mounted instance handles `openAttachment`.
+ * Lightbox dialog for attachments. Previews: images (fit / 100% zoom, drag to pan), video, audio,
+ * PDF, Markdown (rendered), CSV/TSV tables, Jupyter notebooks, Word (.docx), Excel (.xlsx),
+ * PowerPoint (.pptx), EPUB, archives (zip family, tar, tar.gz contents), text and code (up to
+ * 2 MB); unknown files are sniffed and shown as text when they are, otherwise metadata with a
+ * download. A pane that fails (parser crash, chunk load error) falls back to the download card.
+ *
+ * Keys: ←/→ previous/next attachment of the same list, Home/End first/last, D download,
+ * Z actual size / fit (images), Esc closes. On touch screens a horizontal swipe steps through
+ * images, video, audio and unpreviewable files; long lists get a file switcher in the header.
+ * Several viewers may be mounted; the newest mounted instance handles `openAttachment`.
  */
 export function AttachmentViewer() {
   const [state, setState] = useState<ViewerState | null>(null);
@@ -183,7 +173,26 @@ export function AttachmentViewer() {
     );
   }, []);
 
+  const jump = useCallback((index: number) => {
+    setZoomed(false);
+    setState((current) =>
+      current && index >= 0 && index < current.list.length && index !== current.index
+        ? { ...current, index }
+        : current,
+    );
+  }, []);
+
   const current = state?.list[state.index] ?? null;
+  const many = state != null && state.list.length > 1;
+
+  /** The previous and next attachments (each once, never the current one), for preloading. */
+  const neighbours = useMemo(() => {
+    if (!state || state.list.length < 2) return [];
+    const count = state.list.length;
+    const indexes = new Set([(state.index - 1 + count) % count, (state.index + 1) % count]);
+    indexes.delete(state.index);
+    return [...indexes].map((i) => state.list[i]);
+  }, [state]);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -206,13 +215,22 @@ export function AttachmentViewer() {
           if (event.repeat || event.nativeEvent.isComposing) return;
           if (event.metaKey || event.ctrlKey || event.altKey) return;
           const target = event.target as HTMLElement;
-          if (target.closest("video, audio, input, textarea, select")) return;
+          if (target.closest(OWN_KEYS_SELECTOR)) return;
           if (event.key === "ArrowLeft") {
             event.preventDefault();
             step(-1);
           } else if (event.key === "ArrowRight") {
             event.preventDefault();
             step(1);
+          } else if (event.key === "Home" || event.key === "End") {
+            // Single files keep Home/End for scrolling the pane.
+            if (!state || !many) return;
+            event.preventDefault();
+            jump(event.key === "Home" ? 0 : state.list.length - 1);
+          } else if (event.key === "d" || event.key === "D") {
+            if (!current) return;
+            event.preventDefault();
+            triggerDownload(downloadUrlOf(current.url));
           } else if (event.key === "z" || event.key === "Z") {
             if (current && attachmentKind(current) === "image") setZoomed((z) => !z);
           }
@@ -224,8 +242,10 @@ export function AttachmentViewer() {
             attachment={current}
             zoomed={zoomed}
             onZoom={setZoomed}
-            position={state.list.length > 1 ? `${state.index + 1} / ${state.list.length}` : null}
-            onStep={state.list.length > 1 ? step : null}
+            position={many ? `${state.index + 1} / ${state.list.length}` : null}
+            onStep={many ? step : null}
+            switcher={many ? { list: state.list, index: state.index, onSelect: jump } : null}
+            neighbours={neighbours}
             onFeedback={
               state.onFeedback
                 ? () => {
@@ -247,12 +267,31 @@ export function AttachmentViewer() {
   );
 }
 
+/** Whether `target` (or an ancestor below `container`) scrolls sideways, so a swipe there is a scroll. */
+function scrollsHorizontally(target: Element, container: Element): boolean {
+  for (let el: Element | null = target; el && el !== container; el = el.parentElement) {
+    if (el.scrollWidth > el.clientWidth + 1) {
+      const overflow = getComputedStyle(el).overflowX;
+      if (overflow === "auto" || overflow === "scroll") return true;
+    }
+  }
+  return false;
+}
+
+/** Whether a touch at `clientY` on `target` lands on native video/audio controls (seek bar, volume). */
+function onMediaControls(target: Element, clientY: number): boolean {
+  const media = target.closest("video, audio");
+  return media != null && clientY > media.getBoundingClientRect().bottom - MEDIA_CONTROLS_PX;
+}
+
 function ViewerBody({
   attachment,
   zoomed,
   onZoom,
   position,
   onStep,
+  switcher,
+  neighbours,
   onFeedback,
 }: {
   attachment: Attachment;
@@ -260,12 +299,20 @@ function ViewerBody({
   onZoom: (zoomed: boolean | ((zoomed: boolean) => boolean)) => void;
   position: string | null;
   onStep: ((delta: number) => void) | null;
+  switcher: { list: Attachment[]; index: number; onSelect: (index: number) => void } | null;
+  /** Previous/next attachments; images among them are preloaded once the current image is in. */
+  neighbours: Attachment[];
   onFeedback: (() => void) | null;
 }) {
   const kind = attachmentKind(attachment);
+  const KindIcon = KIND_ICON[kind];
   const href = attachment.url;
-  // Shared files force a save dialog with `?download=1`; other URLs download as they are.
-  const download = appFileOf(href) ? `${href.split(/[?#]/)[0]}?download=1` : href;
+  const download = downloadUrlOf(href);
+  /** Touch that may become a swipe: start point and time. */
+  const swipeRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  // Panes with their own horizontal gestures (PDF viewer, tables, zoomed images) keep them.
+  const swipeEnabled =
+    onStep != null && ((kind === "image" && !zoomed) || kind === "video" || kind === "audio" || kind === "other");
 
   const copyLink = async () => {
     try {
@@ -273,6 +320,14 @@ function ViewerBody({
       toast.success("Link copied");
     } catch {
       toast.error("Couldn't copy the link");
+    }
+  };
+
+  const preloadNeighbours = () => {
+    for (const item of neighbours) {
+      if (attachmentKind(item) !== "image") continue;
+      const image = new Image();
+      image.src = item.url;
     }
   };
 
@@ -285,6 +340,7 @@ function ViewerBody({
   return (
     <>
       <header className="flex min-w-0 items-center gap-1 border-b py-1.5 pr-1.5 pl-3 max-md:pt-[max(0.375rem,env(safe-area-inset-top))]">
+        <KindIcon className="mr-1.5 size-4 shrink-0 text-muted-foreground max-md:hidden" aria-hidden />
         <div className="min-w-0 flex-1">
           <DialogTitle className="truncate text-sm font-medium" title={attachment.name}>
             {attachment.name}
@@ -297,9 +353,11 @@ function ViewerBody({
             <span className="max-sm:sr-only">Feedback</span>
           </Button>
         )}
+        {switcher && <FileSwitcher {...switcher} />}
         {kind === "image" && (
           <HeaderButton
             label={zoomed ? "Fit to screen (Z)" : "Actual size (Z)"}
+            keyShortcuts="Z"
             onClick={() => onZoom((z) => !z)}
             className="max-md:hidden"
           >
@@ -312,7 +370,7 @@ function ViewerBody({
         <HeaderButton label="Open in new tab" href={href}>
           <ExternalLinkIcon />
         </HeaderButton>
-        <HeaderButton label="Download" href={download} download>
+        <HeaderButton label="Download (D)" keyShortcuts="D" href={download} download>
           <DownloadIcon />
         </HeaderButton>
         <DialogClose asChild>
@@ -329,24 +387,45 @@ function ViewerBody({
         </DialogClose>
       </header>
 
-      <div className="relative min-h-0 flex-1 bg-muted/40">
-        {kind === "image" ? (
-          <ImageView attachment={attachment} zoomed={zoomed} onZoom={onZoom} download={download} />
-        ) : kind === "video" ? (
-          <MediaFrame>
-            <video src={href} controls playsInline preload="metadata" className="max-h-full max-w-full rounded-md bg-black" />
-          </MediaFrame>
-        ) : kind === "audio" ? (
-          <MediaFrame>
-            <audio src={href} controls preload="metadata" className="w-full max-w-lg" />
-          </MediaFrame>
-        ) : kind === "pdf" ? (
-          <iframe src={href} title={attachment.name} className="size-full border-0 bg-white" />
-        ) : kind === "text" ? (
-          <TextView attachment={attachment} download={download} />
-        ) : (
-          <Fallback attachment={attachment} download={download} message="No preview for this file type." />
-        )}
+      <div
+        className="relative min-h-0 flex-1 bg-muted/40"
+        onTouchStart={(event) => {
+          swipeRef.current = null;
+          if (!swipeEnabled || event.touches.length !== 1) return;
+          const touch = event.touches[0];
+          const target = event.target as Element;
+          if (onMediaControls(target, touch.clientY) || scrollsHorizontally(target, event.currentTarget)) return;
+          swipeRef.current = { x: touch.clientX, y: touch.clientY, time: event.timeStamp };
+        }}
+        onTouchEnd={(event) => {
+          const start = swipeRef.current;
+          swipeRef.current = null;
+          if (!start || !onStep || event.touches.length > 0) return;
+          const touch = event.changedTouches[0];
+          if (!touch || event.timeStamp - start.time > SWIPE_MAX_MS) return;
+          const dx = touch.clientX - start.x;
+          const dy = touch.clientY - start.y;
+          if (Math.abs(dx) > SWIPE_MIN_DX && Math.abs(dx) > SWIPE_RATIO * Math.abs(dy)) onStep(dx < 0 ? 1 : -1);
+        }}
+        onTouchCancel={() => {
+          swipeRef.current = null;
+        }}
+      >
+        <PaneErrorBoundary key={attachment.url} attachment={attachment} download={download}>
+          <Suspense fallback={<PaneSkeleton />}>
+            {kind === "image" ? (
+              <ImageView
+                attachment={attachment}
+                zoomed={zoomed}
+                onZoom={onZoom}
+                onLoaded={preloadNeighbours}
+                download={download}
+              />
+            ) : (
+              <KindPane kind={kind} attachment={attachment} download={download} />
+            )}
+          </Suspense>
+        </PaneErrorBoundary>
 
         {onStep && (
           <>
@@ -359,17 +438,104 @@ function ViewerBody({
   );
 }
 
-const KIND_LABEL: Record<AttachmentKind, string> = {
-  image: "Image",
-  video: "Video",
-  audio: "Audio",
-  pdf: "PDF",
-  text: "Text",
-  other: "File",
-};
+/** The preview for every kind but images (which need the zoom state). */
+function KindPane({ kind, attachment, download }: PaneProps & { kind: Exclude<AttachmentKind, "image"> }) {
+  const props = { attachment, download };
+  switch (kind) {
+    case "video":
+    case "audio":
+      return <MediaView kind={kind} {...props} />;
+    case "pdf":
+      return <PdfView {...props} />;
+    case "markdown":
+      return <MarkdownPane {...props} />;
+    case "csv":
+      return <CsvPane {...props} />;
+    case "notebook":
+      return <NotebookPane {...props} />;
+    case "text":
+      return <TextView {...props} />;
+    case "document":
+      return <DocumentPane {...props} />;
+    case "spreadsheet":
+      return <SpreadsheetPane {...props} />;
+    case "presentation":
+      return <PresentationPane {...props} />;
+    case "ebook":
+      return <EbookPane {...props} />;
+    case "archive":
+      return <ArchivePane {...props} />;
+    case "other":
+      return <SniffView {...props} />;
+  }
+}
+
+/** Catches a pane that throws (parser bug, failed chunk load) and shows the download card instead. */
+class PaneErrorBoundary extends Component<PaneProps & { children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <ViewerFallback
+          attachment={this.props.attachment}
+          download={this.props.download}
+          message="Something went wrong while previewing this file."
+        />
+      );
+    }
+    return this.props.children;
+  }
+}
+
+/** Header menu listing every file of the list, for jumping around long lists. */
+function FileSwitcher({
+  list,
+  index,
+  onSelect,
+}: {
+  list: Attachment[];
+  index: number;
+  onSelect: (index: number) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label="Jump to file"
+          title="Jump to file"
+          className="size-11 shrink-0 text-muted-foreground hover:text-foreground max-sm:hidden md:size-8"
+        >
+          <ListIcon />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-72 max-w-[calc(100vw-2rem)]">
+        <DropdownMenuRadioGroup value={String(index)} onValueChange={(value) => onSelect(Number(value))}>
+          {list.map((item, i) => {
+            const Icon = KIND_ICON[attachmentKind(item)];
+            return (
+              <DropdownMenuRadioItem key={`${i}:${item.url}`} value={String(i)} title={item.name}>
+                <Icon className="text-muted-foreground" aria-hidden />
+                <span className="min-w-0 truncate">{item.name}</span>
+              </DropdownMenuRadioItem>
+            );
+          })}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 function HeaderButton({
   label,
+  keyShortcuts,
   onClick,
   href,
   download,
@@ -377,11 +543,13 @@ function HeaderButton({
   children,
 }: {
   label: string;
+  /** `aria-keyshortcuts` value, e.g. "D". */
+  keyShortcuts?: string;
   onClick?: () => void;
   href?: string;
   download?: boolean;
   className?: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   const classes = cn("size-11 shrink-0 text-muted-foreground hover:text-foreground md:size-8", className);
   if (href) {
@@ -390,6 +558,7 @@ function HeaderButton({
         <a
           href={href}
           aria-label={label}
+          aria-keyshortcuts={keyShortcuts}
           title={label}
           {...(download ? { download: "" } : { target: "_blank", rel: "noopener noreferrer" })}
         >
@@ -404,6 +573,7 @@ function HeaderButton({
       variant="ghost"
       size="icon"
       aria-label={label}
+      aria-keyshortcuts={keyShortcuts}
       title={label}
       className={classes}
       onClick={onClick}
@@ -420,6 +590,7 @@ function StepButton({ side, onClick }: { side: "left" | "right"; onClick: () => 
       variant="secondary"
       size="icon"
       aria-label={side === "left" ? "Previous attachment (←)" : "Next attachment (→)"}
+      aria-keyshortcuts={side === "left" ? "ArrowLeft" : "ArrowRight"}
       title={side === "left" ? "Previous (←)" : "Next (→)"}
       onClick={onClick}
       className={cn(
@@ -432,19 +603,121 @@ function StepButton({ side, onClick }: { side: "left" | "right"; onClick: () => 
   );
 }
 
-function MediaFrame({ children }: { children: React.ReactNode }) {
+function MediaFrame({ children }: { children: ReactNode }) {
   return <div className="flex size-full items-center justify-center p-3 md:p-6">{children}</div>;
+}
+
+/** Native video/audio player; a format the browser can't play falls back to the download card. */
+function MediaView({ kind, attachment, download }: PaneProps & { kind: "video" | "audio" }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <ViewerFallback
+        attachment={attachment}
+        download={download}
+        message={`This ${kind} couldn't be played. Your browser may not support its format.`}
+      />
+    );
+  }
+  return (
+    <MediaFrame>
+      {kind === "video" ? (
+        <video
+          src={attachment.url}
+          controls
+          playsInline
+          preload="metadata"
+          onError={() => setFailed(true)}
+          className="max-h-full max-w-full rounded-md bg-black"
+        />
+      ) : (
+        <audio
+          src={attachment.url}
+          controls
+          preload="metadata"
+          onError={() => setFailed(true)}
+          className="w-full max-w-lg"
+        />
+      )}
+    </MediaFrame>
+  );
+}
+
+/** Whether `url` is served by this app's origin (relative, or same host), so it can be probed. */
+function isSameOrigin(url: string): boolean {
+  if (appFileOf(url)) return true;
+  try {
+    return new URL(url, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+type ProbeState = { status: "probing" } | { status: "ok" } | { status: "error"; message: string };
+
+/**
+ * PDF in the browser's viewer. Same-origin files are probed first (one byte via Range) so a
+ * missing or forbidden file shows the fallback instead of the server's error body in the frame.
+ */
+function PdfView({ attachment, download }: PaneProps) {
+  const probe = isSameOrigin(attachment.url);
+  const [state, setState] = useState<ProbeState>(() => (probe ? { status: "probing" } : { status: "ok" }));
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    if (!probe) return;
+    const controller = new AbortController();
+    setState({ status: "probing" });
+    void (async () => {
+      let res: Response;
+      try {
+        res = await fetch(attachment.url, {
+          method: "GET",
+          headers: { range: "bytes=0-0" },
+          credentials: "same-origin",
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        setState({
+          status: "error",
+          message: `Network error: ${err instanceof Error ? err.message : String(err)}. Check your connection and try again.`,
+        });
+        return;
+      }
+      res.body?.cancel().catch(() => {});
+      if (controller.signal.aborted) return;
+      setState(res.ok ? { status: "ok" } : { status: "error", message: fetchErrorMessage(res.status) });
+    })();
+    return () => controller.abort();
+  }, [attachment.url, probe, attempt]);
+
+  if (state.status === "probing") return <PaneSkeleton />;
+  if (state.status === "error") {
+    return (
+      <ViewerFallback
+        attachment={attachment}
+        download={download}
+        message={`Couldn't load the file. ${state.message}`}
+        onRetry={() => setAttempt((n) => n + 1)}
+      />
+    );
+  }
+  return <iframe src={attachment.url} title={attachment.name} className="size-full border-0 bg-white" />;
 }
 
 function ImageView({
   attachment,
   zoomed,
   onZoom,
+  onLoaded,
   download,
 }: {
   attachment: Attachment;
   zoomed: boolean;
   onZoom: (zoomed: boolean) => void;
+  /** Called once the image has loaded. */
+  onLoaded: () => void;
   download: string;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -467,7 +740,7 @@ function ImageView({
 
   if (status === "error") {
     return (
-      <Fallback attachment={attachment} download={download} message="This image couldn't be loaded." broken />
+      <ViewerFallback attachment={attachment} download={download} message="This image couldn't be loaded." broken />
     );
   }
 
@@ -522,7 +795,10 @@ function ImageView({
           src={attachment.url}
           alt={attachment.name}
           draggable={false}
-          onLoad={() => setStatus("ready")}
+          onLoad={() => {
+            setStatus("ready");
+            onLoaded();
+          }}
           onError={() => setStatus("error")}
           onClick={(event) => {
             if (zoomed) return;
@@ -546,156 +822,85 @@ function ImageView({
   );
 }
 
-type TextState =
-  | { status: "loading" }
-  | { status: "ready"; text: string }
-  | { status: "too-large" }
-  | { status: "error"; message: string };
-
-function TextView({ attachment, download }: { attachment: Attachment; download: string }) {
-  const [state, setState] = useState<TextState>(() =>
-    attachment.size != null && attachment.size > MAX_TEXT_BYTES ? { status: "too-large" } : { status: "loading" },
-  );
-  const [attempt, setAttempt] = useState(0);
-  const tooLargeUpfront = attachment.size != null && attachment.size > MAX_TEXT_BYTES;
-
-  useEffect(() => {
-    if (tooLargeUpfront) return;
-    const controller = new AbortController();
-    setState({ status: "loading" });
-    void (async () => {
-      try {
-        const res = await fetch(attachment.url, { signal: controller.signal, credentials: "same-origin" });
-        if (!res.ok) throw new Error(`Server returned ${res.status}`);
-        const declared = Number(res.headers.get("content-length"));
-        if (declared > MAX_TEXT_BYTES) {
-          controller.abort();
-          setState({ status: "too-large" });
-          return;
-        }
-        const reader = res.body?.getReader();
-        const chunks: Uint8Array[] = [];
-        let total = 0;
-        if (reader) {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            total += value.byteLength;
-            if (total > MAX_TEXT_BYTES) {
-              await reader.cancel();
-              setState({ status: "too-large" });
-              return;
-            }
-            chunks.push(value);
-          }
-        }
-        const bytes = new Uint8Array(total);
-        let offset = 0;
-        for (const chunk of chunks) {
-          bytes.set(chunk, offset);
-          offset += chunk.byteLength;
-        }
-        let text = new TextDecoder().decode(bytes);
-        if (/\.json$/i.test(attachment.name)) {
-          try {
-            text = JSON.stringify(JSON.parse(text), null, 2);
-          } catch {
-            // Show invalid JSON as is.
-          }
-        }
-        setState({ status: "ready", text });
-      } catch (err) {
-        if (controller.signal.aborted) return;
-        setState({ status: "error", message: err instanceof Error ? err.message : String(err) });
-      }
-    })();
-    return () => controller.abort();
-  }, [attachment.url, attachment.name, tooLargeUpfront, attempt]);
-
-  if (state.status === "too-large") {
-    return (
-      <Fallback
-        attachment={attachment}
-        download={download}
-        message={`This file is larger than ${formatSize(MAX_TEXT_BYTES)}; download it to read it.`}
-      />
-    );
-  }
-  if (state.status === "error") {
-    return (
-      <Fallback
-        attachment={attachment}
-        download={download}
-        message={`Couldn't load the file: ${state.message}`}
-        onRetry={() => setAttempt((n) => n + 1)}
-      />
-    );
-  }
-  if (state.status === "loading") {
-    return (
-      <div className="flex flex-col gap-2 p-4" aria-busy="true">
-        <Skeleton className="h-4 w-3/4" />
-        <Skeleton className="h-4 w-1/2" />
-        <Skeleton className="h-4 w-2/3" />
-        <Skeleton className="h-4 w-5/12" />
-      </div>
-    );
-  }
+/** Plain text in a scrollable, focusable monospace block. */
+function TextContent({ text }: { text: string }) {
   return (
     <pre
       tabIndex={0}
       className="size-full overflow-auto bg-background p-4 font-mono text-xs leading-relaxed whitespace-pre outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset"
     >
-      {state.text || <span className="text-muted-foreground">(empty file)</span>}
+      {text || <span className="text-muted-foreground">(empty file)</span>}
     </pre>
   );
 }
 
-function Fallback({
-  attachment,
-  download,
-  message,
-  broken,
-  onRetry,
-}: {
-  attachment: Attachment;
-  download: string;
-  message: string;
-  broken?: boolean;
-  onRetry?: () => void;
-}) {
-  const Icon = broken ? ImageOffIcon : FileIcon;
+/** Text and code files (up to 2 MB); JSON is pretty-printed. */
+function TextView({ attachment, download }: PaneProps) {
   return (
-    <div className="flex size-full flex-col items-center justify-center gap-3 p-6 text-center">
-      <span className="flex size-14 items-center justify-center rounded-xl border bg-background text-muted-foreground">
-        <Icon className="size-6" aria-hidden />
-      </span>
-      <div className="max-w-sm">
-        <p className="text-sm font-medium [overflow-wrap:anywhere]">{attachment.name}</p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {[attachment.size != null ? formatSize(attachment.size) : null, attachment.mime].filter(Boolean).join(" · ")}
-        </p>
-        <p className="mt-2 text-sm text-muted-foreground">{message}</p>
-      </div>
-      <div className="flex flex-wrap justify-center gap-2">
-        {onRetry && (
-          <Button type="button" variant="ghost" className="h-11 md:h-8" onClick={onRetry}>
-            Try again
-          </Button>
-        )}
-        <Button asChild variant="outline" className="h-11 md:h-8">
-          <a href={attachment.url} target="_blank" rel="noopener noreferrer">
-            <ExternalLinkIcon />
-            Open in new tab
-          </a>
-        </Button>
-        <Button asChild className="h-11 md:h-8">
-          <a href={download} download="">
-            <DownloadIcon />
-            Download
-          </a>
-        </Button>
-      </div>
-    </div>
+    <WithFileBytes attachment={attachment} download={download} limit={MAX_TEXT_BYTES}>
+      {(bytes) => <TextFile attachment={attachment} download={download} bytes={bytes} />}
+    </WithFileBytes>
   );
+}
+
+function TextFile({ attachment, download, bytes }: PaneProps & { bytes: Uint8Array }) {
+  const text = useMemo(() => {
+    const decoded = new TextDecoder().decode(bytes);
+    if (decoded.slice(0, 8 * 1024).includes("\0")) return null;
+    if (!/\.json$/i.test(attachment.name)) return decoded;
+    try {
+      return JSON.stringify(JSON.parse(decoded), null, 2);
+    } catch {
+      // Show invalid JSON as is.
+      return decoded;
+    }
+  }, [bytes, attachment.name]);
+
+  if (text === null) {
+    return (
+      <ViewerFallback
+        attachment={attachment}
+        download={download}
+        message="This looks like a binary file; no preview available."
+      />
+    );
+  }
+  return <TextContent text={text} />;
+}
+
+/** Whether the bytes look like UTF-8 text: no NUL early on and a valid UTF-8 head. */
+function looksLikeText(bytes: Uint8Array): boolean {
+  if (bytes.subarray(0, SNIFF_NUL_BYTES).includes(0)) return false;
+  try {
+    // `stream` tolerates a multi-byte character split at the end of the slice.
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, SNIFF_UTF8_BYTES), { stream: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Unknown file types: shown as text when the content is text (up to 2 MB), else the download card. */
+function SniffView({ attachment, download }: PaneProps) {
+  const { state, retry } = useFileBytes(attachment, MAX_TEXT_BYTES);
+  const text = useMemo(
+    () => (state.status === "ready" && looksLikeText(state.bytes) ? new TextDecoder().decode(state.bytes) : null),
+    [state],
+  );
+
+  if (state.status === "loading") return <PaneSkeleton />;
+  if (state.status === "error") {
+    return (
+      <ViewerFallback
+        attachment={attachment}
+        download={download}
+        message={`Couldn't load the file. ${state.message}`}
+        onRetry={retry}
+      />
+    );
+  }
+  if (text === null) {
+    return <ViewerFallback attachment={attachment} download={download} message="No preview for this file type." />;
+  }
+  return <TextContent text={text} />;
 }

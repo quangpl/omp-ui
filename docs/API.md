@@ -84,7 +84,7 @@ A board is one project. `workdir` is the main folder (omp runs there); `extraFol
 | POST | `/boards/:id/tasks` | `{ title, description?, status?, position?, blockedBy? }` or `{ text, position? }` | `Task` (201). Creating directly in `in_progress` with autoRun starts the agent. `text`: a card from free text, see [Card writer](#card-writer) |
 | GET | `/boards/:id/files` | – | `SharedFiles` of the board (shared with every card's agent) |
 | POST | `/boards/:id/files?name=<file>` | raw file bytes | `SharedFiles` (201); replaces a file of the same name; max 100 MB |
-| GET | `/boards/:id/files/<name>` | – | the file (`?download=1` forces a download) |
+| GET | `/boards/:id/files/<name>` | – | the file, served like `/tasks/:id/files/<name>` (`?download=1` forces a download) |
 | DELETE | `/boards/:id/files/<name>` | – | `SharedFiles` |
 | GET | `/boards/:id/project-files?q=<query>&limit=<n>` | – | `{ files: ProjectFileHit[] }` for the composer's `@` mentions: fuzzy matches over the project folders' files and directories (git-tracked plus untracked, gitignored excluded; non-git folders are walked). Empty `q` lists the workdir's top level; `q` ending in `/` lists that directory's children. Workdir hits insert a relative path, extra-folder hits an absolute one. `limit` defaults to 30 (1–100) |
 | GET | `/boards/:id/git` | – | `GitStatus[]`, one per project folder (`workdir` first, then `extraFolders`) |
@@ -130,7 +130,7 @@ Git never prompts: commands run without a terminal (`GIT_TERMINAL_PROMPT=0`, SSH
 | DELETE | `/tasks/:id/workspace` | – | `TaskWorkspace` after removing the card's worktrees and their local branch; 409 while its agent is queued or running |
 | GET | `/tasks/:id/files` | – | `SharedFiles` of the card |
 | POST | `/tasks/:id/files?name=<file>` | raw file bytes | `SharedFiles` (201); replaces a file of the same name; max 100 MB |
-| GET | `/tasks/:id/files/<name>` | – | the file. Images, video (`.mp4`, `.webm`, `.mov`), audio (`.mp3`, `.wav`, `.ogg`), PDF and plain text open inline; anything else (HTML, SVG, …) is always a download. `?download=1` forces a download |
+| GET | `/tasks/:id/files/<name>` | – | the file. Images (`.png`, `.jpg`, `.gif`, `.webp`, `.avif`, `.bmp`, `.ico`), video (`.mp4`, `.webm`, `.mov`, `.m4v`, `.ogv`), audio (`.mp3`, `.wav`, `.ogg`, `.oga`, `.opus`, `.m4a`, `.flac`, `.aac`), PDF and plain text (`.txt`, `.md`, `.log`, `.json`, `.jsonl`, `.ndjson`, `.csv`, `.tsv`, `.yaml`, `.yml`, `.toml`, `.ini`, `.diff`, `.patch`, `.ipynb`, as `text/plain`) open inline; anything else (HTML, SVG, XML, Office files, archives, …) is always a download. `?download=1` forces a download. A single `Range: bytes=…` request answers `206` with `content-range` (`416` when unsatisfiable; several ranges get the full `200`); every response sends `accept-ranges: bytes` |
 | DELETE | `/tasks/:id/files/<name>` | – | `SharedFiles` |
 | GET | `/tasks/:id/diff` | – | `TaskDiff`: the card's code changes. See [Code changes](#code-changes) |
 | GET | `/tasks/:id/diff/summary` | – | `DiffSummary`: a one- or two-sentence summary of the changes. See [Code changes](#code-changes) |

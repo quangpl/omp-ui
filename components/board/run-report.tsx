@@ -11,12 +11,8 @@ import {
   ImageOffIcon,
   MessageSquareQuoteIcon,
 } from "lucide-react";
-import {
-  attachmentKind,
-  isPlainClick,
-  openAttachment,
-  type Attachment,
-} from "@/components/attachment-viewer";
+import { openAttachment } from "@/components/attachment-viewer";
+import { attachmentKind, isPlainClick, KIND_ICON, type Attachment } from "@/components/viewer/common";
 import { formatDuration } from "@/components/board/format";
 import { extractAttachments, RichText } from "@/components/board/rich-text";
 import { Button } from "@/components/ui/button";
@@ -204,6 +200,8 @@ export function RunReport({
   const facts: { icon: typeof ClockIcon; label: string; title?: string }[] = [];
   if (report.durationMs !== null) facts.push({ icon: ClockIcon, label: formatDuration(report.durationMs), title: "Run duration" });
   if (report.model) facts.push({ icon: CpuIcon, label: report.model, title: "Model" });
+  /** Screenshots then artifacts: ←/→ in the viewer steps through every file of the report. */
+  const files = [...report.screenshots, ...report.artifacts];
 
   return (
     <section
@@ -255,7 +253,7 @@ export function RunReport({
                   key={shot.url}
                   shot={shot}
                   index={index}
-                  list={report.screenshots}
+                  list={files}
                   onFeedback={onFeedback}
                 />
               ))}
@@ -266,22 +264,27 @@ export function RunReport({
         {report.artifacts.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">Files</span>
-            {report.artifacts.map((file, index) => (
-              <a
-                key={file.url}
-                href={file.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(event) => {
-                  if (!isPlainClick(event)) return;
-                  event.preventDefault();
-                  openAttachment({ ...file, list: report.artifacts, index, onFeedback });
-                }}
-                className="inline-flex max-w-full items-center rounded-md border bg-background px-1.5 py-0.5 text-xs font-medium hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-              >
-                <span className="truncate">{file.name}</span>
-              </a>
-            ))}
+            {report.artifacts.map((file, index) => {
+              const KindIcon = KIND_ICON[attachmentKind(file)];
+              return (
+                <a
+                  key={file.url}
+                  href={file.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`Preview ${file.name}`}
+                  onClick={(event) => {
+                    if (!isPlainClick(event)) return;
+                    event.preventDefault();
+                    openAttachment({ ...file, list: files, index: report.screenshots.length + index, onFeedback });
+                  }}
+                  className="inline-flex max-w-full items-center gap-1 rounded-md border bg-background px-1.5 py-0.5 text-xs font-medium hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+                >
+                  <KindIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="truncate">{file.name}</span>
+                </a>
+              );
+            })}
           </div>
         )}
 

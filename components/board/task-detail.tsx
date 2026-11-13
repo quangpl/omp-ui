@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   AlignLeft,
@@ -21,7 +21,9 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useComposerAutocomplete } from "@/components/board/composer-autocomplete";
-import { RichText } from "@/components/board/rich-text";
+import { extractAttachments, RichText } from "@/components/board/rich-text";
+import { openAttachment } from "@/components/attachment-viewer";
+import { attachmentKind, isPlainClick, KIND_ICON } from "@/components/viewer/common";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -1041,6 +1043,8 @@ function DescriptionEditor({
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   // "/" skills and shortcuts, "@" project files, "skill://" skill names, like the new-card composer.
   const slash = useComposerAutocomplete(fieldRef, draft, setDraft, { boardId: task.boardId });
+  // The textarea can't open links, so files linked in the saved description get preview chips.
+  const linked = useMemo(() => extractAttachments(base), [base]);
 
   useEffect(() => {
     if (task.description === base) return;
@@ -1093,6 +1097,32 @@ function DescriptionEditor({
       </div>
       {slash.suggestion}
       {slash.menu}
+      {linked.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">Linked files</span>
+          {linked.map((file, index) => {
+            const KindIcon = KIND_ICON[attachmentKind(file)];
+            return (
+              <a
+                key={file.url}
+                href={file.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`Preview ${file.name}`}
+                onClick={(event) => {
+                  if (!isPlainClick(event)) return;
+                  event.preventDefault();
+                  openAttachment({ ...file, list: linked, index });
+                }}
+                className="inline-flex max-w-full items-center gap-1 rounded-md border bg-background px-1.5 py-0.5 text-xs font-medium hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+              >
+                <KindIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                <span className="truncate">{file.name}</span>
+              </a>
+            );
+          })}
+        </div>
+      )}
       {dirty && (
         <div className="flex justify-end gap-2">
           <Button variant="ghost" className="h-11 max-md:flex-1 md:h-8" disabled={saving} onClick={() => setDraft(base)}>
