@@ -44,6 +44,7 @@ import { ensureWorkspace } from "@/lib/workspaces";
 import type {
   AppSettings,
   Comment,
+  ContextUsage,
   QueueEntry,
   QueueSnapshot,
   RunEventKind,
@@ -56,6 +57,8 @@ import type {
 const READY_TIMEOUT_MS = 60_000;
 const ABORT_TIMEOUT_MS = 5_000;
 const SUMMARY_TIMEOUT_MS = 15_000;
+/** `get_session_stats` after an assistant message: best effort, never blocks frame handling. */
+const CONTEXT_STATS_TIMEOUT_MS = 5_000;
 const PUMP_RETRY_MS = 5_000;
 const MAX_EVENT_TEXT = 50_000;
 const MAX_THINKING_TEXT = 2_000;
@@ -135,6 +138,8 @@ interface ActiveRun {
   launchedAt: string;
   /** The stamped todo list this run last stored, and when; null before its first update. */
   stampedTodos: { list: TodoPhase[]; at: string } | null;
+  /** Context window fill as of the latest `get_session_stats`; null before the first model reply. */
+  context: ContextUsage | null;
   /** Serializes startup, frame handling and teardown so persistence stays ordered. */
   chain: Promise<void>;
 }
@@ -185,6 +190,11 @@ class OmpAgentManager implements AgentManager {
 
   stats(): { running: string[]; queued: string[] } {
     return { running: [...this.active.keys()], queued: [...this.claiming, ...this.queue] };
+  }
+
+  contextUsage(taskId: string): ContextUsage | null {
+    const run = this.active.get(taskId);
+    return run && !run.finished ? run.context : null;
   }
 
   async queueSnapshot(): Promise<QueueSnapshot> {
@@ -810,6 +820,7 @@ class OmpAgentManager implements AgentManager {
       todos: null,
       launchedAt: new Date().toISOString(),
       stampedTodos: null,
+      context: null,
       chain: Promise.resolve(),
     };
     this.active.set(taskId, run);
@@ -1081,6 +1092,7 @@ class OmpAgentManager implements AgentManager {
       case "message_end": {
         if (isObject(frame.message) && frame.message.role === "assistant") {
           await this.onAssistantMessage(run, frame.message);
+          this.refreshContext(run);
         } else {
           this.resetDeltas(run);
         }
@@ -1147,6 +1159,7 @@ class OmpAgentManager implements AgentManager {
       case "auto_compaction_end": {
         const failure = asString(frame.errorMessage);
         if (failure) await this.event(run, "error", `Context compaction failed: ${failure}`);
+        this.refreshContext(run);
         break;
       }
       case "notice": {
@@ -1604,6 +1617,31 @@ class OmpAgentManager implements AgentManager {
     } catch (err) {
       console.error(`[agent] failed to store the todo list of task ${run.taskId}:`, err);
     }
+  }
+
+  /**
+   * Ask omp how full the run's context window is and publish a live `run.context` when it changed.
+   * Fire-and-forget: frames are handled serially, so the frame queue never waits on it; failures
+   * (old omp, timeout, exited process) are ignored.
+   */
+  private refreshContext(run: ActiveRun): void {
+    const proc = run.proc;
+    if (run.finished || !run.runId || !proc) return;
+    void proc
+      .send({ type: "get_session_stats" }, { timeoutMs: CONTEXT_STATS_TIMEOUT_MS })
+      .then((response) => {
+        if (run.finished || !run.runId) return;
+        const usage = isObject(response.data) ? response.data.contextUsage : undefined;
+        if (!isObject(usage)) return;
+        const tokens = asNumber(usage.tokens);
+        if (tokens === undefined || tokens < 0) return;
+        const window = asNumber(usage.contextWindow) ?? 0;
+        const context: ContextUsage = { tokens, contextWindow: window > 0 ? window : 0 };
+        if (run.context?.tokens === context.tokens && run.context.contextWindow === context.contextWindow) return;
+        run.context = context;
+        publish({ type: "run.context", runId: run.runId, taskId: run.taskId, boardId: run.boardId, context });
+      })
+      .catch(() => undefined);
   }
 
   /**

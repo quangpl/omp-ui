@@ -32,9 +32,9 @@ const STATUS_RANK: Record<SubagentStatus, number> = {
 };
 
 const STATUS_STYLE: Record<SubagentStatus, { icon: string; bar: string }> = {
-  running: { icon: "text-sky-600 dark:text-sky-400", bar: "bg-sky-500" },
+  running: { icon: "text-primary", bar: "bg-primary" },
   pending: { icon: "text-muted-foreground", bar: "bg-muted-foreground/40" },
-  completed: { icon: "text-emerald-600 dark:text-emerald-400", bar: "bg-emerald-500" },
+  completed: { icon: "text-success", bar: "bg-success" },
   failed: { icon: "text-destructive", bar: "bg-destructive" },
   aborted: { icon: "text-muted-foreground", bar: "bg-muted-foreground/60" },
 };
@@ -146,7 +146,7 @@ function SubagentCard({ runId, agent }: { runId: string; agent: SubagentSnapshot
       data-status={agent.status}
       className={cn(
         "scroll-mt-16 rounded-lg border bg-card text-sm transition-colors",
-        agent.status === "running" && "border-sky-500/30",
+        agent.status === "running" && "border-primary/30",
         agent.status === "failed" && "border-destructive/30",
       )}
     >
@@ -281,7 +281,7 @@ export function RunAgents({ runId, agents }: { runId: string; agents: SubagentSn
         {statuses.map((status) => (
           <span
             key={status}
-            className={cn("h-full transition-[flex-grow]", STATUS_STYLE[status].bar, status === "running" && "animate-pulse")}
+            className={cn("h-full", STATUS_STYLE[status].bar, status === "running" && "motion-safe:animate-pulse")}
             style={{ flexGrow: counts.get(status) }}
           />
         ))}
@@ -295,7 +295,7 @@ export function RunAgents({ runId, agents }: { runId: string; agents: SubagentSn
         <Button
           variant="ghost"
           size="sm"
-          className="self-start max-md:h-11"
+          className="self-start pressable max-md:h-11"
           onClick={() => setShowFinished((value) => !value)}
         >
           {showFinished ? "Hide finished agents" : `Show ${folded} finished agent${folded === 1 ? "" : "s"}`}

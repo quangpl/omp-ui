@@ -14,7 +14,7 @@ export const schedulerCardHref = (boardId: string, taskId: string) =>
   `/b/${encodeURIComponent(boardId)}?task=${encodeURIComponent(taskId)}`;
 
 const RUN_STATUS: Record<RunStatus, { label: string; className: string }> = {
-  running: { label: "Agent running", className: "bg-sky-500/10 text-sky-700 dark:bg-sky-400/15 dark:text-sky-300" },
+  running: { label: "Agent running", className: "bg-primary/10 text-primary" },
   succeeded: { label: "Agent done", className: "bg-success/10 text-success" },
   failed: { label: "Agent failed", className: "bg-destructive/10 text-destructive" },
   aborted: { label: "Agent stopped", className: "bg-muted text-muted-foreground" },
@@ -92,17 +92,29 @@ export function SchedulerHistory({
 }) {
   if (runs === null) {
     return (
-      <div className="space-y-2" aria-busy="true" aria-label="Loading history">
+      <ul className="divide-y rounded-xl border" aria-busy="true" aria-label="Loading history">
         {[0, 1, 2].map((i) => (
-          <Skeleton key={i} className="h-16 w-full rounded-xl" />
+          <li key={i} className="flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-start sm:gap-4 sm:px-4">
+            <div className="space-y-1.5 sm:w-48 sm:shrink-0">
+              <Skeleton className="h-4 w-36" />
+              <Skeleton className="h-3 w-20" />
+            </div>
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="flex gap-1.5">
+                <Skeleton className="h-5 w-20 rounded-full" />
+                <Skeleton className="h-5 w-24 rounded-full" />
+              </div>
+              <Skeleton className="h-4 max-w-full" style={{ width: `${12 + ((i * 5) % 9)}rem` }} />
+            </div>
+          </li>
         ))}
-      </div>
+      </ul>
     );
   }
   if (runs.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed px-4 py-10 text-center">
-        <CalendarClock className="mx-auto size-6 text-muted-foreground" />
+      <div className="flex animate-fade-in-soft flex-col items-center rounded-xl border border-dashed px-4 py-10 text-center">
+        <CalendarClock className="size-6 text-muted-foreground" />
         <p className="mt-2 text-sm font-medium">No runs yet</p>
         <p className="mt-1 text-sm text-muted-foreground">
           Each time the schedule fires (or you click Run now) a card is created and listed here.
@@ -112,12 +124,16 @@ export function SchedulerHistory({
   }
   return (
     <ul className="divide-y rounded-xl border">
-      {runs.map((run) => {
+      {runs.map((run, index) => {
         const drift = Math.abs(new Date(run.createdAt).getTime() - new Date(run.scheduledFor).getTime());
         return (
-          <li key={run.id} className="flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-start sm:gap-4 sm:px-4">
+          <li
+            key={run.id}
+            className="flex animate-card-in flex-col gap-2 px-3 py-3 content-auto [contain-intrinsic-size:auto_5.5rem] sm:flex-row sm:items-start sm:gap-4 sm:px-4"
+            style={{ "--stagger": index } as React.CSSProperties}
+          >
             <div className="shrink-0 sm:w-48">
-              <p className="text-sm font-medium tabular-nums" title={formatDateTime(run.scheduledFor)}>
+              <p className="font-mono text-[0.8125rem] font-medium tabular-nums" title={formatDateTime(run.scheduledFor)}>
                 {formatDateTime(run.scheduledFor)}
               </p>
               <p className="text-xs text-muted-foreground" title={formatDateTime(run.createdAt)}>

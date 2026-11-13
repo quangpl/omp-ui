@@ -42,7 +42,7 @@ export function showTaskCompletedNotification(
     const notification = new Notification("Task completed", {
       body: task.title || "Untitled card",
       tag: `task-done-${task.id}`,
-      icon: "/icon.svg",
+      icon: "/icon-192.png",
     });
     notification.onclick = (event) => {
       event.preventDefault();

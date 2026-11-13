@@ -64,7 +64,7 @@ function RowAction({
     <Button
       variant="ghost"
       size="icon"
-      className="size-11 shrink-0 text-muted-foreground hover:text-foreground md:size-7"
+      className="pressable-icon size-11 shrink-0 text-muted-foreground hover:text-foreground md:size-7"
       onClick={onClick}
       disabled={busy}
       aria-label={label}
@@ -129,14 +129,25 @@ function RunningPanel({ close }: { close: () => void }) {
   let body: React.ReactNode;
   if (!summary && !error) {
     body = (
-      <div className="space-y-2 p-3" aria-busy="true">
-        <Skeleton className="h-8 w-full" />
-        <Skeleton className="h-8 w-full" />
-        <Skeleton className="h-8 w-3/4" />
-      </div>
+      <ul className="py-1" aria-busy="true" aria-label="Loading running containers">
+        {["w-2/5", "w-1/2", "w-1/3"].map((width) => (
+          <li key={width} className="flex items-center gap-2 px-3 py-1">
+            <Skeleton className="size-2.5 shrink-0 rounded-full" />
+            <div className="min-w-0 flex-1 space-y-1.5 py-1.5">
+              <Skeleton className={cn("h-3.5", width)} />
+              <Skeleton className="h-2.5 w-3/4" />
+            </div>
+            <Skeleton className="h-8 w-[7.5rem] shrink-0 md:h-6 md:w-[4.75rem]" />
+          </li>
+        ))}
+      </ul>
     );
   } else if (!summary) {
-    body = <p className="p-3 text-xs text-destructive">{error}</p>;
+    body = (
+      <p role="alert" className="p-3 text-xs text-destructive">
+        {error}
+      </p>
+    );
   } else if (!summary.available) {
     body = (
       <div className="space-y-1 p-3 text-xs">
@@ -145,10 +156,17 @@ function RunningPanel({ close }: { close: () => void }) {
       </div>
     );
   } else if (standalone.length === 0 && projects.length === 0) {
-    body = <p className="p-3 text-xs text-muted-foreground">Nothing is running.</p>;
+    body = (
+      <div className="flex items-center gap-3 px-3 py-4 text-xs text-muted-foreground">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted">
+          <BoxIcon className="size-4" />
+        </span>
+        Nothing is running. Launch one below.
+      </div>
+    );
   } else {
     body = (
-      <ul className="max-h-[min(24rem,60dvh)] overflow-y-auto py-1">
+      <ul className="max-h-[min(24rem,60dvh)] overflow-y-auto overscroll-contain py-1 scrollbar-subtle">
         {projects.map((p) => (
           <li key={`p:${p.name}`} className="flex items-center gap-2 px-3 py-1">
             <LayersIcon className="size-3.5 shrink-0 text-muted-foreground" />
@@ -157,7 +175,9 @@ function RunningPanel({ close }: { close: () => void }) {
               <p className="truncate text-[0.7rem] text-muted-foreground">Compose · {p.running} running</p>
             </div>
             {busy.has(`p:${p.name}`) ? (
-              <Loader2Icon className="mx-2 size-4 animate-spin text-muted-foreground" />
+              <span className="flex h-11 w-[8.25rem] shrink-0 items-center justify-center md:h-7 md:w-[5.25rem]">
+                <Loader2Icon className="size-4 animate-spin text-muted-foreground motion-reduce:animate-none" />
+              </span>
             ) : (
               <>
                 <RowAction label={`Logs of ${p.name}`} onClick={() => go(`/containers?logs=${encodeURIComponent(`compose:${p.name}`)}`)}>
@@ -197,7 +217,9 @@ function RunningPanel({ close }: { close: () => void }) {
                 </p>
               </div>
               {busy.has(`c:${c.id}`) ? (
-                <Loader2Icon className="mx-2 size-4 animate-spin text-muted-foreground" />
+                <span className="flex h-11 w-[8.25rem] shrink-0 items-center justify-center md:h-7 md:w-[5.25rem]">
+                  <Loader2Icon className="size-4 animate-spin text-muted-foreground motion-reduce:animate-none" />
+                </span>
               ) : (
                 <>
                   <RowAction label={`Logs of ${c.name}`} onClick={() => go(`/containers?logs=${encodeURIComponent(c.id)}&name=${encodeURIComponent(c.name)}`)}>
@@ -225,12 +247,14 @@ function RunningPanel({ close }: { close: () => void }) {
         <BoxIcon className="size-4 text-muted-foreground" />
         <p className="flex-1 text-sm font-semibold">
           Running containers
-          {count !== null && <span className="ml-1.5 font-normal text-muted-foreground tabular-nums">{count}</span>}
+          {count !== null && (
+            <span className="ml-1.5 font-mono text-xs font-normal text-muted-foreground tabular-nums">{count}</span>
+          )}
         </p>
         <Button
           variant="ghost"
           size="icon"
-          className="size-11 md:size-7"
+          className="pressable-icon size-11 md:size-7"
           aria-label="Refresh"
           title="Refresh"
           disabled={refreshing}
@@ -248,14 +272,14 @@ function RunningPanel({ close }: { close: () => void }) {
         <Button
           variant="ghost"
           size="sm"
-          className="h-11 flex-1 justify-start gap-2 md:h-8"
+          className="pressable h-11 flex-1 justify-start gap-2 md:h-8"
           onClick={() => go("/containers?launch=1")}
           disabled={summary?.available === false}
         >
           <ZapIcon />
           Launch…
         </Button>
-        <Button asChild variant="ghost" size="sm" className="h-11 md:h-8">
+        <Button asChild variant="ghost" size="sm" className="pressable h-11 md:h-8">
           <Link href="/containers" onClick={close}>
             Manage
           </Link>

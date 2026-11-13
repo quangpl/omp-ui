@@ -36,24 +36,24 @@ function StatusLine({ status, stats }: { status: MemoryStatus | null; stats: Mem
       <span className="flex items-center gap-2 text-foreground">
         <span className="relative flex size-2" aria-hidden="true">
           {status.healthy && (
-            <span className="absolute inset-0 animate-ping rounded-full bg-success/50 motion-reduce:animate-none" />
+            <span className="absolute inset-0 animate-breathe rounded-full bg-success motion-reduce:animate-none" />
           )}
           <span className={cn("relative size-2 rounded-full", status.healthy ? "bg-success" : "bg-destructive")} />
         </span>
         {status.healthy ? "Server healthy" : status.starting ? "Starting" : "Server down"}
       </span>
       {memories !== null && (
-        <span className="tabular-nums">
-          {formatCount(memories)} {memories === 1 ? "memory" : "memories"}
+        <span>
+          <span className="font-mono tabular-nums">{formatCount(memories)}</span> {memories === 1 ? "memory" : "memories"}
         </span>
       )}
       {sessions !== null && (
-        <span className="tabular-nums">
-          {formatCount(sessions)} {sessions === 1 ? "session" : "sessions"}
+        <span>
+          <span className="font-mono tabular-nums">{formatCount(sessions)}</span> {sessions === 1 ? "session" : "sessions"}
         </span>
       )}
       <span>{embeddingsLabel(stats?.embeddingProvider ?? status.embeddings)}</span>
-      {status.version && <span className="tabular-nums">v{status.version}</span>}
+      {status.version && <span className="font-mono text-xs tabular-nums">v{status.version}</span>}
     </p>
   );
 }
@@ -165,9 +165,13 @@ export function MemoryView({ onStatus }: { onStatus?: (status: MemoryStatus | nu
           onStatus={applyStatus}
         />
       ) : !status ? (
-        <div className="space-y-4" aria-busy="true">
-          <Skeleton className="h-9 w-72" />
-          <Skeleton className="h-11 w-full" />
+        <div className="space-y-5" aria-busy="true">
+          <div className="flex gap-4 border-b pb-2">
+            <Skeleton className="h-7 w-24 md:h-5" />
+            <Skeleton className="h-7 w-20 md:h-5" />
+            <Skeleton className="h-7 w-16 md:h-5" />
+          </div>
+          <Skeleton className="h-11 w-full md:h-9" />
           <Skeleton className="h-96 w-full rounded-xl" />
         </div>
       ) : (
@@ -182,17 +186,17 @@ export function MemoryView({ onStatus }: { onStatus?: (status: MemoryStatus | nu
         >
           <TabsList
             variant="line"
-            className="w-full justify-start gap-4 border-b group-data-horizontal/tabs:h-11 md:group-data-horizontal/tabs:h-9"
+            className="scroll-row w-full max-w-full justify-start gap-4 border-b group-data-horizontal/tabs:h-11 md:group-data-horizontal/tabs:h-9"
           >
-            <TabsTrigger value="memories" className="flex-none px-1">
+            <TabsTrigger value="memories" className="flex-none px-1 group-data-horizontal/tabs:after:bottom-[-4px]">
               <BrainIcon />
               Memories
             </TabsTrigger>
-            <TabsTrigger value="sessions" className="flex-none px-1">
+            <TabsTrigger value="sessions" className="flex-none px-1 group-data-horizontal/tabs:after:bottom-[-4px]">
               <HistoryIcon />
               Sessions
             </TabsTrigger>
-            <TabsTrigger value="stats" className="flex-none px-1">
+            <TabsTrigger value="stats" className="flex-none px-1 group-data-horizontal/tabs:after:bottom-[-4px]">
               <ChartColumnIcon />
               Stats
             </TabsTrigger>

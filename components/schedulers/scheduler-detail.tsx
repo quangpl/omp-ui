@@ -22,7 +22,12 @@ import { AppHeader } from "@/components/app-header";
 import { errorMessage, formatDateTime, formatRelative, useNow } from "@/components/board/format";
 import { NewTaskForm } from "@/components/board/new-task-form";
 import { ProjectField } from "@/components/board/project-field";
-import { ScheduleFields, scheduleError, type ScheduleValue } from "@/components/schedulers/schedule-fields";
+import {
+  ScheduleFields,
+  STICKY_FORM_ACTIONS,
+  scheduleError,
+  type ScheduleValue,
+} from "@/components/schedulers/schedule-fields";
 import { RunResultBadge, SchedulerHistory, schedulerCardHref } from "@/components/schedulers/scheduler-history";
 import { SchedulerLogs } from "@/components/schedulers/scheduler-logs";
 import {
@@ -351,7 +356,7 @@ export function SchedulerDetail({ id }: { id: string }) {
     <div className="flex min-h-dvh flex-col">
       <AppHeader title={scheduler.name} subtitle={projectName} backHref="/schedulers" />
       <main className="px-safe pb-safe flex-1">
-        <div className="mx-auto w-full max-w-[1400px] space-y-6 px-4 py-6 sm:px-6 md:space-y-8 md:py-8 lg:px-8">
+        <div className="mx-auto w-full max-w-[1400px] animate-page-in space-y-6 px-4 py-6 sm:px-6 md:space-y-8 md:py-8 lg:px-8 motion-reduce:animate-none">
           <section className="space-y-5">
             <Link
               href="/schedulers"
@@ -412,7 +417,7 @@ export function SchedulerDetail({ id }: { id: string }) {
               <Fact label="Next run">
                 {scheduler.nextRunAt ? (
                   <time dateTime={scheduler.nextRunAt} title={formatDateTime(scheduler.nextRunAt)}>
-                    <span className="font-medium">{formatRelative(scheduler.nextRunAt, now)}</span>
+                    <span className="font-mono font-medium tabular-nums">{formatRelative(scheduler.nextRunAt, now)}</span>
                     <span className="block text-xs text-muted-foreground tabular-nums">
                       {formatDateTime(scheduler.nextRunAt)}
                     </span>
@@ -454,7 +459,7 @@ export function SchedulerDetail({ id }: { id: string }) {
                 )}
               </Fact>
               <Fact label="Runs">
-                <span className="font-medium tabular-nums">
+                <span className="font-mono font-medium tabular-nums">
                   {scheduler.runCount.toLocaleString()}
                   {scheduler.maxRuns !== null && (
                     <span className="font-normal text-muted-foreground"> of {scheduler.maxRuns.toLocaleString()}</span>
@@ -468,7 +473,7 @@ export function SchedulerDetail({ id }: { id: string }) {
           </section>
 
           <Tabs value={tab} onValueChange={(value) => setTab(value as DetailTab)} className="gap-4">
-            <div className="-mx-4 overflow-x-auto overscroll-x-contain border-b [scrollbar-width:none] sm:-mx-6 md:mx-0 [&::-webkit-scrollbar]:hidden">
+            <div className="scroll-row -mx-4 border-b sm:-mx-6 md:mx-0">
               <TabsList
                 variant="line"
                 className="w-max min-w-full justify-start gap-1 px-2 group-data-horizontal/tabs:h-12 md:px-0 md:group-data-horizontal/tabs:h-11"
@@ -605,11 +610,12 @@ function SchedulerConfig({
   return (
     <div className="max-w-3xl">
       <NewTaskForm
+        className={STICKY_FORM_ACTIONS}
         onSubmit={save}
         initialText={scheduler.prompt}
         boardId={draft.boardId}
         label="What should the agent do each time?"
-        hint="Each run creates a card from this text in the project, like the New card form: an agent writes its title and brief, then starts work."
+        hint="Each run creates a card from this text in the project, like the New task form: an agent writes its title and brief, then starts work."
         submitLabel="Save changes"
         busyLabel="Saving…"
         resetOnSubmit={false}

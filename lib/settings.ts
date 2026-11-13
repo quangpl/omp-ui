@@ -2,10 +2,12 @@ import type { Repository } from "@/lib/db/types";
 import {
   BROWSER_MODES,
   CLEANUP_SCHEDULES,
+  DASHBOARD_MENU_IDS,
   DEFAULT_SETTINGS,
   SCHEDULED_CLEANUP_IDS,
   type AppSettings,
   type ApprovalMode,
+  type DashboardMenuId,
   type ScheduledCleanupId,
 } from "@/lib/types";
 
@@ -74,7 +76,16 @@ function sanitize(s: AppSettings): AppSettings {
       typeof s.taskCompletionNotifications === "boolean"
         ? s.taskCompletionNotifications
         : DEFAULT_SETTINGS.taskCompletionNotifications,
+    // Known ids only, each once, in the canonical order; missing (older settings) shows every menu.
+    visibleDashboardMenus: Array.isArray(s.visibleDashboardMenus)
+      ? DASHBOARD_MENU_IDS.filter((id) => (s.visibleDashboardMenus as unknown[]).includes(id))
+      : [...DEFAULT_SETTINGS.visibleDashboardMenus],
   };
+}
+
+/** Whether `value` names a navigation menu section the user may hide. */
+export function isDashboardMenuId(value: unknown): value is DashboardMenuId {
+  return (DASHBOARD_MENU_IDS as readonly unknown[]).includes(value);
 }
 
 /** Whether `value` names a cleanup the schedule may run. */

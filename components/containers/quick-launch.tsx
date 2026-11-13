@@ -78,9 +78,8 @@ const IMAGE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._\-/:@]{0,254}$/;
 const HUB_LIMIT = 8;
 const TEMPLATE_LIMIT = 5;
 const LOCAL_LIMIT = 4;
-/** Chip rows scroll sideways on phones (edge to edge of the card), wrap from `sm` up. */
-const CHIP_ROW =
-  "-mx-4 -my-1 flex gap-1.5 overflow-x-auto px-4 py-1 [scrollbar-width:none] sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 [&::-webkit-scrollbar]:hidden";
+/** Chip rows swipe sideways on phones (edge to edge of the card), wrap from `sm` up. */
+const CHIP_ROW = "scroll-row -mx-4 -my-1 flex gap-1.5 px-4 py-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0";
 
 const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 
@@ -165,7 +164,7 @@ function Secret({ entry }: { entry: EnvVar }) {
       <span className="truncate">{shown ? entry.value : "••••••••"}</span>
       <button
         type="button"
-        className="rounded p-1.5 text-muted-foreground hover:text-foreground md:p-1"
+        className="pressable-icon inline-flex size-9 items-center justify-center rounded text-muted-foreground hover:text-foreground md:size-6"
         onClick={() => setShown((s) => !s)}
         aria-label={shown ? `Hide ${entry.key}` : `Show ${entry.key}`}
       >
@@ -174,7 +173,7 @@ function Secret({ entry }: { entry: EnvVar }) {
       {canCopy && (
         <button
           type="button"
-          className="rounded p-1.5 text-muted-foreground hover:text-foreground md:p-1"
+          className="pressable-icon inline-flex size-9 items-center justify-center rounded text-muted-foreground hover:text-foreground md:size-6"
           onClick={() =>
             void navigator.clipboard.writeText(entry.value).then(
               () => toast.success(`Copied ${entry.key}`),
@@ -221,16 +220,16 @@ function JobCard({
         : { kind: "container", id: job.id, name: started[0]?.name ?? job.title };
 
   return (
-    <li className="animate-in fade-in-0 slide-in-from-top-1 space-y-2 rounded-xl p-3 ring-1 ring-foreground/10 motion-reduce:animate-none">
-      <div className="flex items-start gap-2">
+    <li className="animate-in fade-in-0 slide-in-from-top-1 space-y-2 rounded-xl p-3 ring-1 ring-foreground/10 duration-300 ease-(--ease-fluid) motion-reduce:animate-none">
+      <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
         {job.status === "running" ? (
           <Loader2Icon className="mt-0.5 size-4 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none" />
         ) : job.status === "ok" ? (
-          <CheckCircle2Icon className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-500" />
+          <CheckCircle2Icon className="mt-0.5 size-4 shrink-0 text-success" />
         ) : (
           <XCircleIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
         )}
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-48">
           <p className="truncate font-mono text-sm">{job.title}</p>
           <p
             className={cn(
@@ -245,28 +244,37 @@ function JobCard({
               : job.message}
           </p>
         </div>
-        {logsTarget && (
-          <Button variant="ghost" size="sm" className="h-11 gap-1.5 md:h-7" onClick={() => onLogs(logsTarget)}>
-            <ScrollTextIcon />
-            Logs
-          </Button>
-        )}
-        {job.lines.length > 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-11 md:h-7"
-            onClick={() => setShowLog((s) => !s)}
-            aria-expanded={showLog}
-          >
-            {showLog ? "Hide output" : "Output"}
-          </Button>
-        )}
-        {job.status !== "running" && (
-          <Button variant="ghost" size="icon" className="size-11 md:size-7" onClick={onDismiss} aria-label="Dismiss">
-            <XIcon />
-          </Button>
-        )}
+        {/* Phones: actions drop under the message when it needs the width. */}
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          {logsTarget && (
+            <Button variant="ghost" size="sm" className="pressable h-11 gap-1.5 md:h-7" onClick={() => onLogs(logsTarget)}>
+              <ScrollTextIcon />
+              Logs
+            </Button>
+          )}
+          {job.lines.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="pressable h-11 md:h-7"
+              onClick={() => setShowLog((s) => !s)}
+              aria-expanded={showLog}
+            >
+              {showLog ? "Hide output" : "Output"}
+            </Button>
+          )}
+          {job.status !== "running" && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="pressable-icon size-11 md:size-7"
+              onClick={onDismiss}
+              aria-label="Dismiss"
+            >
+              <XIcon />
+            </Button>
+          )}
+        </div>
       </div>
       {progress && (
         <div className="h-1 overflow-hidden rounded-full bg-muted" aria-hidden="true">
@@ -284,7 +292,7 @@ function JobCard({
               href={`http://${host}:${port}`}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex h-7 items-center gap-1 rounded-md bg-primary/10 px-2 font-mono text-xs text-primary tabular-nums hover:bg-primary/15"
+              className="pressable inline-flex h-9 items-center gap-1 rounded-md bg-primary/10 px-2 font-mono text-xs text-primary tabular-nums hover:bg-primary/15 md:h-7"
               title="Open in a new tab"
             >
               <GlobeIcon className="size-3" />
@@ -568,7 +576,7 @@ export function QuickLaunch({
         type="button"
         disabled={busy}
         onClick={(e) => (e.shiftKey ? onCustomizeTemplate(t) : runTemplate(t, key))}
-        className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full bg-muted/70 py-1 pr-3 pl-1 text-xs font-medium whitespace-nowrap outline-none transition-[background-color,color,scale] hover:bg-primary/10 hover:text-primary focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.98] disabled:opacity-60 md:h-8"
+        className="pressable inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full bg-muted/70 py-1 pr-3 pl-1 text-xs font-medium whitespace-nowrap outline-none hover:bg-primary/10 hover:text-primary focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-60 md:h-8"
         title={`${t.description}\nClick to start with defaults, Shift-click to customize.`}
       >
         {busy ? (
@@ -586,7 +594,7 @@ export function QuickLaunch({
   return (
     <section
       aria-labelledby="quick-launch"
-      className="animate-fade-in-soft space-y-4 rounded-2xl bg-card p-4 ring-1 ring-foreground/10 sm:p-6"
+      className="space-y-4 rounded-2xl bg-card p-4 ring-1 ring-foreground/10 sm:p-6"
     >
       <div className="flex items-start gap-3">
         <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary max-sm:hidden">
@@ -602,7 +610,7 @@ export function QuickLaunch({
             public.ecr.aws…
           </p>
         </div>
-        <Button variant="outline" size="sm" className="h-11 shrink-0 gap-1.5 md:h-8" onClick={onImportCompose}>
+        <Button variant="outline" size="sm" className="pressable h-11 shrink-0 gap-1.5 md:h-8" onClick={onImportCompose}>
           <FileCodeIcon />
           <span className="max-sm:hidden">Compose from YAML / URL</span>
           <span className="sm:hidden">Compose</span>
@@ -618,7 +626,7 @@ export function QuickLaunch({
           onKeyDown={onKeyDown}
           onFocus={onWantCatalog}
           placeholder="redis, grafana/grafana, ghcr.io/org/app:1.2…"
-          className="h-12 rounded-xl bg-background pr-10 pl-10 font-mono text-base md:text-sm"
+          className="h-12 rounded-xl bg-background pr-12 pl-10 font-mono text-base md:pr-10 md:text-sm"
           role="combobox"
           aria-expanded={results.length > 0}
           aria-controls={listId}
@@ -638,7 +646,7 @@ export function QuickLaunch({
                 setQuery("");
                 inputRef.current?.focus();
               }}
-              className="absolute top-1/2 right-1 -translate-y-1/2 rounded p-2.5 text-muted-foreground hover:text-foreground md:p-1.5"
+              className="pressable-icon absolute top-1/2 right-0.5 flex size-11 -translate-y-1/2 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground md:size-8"
               aria-label="Clear"
             >
               <XIcon className="size-4" />
@@ -654,7 +662,7 @@ export function QuickLaunch({
               id={listId}
               role="listbox"
               aria-label="Launch results"
-              className="max-h-[28rem] divide-y overflow-y-auto rounded-xl ring-1 ring-foreground/10"
+              className="max-h-[28rem] divide-y overflow-y-auto overscroll-contain rounded-xl ring-1 ring-foreground/10 scrollbar-subtle"
             >
               {results.map((r, index) => {
                 const image = imageOf(r);
@@ -706,13 +714,13 @@ export function QuickLaunch({
                           </span>
                         )}
                         {r.kind === "hub" && r.repo.official && (
-                          <span className="inline-flex shrink-0 items-center gap-0.5 text-[0.65rem] font-medium text-sky-600 dark:text-sky-400">
+                          <span className="inline-flex shrink-0 items-center gap-0.5 text-[0.65rem] font-medium text-primary">
                             <BadgeCheckIcon className="size-3.5" />
                             Official
                           </span>
                         )}
                         {r.kind === "hub" && r.repo.verified && (
-                          <span className="inline-flex shrink-0 items-center gap-0.5 text-[0.65rem] font-medium text-emerald-700 dark:text-emerald-400">
+                          <span className="inline-flex shrink-0 items-center gap-0.5 text-[0.65rem] font-medium text-success">
                             <ShieldCheckIcon className="size-3.5" />
                             Verified
                           </span>
@@ -757,7 +765,7 @@ export function QuickLaunch({
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="size-11 text-muted-foreground md:size-8"
+                          className="pressable-icon size-11 text-muted-foreground md:size-8"
                           onClick={() => onPullImage(image)}
                           disabled={busy}
                           title="Pull only"
@@ -769,7 +777,7 @@ export function QuickLaunch({
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="size-11 text-muted-foreground md:size-8"
+                        className="pressable-icon size-11 text-muted-foreground md:size-8"
                         onClick={() => customize(r)}
                         disabled={busy}
                         title="Customize (⇧↵)"
@@ -779,7 +787,7 @@ export function QuickLaunch({
                       </Button>
                       <Button
                         size="sm"
-                        className="h-11 min-w-16 gap-1 md:h-8"
+                        className="pressable h-11 min-w-16 gap-1 md:h-8"
                         onClick={() => run(r)}
                         disabled={busy}
                         title="Start with defaults (↵)"
@@ -817,14 +825,18 @@ export function QuickLaunch({
             )}
             <span className="ml-auto flex items-center gap-2">
               {hubCount > HUB_LIMIT && (
-                <button type="button" className="hover:text-foreground" onClick={() => setShowAllHub((s) => !s)}>
+                <button
+                  type="button"
+                  className="inline-flex h-9 items-center hover:text-foreground md:h-auto"
+                  onClick={() => setShowAllHub((s) => !s)}
+                >
                   {showAllHub ? "Fewer Docker Hub results" : `All ${hubCount} Docker Hub results`}
                 </button>
               )}
               {parsed.hubTerm && (
                 <button
                   type="button"
-                  className="hover:text-foreground"
+                  className="inline-flex h-9 items-center hover:text-foreground md:h-auto"
                   aria-pressed={includeQuay}
                   onClick={() => setIncludeQuay((s) => !s)}
                 >

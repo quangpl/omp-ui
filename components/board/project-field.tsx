@@ -12,7 +12,7 @@ import {
 import type { BoardWithCounts } from "@/lib/types";
 
 /**
- * "Project" picker of the "New card" form: a loading line while `boards` is `null`, a pointer to
+ * "Project" picker of the "New task" form: a loading line while `boards` is `null`, a pointer to
  * create one when there are none, else a select. `onLeave` runs when its link navigates away.
  */
 export function ProjectField({

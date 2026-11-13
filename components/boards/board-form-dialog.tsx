@@ -50,6 +50,8 @@ import { cn } from "@/lib/utils";
 type View = "source" | "clone" | "details";
 /** Which slot a picked or cloned folder fills. */
 type Target = "primary" | "extra";
+/** A form error; `field` places it under that input instead of above the actions. */
+type FormError = { message: string; field?: "name" | "workdir" };
 
 function basename(path: string): string {
   return path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? "";
@@ -95,7 +97,7 @@ export function BoardFormDialog({
   const [showMore, setShowMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<FormError | null>(null);
   // Git state of folders picked in this session ("checking" while the lookup runs); edit-mode
   // folders that came from the board are never checked.
   const [repoState, setRepoState] = useState<Record<string, boolean | "checking" | "error">>({});
@@ -199,11 +201,11 @@ export function BoardFormDialog({
       autoRun,
     };
     if (!input.workdir) {
-      setError("Choose the project folder first.");
+      setError({ message: "Choose the project folder first.", field: "workdir" });
       return;
     }
     if (!input.name) {
-      setError("Give the project a name.");
+      setError({ message: "Give the project a name.", field: "name" });
       return;
     }
 
@@ -217,7 +219,7 @@ export function BoardFormDialog({
       onOpenChange(false);
       onSaved?.(saved, !board);
     } catch (err) {
-      setError(err instanceof Error && err.message ? err.message : "Couldn't save the project.");
+      setError({ message: err instanceof Error && err.message ? err.message : "Couldn't save the project." });
       setSaving(false);
     }
   }
@@ -277,7 +279,7 @@ export function BoardFormDialog({
           key={option.title}
           type="button"
           onClick={option.onClick}
-          className="flex min-h-20 w-full items-center gap-4 rounded-xl border bg-card p-4 text-left outline-none transition-colors hover:border-primary/40 hover:bg-accent/40 focus-visible:ring-3 focus-visible:ring-ring/50 active:bg-accent/60"
+          className="pressable flex min-h-20 w-full items-center gap-4 rounded-xl border bg-card p-4 text-left outline-none hover:border-primary/40 hover:bg-accent/40 focus-visible:ring-3 focus-visible:ring-ring/50 active:bg-accent/60"
         >
           <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary [&_svg]:size-5">
             {option.icon}
@@ -333,9 +335,13 @@ export function BoardFormDialog({
       </label>
     );
 
+  const nameError = error?.field === "name" ? error.message : null;
+  const folderError = error?.field === "workdir" ? error.message : null;
+  const formError = error && !error.field ? error.message : null;
+
   const detailsView = (
     <form id={formId} onSubmit={onSubmit} noValidate className="space-y-5">
-      <div className="space-y-2">
+      <div className="flex flex-col gap-2">
         <Label htmlFor={`${formId}-name`}>Project name</Label>
         <Input
           id={`${formId}-name`}
@@ -343,22 +349,34 @@ export function BoardFormDialog({
           onChange={(e) => {
             setName(e.target.value);
             setNameTouched(true);
+            if (nameError) setError(null);
           }}
           placeholder="My app"
           autoComplete="off"
           maxLength={120}
           disabled={saving}
+          aria-invalid={nameError ? true : undefined}
+          aria-describedby={nameError ? `${formId}-name-error` : undefined}
           className="h-11 md:h-9"
         />
+        {nameError && (
+          <p id={`${formId}-name-error`} role="alert" className="text-xs font-medium text-destructive">
+            {nameError}
+          </p>
+        )}
       </div>
 
-      <div className="space-y-2">
+      <div className="flex flex-col gap-2">
         <span id={`${formId}-folder-label`} className="text-sm font-medium">
           Project folder
         </span>
         <div
           aria-labelledby={`${formId}-folder-label`}
-          className="flex min-h-12 items-center gap-2.5 rounded-lg border bg-muted/40 py-1 pr-1 pl-3"
+          aria-describedby={folderError ? `${formId}-folder-error` : undefined}
+          className={cn(
+            "flex min-h-12 items-center gap-2.5 rounded-lg border bg-muted/40 py-1 pr-1 pl-3",
+            folderError && "border-destructive",
+          )}
         >
           <FolderIcon className="size-4 shrink-0 text-primary" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate font-mono text-sm" title={workdir}>
@@ -366,11 +384,16 @@ export function BoardFormDialog({
           </span>
           {folderMenu(
             "primary",
-            <Button type="button" variant="ghost" disabled={saving} className="h-10 shrink-0 px-3 md:h-8">
+            <Button type="button" variant="ghost" disabled={saving} className="h-11 shrink-0 px-3 md:h-8">
               Change
             </Button>,
           )}
         </div>
+        {folderError && (
+          <p id={`${formId}-folder-error`} role="alert" className="text-xs font-medium text-destructive">
+            {folderError}
+          </p>
+        )}
         {initGitToggle(workdir, `${formId}-init-primary`)}
         <p className="text-xs text-muted-foreground">The agent works in this folder.</p>
       </div>
@@ -396,7 +419,7 @@ export function BoardFormDialog({
                         setExtraFolders((list) => list.filter((f) => f !== folder));
                         forgetFolder(folder);
                       }}
-                      className="size-10 shrink-0 text-muted-foreground md:size-8"
+                      className="size-11 shrink-0 text-muted-foreground md:size-8"
                       aria-label={`Remove ${basename(folder)}`}
                     >
                       <XIcon />
@@ -442,7 +465,7 @@ export function BoardFormDialog({
         </button>
         {showMore && (
           <div id={`${formId}-more`} className="space-y-4 border-t p-3.5">
-            <div className="space-y-2">
+            <div className="flex flex-col gap-2">
               <Label htmlFor={`${formId}-model`}>Model</Label>
               <Input
                 id={`${formId}-model`}
@@ -500,9 +523,9 @@ export function BoardFormDialog({
         )}
       </div>
 
-      {error && (
+      {formError && (
         <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-sm [overflow-wrap:anywhere] text-destructive">
-          {error}
+          {formError}
         </p>
       )}
     </form>

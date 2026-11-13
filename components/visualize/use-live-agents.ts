@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api-client";
-import { parseToolCall } from "@/lib/run-log";
-import type { RunEvent, ServerEvent, SubagentSnapshot } from "@/lib/types";
+import { parseToolCall, parseToolFailure } from "@/lib/run-log";
+import type { ContextUsage, RunEvent, RunEventKind, ServerEvent, SubagentSnapshot } from "@/lib/types";
 import { boardContact } from "./agent-map";
 import { type Activity, describeActivity } from "./activity";
 
@@ -14,6 +14,23 @@ export interface Contact {
   cardIds: string[];
   /** When the tool call started (ISO). */
   at: string;
+}
+
+/** Running tallies of one run, the raw material of the agent's mood (see ./mood). */
+export interface AgentStats {
+  toolCount: number;
+  errorCount: number;
+  /** Model request retries ("Retrying …" status lines) over the whole run. */
+  retryCount: number;
+  /** Newest last, at most 12. */
+  recentTools: { tool: string; at: string; error?: boolean }[];
+  /** Errors since the last sign of progress (successful tool / text reply). */
+  unresolvedErrors: number;
+  lastProgressAt?: string;
+  lastErrorAt?: string;
+  /** Start of the current uninterrupted thinking stretch; cleared by any non-thinking event. */
+  thinkingSince?: string;
+  lastEventAt?: string;
 }
 
 /** What the Visualize page knows live about one running card, beyond the dashboard snapshot. */
@@ -27,11 +44,102 @@ export interface LiveAgent {
   helpers: Record<string, SubagentSnapshot>;
   /** Recent board interactions with other cards (newest last, at most 12). */
   contacts: Contact[];
+  /** Tallies of the current run (zeros before its first event). */
+  stats: AgentStats;
+  /** Latest context fill of the current run ("run.context" events). */
+  context?: ContextUsage;
 }
 
 type LiveMap = Record<string, LiveAgent>;
 
-const EMPTY: LiveAgent = { helpers: {}, contacts: [] };
+/** Stats of a run with no events yet. */
+export const EMPTY_STATS: AgentStats = { toolCount: 0, errorCount: 0, retryCount: 0, recentTools: [], unresolvedErrors: 0 };
+
+const EMPTY: LiveAgent = { helpers: {}, contacts: [], stats: EMPTY_STATS };
+
+/** Tool calls kept in `AgentStats.recentTools`. */
+const MAX_RECENT_TOOLS = 12;
+
+/** `stats` without a thinking stretch. */
+function stopThinking(stats: AgentStats): AgentStats {
+  if (!stats.thinkingSince) return stats;
+  const { thinkingSince: _, ...rest } = stats;
+  return rest;
+}
+
+/**
+ * `stats` after one run event of `kind` at `at` (ISO). A tool call whose previous call went fine
+ * counts as progress and clears unresolved errors, unless it goes back to the tool that failed
+ * last; a text reply always does. Thinking starts a stretch, anything else ends it.
+ */
+export function applyEvent(stats: AgentStats, kind: RunEventKind, text: string, at: string): AgentStats {
+  const next: AgentStats = { ...stats, lastEventAt: at };
+  switch (kind) {
+    case "tool": {
+      const tool = parseToolCall(text).name;
+      const prev = stats.recentTools[stats.recentTools.length - 1];
+      if (!prev?.error) {
+        next.lastProgressAt = at;
+        const failing = stats.recentTools.findLast((t) => t.error)?.tool;
+        if (tool !== failing || prev?.tool === failing) next.unresolvedErrors = 0;
+      }
+      next.toolCount = stats.toolCount + 1;
+      next.recentTools = [...stats.recentTools, { tool, at }].slice(-MAX_RECENT_TOOLS);
+      return stopThinking(next);
+    }
+    case "error": {
+      next.errorCount = stats.errorCount + 1;
+      next.unresolvedErrors = stats.unresolvedErrors + 1;
+      next.lastErrorAt = at;
+      const failed = /^✗ (\S+) failed/.exec(text)?.[1];
+      if (failed) {
+        const index = stats.recentTools.findLastIndex((t) => t.tool === failed);
+        if (index !== -1) next.recentTools = stats.recentTools.with(index, { ...stats.recentTools[index], error: true });
+      }
+      return stopThinking(next);
+    }
+    case "status":
+      if (text.startsWith("Retrying")) next.retryCount = stats.retryCount + 1;
+      else if (text.startsWith("Retry succeeded")) next.unresolvedErrors = 0;
+      return stopThinking(next);
+    case "text":
+      next.lastProgressAt = at;
+      next.unresolvedErrors = 0;
+      return stopThinking(next);
+    case "thinking":
+      next.thinkingSince = stats.thinkingSince ?? at;
+      return next;
+    case "agent":
+      // Subagent snapshots are a sign of life, not of the agent's own work.
+      return next;
+  }
+}
+
+/**
+ * Replayed stats of a run plus what live events taught meanwhile: counts are lower bounds, so
+ * the larger wins; the side that saw the latest event decides the current stretch and errors.
+ */
+function mergeStats(replay: AgentStats, live: AgentStats): AgentStats {
+  const liveLatest = live.lastEventAt ?? live.thinkingSince;
+  if (!liveLatest) return replay;
+  const newer = liveLatest > (replay.lastEventAt ?? "") ? live : replay;
+  const later = (a?: string, b?: string) => (a && b ? (a > b ? a : b) : (a ?? b));
+  const seen = new Set(replay.recentTools.map((t) => `${t.at}|${t.tool}`));
+  const recentTools = [...replay.recentTools, ...live.recentTools.filter((t) => !seen.has(`${t.at}|${t.tool}`))]
+    .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
+    .slice(-MAX_RECENT_TOOLS);
+  return {
+    toolCount: Math.max(replay.toolCount, live.toolCount),
+    errorCount: Math.max(replay.errorCount, live.errorCount),
+    retryCount: Math.max(replay.retryCount, live.retryCount),
+    recentTools,
+    unresolvedErrors: newer.unresolvedErrors,
+    lastProgressAt: later(replay.lastProgressAt, live.lastProgressAt),
+    lastErrorAt: later(replay.lastErrorAt, live.lastErrorAt),
+    thinkingSince: newer.thinkingSince,
+    lastEventAt: later(replay.lastEventAt, live.lastEventAt),
+  };
+}
 
 /** Board contacts kept per agent. */
 const MAX_CONTACTS = 12;
@@ -74,9 +182,9 @@ function parseSnapshot(text: string): SubagentSnapshot | null {
 const EVENTS_PAGE = 1000;
 
 /**
- * The running run of `taskId` and what its log says so far: latest activity, subagents and board
- * contacts. Lets the page show the right state right after a reload instead of waiting for the
- * next event.
+ * The running run of `taskId` and what its log says so far: latest activity, subagents, board
+ * contacts and stats. Lets the page show the right state right after a reload instead of
+ * waiting for the next event.
  */
 async function replayRun(taskId: string) {
   const run = (await api.tasks.runs(taskId)).find((r) => r.status === "running");
@@ -84,9 +192,11 @@ async function replayRun(taskId: string) {
   let activity: Activity | undefined;
   const helpers: Record<string, SubagentSnapshot> = {};
   const contacts: Contact[] = [];
+  let stats = EMPTY_STATS;
   for (let after = 0; ; ) {
     const page = await api.runs.events(run.id, after, EVENTS_PAGE);
     for (const event of page) {
+      stats = applyEvent(stats, event.kind, event.text, event.createdAt);
       if (event.kind === "agent") {
         const snapshot = parseSnapshot(event.text);
         if (snapshot) helpers[snapshot.id] = snapshot;
@@ -99,7 +209,7 @@ async function replayRun(taskId: string) {
     if (page.length < EVENTS_PAGE) break;
     after = page[page.length - 1].seq;
   }
-  return { run, activity, helpers, contacts: contacts.slice(-MAX_CONTACTS) };
+  return { run, activity, helpers, contacts: contacts.slice(-MAX_CONTACTS), stats };
 }
 
 /**
@@ -135,7 +245,7 @@ export function useLiveAgents(runningIds: readonly string[]) {
       replayRun(taskId)
         .then((replay) => {
           if (!replay) return;
-          const { run, activity, helpers, contacts } = replay;
+          const { run, activity, helpers, contacts, stats } = replay;
           // Live events that arrived meanwhile are newer than the replay and win.
           patch(taskId, (w) =>
             w.runId && w.runId !== run.id
@@ -146,6 +256,8 @@ export function useLiveAgents(runningIds: readonly string[]) {
                   activity: w.activity ?? activity,
                   helpers: { ...helpers, ...w.helpers },
                   contacts: mergeContacts(contacts, w.contacts),
+                  stats: mergeStats(stats, w.stats),
+                  context: w.context,
                 },
           );
         })
@@ -164,7 +276,7 @@ export function useLiveAgents(runningIds: readonly string[]) {
           patch(run.taskId, (w) => {
             if (w.runId === run.id) return w.startedAt ? null : { ...w, startedAt: run.startedAt };
             if (!w.runId) return { ...w, runId: run.id, startedAt: run.startedAt };
-            return { helpers: {}, contacts: [], runId: run.id, startedAt: run.startedAt };
+            return { helpers: {}, contacts: [], stats: EMPTY_STATS, runId: run.id, startedAt: run.startedAt };
           });
           return;
         }
@@ -172,27 +284,51 @@ export function useLiveAgents(runningIds: readonly string[]) {
           const { event: e } = event;
           if (e.kind === "agent") {
             const snapshot = parseSnapshot(e.text);
-            if (snapshot) patch(e.taskId, (w) => ({ ...w, helpers: { ...w.helpers, [snapshot.id]: snapshot } }));
+            if (snapshot) {
+              patch(e.taskId, (w) => ({
+                ...w,
+                helpers: { ...w.helpers, [snapshot.id]: snapshot },
+                stats: applyEvent(w.stats, e.kind, e.text, e.createdAt),
+              }));
+            }
             return;
           }
           const activity = describeActivity(e.kind, e.text);
           const contact = contactOf(e);
-          if (!activity && !contact) return;
           patch(e.taskId, (w) => ({
             ...w,
             activity: activity ?? w.activity,
             contacts: contact ? mergeContacts(w.contacts, [contact]) : w.contacts,
+            stats: applyEvent(w.stats, e.kind, e.text, e.createdAt),
           }));
           return;
         }
         case "run.agent":
           patch(event.taskId, (w) => ({ ...w, helpers: { ...w.helpers, [event.agent.id]: event.agent } }));
           return;
+        case "run.context": {
+          const { context } = event;
+          patch(event.taskId, (w) =>
+            (w.runId && w.runId !== event.runId) ||
+            (w.context?.tokens === context.tokens && w.context.contextWindow === context.contextWindow)
+              ? null
+              : { ...w, context },
+          );
+          return;
+        }
         case "run.delta": {
-          // Deltas stream many times a second; only a change of kind changes the activity.
+          // Deltas stream many times a second: patch only when the kind of activity changes or a
+          // thinking stretch starts or ends (deltas carry no time, so it is stamped now).
           const activity = describeActivity(event.kind, event.text);
           if (!activity) return;
-          patch(event.taskId, (w) => (w.activity?.icon === activity.icon ? null : { ...w, activity }));
+          const thinking = event.kind === "thinking";
+          patch(event.taskId, (w) => {
+            const stretchChanges = thinking !== Boolean(w.stats.thinkingSince);
+            if (w.activity?.icon === activity.icon && !stretchChanges) return null;
+            if (!stretchChanges) return { ...w, activity };
+            const stats = thinking ? { ...w.stats, thinkingSince: new Date().toISOString() } : stopThinking(w.stats);
+            return { ...w, activity, stats };
+          });
           return;
         }
       }

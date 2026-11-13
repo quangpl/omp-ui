@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ArrowRightIcon, CpuIcon, LoaderCircleIcon, SquareIcon, ZapIcon } from "lucide-react";
+import { ArrowRightIcon, BotIcon, CpuIcon, LoaderCircleIcon, SquareIcon, ZapIcon } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessage, formatDuration, formatRelative, useNow } from "@/components/board/format";
 import { useNewCard } from "@/components/new-card";
@@ -11,7 +11,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { api } from "@/lib/api-client";
 import type { DashboardLiveAgent, QueueEntry, QueueSnapshot } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { FOCUS_RING, PRESSABLE, Panel, SectionTitle, cardHref, plural, useEntrance } from "./shared";
+import { FOCUS_RING, Panel, SectionTitle, cardHref, plural, useEntrance } from "./shared";
 
 /** Rows shown; the rest are summarized with a link to the visual overview. */
 const MAX_ROWS = 6;
@@ -67,19 +67,29 @@ function AgentRow({
       <span
         aria-hidden="true"
         className={cn(
-          "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-medium tabular-nums",
-          running ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground",
+          "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full font-mono text-[11px] font-medium tabular-nums",
+          running ? "bg-primary/10" : "bg-muted text-muted-foreground",
         )}
       >
-        {running ? <LoaderCircleIcon className="size-3.5 animate-spin motion-reduce:animate-none" /> : position}
+        {running ? (
+          <span className="relative flex size-2">
+            <span className="animate-breathe absolute inset-0 rounded-full bg-primary" />
+            <span className="relative size-2 rounded-full bg-primary" />
+          </span>
+        ) : (
+          position
+        )}
       </span>
-      <Link href={cardHref({ boardId: entry.boardId, id: entry.taskId })} className={cn("min-w-0 flex-1 rounded-md", FOCUS_RING)}>
+      <Link
+        href={cardHref({ boardId: entry.boardId, id: entry.taskId })}
+        className={cn("pressable min-w-0 flex-1 rounded-md", FOCUS_RING)}
+      >
         <span className="flex min-w-0 items-baseline gap-2">
           <span className="truncate text-sm font-medium" title={entry.title}>
             {entry.title}
           </span>
           {running && live?.startedAt && (
-            <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums" title="Running for">
+            <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground tabular-nums" title="Running for">
               {formatDuration(now - Date.parse(live.startedAt))}
             </span>
           )}
@@ -144,18 +154,25 @@ export function LiveAgents({
         id="home-agents"
         title="Live agents"
         action={
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {busy}/{limit} slots{queued.length > 0 ? ` · ${queued.length} queued` : ""}
+          <span className="text-xs text-muted-foreground">
+            <span className="font-mono tabular-nums">
+              {busy}/{limit}
+            </span>{" "}
+            slots{queued.length > 0 ? ` · ${queued.length} queued` : ""}
           </span>
         }
       />
       <Panel className="p-3">
         <div className="flex gap-1" role="img" aria-label={`${busy} of ${limit} agent slots busy`}>
           {Array.from({ length: limit }, (_, i) => (
-            <span
-              key={i}
-              className={cn("h-1.5 flex-1 rounded-full bg-muted transition-colors duration-500", i < busy && "bg-primary")}
-            />
+            <span key={i} className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+              <span
+                className={cn(
+                  "absolute inset-0 rounded-full bg-primary opacity-0 transition-opacity duration-500 motion-reduce:transition-none",
+                  i < busy && "opacity-100",
+                )}
+              />
+            </span>
           ))}
         </div>
         {planning.length > 0 && (
@@ -165,22 +182,26 @@ export function LiveAgents({
           </p>
         )}
         {entries.length === 0 ? (
-          <div className="pt-3">
-            <p className="text-sm font-medium">No agents working</p>
-            <p className="text-xs text-muted-foreground">Start a card to see its agent and current step here.</p>
-            <button
-              type="button"
-              onClick={() => openNewCard()}
-              className={cn(
-                "mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-md text-sm font-medium text-primary hover:underline md:min-h-0",
-                FOCUS_RING,
-                PRESSABLE,
-              )}
-            >
-              <ZapIcon className="size-3.5" aria-hidden="true" />
-              New card
-              <Kbd className="hidden md:inline-flex">N</Kbd>
-            </button>
+          <div className="flex items-start gap-3 pt-3">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+              <BotIcon className="size-4.5" aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-medium">No agents working</p>
+              <p className="text-xs text-pretty text-muted-foreground">Start a card to see its agent and current step here.</p>
+              <button
+                type="button"
+                onClick={() => openNewCard()}
+                className={cn(
+                  "pressable mt-1 inline-flex min-h-11 items-center gap-1.5 rounded-md text-sm font-medium text-primary hover:underline md:min-h-8",
+                  FOCUS_RING,
+                )}
+              >
+                <ZapIcon className="size-3.5" aria-hidden="true" />
+                New task
+                <Kbd className="hidden md:inline-flex">N</Kbd>
+              </button>
+            </div>
           </div>
         ) : (
           <ul className="mt-3 flex flex-col divide-y">
@@ -200,9 +221,12 @@ export function LiveAgents({
         {entries.length > shown.length && (
           <Link
             href="/visualize"
-            className={cn("mt-2 flex min-h-11 items-center gap-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground md:min-h-0", FOCUS_RING)}
+            className={cn(
+              "pressable mt-2 flex min-h-11 items-center gap-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground md:min-h-0",
+              FOCUS_RING,
+            )}
           >
-            {entries.length - shown.length} more — view all
+            <span className="font-mono tabular-nums">{entries.length - shown.length}</span> more — view all
             <ArrowRightIcon className="size-3" aria-hidden="true" />
           </Link>
         )}

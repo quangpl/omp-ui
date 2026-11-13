@@ -100,7 +100,7 @@ function NeedsYouRow({
       style={enter.style}
       className={cn(
         enter.className,
-        "flex items-center gap-2.5 px-3 py-2 transition-colors focus-within:bg-muted/50 hover:bg-muted/40",
+        "flex items-center gap-2.5 px-3 py-2 transition-colors focus-within:bg-muted/50 hover:bg-muted/40 has-[a:active]:bg-muted/60",
       )}
     >
       <span
@@ -282,7 +282,7 @@ export function NeedsYouList({
         }
       />
       {cards.length === 0 ? (
-        <Panel className="animate-fade-in-soft flex items-center gap-3 px-4 py-4">
+        <div className="animate-fade-in-soft flex items-center gap-3 rounded-xl border border-dashed px-4 py-4">
           <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-success/10 text-success">
             <CircleCheckIcon className="size-4.5" aria-hidden="true" />
           </span>
@@ -292,9 +292,9 @@ export function NeedsYouList({
               Agent questions, failures, open feedback and unpushed work land here.
             </span>
           </span>
-        </Panel>
+        </div>
       ) : (
-        <Panel className="overflow-hidden">
+        <Panel className="shadow-diffuse overflow-hidden">
           <ul ref={listRef} className="divide-y" aria-label="Cards that need you">
             {shown.map((card, i) => (
               <NeedsYouRow
@@ -316,7 +316,7 @@ export function NeedsYouList({
                   onClick={() => setExpanded((v) => !v)}
                   aria-expanded={expanded}
                   className={cn(
-                    "inline-flex min-h-11 items-center gap-1 rounded-md font-medium text-foreground hover:underline md:min-h-0",
+                    "pressable inline-flex min-h-11 items-center gap-1 rounded-md font-medium text-foreground hover:underline md:min-h-0",
                     FOCUS_RING,
                   )}
                 >
@@ -325,8 +325,9 @@ export function NeedsYouList({
                 </button>
               )}
               {total > cards.length && (
-                <span className="ml-auto">
-                  {cards.length} most urgent of {total} · the rest are on their boards
+                <span className="ml-auto text-right">
+                  <span className="font-mono tabular-nums">{cards.length}</span> most urgent of{" "}
+                  <span className="font-mono tabular-nums">{total}</span> · the rest are on their boards
                 </span>
               )}
             </div>

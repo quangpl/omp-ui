@@ -12,7 +12,7 @@ function Figure({ label, value, note }: { label: string; value: number | null; n
   return (
     <div className="min-w-0">
       <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="mt-1 text-2xl font-semibold tracking-tight tabular-nums">
+      <dd className="mt-1 font-mono text-2xl font-semibold tracking-tight tabular-nums">
         {value === null ? <span className="text-muted-foreground/60">n/a</span> : formatCount(value)}
       </dd>
       {note && <dd className="text-xs text-muted-foreground">{note}</dd>}
@@ -34,7 +34,7 @@ function Breakdown({
 }) {
   const max = Math.max(1, ...rows.map((r) => r.count));
   return (
-    <section className={cn(MEMORY_PANEL, "p-5")}>
+    <section className={cn(MEMORY_PANEL, "h-full p-5")}>
       <h3 className="mb-4 text-sm font-medium">{title}</h3>
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">{empty}</p>
@@ -47,7 +47,7 @@ function Breakdown({
                   {format(row.value)}
                   {row.note && <span className="ml-2 text-xs text-muted-foreground">{row.note}</span>}
                 </span>
-                <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{formatCount(row.count)}</span>
+                <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">{formatCount(row.count)}</span>
               </div>
               <div
                 className="h-1 origin-left animate-card-in rounded-full bg-foreground/60"
@@ -80,11 +80,16 @@ export function StatsTab({ stats, error }: { stats: MemoryStoreStats | null; err
   if (error && !stats) return <p className="text-sm text-destructive">{error}</p>;
   if (!stats) {
     return (
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]" aria-busy="true">
-        <Skeleton className="h-56 rounded-xl" />
-        <Skeleton className="h-56 rounded-xl" />
-        <Skeleton className="h-48 rounded-xl" />
-        <Skeleton className="h-48 rounded-xl" />
+      <div className="space-y-6" aria-busy="true">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+          <Skeleton className="h-72 rounded-xl" />
+          <Skeleton className="h-72 rounded-xl" />
+        </div>
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] lg:grid-rows-2">
+          <Skeleton className="h-48 rounded-xl lg:row-span-2 lg:h-auto" />
+          <Skeleton className="h-48 rounded-xl" />
+          <Skeleton className="h-48 rounded-xl" />
+        </div>
       </div>
     );
   }
@@ -96,9 +101,9 @@ export function StatsTab({ stats, error }: { stats: MemoryStoreStats | null; err
   return (
     <div className="@container space-y-6">
       <div className="grid gap-6 @4xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-        <section className={cn(MEMORY_PANEL, "animate-card-in p-6 sm:p-8")}>
+        <section className={cn(MEMORY_PANEL, "animate-card-in p-5 sm:p-8")}>
           <p className="text-xs font-medium text-muted-foreground">Long-term memories</p>
-          <p className="mt-2 text-6xl leading-none font-semibold tracking-tighter tabular-nums">
+          <p className="mt-2 font-mono text-5xl leading-none font-semibold tracking-tighter tabular-nums sm:text-6xl">
             {formatCount(counts.latestMemories)}
           </p>
           {superseded > 0 && (
@@ -106,7 +111,7 @@ export function StatsTab({ stats, error }: { stats: MemoryStoreStats | null; err
               plus {formatCount(superseded)} superseded {superseded === 1 ? "version" : "versions"}
             </p>
           )}
-          <dl className="mt-8 grid grid-cols-2 gap-6 border-t pt-6 @xl:grid-cols-4">
+          <dl className="mt-6 grid grid-cols-2 gap-x-4 gap-y-6 border-t pt-6 sm:mt-8 @xl:grid-cols-4 @xl:gap-6">
             <Figure
               label="Sessions"
               value={counts.sessions}
@@ -122,7 +127,7 @@ export function StatsTab({ stats, error }: { stats: MemoryStoreStats | null; err
           </dl>
         </section>
 
-        <section className={cn(MEMORY_PANEL, "animate-card-in p-6 [--stagger:1]")}>
+        <section className={cn(MEMORY_PANEL, "animate-card-in p-5 [--stagger:1] sm:p-6")}>
           <p className="text-xs font-medium text-muted-foreground">Recall</p>
           <p className="mt-2 text-lg font-semibold tracking-tight">{mode.label}</p>
           <p className="mt-1 text-sm leading-relaxed text-pretty text-muted-foreground">{mode.detail}</p>
@@ -133,7 +138,7 @@ export function StatsTab({ stats, error }: { stats: MemoryStoreStats | null; err
             </div>
             <div>
               <dt className="text-xs text-muted-foreground">Server</dt>
-              <dd className="mt-0.5 tabular-nums">{stats.version ? `agentmemory ${stats.version}` : "agentmemory"}</dd>
+              <dd className="mt-0.5 font-mono text-xs tabular-nums">{stats.version ? `agentmemory ${stats.version}` : "agentmemory"}</dd>
             </div>
           </dl>
           {stats.flags.length > 0 && (
@@ -156,14 +161,20 @@ export function StatsTab({ stats, error }: { stats: MemoryStoreStats | null; err
         </section>
       </div>
 
-      <div className="grid gap-6 @3xl:grid-cols-3">
-        <Breakdown
-          title="Memories by project"
-          rows={memoryProjects.map((p) => ({ ...p, note: p.boardName && p.boardName !== p.value ? p.boardName : undefined }))}
-          empty="No project-scoped memories yet."
-        />
-        <Breakdown title="Memories by kind" rows={stats.types} empty="No memories yet." format={typeLabel} />
-        <Breakdown title="Sessions by project" rows={stats.sessionProjects} empty="No sessions recorded yet." />
+      <div className="grid gap-6 @3xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+        <div className="animate-card-in [--stagger:2] @3xl:row-span-2">
+          <Breakdown
+            title="Memories by project"
+            rows={memoryProjects.map((p) => ({ ...p, note: p.boardName && p.boardName !== p.value ? p.boardName : undefined }))}
+            empty="No project-scoped memories yet."
+          />
+        </div>
+        <div className="animate-card-in [--stagger:3]">
+          <Breakdown title="Memories by kind" rows={stats.types} empty="No memories yet." format={typeLabel} />
+        </div>
+        <div className="animate-card-in [--stagger:4]">
+          <Breakdown title="Sessions by project" rows={stats.sessionProjects} empty="No sessions recorded yet." />
+        </div>
       </div>
     </div>
   );

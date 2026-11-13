@@ -714,6 +714,34 @@ export function runRepositoryContract(
         expect(await repo.listRuns("no-such-task")).toEqual([]);
       });
 
+      it("lists recent runs of every task newest first", async () => {
+        expect(await repo.listRecentRuns()).toEqual([]);
+
+        const task = await setupTask("a");
+        const other = await setupTask("b");
+        const r1 = await repo.createRun({ taskId: task.id, prompt: "1" });
+        const r2 = await repo.createRun({ taskId: other.id, prompt: "2" });
+        const r3 = await repo.createRun({ taskId: task.id, prompt: "3" });
+        await repo.updateRun(r2.id, { status: "failed", error: "boom" });
+
+        const runs = await repo.listRecentRuns();
+        expect(ids(runs)).toEqual([r3.id, r2.id, r1.id]);
+        expect(runs[1]).toEqual(await repo.getRun(r2.id));
+        expect(runs.map((r) => r.taskId)).toEqual([task.id, other.id, task.id]);
+      });
+
+      it("limits recent runs and clamps the limit to at least 1", async () => {
+        const task = await setupTask();
+        await repo.createRun({ taskId: task.id, prompt: "1" });
+        const r2 = await repo.createRun({ taskId: task.id, prompt: "2" });
+        const r3 = await repo.createRun({ taskId: task.id, prompt: "3" });
+
+        expect(ids(await repo.listRecentRuns(2))).toEqual([r3.id, r2.id]);
+        expect(ids(await repo.listRecentRuns(0))).toEqual([r3.id]);
+        expect(ids(await repo.listRecentRuns(2.9))).toEqual([r3.id, r2.id]);
+        expect(await repo.listRecentRuns(Number.NaN)).toHaveLength(3);
+      });
+
       it("abortRunningRuns aborts only running runs and returns the count", async () => {
         const task = await setupTask("a");
         const other = await setupTask("b");

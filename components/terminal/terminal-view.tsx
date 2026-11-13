@@ -99,13 +99,15 @@ function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
       title={live ? "Attached to the server session" : label}
       className="inline-flex shrink-0 items-center gap-1.5 font-sans text-[11px] text-muted-foreground"
     >
-      <span
-        aria-hidden="true"
-        className={cn(
-          "size-1.5 rounded-full",
-          live ? "bg-success" : "animate-pulse bg-amber-500 motion-reduce:animate-none",
-        )}
-      />
+      <span aria-hidden="true" className="relative flex size-1.5">
+        {live && <span className="absolute inset-0 animate-breathe rounded-full bg-success" />}
+        <span
+          className={cn(
+            "relative size-1.5 rounded-full",
+            live ? "bg-success" : "animate-pulse bg-amber-500 motion-reduce:animate-none",
+          )}
+        />
+      </span>
       {/* Phones keep just the dot while live; trouble is always spelled out. */}
       <span className={cn(live && "max-sm:sr-only")}>{label}</span>
     </span>
@@ -144,7 +146,7 @@ function SessionStatus({ blocks }: { blocks: readonly TerminalBlock[] }) {
     >
       <span aria-hidden="true" className="relative flex size-1.5">
         {running > 0 && (
-          <span className="absolute inset-0 animate-ping rounded-full bg-primary/60 motion-reduce:animate-none" />
+          <span className="absolute inset-0 animate-breathe rounded-full bg-primary" />
         )}
         <span className={cn("relative size-1.5 rounded-full", dot)} />
       </span>
@@ -256,7 +258,7 @@ const BlockView = memo(function BlockView({
             disabled={interrupted}
             aria-label={`Stop ${block.command}`}
             onClick={() => onCancel(block.id)}
-            className="h-8 text-destructive hover:bg-destructive/10 hover:text-destructive md:h-6"
+            className="pressable relative h-8 text-destructive after:absolute after:inset-x-0 after:-inset-y-1.5 after:content-[''] hover:bg-destructive/10 hover:text-destructive md:h-6 md:after:hidden"
           >
             <SquareIcon aria-hidden="true" className="fill-current" />
             {interrupted ? "Stopping" : "Stop"}
@@ -267,7 +269,7 @@ const BlockView = memo(function BlockView({
           size="icon-xs"
           aria-label="Copy command and output"
           onClick={() => void copyText(blockToText(block, runs, interrupted), "Copied command and output")}
-          className="size-8 text-muted-foreground opacity-0 transition-opacity duration-150 group-hover/block:opacity-100 focus-visible:opacity-100 motion-reduce:transition-none md:size-6 [@media(hover:none)]:opacity-100"
+          className="relative size-8 text-muted-foreground opacity-0 transition-opacity duration-150 after:absolute after:inset-x-0 after:-inset-y-1.5 after:content-[''] group-hover/block:opacity-100 focus-visible:opacity-100 motion-reduce:transition-none md:size-6 md:after:hidden [@media(hover:none)]:opacity-100"
         >
           <CopyIcon aria-hidden="true" />
         </Button>
@@ -298,7 +300,7 @@ function EmptyState({ cwd, onPick }: { cwd: string; onPick: (command: string) =>
             key={command}
             type="button"
             onClick={() => onPick(command)}
-            className="h-9 rounded-md border bg-background/60 px-2.5 font-mono text-xs text-foreground transition-[background-color,transform] duration-150 ease-(--ease-out-smooth) hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none active:scale-[0.97] motion-reduce:transition-none md:h-7 md:px-2"
+            className="pressable h-11 rounded-lg border bg-background/60 px-3 font-mono text-xs text-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:h-7 md:rounded-md md:px-2"
           >
             {command}
           </button>
@@ -563,7 +565,7 @@ export function TerminalView() {
                 size="icon-sm"
                 aria-label="Copy all output"
                 onClick={copyAll}
-                className="size-9 text-muted-foreground hover:text-foreground md:size-7"
+                className="pressable-icon size-11 text-muted-foreground hover:text-foreground md:size-7"
               >
                 <CopyIcon aria-hidden="true" />
               </Button>
@@ -580,7 +582,7 @@ export function TerminalView() {
                   clearScreen();
                   refocusOnDesktop();
                 }}
-                className="size-9 text-muted-foreground hover:text-foreground md:size-7"
+                className="pressable-icon size-11 text-muted-foreground hover:text-foreground md:size-7"
               >
                 <EraserIcon aria-hidden="true" />
               </Button>
@@ -635,7 +637,7 @@ export function TerminalView() {
             <button
               type="button"
               onClick={() => scrollToBottom(true)}
-              className="pointer-events-auto inline-flex h-9 items-center gap-1.5 rounded-full border bg-background/90 px-3.5 font-sans text-xs font-medium text-foreground shadow-md backdrop-blur-md transition-[background-color,scale] duration-150 animate-in fade-in zoom-in-95 slide-in-from-bottom-2 ease-(--ease-out-smooth) hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none active:scale-95 motion-reduce:animate-none motion-reduce:transition-none md:h-8"
+              className="pointer-events-auto inline-flex h-11 items-center gap-1.5 rounded-full border bg-background/90 px-4 font-sans text-xs font-medium text-foreground shadow-diffuse backdrop-blur-md transition-[background-color,scale] duration-150 animate-in fade-in zoom-in-95 slide-in-from-bottom-2 ease-(--ease-out-smooth) hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none active:scale-95 motion-reduce:animate-none motion-reduce:transition-none md:h-8 md:px-3.5"
             >
               <ArrowDownIcon aria-hidden="true" className="size-3.5" />
               Jump to latest
@@ -649,12 +651,12 @@ export function TerminalView() {
           event.preventDefault();
           submit();
         }}
-        className="flex shrink-0 items-start gap-2 border-t bg-muted/30 py-1.5 pr-1.5 pl-3 md:py-1 md:pl-4 dark:bg-white/[0.02]"
+        className="flex shrink-0 items-start gap-2 border-t bg-muted/30 py-1 pr-1 pl-3 md:pr-1.5 md:pl-4 dark:bg-white/[0.02]"
       >
-        <span aria-hidden="true" className="shrink-0 py-1.5 text-base leading-6 font-bold text-primary select-none md:text-sm md:leading-5">
+        <span aria-hidden="true" className="shrink-0 py-2.5 text-base leading-6 font-bold text-primary select-none md:py-1.5 md:text-sm md:leading-5">
           ❯
         </span>
-        {/* 16px on phones: iOS zooms into smaller text fields on focus. */}
+        {/* 16px on phones: iOS zooms into smaller text fields on focus. 44px tall to line up with Run. */}
         <textarea
           ref={textareaRef}
           rows={1}
@@ -672,7 +674,7 @@ export function TerminalView() {
           spellCheck={false}
           enterKeyHint="send"
           inputMode="text"
-          className="max-h-[9.75rem] min-w-0 flex-1 resize-none bg-transparent py-1.5 text-base leading-6 text-foreground outline-none placeholder:text-muted-foreground/60 md:max-h-[8.25rem] md:text-sm md:leading-5"
+          className="max-h-[10.25rem] min-w-0 flex-1 resize-none bg-transparent py-2.5 text-base leading-6 text-foreground outline-none placeholder:text-muted-foreground/60 md:max-h-[8.25rem] md:py-1.5 md:text-sm md:leading-5"
         />
         <Button
           type="submit"
@@ -680,7 +682,7 @@ export function TerminalView() {
           variant={hasInput ? "default" : "ghost"}
           disabled={!hasInput}
           aria-label="Run command"
-          className="size-9 shrink-0 self-end rounded-lg transition-[background-color,color,scale] duration-150 active:scale-95 motion-reduce:transition-none md:size-7"
+          className="size-11 shrink-0 self-end rounded-lg transition-[background-color,color,scale] duration-150 active:scale-95 motion-reduce:transition-none md:size-7"
         >
           <CornerDownLeftIcon aria-hidden="true" />
         </Button>

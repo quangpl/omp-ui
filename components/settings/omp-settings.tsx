@@ -7,6 +7,8 @@ import {
   SettingsField,
   SettingsGroup,
   SettingsPanel,
+  SettingsRows,
+  SettingsSaveBar,
   SettingsSection,
   SettingsToggle,
 } from "@/components/settings/settings-section";
@@ -233,7 +235,7 @@ export function OmpSettingsSection() {
           spellCheck={false}
           aria-invalid={error ? true : undefined}
           disabled={saving}
-          className={`${FIELD} ${field.type === "model" || field.type === "string" ? "font-mono text-sm md:text-xs" : ""}`}
+          className={`${FIELD} ${field.type === "model" || field.type === "string" ? "font-mono md:text-xs" : ""}`}
         />
       </SettingsField>
     );
@@ -253,7 +255,7 @@ export function OmpSettingsSection() {
       disabled={!snapshot && !loadError}
       aria-label="Reload omp's config"
       title="Reload from disk"
-      className="size-11 md:size-8"
+      className="pressable-icon size-11 md:size-8"
     >
       <RefreshCwIcon />
     </Button>
@@ -267,7 +269,7 @@ export function OmpSettingsSection() {
           <AlertTitle>Could not load omp&apos;s config</AlertTitle>
           <AlertDescription className="space-y-3">
             <p className="break-words">{loadError}</p>
-            <Button type="button" variant="outline" onClick={() => void load()} className={FIELD}>
+            <Button type="button" variant="outline" onClick={() => void load()} className={`${FIELD} pressable`}>
               Try again
             </Button>
           </AlertDescription>
@@ -309,27 +311,17 @@ export function OmpSettingsSection() {
                     {inputs.length > 0 && (
                       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">{inputs.map(renderField)}</div>
                     )}
-                    {toggles.length > 0 && <div className="space-y-1">{toggles.map(renderField)}</div>}
+                    {toggles.length > 0 && <SettingsRows>{toggles.map(renderField)}</SettingsRows>}
                   </SettingsGroup>
                 );
               })}
-              <div className="flex flex-col-reverse gap-2 border-t p-4 sm:flex-row sm:items-center sm:justify-end sm:p-5">
-                {dirty && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    disabled={saving}
-                    onClick={() => setDraft(toForm(snapshot))}
-                    className={FIELD}
-                  >
-                    Reset
-                  </Button>
-                )}
-                <Button type="submit" disabled={!dirty || !valid || saving} className={FIELD}>
-                  {saving && <Loader2Icon className="animate-spin" />}
-                  Save changes
-                </Button>
-              </div>
+              <SettingsSaveBar
+                dirty={dirty}
+                saving={saving}
+                disabled={!dirty || !valid}
+                onDiscard={() => setDraft(toForm(snapshot))}
+                discardLabel="Reset"
+              />
             </SettingsPanel>
             {models.length > 0 && (
               <datalist id={modelListId}>
@@ -348,7 +340,7 @@ export function OmpSettingsSection() {
               onClick={() => setAdvancedOpen((open) => !open)}
               aria-expanded={advancedOpen}
               aria-controls={advancedId}
-              className="flex min-h-12 w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none sm:px-5"
+              className="flex min-h-12 w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none active:bg-muted/70 sm:px-5"
             >
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium">Advanced: edit config.yml</span>
@@ -384,7 +376,7 @@ export function OmpSettingsSection() {
                   autoCorrect="off"
                   wrap="off"
                   disabled={rawSaving}
-                  className="max-h-[70vh] min-h-64 overflow-auto font-mono text-xs leading-5 md:text-xs"
+                  className="max-h-[70dvh] min-h-64 overflow-auto font-mono text-base leading-6 md:text-xs md:leading-5"
                 />
                 {rawError && (
                   <p id={rawErrorId} role="alert" className="text-xs whitespace-pre-wrap text-destructive">
@@ -406,12 +398,17 @@ export function OmpSettingsSection() {
                         setRawVersion(snapshot.version);
                         setRawError(null);
                       }}
-                      className={FIELD}
+                      className={`${FIELD} pressable`}
                     >
                       Revert
                     </Button>
                   )}
-                  <Button type="button" onClick={() => void saveRaw()} disabled={!rawDirty || rawSaving} className={FIELD}>
+                  <Button
+                    type="button"
+                    onClick={() => void saveRaw()}
+                    disabled={!rawDirty || rawSaving}
+                    className={`${FIELD} pressable`}
+                  >
                     {rawSaving && <Loader2Icon className="animate-spin" />}
                     Save config.yml
                   </Button>

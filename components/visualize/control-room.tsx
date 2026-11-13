@@ -16,8 +16,9 @@ import {
 import { cardHref } from "@/components/home/shared";
 import { ACTIVITY_ICON } from "@/components/visualize/activity-icons";
 import { type AchievementId, XP_PER_CARD, achievements, crewLevel, workerIdentity } from "@/components/visualize/game";
+import { agentVitals, moodTone, type Vitals } from "@/components/visualize/mood";
 import type { LiveAgent } from "@/components/visualize/use-live-agents";
-import { WorkerAvatar } from "@/components/visualize/worker-avatar";
+import { ManaBar, MOOD_LABEL, WorkerAvatar } from "@/components/visualize/worker-avatar";
 import type { Dashboard, QueueEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -111,15 +112,43 @@ function useShipStamp(done: number): { key: number; xp: number } | null {
 // ---------------------------------------------------------------------------------------------
 // Left: the floor's pulse
 
+/** Thin 0..1 gauge for a vital (fatigue, load, heat); amber past half, red past 80%. */
+function VitalMeter({ label, value, className }: { label: string; value: number; className?: string }) {
+  const percent = Math.round(Math.min(1, Math.max(0, value)) * 100);
+  return (
+    <div className={cn("flex items-center gap-1.5", className)} title={`${label}: ${percent}%`}>
+      <span className="w-8 text-right font-mono text-[10px] leading-none text-muted-foreground">{label}</span>
+      <span
+        role="meter"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        className="relative h-1 w-16 overflow-hidden rounded-full bg-muted"
+      >
+        <span
+          className={cn(
+            "absolute inset-y-0 left-0 rounded-full transition-[width] duration-500",
+            percent >= 80 ? "bg-destructive" : percent >= 50 ? "bg-signal" : "bg-muted-foreground/50",
+          )}
+          style={{ width: `${percent}%` }}
+        />
+      </span>
+    </div>
+  );
+}
+
 function TickerRow({
   entry,
   agent,
+  vitals,
   startedAt,
   now,
   index,
 }: {
   entry: QueueEntry;
   agent: LiveAgent | undefined;
+  vitals: Vitals;
   startedAt: string | null;
   now: number;
   index: number;
@@ -128,17 +157,22 @@ function TickerRow({
   const activity = agent?.activity;
   const Icon = activity ? ACTIVITY_ICON[activity.icon] : null;
   const shift = shiftLength(agent?.startedAt ?? startedAt, now);
+  const href = cardHref({ boardId: entry.boardId, id: entry.taskId });
+  const mood = MOOD_LABEL[vitals.mood];
+  const tone = moodTone(vitals.mood);
+  // The feeling often opens with the mood's own words ("Running hot: …"); don't say it twice.
+  const echoed = vitals.feeling.toLowerCase().startsWith(mood.toLowerCase());
   return (
     <li
       className="animate-floor-in flex min-w-0 items-center gap-4 py-4"
       style={{ "--i": index } as CSSProperties}
     >
-      <WorkerAvatar hue={worker.hue} mood="working" className="size-10" />
+      <WorkerAvatar hue={worker.hue} mood={vitals.mood} role="lead" help={vitals.help !== null} className="size-10" />
       <div className="min-w-0 flex-1 space-y-1">
         <p className="flex min-w-0 items-baseline gap-2.5">
           <span className="shrink-0 font-mono text-xs text-muted-foreground">{worker.name}</span>
           <Link
-            href={cardHref({ boardId: entry.boardId, id: entry.taskId })}
+            href={href}
             title={`${entry.title} in ${entry.boardName}`}
             className="inline-block min-w-0 truncate rounded-[3px] text-base font-medium transition-[color,scale] outline-none hover:underline hover:underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.98] motion-reduce:active:scale-100"
           >
@@ -150,12 +184,44 @@ function TickerRow({
           <span className="shrink-0 text-foreground">{activity?.label ?? "Clocking in"}</span>
           {activity?.detail && <span className="min-w-0 truncate">{activity.detail}</span>}
         </p>
+        <p
+          className={cn(
+            "flex min-w-0 items-center gap-2 text-xs",
+            tone === "error" ? "text-destructive" : tone === "strain" ? "text-signal-ink" : "text-muted-foreground",
+          )}
+        >
+          {!echoed && <span className="shrink-0 font-medium">{mood}</span>}
+          <span className="min-w-0 truncate" title={vitals.feeling}>
+            {vitals.feeling}
+          </span>
+          {vitals.help && (
+            <Link
+              href={href}
+              title={vitals.help.text}
+              aria-label={`Needs help: ${vitals.help.text}. Open ${entry.title}`}
+              className="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 font-medium text-destructive transition-colors outline-none hover:bg-destructive/15 focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Needs help
+            </Link>
+          )}
+        </p>
       </div>
-      {shift && (
-        <span className="shrink-0 font-mono text-sm text-muted-foreground tabular-nums" title="Time at the station">
-          {shift}
-        </span>
-      )}
+      <div className="flex shrink-0 flex-col items-end gap-1.5">
+        {shift && (
+          <span className="font-mono text-sm text-muted-foreground tabular-nums" title="Time at the station">
+            {shift}
+          </span>
+        )}
+        <div className="flex flex-col items-end gap-1" title={vitals.notes.join("\n") || undefined}>
+          <div className="flex items-center gap-1.5">
+            <span className="w-8 text-right font-mono text-[10px] leading-none text-muted-foreground">Mana</span>
+            <ManaBar value={vitals.mana} className="w-16" />
+          </div>
+          <VitalMeter label="Tired" value={vitals.fatigue} className="hidden sm:flex" />
+          <VitalMeter label="Load" value={vitals.load} className="hidden sm:flex" />
+          <VitalMeter label="Heat" value={vitals.heat} className="hidden sm:flex" />
+        </div>
+      </div>
     </li>
   );
 }
@@ -164,7 +230,13 @@ function FloorPulse({ dashboard, live, now }: { dashboard: Dashboard; live: Reco
   const { queue } = dashboard;
   const running = queue.running.length;
   const startedAt = new Map(dashboard.live.map((agent) => [agent.taskId, agent.startedAt]));
-  const shown = queue.running.slice(0, MAX_TICKER);
+  const context = new Map(dashboard.live.map((agent) => [agent.taskId, agent.context]));
+  const rows = queue.running.map((entry) => ({
+    entry,
+    vitals: agentVitals(live[entry.taskId], now, context.get(entry.taskId)),
+  }));
+  const needHelp = rows.filter((row) => row.vitals.help !== null).length;
+  const shown = rows.slice(0, MAX_TICKER);
   const more = running - shown.length;
 
   return (
@@ -173,6 +245,11 @@ function FloorPulse({ dashboard, live, now }: { dashboard: Dashboard; live: Reco
       <p className="mb-3 flex items-center gap-2 font-mono text-xs text-muted-foreground">
         <Lamp live={running > 0} />
         {running > 0 ? "At the station" : "Stations idle"}
+        {needHelp > 0 && (
+          <span className="text-destructive">
+            · {needHelp} {needHelp === 1 ? "needs" : "need"} help
+          </span>
+        )}
       </p>
       <p className="flex items-baseline leading-none" aria-label={`${running} of ${queue.limit} stations working`}>
         <Numeral value={running} className={cn("text-7xl leading-none sm:text-8xl", running > 0 && "text-signal-ink")} />
@@ -185,11 +262,12 @@ function FloorPulse({ dashboard, live, now }: { dashboard: Dashboard; live: Reco
         {running > 0 ? (
           <>
             <ul className="divide-y" aria-label="Workers at the station">
-              {shown.map((entry, index) => (
+              {shown.map(({ entry, vitals }, index) => (
                 <TickerRow
                   key={entry.taskId}
                   entry={entry}
                   agent={live[entry.taskId]}
+                  vitals={vitals}
                   startedAt={startedAt.get(entry.taskId) ?? null}
                   now={now}
                   index={index}

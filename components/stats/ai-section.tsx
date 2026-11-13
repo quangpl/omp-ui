@@ -106,7 +106,7 @@ function QuotaLimitRow({ limit, now }: { limit: AiQuotaLimit; now: number }) {
         >
           <span
             className={cn(
-              "text-[11px] leading-none font-semibold tracking-tight tabular-nums",
+              "font-mono text-[11px] leading-none font-semibold tracking-tight tabular-nums",
               TONE_TEXT[toneForFraction(fraction)],
             )}
           >
@@ -130,7 +130,7 @@ function QuotaLimitRow({ limit, now }: { limit: AiQuotaLimit; now: number }) {
         </div>
         <p className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground tabular-nums">
           <span>{resetText(limit, now)}</span>
-          {showAmount && <span className="text-foreground/80">{amount}</span>}
+          {showAmount && <span className="font-mono text-foreground/80">{amount}</span>}
         </p>
       </div>
     </li>
@@ -194,7 +194,7 @@ function TightestLimit({ providers, now }: { providers: AiProviderQuota[]; now: 
       </div>
       <span
         className={cn(
-          "shrink-0 text-2xl leading-none font-semibold tracking-tighter tabular-nums",
+          "shrink-0 font-mono text-2xl leading-none font-semibold tracking-tighter tabular-nums",
           TONE_TEXT[tone],
         )}
       >
@@ -348,7 +348,7 @@ function UsageByModel({ usage }: { usage: AiStats["usage"] }) {
           <div className="space-y-3 border-b px-4 py-4 sm:px-5">
             <div className="flex items-baseline justify-between gap-3">
               <p className={LABEL}>{byCost ? "Cost share" : "Request share"}</p>
-              <p className="text-sm font-semibold tracking-tight tabular-nums">
+              <p className="font-mono text-sm font-semibold tracking-tight tabular-nums">
                 {byCost ? usd.format(totalCost) : `${wholeNumber.format(total)} req`}
               </p>
             </div>
@@ -365,7 +365,7 @@ function UsageByModel({ usage }: { usage: AiStats["usage"] }) {
                   >
                     {share.label}
                   </span>
-                  <span className="shrink-0 text-muted-foreground tabular-nums">
+                  <span className="shrink-0 font-mono text-muted-foreground tabular-nums">
                     {formatPercent(total > 0 ? share.value / total : 0)}
                   </span>
                 </li>
@@ -378,17 +378,17 @@ function UsageByModel({ usage }: { usage: AiStats["usage"] }) {
             {ranked.map(({ model: m, value, colorClass }) => (
               <li
                 key={`${m.provider}/${m.model}`}
-                className="space-y-1.5 px-4 py-3 transition-colors hover:bg-muted/40 sm:px-5"
+                className="space-y-1.5 px-4 py-3 content-auto [contain-intrinsic-size:auto_4.5rem] sm:px-5"
               >
                 <div className="flex items-baseline gap-3">
                   <span className="min-w-0 flex-1 truncate font-mono text-xs" title={m.model}>
                     {m.model}
                   </span>
-                  <span className="shrink-0 text-sm font-semibold tabular-nums">{usd.format(m.costUsd)}</span>
+                  <span className="shrink-0 font-mono text-sm font-semibold tabular-nums">{usd.format(m.costUsd)}</span>
                 </div>
                 <ShareBar value={value} max={max} colorClass={colorClass} />
-                <p className="flex flex-wrap gap-x-3 text-xs text-muted-foreground tabular-nums">
-                  {!soleProvider && <span>{providerName(m.provider)}</span>}
+                <p className="flex flex-wrap gap-x-3 font-mono text-xs text-muted-foreground tabular-nums">
+                  {!soleProvider && <span className="font-sans">{providerName(m.provider)}</span>}
                   <span>{wholeNumber.format(m.requests)} req</span>
                   <span>{compactNumber.format(m.inputTokens)} in</span>
                   <span>{compactNumber.format(m.outputTokens)} out</span>
@@ -438,10 +438,10 @@ function UsageByModel({ usage }: { usage: AiStats["usage"] }) {
                       {providerName(m.provider)}
                     </td>
                   )}
-                  <td className="text-right">{wholeNumber.format(m.requests)}</td>
-                  <td className="text-right text-muted-foreground">{compactNumber.format(m.inputTokens)}</td>
-                  <td className="text-right text-muted-foreground">{compactNumber.format(m.outputTokens)}</td>
-                  <td className="text-right font-semibold">{usd.format(m.costUsd)}</td>
+                  <td className="text-right font-mono text-[0.8125rem]">{wholeNumber.format(m.requests)}</td>
+                  <td className="text-right font-mono text-[0.8125rem] text-muted-foreground">{compactNumber.format(m.inputTokens)}</td>
+                  <td className="text-right font-mono text-[0.8125rem] text-muted-foreground">{compactNumber.format(m.outputTokens)}</td>
+                  <td className="text-right font-mono text-[0.8125rem] font-semibold">{usd.format(m.costUsd)}</td>
                 </tr>
               ))}
             </tbody>
@@ -542,9 +542,9 @@ export function AiSection({ ai }: { ai: AiState }) {
             variant="outline"
             onClick={reload}
             disabled={refreshing}
-            className="h-11 shrink-0 gap-2 px-3.5 transition-transform active:scale-[0.98] md:h-9"
+            className="pressable h-11 shrink-0 gap-2 px-3.5 md:h-9"
           >
-            {refreshing ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
+            {refreshing ? <Loader2Icon className="animate-spin motion-reduce:animate-none" /> : <RefreshCwIcon />}
             Refresh
           </Button>
         }

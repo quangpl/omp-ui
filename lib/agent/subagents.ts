@@ -81,6 +81,7 @@ export function progressPatch(progress: unknown): SubagentPatch | null {
     toolCount: asNumber(progress.toolCount),
     requests: asNumber(progress.requests),
     tokens: asNumber(progress.tokens),
+    contextTokens: asNumber(progress.contextTokens),
     cost: asNumber(progress.cost),
     durationMs: asNumber(progress.durationMs),
   };

@@ -11,7 +11,7 @@ import {
   useState,
 } from "react";
 import { BookOpen, FileText, Folder, Zap } from "lucide-react";
-import { Kbd } from "@/components/ui/kbd";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/lib/api-client";
 import {
   applyCompletion,
@@ -149,7 +149,10 @@ export interface ComposerAutocomplete {
    * wrapper whose top-left corner is the textarea's. Null without a suggestion.
    */
   ghost: ReactNode;
-  /** Tappable chip with the suggested word (touch has no Tab), rendered below the textarea; null without one. */
+  /**
+   * Tappable chip with the suggested word (touch has no Tab), rendered below the textarea and
+   * right-aligned; mobile only (desktop has Tab and the ghost). Null without a suggestion.
+   */
   suggestion: ReactNode;
   /** Whether a word suggestion is showing, so Escape only hides it (like `open` for the picker). */
   suggesting: boolean;
@@ -187,6 +190,7 @@ export function useComposerAutocomplete(
   const wordDismissedRef = useRef<number | null>(null);
   /** True during IME composition, when the ghost would sit inside the uncommitted text. */
   const composingRef = useRef(false);
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     let active = true;
@@ -496,8 +500,8 @@ export function useComposerAutocomplete(
     </div>
   ) : null;
 
-  const suggestion = word ? (
-    <div className="flex">
+  const suggestion = word && isMobile ? (
+    <div className="flex justify-end">
       <button
         type="button"
         tabIndex={-1}
@@ -511,7 +515,6 @@ export function useComposerAutocomplete(
           <span className="text-foreground">{word.query.prefix}</span>
           {word.suffix}
         </span>
-        <Kbd className="h-4 min-w-0 px-1 text-[10px]">tab</Kbd>
       </button>
     </div>
   ) : null;

@@ -24,10 +24,11 @@ import { useNewCard } from "@/components/new-card";
 import { Button } from "@/components/ui/button";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Skeleton } from "@/components/ui/skeleton";
+import { isMenuHrefVisible, useVisibleDashboardMenus } from "@/lib/dashboard-menus";
 import { modKeyLabel } from "@/lib/hotkeys";
 import type { Dashboard } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { FOCUS_RING, PRESSABLE, Panel, boardHref, cardHref, plural, useEntrance } from "./shared";
+import { FOCUS_RING, Panel, boardHref, cardHref, plural, useEntrance } from "./shared";
 
 // ---------------------------------------------------------------------------------------------
 // Overview: greeting and a one-line status
@@ -79,7 +80,7 @@ export function Overview({ dashboard, now }: { dashboard: Dashboard; now: number
             className="flex min-w-0 flex-col-reverse justify-end gap-1 px-2.5 first:pl-0 last:pr-0 @2xl/home:px-5 @2xl/home:text-right"
           >
             <dt className="text-xs leading-tight text-muted-foreground">{figure.label}</dt>
-            <dd className={cn("text-xl leading-none font-semibold tracking-tight tabular-nums md:text-2xl", figure.tone)}>
+            <dd className={cn("font-mono text-xl leading-none font-semibold tabular-nums md:text-2xl", figure.tone)}>
               {figure.value}
             </dd>
           </div>
@@ -153,10 +154,10 @@ function QuickAction({
         STRIP_ITEM,
         enter.className,
         FOCUS_RING,
-        PRESSABLE,
+        "pressable",
         primary
           ? "bg-primary text-primary-foreground hover:bg-primary/90 [&_kbd]:bg-primary-foreground/15 [&_kbd]:text-primary-foreground"
-          : "border bg-card hover:bg-muted/60 [&_svg]:text-muted-foreground",
+          : "border bg-card hover:bg-muted/60 active:bg-muted/60 [&_svg]:text-muted-foreground",
       )}
     >
       {icon}
@@ -176,21 +177,23 @@ const GO_TO: { href: string; label: string; icon: ReactNode; keys: string[] }[] 
 export function QuickActions({ onCreateProject }: { onCreateProject: () => void }) {
   const openNewCard = useNewCard();
   const mod = modKeyLabel();
+  const visibleMenus = useVisibleDashboardMenus();
+  const goTo = GO_TO.filter((item) => isMenuHrefVisible(item.href, visibleMenus));
   return (
     <section aria-labelledby="home-quick-actions">
       <h2 id="home-quick-actions" className="sr-only">
         Quick actions
       </h2>
       {/*
-        One strip: actions, then the Go-to links. Phones scroll it sideways edge to edge (the bleed
+        One strip: actions, then the Go-to links. Phones swipe it sideways edge to edge (the bleed
         hints there is more); wider containers wrap it instead.
       */}
-      <div className="-mx-4 flex snap-x scroll-px-4 items-center gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] sm:-mx-6 sm:scroll-px-6 sm:px-6 @2xl/home:mx-0 @2xl/home:flex-wrap @2xl/home:overflow-visible @2xl/home:px-0 @2xl/home:pb-0 [&::-webkit-scrollbar]:hidden">
+      <div className="scroll-row -mx-4 flex snap-x scroll-px-4 items-center gap-2 px-4 pb-1 sm:-mx-6 sm:scroll-px-6 sm:px-6 @2xl/home:mx-0 @2xl/home:flex-wrap @2xl/home:overflow-visible @2xl/home:px-0 @2xl/home:pb-0">
         <QuickAction
           primary
           index={0}
           icon={<PlusIcon />}
-          label="New card"
+          label="New task"
           hint="Brief an agent in any project"
           keys={["N"]}
           onClick={() => openNewCard()}
@@ -218,26 +221,30 @@ export function QuickActions({ onCreateProject }: { onCreateProject: () => void 
           keys={["?"]}
           onClick={openKeyboardHelp}
         />
-        <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-border" />
-        <nav aria-label="Go to" className="flex shrink-0 items-center gap-1">
-          <span className="mr-1 text-xs whitespace-nowrap text-muted-foreground">Go to</span>
-          {GO_TO.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={cn(
-                STRIP_ITEM,
-                "px-2.5 text-muted-foreground hover:bg-muted/60 hover:text-foreground [&_svg]:size-3.5",
-                FOCUS_RING,
-                PRESSABLE,
-              )}
-            >
-              {item.icon}
-              {item.label}
-              <KeyHint keys={item.keys} />
-            </Link>
-          ))}
-        </nav>
+        {goTo.length > 0 && (
+          <>
+            <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-border" />
+            <nav aria-label="Go to" className="flex shrink-0 items-center gap-1">
+              <span className="mr-1 text-xs whitespace-nowrap text-muted-foreground">Go to</span>
+              {goTo.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    STRIP_ITEM,
+                    "px-2.5 text-muted-foreground hover:bg-muted/60 hover:text-foreground active:bg-muted/60 [&_svg]:size-3.5",
+                    FOCUS_RING,
+                    "pressable",
+                  )}
+                >
+                  {item.icon}
+                  {item.label}
+                  <KeyHint keys={item.keys} />
+                </Link>
+              ))}
+            </nav>
+          </>
+        )}
       </div>
     </section>
   );
@@ -313,13 +320,13 @@ export function GettingStarted({
   const steps: Step[] = [
     { title: "Create a project", body: "A server folder or a cloned Git repo.", done: true },
     {
-      title: "Write your first card",
+      title: "Write your first task",
       body: "One card per task. State the goal, constraints and what “done” means.",
       done: setup.hasCard,
       action: (
         <Button size="sm" className="h-11 md:h-7" onClick={() => openNewCard()}>
           <PlusIcon />
-          New card
+          New task
           <KeyHint keys={["N"]} />
         </Button>
       ),
@@ -444,69 +451,104 @@ export function GettingStarted({
 
 export function DashboardSkeleton() {
   const block = (className: string, key?: number) => <Skeleton key={key} className={className} />;
-  const section = (title: string, body: ReactNode) => (
-    <div className="min-w-0">
-      {block(cn("mb-2.5 h-5", title))}
-      {body}
-    </div>
-  );
+  const title = (width: string) => block(cn("mb-2.5 h-5", width));
   return (
-    <div className="animate-fade-in-soft flex flex-col gap-6" aria-busy="true" aria-label="Loading dashboard">
-      <div className="flex flex-col gap-4 @2xl/home:flex-row @2xl/home:items-end @2xl/home:justify-between">
+    <div className="flex flex-col gap-6" aria-busy="true" aria-label="Loading dashboard">
+      <div className="flex flex-col gap-4 @2xl/home:flex-row @2xl/home:items-end @2xl/home:justify-between @2xl/home:gap-8">
         <div className="space-y-2">
           {block("h-3.5 w-32")}
-          {block("h-8 w-56")}
+          {block("h-8 w-56 max-w-full")}
           {block("h-4 w-72 max-w-full")}
         </div>
-        <div className="grid grid-cols-4 gap-5">{Array.from({ length: 4 }, (_, i) => block("h-10 w-14", i))}</div>
+        <div className="grid grid-cols-4 divide-x border-y py-2.5 @2xl/home:border-y-0 @2xl/home:py-0">
+          {Array.from({ length: 4 }, (_, i) => (
+            <div key={i} className="flex flex-col gap-1 px-2.5 first:pl-0 last:pr-0 @2xl/home:items-end @2xl/home:px-5">
+              {block("h-5 w-8 md:h-6")}
+              {block("h-3 w-12")}
+            </div>
+          ))}
+        </div>
       </div>
-      <div className="flex gap-2 overflow-hidden">
+      <div className="-mx-4 flex gap-2 overflow-hidden px-4 sm:-mx-6 sm:px-6 @2xl/home:mx-0 @2xl/home:px-0">
         {[28, 32, 28, 24, 24].map((width, i) => (
           <Skeleton key={i} style={{ width: `${width * 4}px` }} className="h-11 shrink-0 rounded-lg md:h-9" />
         ))}
       </div>
-      <div className="grid grid-cols-1 items-start gap-6 @5xl/home:grid-cols-[minmax(0,1fr)_21rem] @5xl/home:gap-x-8">
+      <div className="grid grid-cols-1 items-start gap-6 @5xl/home:grid-cols-[minmax(0,2fr)_minmax(19rem,1fr)] @5xl/home:gap-x-10">
         <div className="flex min-w-0 flex-col gap-6 @5xl/home:gap-8">
-          {section(
-            "w-28",
-            <Panel className="divide-y">
+          <div className="min-w-0">
+            {title("w-28")}
+            <Panel className="divide-y overflow-hidden">
               {Array.from({ length: 3 }, (_, i) => (
-                <div key={i} className="flex items-center gap-3 px-3 py-2.5">
-                  {block("size-7 rounded-md")}
-                  <div className="flex-1 space-y-1.5">
+                <div key={i} className="flex items-center gap-2.5 px-3 py-2">
+                  {block("size-7 shrink-0 rounded-md")}
+                  <div className="flex min-h-11 flex-1 flex-col justify-center gap-1.5 md:min-h-9">
                     {block("h-4 w-3/5")}
                     {block("h-3 w-4/5")}
                   </div>
-                  {block("h-11 w-11 md:h-7 md:w-16")}
+                  {block("size-11 shrink-0 md:h-7 md:w-16")}
                 </div>
               ))}
-            </Panel>,
-          )}
-          {section(
-            "w-24",
+            </Panel>
+          </div>
+          <div className="min-w-0">
+            {title("w-24")}
             <div className="grid grid-cols-[repeat(auto-fill,minmax(min(18rem,100%),1fr))] gap-3">
               {Array.from({ length: 4 }, (_, i) => (
                 <Panel key={i} className="flex flex-col gap-3 p-4">
                   {block("h-5 w-2/5")}
                   {block("h-3.5 w-3/4")}
-                  {block("h-10 w-full rounded-lg")}
+                  <div className="grid grid-cols-3 gap-3">
+                    {Array.from({ length: 3 }, (_, j) => block("h-9", j))}
+                  </div>
+                  {block("h-1 w-full rounded-full")}
                   {block("h-3.5 w-1/2")}
                 </Panel>
               ))}
-            </div>,
-          )}
+            </div>
+          </div>
         </div>
         <div className="flex min-w-0 flex-col gap-6 @5xl/home:gap-8">
-          {[32, 40, 56].map((height, i) => (
-            <div key={i}>
-              {section(
-                "w-28",
-                <Panel className="p-3">
-                  <Skeleton style={{ height: `${height * 4}px` }} className="w-full" />
-                </Panel>,
-              )}
+          <div className="min-w-0">
+            {title("w-28")}
+            <Panel className="space-y-3 p-3">
+              {block("h-1.5 w-full rounded-full")}
+              {Array.from({ length: 2 }, (_, i) => (
+                <div key={i} className="flex items-start gap-2.5">
+                  {block("size-6 shrink-0 rounded-full")}
+                  <div className="flex-1 space-y-1.5">
+                    {block("h-4 w-3/4")}
+                    {block("h-3 w-1/2")}
+                  </div>
+                </div>
+              ))}
+            </Panel>
+          </div>
+          <div className="min-w-0">
+            {title("w-24")}
+            <div className="flex items-end gap-3 border-t pt-3">
+              <div className="flex-1 space-y-1.5">
+                {block("h-3 w-16")}
+                {block("h-7 w-12")}
+                {block("h-3 w-32")}
+              </div>
+              {block("h-9 w-24")}
             </div>
-          ))}
+          </div>
+          <div className="min-w-0">
+            {title("w-32")}
+            <div className="space-y-3 border-t pt-3">
+              {Array.from({ length: 4 }, (_, i) => (
+                <div key={i} className="flex items-start gap-2.5">
+                  {block("size-[22px] shrink-0 rounded-full")}
+                  <div className="flex-1 space-y-1.5">
+                    {block("h-3 w-2/3")}
+                    {block("h-4 w-full")}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>

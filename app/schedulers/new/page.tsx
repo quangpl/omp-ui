@@ -11,6 +11,7 @@ import { NewTaskForm } from "@/components/board/new-task-form";
 import { ProjectField } from "@/components/board/project-field";
 import {
   ScheduleFields,
+  STICKY_FORM_ACTIONS,
   defaultScheduleValue,
   scheduleError,
   type ScheduleValue,
@@ -25,14 +26,14 @@ import { api } from "@/lib/api-client";
 import { LAST_BOARD_KEY } from "@/lib/new-card-route";
 import type { BoardWithCounts } from "@/lib/types";
 
-/** `/schedulers/new` (`?boardId=` preselects the project): the "New card" composer plus a schedule. */
+/** `/schedulers/new` (`?boardId=` preselects the project): the "New task" composer plus a schedule. */
 export default function NewSchedulerPage() {
   useDocumentTitle("New scheduler");
   return (
     <div className="flex min-h-dvh flex-col">
       <AppHeader title="New scheduler" backHref="/schedulers" />
       <main className="px-safe pb-safe flex-1">
-        <div className="mx-auto w-full max-w-2xl px-4 py-6 sm:px-6 md:py-8">
+        <div className="mx-auto w-full max-w-2xl animate-page-in px-4 py-6 sm:px-6 md:py-8 motion-reduce:animate-none">
           <p className="mb-6 text-sm text-muted-foreground">
             Creates a card from the same text on a schedule, in the project&apos;s normal agent flow.
           </p>
@@ -147,6 +148,7 @@ function NewSchedulerForm({ boards, initialBoardId }: { boards: BoardWithCounts[
   return (
     <NewTaskForm
       layout="dialog"
+      className={STICKY_FORM_ACTIONS}
       boardId={boardId}
       projectField={
         <div className="grid gap-4 sm:grid-cols-2">
@@ -192,13 +194,22 @@ function NewSchedulerSkeleton() {
   return (
     <div className="flex flex-col gap-4" aria-busy="true" aria-label="Loading">
       <div className="grid gap-4 sm:grid-cols-2">
-        <Skeleton className="h-16 w-full" />
-        <Skeleton className="h-16 w-full" />
+        {[0, 1].map((i) => (
+          <div key={i} className="flex flex-col gap-2">
+            <Skeleton className="h-4 w-20" />
+            <Skeleton className="h-11 w-full md:h-9" />
+          </div>
+        ))}
       </div>
-      <Skeleton className="h-44 w-full" />
-      <Skeleton className="h-72 w-full rounded-xl" />
-      <div className="flex justify-end">
-        <Skeleton className="h-11 w-40 md:h-9" />
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-4 w-56 max-w-full" />
+        <Skeleton className="h-36 w-full" />
+        <Skeleton className="h-3.5 w-4/5" />
+      </div>
+      <Skeleton className="h-96 w-full rounded-xl" />
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-2 sm:flex sm:justify-between">
+        <Skeleton className="h-11 w-24 md:h-9" />
+        <Skeleton className="h-11 sm:w-40 md:h-9" />
       </div>
     </div>
   );

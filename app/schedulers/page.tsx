@@ -13,7 +13,7 @@ export default function SchedulersPage() {
     <div className="flex min-h-dvh flex-col">
       <AppHeader title="Schedulers" />
       <main className="px-safe pb-safe flex-1">
-        <div className="mx-auto w-full max-w-[1400px] space-y-6 px-4 py-6 sm:px-6 md:py-8 lg:px-8">
+        <div className="mx-auto w-full max-w-[1400px] animate-page-in space-y-6 px-4 py-6 sm:px-6 md:py-8 lg:px-8 motion-reduce:animate-none">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
             <div className="min-w-0">
               <h1 className="text-2xl font-semibold tracking-tighter md:text-3xl">Schedulers</h1>

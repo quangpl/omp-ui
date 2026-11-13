@@ -58,6 +58,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { GO_SHORTCUTS } from "@/hooks/use-go-hotkeys";
 import { api } from "@/lib/api-client";
+import { isMenuHrefVisible, useVisibleDashboardMenus } from "@/lib/dashboard-menus";
 import type { BoardWithCounts } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -65,8 +66,11 @@ const BOARDS_REFRESH_MS = 30_000;
 /** Projects listed before the "All projects" overflow link. */
 const MAX_LISTED_BOARDS = 8;
 
-/** Phone-sized (sheet) rows get 44px touch targets and slightly larger text and icons. */
-const ROW = "max-md:h-11 max-md:gap-3 max-md:px-3 max-md:text-[0.95rem] max-md:[&_svg]:size-5";
+/** Phone-sized (sheet) rows get 44px touch targets, slightly larger text and icons, and press feedback. */
+const ROW = "max-md:pressable max-md:h-11 max-md:gap-3 max-md:px-3 max-md:text-[0.95rem] max-md:[&_svg]:size-5";
+/** The current page's row: accent tint instead of the neutral selection. */
+const ACTIVE_ROW =
+  "data-active:bg-primary/10 data-active:text-primary hover:data-active:bg-primary/12 hover:data-active:text-primary";
 
 async function logout() {
   try {
@@ -165,7 +169,7 @@ function FooterIconButton({
         <Button
           variant="ghost"
           size="icon"
-          className="size-11 rounded-full text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-95 md:size-9"
+          className="pressable-icon size-11 rounded-full text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:size-9"
           aria-label={label}
           onClick={onClick}
         >
@@ -215,7 +219,7 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
       {/* The rail has no room for names; the Projects nav item covers it there. */}
       <SidebarGroup className="group/collapsible group-data-[collapsible=icon]:hidden">
         <SidebarGroupLabel asChild>
-          <Collapsible.Trigger className="w-full gap-1 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground max-md:h-10 max-md:px-3">
+          <Collapsible.Trigger className="w-full gap-1 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground max-md:h-11 max-md:px-3">
             Your projects
             {boards && boards.length > 0 && (
               <span className="ml-1 text-sidebar-foreground/50 tabular-nums">{boards.length}</span>
@@ -242,7 +246,7 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
                 const pending = board.counts.todo + board.counts.in_progress;
                 return (
                   <SidebarMenuItem key={board.id}>
-                    <SidebarMenuButton asChild isActive={active} className={ROW}>
+                    <SidebarMenuButton asChild isActive={active} className={cn(ROW, ACTIVE_ROW)}>
                       <Link
                         href={href}
                         // Distinct from the project's own name so page links stay uniquely named.
@@ -254,13 +258,16 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
                         <ProjectTile name={board.name} active={active} />
                         <span className="min-w-0 flex-1 truncate">{board.name}</span>
                         {running > 0 ? (
-                          <span className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-sidebar-primary tabular-nums">
-                            <span className="size-1.5 rounded-full bg-current motion-safe:animate-pulse" />
+                          <span className="flex shrink-0 items-center gap-1.5 font-mono text-xs font-medium text-sidebar-primary tabular-nums">
+                            <span aria-hidden="true" className="relative flex size-1.5">
+                              <span className="absolute inset-0 rounded-full bg-current motion-safe:animate-breathe" />
+                              <span className="relative size-1.5 rounded-full bg-current" />
+                            </span>
                             {running}
                           </span>
                         ) : (
                           pending > 0 && (
-                            <span className="shrink-0 text-xs text-sidebar-foreground/45 tabular-nums">{pending}</span>
+                            <span className="shrink-0 font-mono text-xs text-sidebar-foreground/45 tabular-nums">{pending}</span>
                           )
                         )}
                       </Link>
@@ -274,7 +281,7 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
                     <Link href="/" onClick={onNavigate}>
                       <ArrowRightIcon />
                       <span className="flex-1 truncate">All projects</span>
-                      <span className="text-xs tabular-nums">+{overflow}</span>
+                      <span className="font-mono text-xs tabular-nums">+{overflow}</span>
                     </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
@@ -350,6 +357,8 @@ export function AppSidebar() {
   const pathname = usePathname() ?? "/";
   const { isMobile, setOpenMobile, state } = useSidebar();
   const openNewCard = useNewCard();
+  const visibleMenus = useVisibleDashboardMenus();
+  const navTabs = TOP_TABS.filter((tab) => isMenuHrefVisible(tab.href, visibleMenus));
 
   useEffect(() => {
     setOpenMobile(false);
@@ -378,7 +387,7 @@ export function AppSidebar() {
             <Button
               variant="ghost"
               size="icon"
-              className="size-11 rounded-full text-sidebar-foreground/70"
+              className="pressable-icon size-11 rounded-full text-sidebar-foreground/70"
               aria-label="Close menu"
               onClick={() => setOpenMobile(false)}
             >
@@ -402,18 +411,18 @@ export function AppSidebar() {
         <SidebarMenu className="gap-1">
           <SidebarMenuItem>
             <SidebarMenuButton
-              tooltip={{ children: <TooltipLabel label="New card" keys={["N"]} /> }}
+              tooltip={{ children: <TooltipLabel label="New task" keys={["N"]} /> }}
               onClick={() => {
                 closeMobile();
                 openNewCard();
               }}
               className={cn(
                 ROW,
-                "bg-sidebar-primary font-medium text-sidebar-primary-foreground shadow-xs transition-[width,height,padding,transform] hover:bg-sidebar-primary/90 hover:text-sidebar-primary-foreground active:scale-[0.98] active:bg-sidebar-primary/85 active:text-sidebar-primary-foreground",
+                "bg-sidebar-primary font-medium text-sidebar-primary-foreground shadow-xs transition-[width,height,padding,scale] hover:bg-sidebar-primary/90 hover:text-sidebar-primary-foreground active:scale-[0.98] active:bg-sidebar-primary/85 active:text-sidebar-primary-foreground",
               )}
             >
               <PlusIcon />
-              <span className="flex-1">New card</span>
+              <span className="flex-1">New task</span>
               <Kbd
                 aria-hidden="true"
                 className="bg-sidebar-primary-foreground/15 text-sidebar-primary-foreground group-data-[collapsible=icon]:hidden max-md:hidden"
@@ -451,7 +460,7 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <nav aria-label="Main">
               <SidebarMenu className="gap-0.5">
-                {TOP_TABS.map(({ href, label, icon: Icon }) => {
+                {navTabs.map(({ href, label, icon: Icon }) => {
                   const active = isActivePath(pathname, href);
                   // Second key of the `G` sequence (the first listed alias wins).
                   const key = GO_SHORTCUTS.find((shortcut) => shortcut.href === href)?.key.toUpperCase();
@@ -464,7 +473,8 @@ export function AppSidebar() {
                         tooltip={{ children: <TooltipLabel label={label} keys={key ? ["G", key] : undefined} /> }}
                         className={cn(
                           ROW,
-                          "data-active:[&>svg:first-child]:text-sidebar-primary",
+                          ACTIVE_ROW,
+                          "data-active:[&>svg:first-child]:text-primary",
                           containers && "pr-9 max-md:pr-12",
                         )}
                       >
@@ -479,7 +489,7 @@ export function AppSidebar() {
                         <RunningContainersButton
                           side={isMobile ? "bottom" : "right"}
                           align="start"
-                          className="absolute top-1/2 right-1 size-9 min-w-0 -translate-y-1/2 rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent group-data-[collapsible=icon]:hidden md:size-6"
+                          className="absolute top-1/2 right-1 size-11 min-w-0 -translate-y-1/2 rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent group-data-[collapsible=icon]:hidden md:size-6"
                         />
                       )}
                     </SidebarMenuItem>
@@ -501,7 +511,7 @@ export function AppSidebar() {
             onNavigate={closeMobile}
             className="size-11 text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:size-9"
           />
-          <ThemeToggle className="text-sidebar-foreground/75 hover:bg-sidebar-accent active:scale-95" />
+          <ThemeToggle className="pressable-icon text-sidebar-foreground/75 hover:bg-sidebar-accent" />
           <FooterIconButton label="Keyboard shortcuts" hint="?" onClick={openKeyboardHelp}>
             <KeyboardIcon className="size-5 md:size-4" />
           </FooterIconButton>

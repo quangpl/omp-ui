@@ -8,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api-client";
 import type { AiStats, DashboardStats } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { FOCUS_RING, Panel, SectionTitle } from "./shared";
+import { FOCUS_RING, SectionTitle } from "./shared";
 
 const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 const usd = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -57,9 +57,9 @@ function RunsSparkline({ daily }: { daily: DashboardStats["daily"] }) {
 
 function Metric({ label, value, detail, className }: { label: string; value: ReactNode; detail?: string; className?: string }) {
   return (
-    <div className={cn("min-w-0 bg-card px-3 py-2.5", className)}>
+    <div className={cn("min-w-0 bg-background px-3 py-2.5", className)}>
       <dt className="truncate text-[11px] font-medium text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 text-lg leading-tight font-semibold tracking-tight tabular-nums">{value}</dd>
+      <dd className="mt-0.5 font-mono text-lg leading-tight font-semibold tabular-nums">{value}</dd>
       {detail && <dd className="truncate text-[11px] text-muted-foreground">{detail}</dd>}
     </div>
   );
@@ -79,20 +79,20 @@ function OmpUsage() {
     };
   }, []);
 
-  if (usage === undefined) return <Skeleton className="mx-3 mb-3 h-4 w-40" />;
+  if (usage === undefined) return <Skeleton className="my-2 h-4 w-40" />;
   const totals = usage?.available ? usage.totals : null;
   if (!totals) return null;
   return (
-    <p className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-2 text-xs text-muted-foreground">
+    <p className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t py-2 text-xs text-muted-foreground">
       <span>
-        <span className="font-medium text-foreground tabular-nums">
+        <span className="font-mono font-medium text-foreground tabular-nums">
           {compact.format(totals.inputTokens + totals.outputTokens)}
         </span>{" "}
         tokens
       </span>
       {totals.costUsd > 0 && (
         <span>
-          <span className="font-medium text-foreground tabular-nums">{usd.format(totals.costUsd)}</span> spent
+          <span className="font-mono font-medium text-foreground tabular-nums">{usd.format(totals.costUsd)}</span> spent
         </span>
       )}
       <span className="ml-auto">all time, from omp</span>
@@ -114,7 +114,7 @@ export function StatsPanel({ stats }: { stats: DashboardStats }) {
           <Link
             href="/stats"
             className={cn(
-              "inline-flex min-h-11 items-center gap-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground md:min-h-0",
+              "pressable inline-flex min-h-11 items-center gap-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground md:min-h-0",
               FOCUS_RING,
             )}
           >
@@ -123,23 +123,25 @@ export function StatsPanel({ stats }: { stats: DashboardStats }) {
           </Link>
         }
       />
-      <Panel className="overflow-hidden">
-        <div className="flex items-end gap-3 px-3 pt-3 pb-2.5">
+      {/* Figures breathe on negative space: hairline rules group them, no card around them. */}
+      <div className="border-t">
+        <div className="flex items-end gap-3 pt-3 pb-2.5">
           <div className="min-w-0 flex-1">
             <p className="text-[11px] font-medium text-muted-foreground">Agent runs</p>
-            <p className="text-2xl leading-none font-semibold tracking-tight tabular-nums">{week.runs}</p>
+            <p className="font-mono text-2xl leading-none font-semibold tabular-nums">{week.runs}</p>
             <p className="mt-1 truncate text-[11px] text-muted-foreground">
-              {day.runs} in the last 24 h{dayRate ? ` · ${dayRate} succeeded` : ""}
+              <span className="font-mono tabular-nums">{day.runs}</span> in the last 24 h
+              {dayRate ? ` · ${dayRate} succeeded` : ""}
             </p>
           </div>
           <RunsSparkline daily={daily} />
         </div>
         {week.runs === 0 && week.shipped === 0 && week.created === 0 ? (
-          <p className="border-t px-3 py-3 text-xs text-pretty text-muted-foreground">
+          <p className="border-t py-3 text-xs text-pretty text-muted-foreground">
             No activity this week. Start a card to see runs, success rate and shipped work.
           </p>
         ) : (
-          <dl className="grid grid-cols-2 gap-px border-t bg-border [&>*:last-child:nth-child(odd)]:col-span-2">
+          <dl className="grid grid-cols-2 gap-px border-t bg-border [&>*:last-child:nth-child(odd)]:col-span-2 [&>*:nth-child(odd)]:pl-0">
             {weekRate && (
               <Metric label="Success rate" value={weekRate} detail={`${week.succeeded} ok · ${week.failed} failed`} />
             )}
@@ -155,7 +157,7 @@ export function StatsPanel({ stats }: { stats: DashboardStats }) {
           </dl>
         )}
         <OmpUsage />
-      </Panel>
+      </div>
     </section>
   );
 }

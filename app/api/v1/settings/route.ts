@@ -1,9 +1,10 @@
 import { parseCleanupIds, resetCleanupAnchor } from "@/lib/cleanup";
 import { HttpError, json, readJson, withApi } from "@/lib/server/http";
-import { MAX_EXPLICIT_AGENTS, getAppSettings, updateAppSettings } from "@/lib/settings";
+import { MAX_EXPLICIT_AGENTS, getAppSettings, isDashboardMenuId, updateAppSettings } from "@/lib/settings";
 import {
   BROWSER_MODES,
   CLEANUP_SCHEDULES,
+  DASHBOARD_MENU_IDS,
   SCHEDULED_CLEANUP_IDS,
   type AppSettings,
   type ApprovalMode,
@@ -94,6 +95,13 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
       throw new HttpError(400, "taskCompletionNotifications must be a boolean");
     }
     patch.taskCompletionNotifications = body.taskCompletionNotifications;
+  }
+  if (body.visibleDashboardMenus !== undefined) {
+    const ids = body.visibleDashboardMenus;
+    if (!Array.isArray(ids) || !ids.every(isDashboardMenuId)) {
+      throw new HttpError(400, `visibleDashboardMenus must be an array of: ${DASHBOARD_MENU_IDS.join(", ")}`);
+    }
+    patch.visibleDashboardMenus = ids;
   }
   return patch;
 }

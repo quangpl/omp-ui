@@ -21,16 +21,18 @@ export const GO_SHORTCUTS: readonly GoShortcut[] = [
   { key: "d", href: "/containers", label: "Containers" },
   { key: "x", href: "/terminal", label: "Terminal" },
   { key: "t", href: "/stats", label: "Stats" },
+  { key: "l", href: "/logs", label: "Logs" },
   { key: "m", href: "/memory", label: "Memory" },
   { key: "k", href: "/credentials", label: "Credentials" },
   { key: "s", href: "/settings", label: "Settings" },
 ];
 
 const HINT_TOAST_ID = "go-hotkeys-hint";
-const HINT = "G — then P projects, C schedulers, V visualize, D containers, X terminal, T stats, M memory, K credentials, S settings";
+const HINT =
+  "G — then P projects, C schedulers, V visualize, D containers, X terminal, T stats, L logs, M memory, K credentials, S settings";
 
 /**
- * App-wide `G` then `P`/`H`/`C`/`V`/`D`/`X`/`T`/`M`/`K`/`S` navigation. Listens in the window capture phase so the
+ * App-wide `G` then `P`/`H`/`C`/`V`/`D`/`X`/`T`/`L`/`M`/`K`/`S` navigation. Listens in the window capture phase so the
  * consumed second key never reaches single-key board hotkeys; a small toast shows the options
  * while the sequence waits for its second key.
  */

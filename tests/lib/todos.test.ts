@@ -27,7 +27,7 @@ describe("todoProgress", () => {
       { name: "A", tasks: [{ content: "one", status: "completed" }, { content: "two", status: "abandoned" }] },
       { name: "B", tasks: [{ content: "three", status: "in_progress" }, { content: "four", status: "pending" }] },
     ]);
-    expect(progress).toEqual({ done: 1, total: 3, current: "three" });
+    expect(progress).toEqual({ done: 1, total: 3, current: "three", feedback: 0 });
     expect(progressFraction("in_progress", progress)).toBeCloseTo(1 / 3);
   });
 
@@ -36,7 +36,20 @@ describe("todoProgress", () => {
     expect(todoProgress([{ name: "", tasks: [{ content: "x", status: "abandoned" }] }])).toBeNull();
     expect(progressFraction("todo", null)).toBe(0);
     expect(progressFraction("in_progress", null)).toBe(0.5);
-    expect(progressFraction("done", { done: 2, total: 5, current: null })).toBe(1);
+    expect(progressFraction("done", { done: 2, total: 5, current: null, feedback: 0 })).toBe(1);
+    // Open feedback alone never makes a list.
+    expect(todoProgress([], 2)).toBeNull();
+  });
+
+  it("counts open feedback as pending work once the list has nothing left", () => {
+    const finished = list({ content: "one", status: "completed" }, { content: "two", status: "abandoned" });
+    const resumed = todoProgress(finished, 1);
+    expect(resumed).toEqual({ done: 1, total: 2, current: null, feedback: 1 });
+    expect(progressFraction("in_progress", resumed)).toBe(0.5);
+    expect(progressFraction("done", resumed)).toBe(1);
+    // Items the agent adds for the feedback take over: no double counting.
+    const working = todoProgress([...finished, ...list({ content: "fix", status: "in_progress" })], 1);
+    expect(working).toEqual({ done: 1, total: 2, current: "fix", feedback: 0 });
   });
 });
 

@@ -44,7 +44,7 @@ test("no horizontal scrolling on Projects, Stats, Settings and a board", async (
 
   await page.goto(`/b/${board.id}`);
   await expect(page.getByRole("tab", { name: columnTabName("To do", 1) })).toBeVisible();
-  await expect(page.getByRole("tabpanel").getByRole("button", { name: /^Refactor/ })).toBeVisible();
+  await expect(page.getByRole("tabpanel").getByRole("button", { name: /^(?!More actions).*Refactor/ })).toBeVisible();
   await expectNoHorizontalScroll(page);
 });
 
@@ -113,16 +113,16 @@ test("board: FAB adds a card that starts on its own, the detail drawer steers th
   }
 
   // FAB → the dedicated new-card page (a keyboard plus a bottom sheet leaves no room on a phone).
-  const fab = page.getByRole("button", { name: "New card" });
-  await expectTouchTarget(fab, "New card FAB");
+  const fab = page.getByRole("button", { name: "New task" });
+  await expectTouchTarget(fab, "New task FAB");
   await fab.click();
   await expect(page).toHaveURL(/\/b\/[^/]+\/new\?from=board$/);
-  await expect(page.getByRole("heading", { name: "New card" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "New task" })).toBeVisible();
   const prompt = page.getByLabel("What should the agent do?", { exact: true });
-  const create = page.getByRole("button", { name: "Create card" });
+  const create = page.getByRole("button", { name: "Create task" });
   await expect(prompt).toBeVisible();
   await expect(create).toBeDisabled();
-  // The whole form fits on screen: no vertical page scroll, Create card reachable without scrolling.
+  // The whole form fits on screen: no vertical page scroll, Create task reachable without scrolling.
   const viewport = page.viewportSize()!;
   const { scrollHeight, innerHeight } = await page.evaluate(() => ({
     scrollHeight: document.scrollingElement!.scrollHeight,
@@ -130,9 +130,9 @@ test("board: FAB adds a card that starts on its own, the detail drawer steers th
   }));
   expect(scrollHeight).toBeLessThanOrEqual(innerHeight + 1);
   const createBox = await create.boundingBox();
-  expect(createBox, "Create card has no layout box").not.toBeNull();
+  expect(createBox, "Create task has no layout box").not.toBeNull();
   expect(createBox!.y + createBox!.height).toBeLessThanOrEqual(viewport.height);
-  await expectTouchTarget(create, "Create card");
+  await expectTouchTarget(create, "Create task");
   await prompt.fill(title);
   await expect(create).toBeEnabled();
   await create.click();
@@ -204,7 +204,7 @@ test("board: Cancel on the new-card page returns to the board without creating a
   await page.goto(`/b/${board.id}`);
   await expect(page.getByRole("tab", { name: columnTabName("To do", 0) })).toHaveAttribute("aria-selected", "true");
 
-  await page.getByRole("button", { name: "New card" }).click();
+  await page.getByRole("button", { name: "New task" }).click();
   await expect(page).toHaveURL(/\/b\/[^/]+\/new\?from=board$/);
   await page.getByLabel("What should the agent do?", { exact: true }).fill(uniqueName("Never created"));
   await page.getByRole("button", { name: /cancel/i }).click();

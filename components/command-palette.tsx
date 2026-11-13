@@ -24,6 +24,7 @@ import {
   Settings,
   Square,
   SquareTerminal,
+  ScrollText,
   Sun,
 } from "lucide-react";
 import { StatusDot } from "@/components/board/board-column";
@@ -32,7 +33,7 @@ import { quickActionsFor, type QuickAction, type QuickActionId } from "@/compone
 import { canShip, shipLabels, shipTask } from "@/components/board/ship-actions";
 import { openKeyboardHelp } from "@/components/keyboard-help";
 import { useNewCard } from "@/components/new-card";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { compareTasks, POSITION_GAP, useBoardTasks } from "@/hooks/use-board";
 import { api } from "@/lib/api-client";
@@ -463,7 +464,7 @@ export function CommandPalette() {
       {
         id: "action:new-card",
         group: "Actions",
-        label: "New card",
+        label: "New task",
         keys: ["N"],
         icon: <Plus className="size-4" />,
         run: () => openNewCard(),
@@ -533,6 +534,15 @@ export function CommandPalette() {
         keys: ["G", "T"],
         icon: <ChartColumn className="size-4" />,
         run: go("/stats"),
+      },
+      {
+        id: "go:logs",
+        group: "Go to",
+        label: "Logs",
+        hint: "Security, access, system, agent logs",
+        keys: ["G", "L"],
+        icon: <ScrollText className="size-4" />,
+        run: go("/logs"),
       },
       {
         id: "go:memory",
@@ -697,14 +707,15 @@ export function CommandPalette() {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         showCloseButton={false}
-        className="top-[12%] translate-y-0 gap-0 overflow-hidden p-0 sm:max-w-lg"
+        // Phones: a full-width sheet hanging from the top edge, so the input stays above the keyboard.
+        className="top-[12%] translate-y-0 gap-0 overflow-hidden p-0 sm:max-w-lg max-md:top-0 max-md:bottom-auto max-md:left-0 max-md:max-w-none! max-md:translate-x-0 max-md:rounded-t-none max-md:rounded-b-2xl max-md:pt-safe max-md:pb-0 max-md:shadow-diffuse max-md:duration-300 max-md:ease-(--ease-fluid) max-md:data-open:zoom-in-100 max-md:data-open:slide-in-from-top-4! max-md:data-closed:zoom-out-100 max-md:data-closed:slide-out-to-top-4!"
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
         <DialogDescription className="sr-only">
           Jump to a card or project, or run an action
         </DialogDescription>
-        <div className="flex items-center gap-2 border-b px-3">
-          <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <div className="flex items-center gap-2 border-b px-3 max-md:gap-3 max-md:px-4">
+          <Search className="size-4 shrink-0 text-muted-foreground max-md:size-5" aria-hidden />
           <input
             value={query}
             onChange={(event) => {
@@ -718,24 +729,30 @@ export function CommandPalette() {
             aria-expanded
             aria-controls="command-palette-list"
             aria-activedescendant={selectedEntry ? `command-palette-option-${selected}` : undefined}
-            className="h-12 w-full bg-transparent text-base outline-none placeholder:text-muted-foreground md:text-sm"
+            className="h-12 w-full min-w-0 bg-transparent text-base outline-none placeholder:text-muted-foreground max-md:h-14 md:text-sm"
           />
-          <Kbd>Esc</Kbd>
+          <Kbd className="hidden md:inline-flex">Esc</Kbd>
+          <DialogClose className="pressable -mr-2 flex h-11 shrink-0 items-center rounded-lg px-2 text-[0.95rem] font-medium text-primary outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:hidden">
+            Cancel
+          </DialogClose>
         </div>
         <div
           ref={listRef}
           id="command-palette-list"
           role="listbox"
           aria-label="Results"
-          className="max-h-[min(420px,60dvh)] overflow-y-auto p-1.5"
+          className="scrollbar-subtle max-h-[min(420px,60dvh)] overflow-y-auto overscroll-contain p-1.5 max-md:max-h-[min(560px,62dvh)] max-md:px-2"
         >
           {visible.length === 0 && (
-            <p className="px-3 py-10 text-center text-sm text-muted-foreground">Nothing matches.</p>
+            <div className="flex flex-col items-center gap-2 px-3 py-10 text-center text-sm text-muted-foreground">
+              <Search className="size-5 opacity-60" aria-hidden />
+              <p>Nothing matches.</p>
+            </div>
           )}
           {visible.map((entry, i) => (
             <Fragment key={entry.id}>
               {entry.group !== visible[i - 1]?.group && (
-                <h3 className="truncate px-2.5 pt-2 pb-1 text-xs font-medium text-muted-foreground first:pt-1">
+                <h3 className="truncate px-2.5 pt-2 pb-1 text-xs font-medium text-muted-foreground first:pt-1 max-md:px-3 max-md:pt-3">
                   {entry.group}
                 </h3>
               )}
@@ -752,7 +769,7 @@ export function CommandPalette() {
                 }}
                 onPointerMove={() => setIndex(i)}
                 className={cn(
-                  "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm",
+                  "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm max-md:pressable max-md:min-h-12 max-md:gap-3 max-md:rounded-lg max-md:px-3 max-md:text-[0.95rem]",
                   i === selected && "bg-accent text-accent-foreground",
                 )}
               >

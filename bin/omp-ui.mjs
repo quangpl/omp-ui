@@ -2001,6 +2001,20 @@ const COMMANDS = {
       updateEnvFile({ ADMIN_PASSWORD: pw });
       log.ok("Admin password saved to .env");
       const cfg = loadConfig();
+      // Security log for the Logs page (same JSON-line format as lib/server/log-store.ts); best effort.
+      try {
+        fs.mkdirSync(cfg.dataDir, { recursive: true });
+        const event = {
+          t: new Date().toISOString(),
+          level: "info",
+          category: "password",
+          message: "Admin password changed from the CLI (omp-ui passwd); all sessions revoked",
+          meta: { origin: "cli" },
+        };
+        fs.appendFileSync(path.join(cfg.dataDir, "security.log"), `${JSON.stringify(event)}\n`);
+      } catch {
+        // never fail the command over the log
+      }
       const managed = managedServer(cfg);
       if (managed) {
         log.info(`Restarting under ${managed.manager} to apply it…`);

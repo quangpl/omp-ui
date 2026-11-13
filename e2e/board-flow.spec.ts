@@ -34,13 +34,13 @@ test("a card added in To do on an auto-run board moves to In progress and its ag
 
   // Inline composer: Enter adds the card and keeps the composer open for the next one. A short
   // line is the title as typed (no card agent).
-  await todo.getByRole("button", { name: "Add a card", exact: true }).click();
+  await todo.getByRole("button", { name: "Add a task", exact: true }).click();
   const composer = todo.getByLabel("Card title", { exact: true });
   await composer.fill(title);
   await composer.press("Enter");
   await expect(composer).toHaveValue("");
   await composer.press("Escape");
-  await expect(todo.getByRole("button", { name: "Add a card", exact: true })).toBeVisible();
+  await expect(todo.getByRole("button", { name: "Add a task", exact: true })).toBeVisible();
 
   // The card skips To do: its agent starts right away and the fake run lands it in Done.
   await expect(cardButton(column(page, "Done"), title)).toBeVisible({ timeout: AGENT_TIMEOUT });
@@ -63,12 +63,12 @@ test("new card from free text: it lands in In progress at once, the card agent w
   ].join("\n");
 
   await page.goto(`/b/${board.id}`);
-  await page.getByRole("button", { name: "Add card", exact: true }).click();
-  const newCard = page.getByRole("dialog", { name: "New card" });
+  await page.getByRole("button", { name: "Add task", exact: true }).click();
+  const newCard = page.getByRole("dialog", { name: "New task" });
   // No switches to set: every new card starts, and the card agent decides on parallel subagents.
   await expect(newCard.getByRole("switch")).toHaveCount(0);
   await newCard.getByLabel("What should the agent do?", { exact: true }).fill(text);
-  await newCard.getByRole("button", { name: "Create card" }).click();
+  await newCard.getByRole("button", { name: "Create task" }).click();
   await expect(newCard).toBeHidden();
 
   // The card agent's card: the brief, parallel subagents, and the card it waits for.
@@ -86,10 +86,10 @@ test("new card from free text: it lands in In progress at once, the card agent w
   expect(created?.description).toContain("orchestrate: split this work into parallel subagent tasks");
 
   // When the card agent fails, the text as typed runs anyway, with a note on the card.
-  await page.getByRole("button", { name: "Add card", exact: true }).click();
+  await page.getByRole("button", { name: "Add task", exact: true }).click();
   const failing = uniqueName("[fake-draft:fail] fix the login redirect");
   await newCard.getByLabel("What should the agent do?", { exact: true }).fill(`${failing}\nIt loops forever.`);
-  await newCard.getByRole("button", { name: "Create card" }).click();
+  await newCard.getByRole("button", { name: "Create task" }).click();
   await expect(newCard).toBeHidden();
   const done = column(page, "Done");
   await expect(cardButton(done, failing)).toBeVisible({ timeout: AGENT_TIMEOUT });

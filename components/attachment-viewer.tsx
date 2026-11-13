@@ -628,7 +628,7 @@ function MediaView({ kind, attachment, download }: PaneProps & { kind: "video" |
           playsInline
           preload="metadata"
           onError={() => setFailed(true)}
-          className="max-h-full max-w-full rounded-md bg-black"
+          className="max-h-full max-w-full rounded-md bg-zinc-950"
         />
       ) : (
         <audio

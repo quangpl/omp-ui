@@ -10,8 +10,11 @@ export interface SettingsNavItem {
   icon: React.ReactNode;
 }
 
-/** A section counts as current once its top passes this line (px below the viewport top). */
-const SPY_OFFSET = 140;
+/**
+ * A section counts as current once its top passes its own `scroll-margin-top` (where a nav jump
+ * parks it, i.e. just below the sticky chrome) plus this slack, in px.
+ */
+const SPY_SLACK = 16;
 
 /** Id of the section currently at the top of the viewport; the last one once scrolled to the end. */
 function useScrollSpy(ids: string[]): [string, (id: string) => void] {
@@ -33,7 +36,9 @@ function useScrollSpy(ids: string[]): [string, (id: string) => void] {
       let current = ids[0] ?? "";
       for (const id of ids) {
         const el = document.getElementById(id);
-        if (el && el.getBoundingClientRect().top - SPY_OFFSET <= 0) current = id;
+        if (!el) continue;
+        const line = (parseFloat(getComputedStyle(el).scrollMarginTop) || 0) + SPY_SLACK;
+        if (el.getBoundingClientRect().top - line <= 0) current = id;
       }
       setActive(current);
     };
@@ -66,8 +71,8 @@ function useScrollSpy(ids: string[]): [string, (id: string) => void] {
 
 /**
  * Section navigation for the settings page: a sticky vertical list beside the content on large
- * screens, a sticky horizontally scrolling chip row under the header below that. Both highlight
- * the section in view.
+ * screens; below that a sticky swipeable chip strip pinned under the header (and its metrics strip).
+ * Both highlight the section in view.
  */
 export function SettingsNav({ items }: { items: SettingsNavItem[] }) {
   const [ids] = useState(() => items.map((item) => item.id));
@@ -92,15 +97,12 @@ export function SettingsNav({ items }: { items: SettingsNavItem[] }) {
 
   return (
     <>
-      {/* Phones and tablets: chip row pinned under the app header. */}
+      {/* Phones and tablets: swipeable chip strip pinned under the app header and its metrics strip. */}
       <nav
         aria-label="Settings sections"
-        className="sticky top-[calc(3.5rem+env(safe-area-inset-top))] z-30 -mx-4 -mt-6 border-b bg-background/85 backdrop-blur-lg supports-backdrop-filter:bg-background/70 sm:-mx-6 md:-mt-8 lg:hidden"
+        className="glass-edge sticky top-[calc(5.5rem+2px+env(safe-area-inset-top))] z-30 -mx-4 -mt-6 border-b bg-background/85 backdrop-blur-lg supports-backdrop-filter:bg-background/70 sm:-mx-6 md:-mt-8 lg:hidden"
       >
-        <div
-          ref={chipRow}
-          className="flex gap-2 overflow-x-auto px-4 py-2.5 [scrollbar-width:none] sm:px-6 [&::-webkit-scrollbar]:hidden"
-        >
+        <div ref={chipRow} className="scroll-row flex gap-2 px-4 py-2.5 sm:px-6">
           {items.map((item) => {
             const current = item.id === active;
             return (
@@ -111,7 +113,7 @@ export function SettingsNav({ items }: { items: SettingsNavItem[] }) {
                 aria-current={current ? "location" : undefined}
                 onClick={(e) => onClick(e, item.id)}
                 className={cn(
-                  "inline-flex h-11 shrink-0 items-center gap-2 rounded-full px-4 text-sm font-medium whitespace-nowrap ring-1 transition-[background-color,color,transform] active:scale-[0.98] md:h-9 [&_svg]:size-4",
+                  "inline-flex h-11 shrink-0 items-center gap-2 rounded-full px-4 text-sm font-medium whitespace-nowrap ring-1 transition-[background-color,color,box-shadow,scale] duration-150 ease-(--ease-fluid) active:scale-[0.96] motion-reduce:transition-none [&_svg]:size-4",
                   current
                     ? "bg-primary/10 text-primary ring-primary/30"
                     : "text-muted-foreground ring-border hover:text-foreground",
@@ -143,7 +145,7 @@ export function SettingsNav({ items }: { items: SettingsNavItem[] }) {
                   aria-current={current ? "location" : undefined}
                   onClick={(e) => onClick(e, item.id)}
                   className={cn(
-                    "relative flex h-9 items-center gap-2.5 rounded-lg px-3 text-sm transition-[background-color,color,transform] active:scale-[0.98] [&_svg]:size-4 [&_svg]:shrink-0",
+                    "relative flex h-9 items-center gap-2.5 rounded-lg px-3 text-sm transition-[background-color,color,scale] duration-150 ease-(--ease-fluid) active:scale-[0.98] motion-reduce:transition-none [&_svg]:size-4 [&_svg]:shrink-0",
                     "before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:transition-colors",
                     current
                       ? "bg-muted font-medium text-foreground before:bg-primary"

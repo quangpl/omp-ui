@@ -4,77 +4,82 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Palette (design-taste-frontend-v1): neutral zinc base, one desaturated emerald-teal accent.
+   Status green (--success) sits at a separate hue so "done" never reads as "primary action". */
 :root {
   color-scheme: light;
-  --background: oklch(0.985 0.002 270);
-  --foreground: oklch(0.17 0.01 270);
+  --background: oklch(0.985 0.001 286);
+  --foreground: oklch(0.16 0.005 286);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.17 0.01 270);
+  --card-foreground: oklch(0.16 0.005 286);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.17 0.01 270);
-  --primary: oklch(0.52 0.19 272);
-  --primary-foreground: oklch(0.985 0.005 272);
-  --secondary: oklch(0.955 0.004 270);
-  --secondary-foreground: oklch(0.22 0.01 270);
-  --muted: oklch(0.955 0.004 270);
-  --muted-foreground: oklch(0.52 0.012 270);
-  --accent: oklch(0.95 0.012 272);
-  --accent-foreground: oklch(0.22 0.01 270);
-  --destructive: oklch(0.577 0.245 27.325);
-  --success: oklch(0.6 0.14 158);
-  --border: oklch(0.915 0.005 270);
-  --input: oklch(0.89 0.006 270);
-  --ring: oklch(0.62 0.15 272);
-  --chart-1: oklch(0.52 0.19 272);
-  --chart-2: oklch(0.6 0.14 158);
-  --chart-3: oklch(0.7 0.15 70);
-  --chart-4: oklch(0.6 0.2 330);
-  --chart-5: oklch(0.55 0.02 270);
+  --popover-foreground: oklch(0.16 0.005 286);
+  --primary: oklch(0.55 0.13 168);
+  --primary-foreground: oklch(0.985 0.01 168);
+  --secondary: oklch(0.962 0.002 286);
+  --secondary-foreground: oklch(0.21 0.006 286);
+  --muted: oklch(0.962 0.002 286);
+  --muted-foreground: oklch(0.52 0.014 286);
+  --accent: oklch(0.955 0.01 168);
+  --accent-foreground: oklch(0.21 0.006 286);
+  --destructive: oklch(0.58 0.2 25);
+  --success: oklch(0.6 0.15 145);
+  --border: oklch(0.92 0.004 286);
+  --input: oklch(0.89 0.005 286);
+  --ring: oklch(0.62 0.11 168);
+  --chart-1: oklch(0.55 0.13 168);
+  --chart-2: oklch(0.6 0.11 235);
+  --chart-3: oklch(0.72 0.14 70);
+  --chart-4: oklch(0.6 0.15 10);
+  --chart-5: oklch(0.55 0.014 286);
   --radius: 0.625rem;
-  --sidebar: oklch(0.975 0.003 270);
-  --sidebar-foreground: oklch(0.17 0.01 270);
-  --sidebar-primary: oklch(0.52 0.19 272);
-  --sidebar-primary-foreground: oklch(0.985 0.005 272);
-  --sidebar-accent: oklch(0.95 0.012 272);
-  --sidebar-accent-foreground: oklch(0.22 0.01 270);
-  --sidebar-border: oklch(0.915 0.005 270);
-  --sidebar-ring: oklch(0.62 0.15 272);
+  --sidebar: oklch(0.975 0.002 286);
+  --sidebar-foreground: oklch(0.16 0.005 286);
+  --sidebar-primary: oklch(0.55 0.13 168);
+  --sidebar-primary-foreground: oklch(0.985 0.01 168);
+  --sidebar-accent: oklch(0.955 0.01 168);
+  --sidebar-accent-foreground: oklch(0.21 0.006 286);
+  --sidebar-border: oklch(0.92 0.004 286);
+  --sidebar-ring: oklch(0.62 0.11 168);
+  /* Hue-tinted elevation (never pure-black shadows). */
+  --shadow-tint: oklch(0.25 0.02 286);
 }
 
 .dark {
   color-scheme: dark;
-  --background: oklch(0.155 0.006 270);
-  --foreground: oklch(0.96 0.003 270);
-  --card: oklch(0.2 0.007 270);
-  --card-foreground: oklch(0.96 0.003 270);
-  --popover: oklch(0.215 0.008 270);
-  --popover-foreground: oklch(0.96 0.003 270);
-  --primary: oklch(0.7 0.14 274);
-  --primary-foreground: oklch(0.17 0.03 274);
-  --secondary: oklch(0.26 0.008 270);
-  --secondary-foreground: oklch(0.96 0.003 270);
-  --muted: oklch(0.25 0.008 270);
-  --muted-foreground: oklch(0.7 0.01 270);
-  --accent: oklch(0.28 0.025 272);
-  --accent-foreground: oklch(0.96 0.003 270);
-  --destructive: oklch(0.704 0.191 22.216);
-  --success: oklch(0.72 0.14 158);
+  --background: oklch(0.145 0.004 286);
+  --foreground: oklch(0.965 0.002 286);
+  --card: oklch(0.19 0.005 286);
+  --card-foreground: oklch(0.965 0.002 286);
+  --popover: oklch(0.205 0.006 286);
+  --popover-foreground: oklch(0.965 0.002 286);
+  --primary: oklch(0.74 0.12 168);
+  --primary-foreground: oklch(0.2 0.04 168);
+  --secondary: oklch(0.25 0.006 286);
+  --secondary-foreground: oklch(0.965 0.002 286);
+  --muted: oklch(0.24 0.006 286);
+  --muted-foreground: oklch(0.7 0.012 286);
+  --accent: oklch(0.27 0.018 168);
+  --accent-foreground: oklch(0.965 0.002 286);
+  --destructive: oklch(0.7 0.17 22);
+  --success: oklch(0.74 0.15 145);
   --border: oklch(1 0 0 / 9%);
   --input: oklch(1 0 0 / 14%);
-  --ring: oklch(0.6 0.12 274);
-  --chart-1: oklch(0.7 0.14 274);
-  --chart-2: oklch(0.72 0.14 158);
-  --chart-3: oklch(0.78 0.14 70);
-  --chart-4: oklch(0.7 0.18 330);
-  --chart-5: oklch(0.65 0.02 270);
-  --sidebar: oklch(0.18 0.007 270);
-  --sidebar-foreground: oklch(0.96 0.003 270);
-  --sidebar-primary: oklch(0.7 0.14 274);
-  --sidebar-primary-foreground: oklch(0.17 0.03 274);
-  --sidebar-accent: oklch(0.28 0.025 272);
-  --sidebar-accent-foreground: oklch(0.96 0.003 270);
+  --ring: oklch(0.62 0.1 168);
+  --chart-1: oklch(0.74 0.12 168);
+  --chart-2: oklch(0.72 0.1 235);
+  --chart-3: oklch(0.78 0.13 70);
+  --chart-4: oklch(0.7 0.14 10);
+  --chart-5: oklch(0.65 0.014 286);
+  --sidebar: oklch(0.17 0.005 286);
+  --sidebar-foreground: oklch(0.965 0.002 286);
+  --sidebar-primary: oklch(0.74 0.12 168);
+  --sidebar-primary-foreground: oklch(0.2 0.04 168);
+  --sidebar-accent: oklch(0.27 0.018 168);
+  --sidebar-accent-foreground: oklch(0.965 0.002 286);
   --sidebar-border: oklch(1 0 0 / 9%);
-  --sidebar-ring: oklch(0.6 0.12 274);
+  --sidebar-ring: oklch(0.62 0.1 168);
+  --shadow-tint: oklch(0.05 0.01 286);
 }
 
 @theme inline {
@@ -151,6 +156,30 @@
     overscroll-behavior-y: none;
     overflow-x: hidden;
   }
+  /* No double-tap-zoom wait on controls: taps fire immediately on mobile. */
+  a,
+  button,
+  input,
+  label,
+  select,
+  summary,
+  textarea,
+  [role="button"],
+  [role="tab"],
+  [role="menuitem"],
+  [role="option"],
+  [role="switch"],
+  [role="checkbox"] {
+    touch-action: manipulation;
+  }
+  /* Native-app chrome: UI labels don't get selected by long-press; content and inputs still do. */
+  nav,
+  [role="tablist"],
+  [data-slot="button"] {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
 }
 
 /* ── Motion foundation ──────────────────────────────────────────────
@@ -160,6 +189,98 @@
 :root {
   --ease-out-smooth: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-spring: cubic-bezier(0.34, 1.25, 0.64, 1);
+  /* Long-tail deceleration (skill: cubic-bezier(0.16, 1, 0.3, 1)): sheets, pages, layout moves. */
+  --ease-fluid: cubic-bezier(0.16, 1, 0.3, 1);
+  /* Press feedback must land inside one frame budget of the finger going down. */
+  --duration-press: 120ms;
+  /* `pressable` transitions a superset of what other transition utilities animate, so whichever
+     class wins the cascade on an element, colors/borders/shadows/translate still animate. */
+  --press-props:
+    scale, translate, color, background-color, border-color, outline-color, text-decoration-color,
+    fill, stroke, opacity, box-shadow;
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0;
+    transform: scale(2.2);
+  }
+}
+
+/* Route/section entry; GPU-only (opacity + transform), plays once on mount. */
+@utility animate-page-in {
+  animation: page-in 0.38s var(--ease-fluid) both;
+}
+
+/* Live-status halo: put on an absolutely positioned sibling of a status dot. */
+@utility animate-breathe {
+  animation: breathe 2.4s var(--ease-out-smooth) infinite;
+}
+
+/* Tactile press: instant scale-down on touch/click, springs back on release.
+   Uses the standalone `scale` property so it composes with translate-based utilities. */
+@utility pressable {
+  transition-property: var(--press-props);
+  transition-duration: var(--duration-press);
+  transition-timing-function: var(--ease-fluid);
+  &:active:not(:disabled):not([aria-disabled="true"]) {
+    scale: 0.97;
+  }
+}
+
+/* Same, for small icon-sized targets where 3% is invisible. */
+@utility pressable-icon {
+  transition-property: var(--press-props);
+  transition-duration: var(--duration-press);
+  transition-timing-function: var(--ease-fluid);
+  &:active:not(:disabled):not([aria-disabled="true"]) {
+    scale: 0.9;
+  }
+}
+
+/* Liquid-glass edge for blurred bars/sheets: 1px inner refraction highlight. */
+@utility glass-edge {
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.08);
+}
+
+/* Hue-tinted diffusion shadow for elevated surfaces (sheets, popovers, FAB). */
+@utility shadow-diffuse {
+  box-shadow:
+    0 18px 40px -16px color-mix(in oklch, var(--shadow-tint) 28%, transparent),
+    0 2px 6px -2px color-mix(in oklch, var(--shadow-tint) 10%, transparent);
+}
+
+/* Horizontal chip/tab strips: swipeable, scrollbar hidden, momentum contained. */
+@utility scroll-row {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Long lists: skip layout/paint of offscreen rows (big win on phones). */
+@utility content-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
 }
 
 @keyframes card-in {
@@ -234,8 +355,8 @@
     &:hover {
       translate: 0 -1px;
       box-shadow:
-        0 4px 14px -6px oklch(0.25 0.03 272 / 0.18),
-        0 1px 3px oklch(0.25 0.03 272 / 0.08);
+        0 4px 14px -6px color-mix(in oklch, var(--shadow-tint) 22%, transparent),
+        0 1px 3px color-mix(in oklch, var(--shadow-tint) 9%, transparent);
     }
   }
 }
@@ -406,6 +527,104 @@
   }
 }
 
+/* Face swap when a worker's mood changes (the face group is re-keyed). */
+@keyframes mood-in {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes worker-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-4.5px);
+  }
+  75% {
+    transform: translateY(-1.2px);
+  }
+}
+
+/* A short jitter, then a pause, so an overloaded worker is noticeable but not frantic. */
+@keyframes worker-shake {
+  0%,
+  30%,
+  100% {
+    transform: translateX(0);
+  }
+  5%,
+  15% {
+    transform: translateX(-1px);
+  }
+  10%,
+  20% {
+    transform: translateX(1px);
+  }
+  25% {
+    transform: translateX(-0.5px);
+  }
+}
+
+@keyframes worker-steam {
+  0% {
+    opacity: 0;
+    transform: translateY(2px) scale(0.7);
+  }
+  30% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-6px) scale(1.25);
+  }
+}
+
+@keyframes worker-tilt {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(-5deg);
+  }
+}
+
+@keyframes worker-think {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-1px);
+  }
+}
+
+@keyframes worker-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes worker-help {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.15);
+  }
+}
+
 /* Entry of a floor element; stagger with style={{ "--i": index }}. */
 @keyframes floor-in {
   from {
@@ -476,6 +695,53 @@
   animation: worker-snore 2.4s ease-out infinite;
 }
 
+@utility animate-worker-bob-fast {
+  animation: worker-bob 0.8s ease-in-out infinite;
+}
+
+@utility animate-worker-bounce {
+  animation: worker-bounce 1.1s var(--ease-out-smooth) infinite;
+}
+
+@utility animate-worker-shake {
+  animation: worker-shake 2.4s linear infinite;
+}
+
+@utility animate-worker-tilt {
+  transform-origin: 50% 100%;
+  animation: worker-tilt 3.2s ease-in-out infinite;
+}
+
+@utility animate-worker-steam {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: worker-steam 1.8s ease-out infinite;
+}
+
+@utility animate-worker-think {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: worker-think 1.8s ease-in-out infinite;
+}
+
+@utility animate-worker-spin {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: worker-spin 4s linear infinite;
+}
+
+@utility animate-worker-help {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: worker-help 1.4s ease-in-out infinite;
+}
+
+@utility animate-mood-in {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mood-in 0.22s var(--ease-out-smooth) both;
+}
+
 @utility animate-floor-in {
   animation: floor-in 0.45s var(--ease-out-smooth) both;
   animation-delay: calc(var(--i, 0) * 55ms);
@@ -505,6 +771,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .animate-card-in,
+  .animate-page-in,
   .animate-fade-in-soft,
   .animate-success-pop,
   .animate-check-draw {
@@ -519,16 +786,33 @@
     animation: none;
     opacity: 0;
   }
+  .animate-breathe {
+    animation: none;
+    opacity: 0;
+  }
+  .pressable,
+  .pressable-icon {
+    transition: none;
+  }
   .animate-worker-bob,
   .animate-worker-blink,
   .animate-worker-signal,
   .animate-worker-snore,
+  .animate-worker-bob-fast,
+  .animate-worker-bounce,
+  .animate-worker-shake,
+  .animate-worker-tilt,
+  .animate-worker-steam,
+  .animate-worker-think,
+  .animate-worker-spin,
+  .animate-worker-help,
   .animate-lamp {
     animation: none;
   }
   .animate-floor-in,
   .animate-digit-roll,
-  .animate-stamp {
+  .animate-stamp,
+  .animate-mood-in {
     animation-duration: 0.01ms;
     animation-delay: 0ms;
   }

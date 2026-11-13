@@ -7,7 +7,7 @@ import {
   floorPlan,
   toolSystem,
 } from "@/components/visualize/agent-map";
-import type { LiveAgent } from "@/components/visualize/use-live-agents";
+import { EMPTY_STATS, type LiveAgent } from "@/components/visualize/use-live-agents";
 import type { Dashboard, QueueEntry, QueueSnapshot, SubagentSnapshot } from "@/lib/types";
 
 const A = "11111111-1111-4111-8111-111111111111";
@@ -35,7 +35,7 @@ function queue(running: QueueEntry[], queued: QueueEntry[] = []): QueueSnapshot 
 }
 
 function liveAgent(extra: Partial<LiveAgent> = {}): LiveAgent {
-  return { helpers: {}, contacts: [], ...extra };
+  return { helpers: {}, contacts: [], stats: EMPTY_STATS, ...extra };
 }
 
 function helper(id: string, status: SubagentSnapshot["status"], currentTool?: string): SubagentSnapshot {

@@ -38,6 +38,7 @@ import {
   newId,
   normalizeAfter,
   normalizeLimit,
+  normalizeRecentRunLimit,
   nowIso,
   parseFolderList,
 } from "@/lib/db/util";
@@ -364,6 +365,7 @@ export class MongoRepository implements Repository {
       this.comments.createIndex({ taskId: 1, createdAt: 1 }),
       this.runs.createIndex({ taskId: 1, startedAt: -1 }),
       this.runs.createIndex({ status: 1 }),
+      this.runs.createIndex({ startedAt: -1 }),
       this.runEvents.createIndex({ runId: 1, _id: 1 }),
       this.runEvents.createIndex({ taskId: 1 }),
       this.schedulers.createIndex({ boardId: 1 }),
@@ -675,6 +677,15 @@ export class MongoRepository implements Repository {
 
   async listRuns(taskId: string): Promise<Run[]> {
     const docs = await this.runs.find({ taskId }).sort({ startedAt: -1 }).toArray();
+    return docs.map(toRun);
+  }
+
+  async listRecentRuns(limit?: number): Promise<Run[]> {
+    const docs = await this.runs
+      .find()
+      .sort({ startedAt: -1 })
+      .limit(normalizeRecentRunLimit(limit))
+      .toArray();
     return docs.map(toRun);
   }
 

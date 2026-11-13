@@ -22,7 +22,7 @@ export default function TerminalPage() {
     >
       <AppHeader title="Terminal" />
       <main className="px-safe flex min-h-0 flex-1 flex-col md:pb-safe">
-        <div className="mx-auto flex min-h-0 w-full max-w-[1400px] flex-1 flex-col px-2 py-2 sm:px-6 sm:py-4 md:py-6 lg:px-8">
+        <div className="animate-page-in mx-auto flex min-h-0 w-full max-w-[1400px] flex-1 flex-col px-2 py-2 sm:px-6 sm:py-4 md:py-6 lg:px-8">
           <TerminalView />
         </div>
       </main>

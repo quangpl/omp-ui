@@ -10,10 +10,16 @@
 //                         via: "prompt" and the streamingBehavior; like omp, an idle `prompt` with
 //                         streamingBehavior starts a prompt).
 //   FAKE_OMP_SCENARIO     Default prompt behaviour: success | question | error | quota | crash | slow |
-//                         confirm | stream | orchestrate | board_tools | todos.
+//                         confirm | stream | orchestrate | board_tools | todos | todos_done | todos_steer |
+//                         todos_feedback.
 //                         "error" ends the run with an assistant error (a plain model failure); "quota"
 //                         ends it with a quota / usage-limit error (429), as a provider out of quota does.
 //                         "todos" reports two `todo` tool results (the agent's todo list), then succeeds.
+//                         "todos_done" reports a todo list with every item completed, then succeeds.
+//                         "todos_steer" reports that list, waits for a steer, then reports it again with
+//                         an item for the feedback appended (in_progress), then with that item completed,
+//                         then succeeds. "todos_feedback" does the same without waiting for a steer (the
+//                         feedback came with the prompt, as in a resumed run).
 //                         "question" succeeds with a summary that ends in a question for the user.
 //                         "stream" emits 2 thinking_delta + 15 text_delta frames ~80ms apart, then succeeds.
 //                         "orchestrate" runs a `task` call with two subagents (Scout succeeds, Builder
@@ -486,18 +492,44 @@ const FAKE_TODO_PHASES = [
   ],
 ];
 
-function emitTodos() {
-  FAKE_TODO_PHASES.forEach((phases, i) => {
-    const toolCallId = `todo-${i + 1}`;
-    emit({ type: "tool_execution_start", toolCallId, toolName: "todo", args: { op: i === 0 ? "init" : "done" } });
-    emit({
-      type: "tool_execution_end",
-      toolCallId,
-      toolName: "todo",
-      result: { content: [{ type: "text", text: "Remaining items…" }], details: { op: "update", phases, storage: "session" } },
-      isError: false,
-    });
+/** The todos_done / todos_steer / todos_feedback list: every item completed. */
+const FAKE_DONE_TODO_PHASES = [
+  { name: "Build", tasks: [{ content: "Write the code", status: "completed" }, { content: "Add tests", status: "completed" }] },
+  { name: "Ship", tasks: [{ content: "Update docs", status: "completed" }] },
+];
+
+/** The completed list plus an item for the feedback, in `status`. */
+function feedbackTodoPhases(status) {
+  return [...FAKE_DONE_TODO_PHASES, { name: "Feedback", tasks: [{ content: "Address the feedback", status }] }];
+}
+
+function emitTodo(toolCallId, op, phases) {
+  emit({ type: "tool_execution_start", toolCallId, toolName: "todo", args: { op } });
+  emit({
+    type: "tool_execution_end",
+    toolCallId,
+    toolName: "todo",
+    result: { content: [{ type: "text", text: "Remaining items…" }], details: { op: "update", phases, storage: "session" } },
+    isError: false,
   });
+}
+
+function emitTodos() {
+  FAKE_TODO_PHASES.forEach((phases, i) => emitTodo(`todo-${i + 1}`, i === 0 ? "init" : "done", phases));
+}
+
+/** todos_steer (`waitForSteer`) and todos_feedback; stops if the run is aborted meanwhile. */
+async function feedbackTodos(current, waitForSteer) {
+  emitTodo("todo-1", "init", FAKE_DONE_TODO_PHASES);
+  if (waitForSteer && !current.steers.length) {
+    const { promise, resolve } = Promise.withResolvers();
+    current.onSteer = resolve;
+    await promise;
+  }
+  if (run !== current) return;
+  emitTodo("todo-2", "append", feedbackTodoPhases("in_progress"));
+  emitTodo("todo-3", "done", feedbackTodoPhases("completed"));
+  completeSuccessfully("Fake summary: addressed the feedback.");
 }
 
 async function startPrompt(command) {
@@ -548,6 +580,14 @@ async function startPrompt(command) {
     case "todos":
       emitTodos();
       completeSuccessfully("Fake summary: worked through the todo list.");
+      break;
+    case "todos_done":
+      emitTodo("todo-1", "init", FAKE_DONE_TODO_PHASES);
+      completeSuccessfully("Fake summary: worked through the todo list.");
+      break;
+    case "todos_steer":
+    case "todos_feedback":
+      await feedbackTodos(run, scenario === "todos_steer");
       break;
     case "board_tools":
       await boardTools(command.message);

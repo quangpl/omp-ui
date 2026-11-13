@@ -17,6 +17,10 @@ import type { Board, Comment, Run, RunEvent, ServerEvent, SubagentSnapshot, Task
 const FAKE_OMP = fileURLToPath(new URL("../fixtures/fake-omp.mjs", import.meta.url));
 const SUCCESS_SUMMARY = "Fake summary: implemented the task and ran the tests.";
 const QUOTA_ERROR = "Fake model error: 429 You have exceeded your quota (usage limit reached)";
+/** The todo list the fake's todos_done / todos_steer / todos_feedback scenarios report first. */
+const FINISHED_TODOS = ["Write the code: completed", "Add tests: completed", "Update docs: completed"];
+/** The item those scenarios add for the feedback. */
+const FEEDBACK_TODO = "Address the feedback";
 
 /** Process-wide singletons the app caches on globalThis (lib/db/index.ts, lib/agent/manager.ts, lib/agent/rpc.ts). */
 const globals = globalThis as typeof globalThis & {
@@ -165,6 +169,16 @@ function publishedAgentStates(taskId: string): string[] {
     if (states.at(-1) !== e.task.agentState) states.push(e.task.agentState);
   }
   return states;
+}
+
+/** task.updated events published for a task from `events[from]` on, as the published tasks. */
+function taskUpdates(taskId: string, from = 0): Task[] {
+  return events.slice(from).flatMap((e) => (e.type === "task.updated" && e.task.id === taskId ? [e.task] : []));
+}
+
+/** A todo list as "content: status" lines. */
+function todoLines(todos: Task["todos"]): string[] {
+  return todos.flatMap((phase) => phase.tasks.map((item) => `${item.content}: ${item.status}`));
 }
 
 /** "helper" entries of the smart-queue planner. */
@@ -742,6 +756,133 @@ describe("AgentManager feedback", () => {
       resolvedByRunId: secondRun.id,
     });
     expect(agentComments(comments)).toHaveLength(2);
+  });
+
+  it("publishes the agent's growing todo list while it works on steered feedback", async () => {
+    const task = await createTask("Steer the list", "[fake:todos_steer]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    // The fake reports a list with every item completed, then waits for the steer.
+    const listed = await waitFor(
+      () => taskUpdates(task.id).find((t) => t.todos.length > 0),
+      "the completed todo list to be published",
+    );
+    expect(todoLines(listed.todos)).toEqual(FINISHED_TODOS);
+    expect(listed).toMatchObject({ status: "in_progress", agentState: "running", openCommentCount: 0 });
+
+    const from = events.length;
+    const comment = await repo.addComment({ taskId: task.id, author: "user", body: "Also update the README" });
+    await manager.onComment(await getTask(task.id), comment);
+    const done = await waitDone(task.id);
+    await waitIdleManager(manager);
+    const run = await latestRun(task.id);
+    expect(await repo.listRuns(task.id)).toHaveLength(1);
+
+    const updates = taskUpdates(task.id, from);
+    const working = updates.findIndex((t) => todoLines(t.todos).includes(`${FEEDBACK_TODO}: in_progress`));
+    const finished = updates.findIndex((t) => todoLines(t.todos).includes(`${FEEDBACK_TODO}: completed`));
+    expect(working).toBeGreaterThanOrEqual(0);
+    expect(finished).toBeGreaterThan(working);
+    expect(todoLines(updates[working]!.todos)).toEqual([...FINISHED_TODOS, `${FEEDBACK_TODO}: in_progress`]);
+    expect(todoLines(updates[finished]!.todos)).toEqual([...FINISHED_TODOS, `${FEEDBACK_TODO}: completed`]);
+    // The feedback counts as open until the run that addressed it ends.
+    for (const t of updates.slice(0, -1)) {
+      expect(t).toMatchObject({ status: "in_progress", agentState: "running", openCommentCount: 1 });
+    }
+    expect(updates.at(-1)).toMatchObject({ status: "done", agentState: "idle", openCommentCount: 0 });
+
+    expect(done).toMatchObject({ status: "done", agentState: "idle", openCommentCount: 0, lastRunId: run.id });
+    // The finished items keep their stamps; the feedback item gets its own.
+    expect(done.todos).toEqual([
+      ...listed.todos,
+      {
+        name: "Feedback",
+        tasks: [
+          { content: FEEDBACK_TODO, status: "completed", startedAt: expect.any(String), completedAt: expect.any(String) },
+        ],
+      },
+    ]);
+    expect((await repo.listComments(task.id)).find((c) => c.id === comment.id)).toMatchObject({
+      resolved: true,
+      resolvedByRunId: run.id,
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "comment.updated",
+        comment: expect.objectContaining({ id: comment.id, resolved: true, resolvedByRunId: run.id }),
+      }),
+    );
+  });
+
+  it("reopens a Done card with a finished todo list on feedback and publishes each step", async () => {
+    const task = await createTask("Resume the list", "[fake:todos_done]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    const firstDone = await waitDone(task.id);
+    await waitIdleManager(manager);
+    const firstRun = await latestRun(task.id);
+    expect(todoLines(firstDone.todos)).toEqual(FINISHED_TODOS);
+    expect(firstDone.openCommentCount).toBe(0);
+
+    const from = events.length;
+    // The resumed run's prompt carries the feedback, and with it the fake's scenario marker.
+    const comment = await repo.addComment({
+      taskId: task.id,
+      author: "user",
+      body: "Please rename the button [fake:todos_feedback]",
+    });
+    await manager.onComment(firstDone, comment);
+    const secondDone = await waitTask(
+      task.id,
+      (t) => t.lastRunId !== firstRun.id && t.status === "done" && t.agentState === "idle",
+      "the resumed run to finish",
+    );
+    await waitIdleManager(manager);
+    const secondRun = await latestRun(task.id);
+    expect(secondRun.id).not.toBe(firstRun.id);
+    expect(secondRun.prompt.startsWith("New feedback on this task:")).toBe(true);
+
+    expect(publishedAgentStates(task.id)).toEqual(["queued", "running", "idle", "queued", "running", "idle"]);
+    const updates = taskUpdates(task.id, from);
+    // Reopened with the finished list kept and the feedback open, then running the new run.
+    expect(updates[0]).toMatchObject({
+      status: "in_progress",
+      agentState: "queued",
+      openCommentCount: 1,
+      todos: firstDone.todos,
+    });
+    expect(updates[1]).toMatchObject({
+      status: "in_progress",
+      agentState: "running",
+      openCommentCount: 1,
+      lastRunId: secondRun.id,
+    });
+    for (const t of updates.slice(0, -1)) expect(t).toMatchObject({ status: "in_progress", openCommentCount: 1 });
+    expect(updates.at(-1)).toMatchObject({ status: "done", agentState: "idle", openCommentCount: 0 });
+    const working = updates.findIndex((t) => todoLines(t.todos).includes(`${FEEDBACK_TODO}: in_progress`));
+    const finished = updates.findIndex((t) => todoLines(t.todos).includes(`${FEEDBACK_TODO}: completed`));
+    expect(working).toBeGreaterThan(0);
+    expect(finished).toBeGreaterThan(working);
+
+    const runUpdates = events.slice(from).flatMap((e) => (e.type === "run.updated" && e.run.id === secondRun.id ? [e.run] : []));
+    expect(runUpdates.map((r) => r.status)).toEqual(["running", "succeeded"]);
+
+    // The agent's latest list: the earlier items with their first run's stamps, plus the feedback item.
+    expect(secondDone.todos).toEqual([
+      ...firstDone.todos,
+      {
+        name: "Feedback",
+        tasks: [
+          { content: FEEDBACK_TODO, status: "completed", startedAt: expect.any(String), completedAt: expect.any(String) },
+        ],
+      },
+    ]);
+    const feedbackItem = secondDone.todos.at(-1)!.tasks[0]!;
+    expect(Date.parse(feedbackItem.startedAt!)).toBeGreaterThanOrEqual(Date.parse(firstRun.endedAt!));
+    expect((await repo.listComments(task.id)).find((c) => c.id === comment.id)).toMatchObject({
+      resolved: true,
+      resolvedByRunId: secondRun.id,
+    });
   });
 
   it("ignores feedback on todo tasks and comments by the agent", async () => {

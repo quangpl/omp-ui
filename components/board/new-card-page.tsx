@@ -43,7 +43,7 @@ function takeDraft(boardId: string): string {
 }
 
 /**
- * Phone "New card" screen for `boardId` (`/b/[boardId]/new`): header with Cancel, the project
+ * Phone "New task" screen for `boardId` (`/b/[boardId]/new`): header with Cancel, the project
  * picker, then the form filling the rest. Only the textarea scrolls. Leaving goes back when the
  * board is right behind it in history (`?from=board`), else replaces this entry with the board.
  */
@@ -52,7 +52,7 @@ export function NewCardScreen({ boardId }: { boardId: string }) {
   const searchParams = useSearchParams();
   const fromBoard = searchParams.get("from") === "board";
   const boardPath = `/b/${encodeURIComponent(boardId)}`;
-  useDocumentTitle("New card");
+  useDocumentTitle("New task");
   const keyboard = useKeyboardViewport();
 
   const [boards, setBoards] = useState<BoardWithCounts[] | null>(null);
@@ -124,7 +124,7 @@ export function NewCardScreen({ boardId }: { boardId: string }) {
       <Button
         type="button"
         variant="outline"
-        className="h-9 shrink-0 active:scale-[0.98] motion-reduce:transition-none md:h-8"
+        className="h-11 shrink-0 pressable md:h-8"
         onClick={() => setAttempt((n) => n + 1)}
       >
         Retry
@@ -156,7 +156,7 @@ export function NewCardScreen({ boardId }: { boardId: string }) {
         <Button
           variant="ghost"
           size="icon"
-          className="size-11 shrink-0 rounded-full text-muted-foreground hover:text-foreground active:scale-95 motion-reduce:transition-none md:size-9 md:rounded-lg"
+          className="size-11 shrink-0 rounded-full text-muted-foreground pressable-icon hover:text-foreground md:size-9 md:rounded-lg"
           aria-label="Cancel"
           onClick={leave}
         >
@@ -190,7 +190,7 @@ function NewCardHeader({ subtitle, children }: { subtitle?: string; children: Re
       <div className="mx-auto flex h-14 w-full max-w-2xl items-center gap-1 px-1.5 sm:px-3">
         {children}
         <div className="min-w-0 flex-1 px-1">
-          <h1 className="truncate text-[0.95rem] leading-tight font-semibold tracking-tight sm:text-base">New card</h1>
+          <h1 className="truncate text-[0.95rem] leading-tight font-semibold tracking-tight sm:text-base">New task</h1>
           {subtitle && <p className="truncate text-xs leading-tight text-muted-foreground">{subtitle}</p>}
         </div>
       </div>
@@ -214,7 +214,7 @@ function MissingProject({ boards, onPick }: { boards: BoardWithCounts[]; onPick:
         </p>
       </div>
       {boards.length > 0 && <ProjectField boards={boards} value="" onValueChange={onPick} />}
-      <Button asChild variant="outline" className="h-11 self-start active:scale-[0.98] motion-reduce:transition-none md:h-9">
+      <Button asChild variant="outline" className="h-11 self-start pressable md:h-9">
         <Link href="/">All projects</Link>
       </Button>
     </div>

@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -6,6 +7,7 @@ import {
   ADMIN_PASSWORD,
   api,
   call,
+  env,
   freshEnv,
   restartServer,
   setupAdmin,
@@ -43,6 +45,8 @@ import * as taskRoute from "@/app/api/v1/tasks/[id]/route";
 import * as taskRunRoute from "@/app/api/v1/tasks/[id]/run/route";
 import * as taskRunsRoute from "@/app/api/v1/tasks/[id]/runs/route";
 import * as taskStopRoute from "@/app/api/v1/tasks/[id]/stop/route";
+import type { StoredLogEvent } from "@/lib/log-types";
+import { eventLogPath, flushLogEvents } from "@/lib/server/log-store";
 
 interface Session {
   token: string;
@@ -501,5 +505,84 @@ describe("protected endpoints", () => {
     expect((await login(ADMIN_PASSWORD)).status).toBe(409);
     await setupAdmin();
     expect((await login(ADMIN_PASSWORD)).status).toBe(200);
+  });
+});
+
+describe("security and access logs", () => {
+  // lib/server/http.ts keeps its unauthorized-request log throttle on globalThis (like helpers' `g`).
+  const http = globalThis as unknown as { __ompUiUnauthorizedLogged?: Map<string, number> };
+
+  beforeEach(async () => {
+    // Without proxy trust every client is "direct".
+    await freshEnv({ VINEXT_TRUST_PROXY: undefined, VINEXT_TRUSTED_HOSTS: undefined });
+    // One "Unauthorized request" entry per ip + method + path a minute: forget earlier tests' ones.
+    http.__ompUiUnauthorizedLogged?.clear();
+  });
+
+  /** Raw text and parsed events of DATA_DIR/<source>.log once every queued write landed. */
+  async function readEvents(source: "security" | "access"): Promise<{ raw: string; events: StoredLogEvent[] }> {
+    await flushLogEvents();
+    const raw = readFileSync(eventLogPath(source), "utf8");
+    const events = raw
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as StoredLogEvent);
+    return { raw, events };
+  }
+
+  it("records failed and successful logins in DATA_DIR/security.log without the password", async () => {
+    expect(eventLogPath("security").startsWith(env().dataDir)).toBe(true);
+    await setupAdmin();
+    const wrong = "wrong-password-xyz";
+    expect((await login(wrong)).status).toBe(401);
+    expect((await login(ADMIN_PASSWORD)).status).toBe(200);
+
+    const { raw, events } = await readEvents("security");
+    const logins = events.filter((e) => e.category === "login");
+    expect(logins).toEqual([
+      expect.objectContaining({ level: "warn", message: "Login failed: invalid password" }),
+      expect.objectContaining({ level: "info", message: "Login succeeded" }),
+    ]);
+    for (const event of logins) {
+      expect(Number.isNaN(Date.parse(event.t))).toBe(false);
+      expect(event.meta?.ip).toBe("direct");
+    }
+    expect(events).toContainEqual(expect.objectContaining({ category: "password", message: "Admin password set up" }));
+    expect(raw).not.toContain(wrong);
+    expect(raw).not.toContain(ADMIN_PASSWORD);
+  });
+
+  it("records authenticated API calls in DATA_DIR/access.log without the query string", async () => {
+    await setupAdmin();
+    expect((await api(boardsRoute, "GET", "/boards?token=leak-me")).status).toBe(200);
+
+    const { raw, events } = await readEvents("access");
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        level: "info",
+        category: "api",
+        message: "GET /api/v1/boards 200",
+        meta: expect.objectContaining({ method: "GET", path: "/api/v1/boards", status: 200, ip: "direct" }),
+      }),
+    );
+    expect(raw).not.toContain("leak-me");
+    expect(raw).not.toContain("?");
+  });
+
+  it("records unauthorized requests once per client, method and path a minute", async () => {
+    await setupAdmin();
+    expect((await listBoards(null)).status).toBe(401);
+    expect((await listBoards("not-a-token")).status).toBe(401);
+
+    const unauthorized = (await readEvents("security")).events.filter((e) => e.category === "auth");
+    expect(unauthorized).toEqual([
+      expect.objectContaining({
+        level: "warn",
+        message: "Unauthorized request: GET /api/v1/boards",
+        meta: { ip: "direct", method: "GET", path: "/api/v1/boards", reason: "no token" },
+      }),
+    ]);
+    const denied = (await readEvents("access")).events.filter((e) => e.message === "GET /api/v1/boards 401");
+    expect(denied.map((e) => e.level)).toEqual(["warn", "warn"]);
   });
 });

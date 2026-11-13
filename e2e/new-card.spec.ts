@@ -9,15 +9,15 @@ function column(page: Page, name: "To do" | "In progress" | "Done") {
 }
 
 async function openNewCard(page: Page) {
-  await page.getByRole("button", { name: "Add card", exact: true }).click();
-  return page.getByRole("dialog", { name: "New card" });
+  await page.getByRole("button", { name: "Add task", exact: true }).click();
+  return page.getByRole("dialog", { name: "New task" });
 }
 
 test.beforeEach(async ({ page }) => {
   await login(page);
 });
 
-test("Create card never waits for the card agent: the card is written in the background", async ({
+test("Create task never waits for the card agent: the card is written in the background", async ({
   page,
   request,
 }) => {
@@ -30,7 +30,7 @@ test("Create card never waits for the card agent: the card is written in the bac
   await page.goto(`/b/${board.id}`);
   let newCard = await openNewCard(page);
   await newCard.getByLabel("What should the agent do?", { exact: true }).fill(`${slowLine}\nKeep the old column order working.`);
-  await newCard.getByRole("button", { name: "Create card" }).click();
+  await newCard.getByRole("button", { name: "Create task" }).click();
   await expect(newCard).toBeHidden();
 
   // In progress right away, titled as typed, while the card agent works on it.
@@ -42,7 +42,7 @@ test("Create card never waits for the card agent: the card is written in the bac
   // Meanwhile the next card can be added; it is written and run to Done on its own.
   newCard = await openNewCard(page);
   await newCard.getByLabel("What should the agent do?", { exact: true }).fill(`${title}\n${detailLine}`);
-  await newCard.getByRole("button", { name: "Create card" }).click();
+  await newCard.getByRole("button", { name: "Create task" }).click();
   await expect(newCard).toBeHidden();
   const done = column(page, "Done");
   await expect(cardButton(done, title)).toBeVisible({ timeout: AGENT_TIMEOUT });
@@ -60,7 +60,7 @@ test("the column composer sends longer text through the card agent", async ({ pa
 
   await page.goto(`/b/${board.id}`);
   const todo = column(page, "To do");
-  await todo.getByRole("button", { name: "Add a card", exact: true }).click();
+  await todo.getByRole("button", { name: "Add a task", exact: true }).click();
   const composer = todo.getByLabel("Card title", { exact: true });
   await composer.fill(`${title}\n${detailLine}`);
   await composer.press("Enter");
@@ -87,7 +87,7 @@ test("a long request is attached to the card as brief.md", async ({ page, reques
   await page.goto(`/b/${board.id}`);
   const newCard = await openNewCard(page);
   await newCard.getByLabel("What should the agent do?", { exact: true }).fill(text);
-  await newCard.getByRole("button", { name: "Create card" }).click();
+  await newCard.getByRole("button", { name: "Create task" }).click();
   await expect(newCard).toBeHidden();
 
   const done = column(page, "Done");

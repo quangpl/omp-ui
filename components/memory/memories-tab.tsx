@@ -75,14 +75,17 @@ function MemoryRow({
 }) {
   const when = item.updatedAt ?? item.createdAt;
   return (
-    <li className="animate-card-in" style={{ "--stagger": index % PAGE_SIZE } as React.CSSProperties}>
+    <li
+      className="animate-card-in content-auto [contain-intrinsic-size:auto_4.5rem]"
+      style={{ "--stagger": index % PAGE_SIZE } as React.CSSProperties}
+    >
       <button
         type="button"
         data-memory-row={index}
         aria-current={open ? "true" : undefined}
         onClick={onClick}
         className={cn(
-          "relative grid w-full grid-cols-[minmax(0,1fr)] gap-x-5 gap-y-1 px-4 py-3 text-left transition-colors outline-none",
+          "pressable relative grid min-h-12 w-full grid-cols-[minmax(0,1fr)] gap-x-5 gap-y-1 px-4 py-3 text-left transition-[background-color,scale] outline-none",
           "@3xl:grid-cols-[6.5rem_minmax(0,1fr)_9rem_4rem_6rem] @3xl:items-center",
           "hover:bg-muted/50 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-inset",
           selected && "bg-muted/60",
@@ -164,7 +167,7 @@ function EmptyState({
   action?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-start gap-4 px-6 py-12 sm:px-10">
+    <div className="flex animate-fade-in-soft flex-col items-start gap-4 px-5 py-12 sm:px-10">
       <span className="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-5">
         {icon}
       </span>
@@ -450,7 +453,7 @@ export function MemoriesTab({
               {summary}
             </p>
             {(filtered || layer !== "all") && (
-              <Button variant="ghost" size="sm" className="h-9 shrink-0 md:h-7" onClick={clearFilters}>
+              <Button variant="ghost" size="sm" className="-my-2 h-11 shrink-0 md:my-0 md:h-7" onClick={clearFilters}>
                 Clear filters
               </Button>
             )}
@@ -474,7 +477,22 @@ export function MemoriesTab({
             <ListSkeleton />
           ) : items.length === 0 ? (
             searching ? (
-              <EmptyState icon={<SearchXIcon />} title={`Nothing matches “${debouncedQuery}”`}>
+              <EmptyState
+                icon={<SearchXIcon />}
+                title={`Nothing matches “${debouncedQuery}”`}
+                action={
+                  <Button
+                    variant="outline"
+                    className="h-11 md:h-8"
+                    onClick={() => {
+                      setQuery("");
+                      searchRef.current?.focus();
+                    }}
+                  >
+                    Clear search
+                  </Button>
+                }
+              >
                 Try fewer or different words. Keyword search matches exact terms; semantic search needs an embedding
                 provider (see Stats).
               </EmptyState>
@@ -566,7 +584,11 @@ export function MemoriesTab({
       </div>
 
       <Sheet open={!wide && openItem !== null} onOpenChange={(next) => !next && close()}>
-        <SheetContent side="right" showCloseButton={false} className="w-full gap-0 overflow-y-auto p-0 sm:max-w-lg">
+        <SheetContent
+          side="right"
+          showCloseButton={false}
+          className="w-full gap-0 overflow-y-auto overscroll-contain p-0 scrollbar-subtle sm:max-w-lg"
+        >
           <SheetTitle className="sr-only">{openItem?.title ?? "Memory"}</SheetTitle>
           <SheetDescription className="sr-only">Memory content and metadata</SheetDescription>
           {!wide && detail}

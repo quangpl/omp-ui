@@ -13,10 +13,10 @@ import { cn } from "@/lib/utils";
 const KIND_CLASS: Record<SchedulerLogEntry["kind"], string> = {
   scheduler: "bg-primary/10 text-primary",
   status: "bg-muted text-muted-foreground",
-  text: "bg-sky-500/10 text-sky-700 dark:bg-sky-400/15 dark:text-sky-300",
-  thinking: "bg-violet-500/10 text-violet-700 dark:bg-violet-400/15 dark:text-violet-300",
-  tool: "bg-amber-500/10 text-amber-700 dark:bg-amber-400/15 dark:text-amber-300",
-  agent: "bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-300",
+  text: "bg-foreground/[0.07] text-foreground",
+  thinking: "text-muted-foreground ring-1 ring-border ring-inset",
+  tool: "bg-chart-3/15 text-foreground/80",
+  agent: "bg-success/10 text-success",
   error: "bg-destructive/10 text-destructive",
 };
 
@@ -108,15 +108,28 @@ export function SchedulerLogs({
           disabled={loading}
           onClick={() => void load(true)}
         >
-          <RefreshCw className={cn(loading && "animate-spin")} />
+          <RefreshCw className={cn(loading && "animate-spin motion-reduce:animate-none")} />
           Refresh
         </Button>
       </div>
       {entries === null ? (
-        <Skeleton className="h-64 w-full rounded-xl" aria-label="Loading log" />
+        <div className="overflow-hidden rounded-xl border bg-muted/30" aria-busy="true" aria-label="Loading log">
+          <div className="border-b px-3 py-2">
+            <Skeleton className="h-3.5 w-48 max-w-full" />
+          </div>
+          <div className="space-y-2.5 px-3 py-3">
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 sm:grid-cols-[auto_auto_minmax(0,1fr)]">
+                <Skeleton className="h-3.5 w-14" />
+                <Skeleton className="h-3.5 w-[4.5rem]" />
+                <Skeleton className="col-span-2 h-3.5 sm:col-span-1" style={{ width: `${45 + ((i * 23) % 50)}%` }} />
+              </div>
+            ))}
+          </div>
+        </div>
       ) : entries.length === 0 ? (
-        <div className="rounded-xl border border-dashed px-4 py-10 text-center">
-          <ScrollText className="mx-auto size-6 text-muted-foreground" />
+        <div className="flex animate-fade-in-soft flex-col items-center rounded-xl border border-dashed px-4 py-10 text-center">
+          <ScrollText className="size-6 text-muted-foreground" />
           <p className="mt-2 text-sm font-medium">No log yet</p>
           <p className="mt-1 text-sm text-muted-foreground">
             Lines appear here once the scheduler fires and its cards&apos; agents run.
@@ -129,7 +142,7 @@ export function SchedulerLogs({
             const node = event.currentTarget;
             stickRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 24;
           }}
-          className="max-h-[70dvh] overflow-auto overscroll-contain rounded-xl border bg-muted/30 font-mono text-xs"
+          className="max-h-[70dvh] overflow-auto overscroll-contain rounded-xl border bg-muted/30 font-mono text-xs scrollbar-subtle"
         >
           {groups.map((group) => {
             const run = runsById.get(group.runId);
@@ -146,7 +159,10 @@ export function SchedulerLogs({
                 </h3>
                 <ol className="space-y-0.5 px-3 py-2">
                   {group.entries.map((entry, index) => (
-                    <li key={`${entry.at}-${index}`} className="flex items-start gap-2">
+                    <li
+                      key={`${entry.at}-${index}`}
+                      className="grid grid-cols-[auto_1fr] items-start gap-x-2 gap-y-0.5 sm:grid-cols-[auto_auto_minmax(0,1fr)]"
+                    >
                       <time
                         dateTime={entry.at}
                         title={formatDateTime(entry.at)}
@@ -156,7 +172,7 @@ export function SchedulerLogs({
                       </time>
                       <span
                         className={cn(
-                          "inline-flex h-4 w-[4.5rem] shrink-0 items-center justify-center rounded px-1 text-[10px] font-medium uppercase",
+                          "inline-flex h-4 w-[4.5rem] shrink-0 items-center justify-center justify-self-start rounded px-1 text-[10px] font-medium uppercase",
                           KIND_CLASS[entry.kind],
                         )}
                       >
@@ -164,7 +180,7 @@ export function SchedulerLogs({
                       </span>
                       <span
                         className={cn(
-                          "min-w-0 flex-1 break-words whitespace-pre-wrap",
+                          "col-span-2 min-w-0 break-words whitespace-pre-wrap max-sm:pb-1.5 sm:col-span-1",
                           entry.kind === "error" && "text-destructive",
                         )}
                       >

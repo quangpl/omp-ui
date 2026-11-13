@@ -6,6 +6,7 @@ import { EmptyState, Notice, TemplateLogo } from "@/components/containers/shared
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { ContainerTemplate, TemplateCatalog } from "@/lib/docker-types";
 import { cn } from "@/lib/utils";
 
@@ -48,62 +49,81 @@ export function AppsCatalog({
     );
   }, [templates, query, category, kind]);
 
+  const clearFilters = () => {
+    setQuery("");
+    setCategory(null);
+    setKind("all");
+  };
+
   return (
-    <div className="space-y-3">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+    <div className="@container space-y-3">
+      <div className="flex flex-col gap-2 @xl:flex-row @xl:items-center">
         <div className="relative flex-1">
           <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search apps: postgres, wordpress, grafana…"
-            className="h-11 pl-9 md:h-9"
+            className="h-11 pl-9 text-base md:h-9 md:text-sm"
             aria-label="Search apps"
           />
         </div>
-        <div className="flex gap-1 rounded-lg bg-muted p-1">
-          {(
-            [
-              ["all", "All"],
-              ["container", "Containers"],
-              ["compose", "Stacks"],
-            ] as [KindFilter, string][]
-          ).map(([value, label]) => (
-            <Button
-              key={value}
-              size="sm"
-              variant={kind === value ? "outline" : "ghost"}
-              className={cn("h-9 flex-1 md:h-7", kind !== value && "text-muted-foreground")}
-              onClick={() => setKind(value)}
-              aria-pressed={kind === value}
-            >
-              {label}
-            </Button>
-          ))}
+        <div className="flex min-w-0 gap-2">
+          <div className="scroll-row flex min-w-0 flex-1 gap-1 rounded-lg bg-muted p-1">
+            {(
+              [
+                ["all", "All"],
+                ["container", "Containers"],
+                ["compose", "Stacks"],
+              ] as [KindFilter, string][]
+            ).map(([value, label]) => (
+              <Button
+                key={value}
+                size="sm"
+                variant={kind === value ? "outline" : "ghost"}
+                className={cn("pressable h-9 flex-1 shrink-0 md:h-7", kind !== value && "text-muted-foreground")}
+                onClick={() => setKind(value)}
+                aria-pressed={kind === value}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
+          <Button
+            variant="outline"
+            onClick={onRefresh}
+            disabled={loading}
+            className="pressable h-11 shrink-0 gap-2 md:h-9"
+            title="Reload the remote app catalog"
+          >
+            {loading ? <Loader2Icon className="animate-spin motion-reduce:animate-none" /> : <RefreshCwIcon />}
+            Reload
+          </Button>
         </div>
-        <Button variant="outline" onClick={onRefresh} disabled={loading} className="h-11 gap-2 md:h-9" title="Reload the remote app catalog">
-          {loading ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
-          Reload
-        </Button>
       </div>
 
       {categories.length > 0 && (
-        <div className="flex gap-1.5 overflow-x-auto pb-1">
+        <div className="scroll-row -mx-4 flex gap-1.5 px-4 py-1 sm:-mx-1 sm:px-1" role="group" aria-label="Categories">
           <Button
-            size="xs"
+            size="sm"
             variant={category === null ? "secondary" : "ghost"}
             onClick={() => setCategory(null)}
-            className="shrink-0"
+            aria-pressed={category === null}
+            className="pressable h-11 shrink-0 rounded-full px-3.5 md:h-7"
           >
             All categories
           </Button>
           {categories.map((c) => (
             <Button
               key={c}
-              size="xs"
+              size="sm"
               variant={category === c ? "secondary" : "ghost"}
               onClick={() => setCategory(category === c ? null : c)}
-              className="shrink-0 capitalize"
+              aria-pressed={category === c}
+              className={cn(
+                "pressable h-11 shrink-0 rounded-full px-3.5 capitalize md:h-7",
+                category !== c && "text-muted-foreground",
+              )}
             >
               {c.replace(/-/g, " ")}
             </Button>
@@ -118,40 +138,76 @@ export function AppsCatalog({
 
       {!catalog ? (
         loading && (
-          <p className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2Icon className="size-4 animate-spin" /> Loading the app catalog…
-          </p>
+          <ul
+            className="grid gap-2 @xl:grid-cols-2 @4xl:grid-cols-4"
+            aria-busy="true"
+            aria-label="Loading the app catalog"
+          >
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <li
+                key={i}
+                className={cn(
+                  "flex items-start gap-3 rounded-xl p-3 ring-1 ring-foreground/10",
+                  i < 2 && "@4xl:col-span-2",
+                )}
+              >
+                <Skeleton className="size-9 shrink-0 rounded-lg" />
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-4 w-1/2" />
+                  <Skeleton className="h-3 w-full" />
+                  <Skeleton className="h-3 w-2/3" />
+                </div>
+              </li>
+            ))}
+          </ul>
         )
       ) : visible.length === 0 ? (
-        <EmptyState title="No apps match" />
+        <EmptyState
+          title="No apps match"
+          icon={<SearchIcon />}
+          action={
+            <Button variant="outline" className="pressable h-11 md:h-8" onClick={clearFilters}>
+              Clear filters
+            </Button>
+          }
+        />
       ) : (
-        <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-          {visible.map((t) => (
-            <li key={t.id}>
-              <button
-                type="button"
-                onClick={() => onLaunch(t)}
-                className="flex h-full w-full items-start gap-3 rounded-xl bg-card p-3 text-left ring-1 ring-foreground/10 outline-none transition-colors hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50"
+        /* Phones: one column of rows. Wide: a 4-track grid where built-in apps take two tracks,
+           so rows alternate between featured pairs and dense community tiles. */
+        <ul className="grid grid-flow-row-dense gap-2 @xl:grid-cols-2 @4xl:grid-cols-4">
+          {visible.map((t, index) => {
+            const featured = t.source === "builtin";
+            return (
+              <li
+                key={t.id}
+                className={cn("animate-card-in", featured && "@4xl:col-span-2")}
+                style={{ "--stagger": index } as React.CSSProperties}
               >
-                <TemplateLogo src={t.logo} />
-                <div className="min-w-0 flex-1 space-y-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-sm font-medium">{t.title}</span>
-                    {t.kind === "compose" && (
-                      <Badge variant="secondary" className="gap-1 font-normal">
-                        <LayersIcon />
-                        Stack
-                      </Badge>
-                    )}
+                <button
+                  type="button"
+                  onClick={() => onLaunch(t)}
+                  className="pressable flex h-full w-full items-start gap-3 rounded-xl bg-card p-3 text-left ring-1 ring-foreground/10 outline-none transition-colors hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50 active:bg-muted/60"
+                >
+                  <TemplateLogo src={t.logo} className={cn(featured && "@4xl:size-11")} />
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate text-sm font-medium tracking-tight">{t.title}</span>
+                      {t.kind === "compose" && (
+                        <Badge variant="secondary" className="gap-1 font-normal">
+                          <LayersIcon />
+                          Stack
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="line-clamp-2 text-xs text-pretty text-muted-foreground">{t.description}</p>
+                    <p className="truncate font-mono text-[0.65rem] text-muted-foreground/80">
+                      {t.image ?? "docker compose"} · {t.source === "builtin" ? "built-in" : "Portainer catalog"}
+                    </p>
                   </div>
-                  <p className="line-clamp-2 text-xs text-muted-foreground">{t.description}</p>
-                  <p className="truncate font-mono text-[0.65rem] text-muted-foreground/80">
-                    {t.image ?? "docker compose"} · {t.source === "builtin" ? "built-in" : "Portainer catalog"}
-                  </p>
-                </div>
-              </button>
-            </li>
-          ))}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

@@ -10,7 +10,7 @@ import { useComposerAutocomplete } from "@/components/board/composer-autocomplet
 export type QuickCreate = (text: string) => Promise<boolean>;
 
 /**
- * Trello-style "Add a card" composer: Enter adds (and stays open for the next card),
+ * Trello-style "Add a task" composer: Enter adds (and stays open for the next card),
  * Shift+Enter inserts a newline, Esc cancels. The card is created right away; the card agent
  * turns longer text into its title and brief in the background.
  */
@@ -57,7 +57,7 @@ export function InlineComposer({
         onClick={() => setOpen(true)}
       >
         <Plus />
-        Add a card
+        Add a task
       </Button>
     );
   }
@@ -109,7 +109,7 @@ export function InlineComposer({
           disabled={!text.trim() || busy}
           onMouseDown={(event) => event.preventDefault()}
         >
-          Add card
+          Add task
         </Button>
         <Button
           type="button"

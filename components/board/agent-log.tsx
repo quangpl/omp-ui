@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api-client";
 import { SUBAGENT_STATUS_LABELS, parseSubagent } from "@/lib/subagents";
@@ -71,11 +72,11 @@ const MONO_WRAP =
 const RUN_STATUS: Record<RunStatus, { label: string; className: string }> = {
   running: {
     label: "Running",
-    className: "bg-sky-500/10 text-sky-700 dark:bg-sky-400/15 dark:text-sky-300",
+    className: "bg-primary/10 text-primary dark:bg-primary/15",
   },
   succeeded: {
     label: "Succeeded",
-    className: "bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-300",
+    className: "bg-success/10 text-success dark:bg-success/15",
   },
   failed: { label: "Failed", className: "bg-destructive/10 text-destructive dark:bg-destructive/20" },
   aborted: { label: "Stopped", className: "bg-muted text-muted-foreground" },
@@ -158,7 +159,7 @@ function Offset({ at, start }: { at: string; start: string }) {
     <time
       dateTime={at}
       title={formatDateTime(at)}
-      className="shrink-0 text-[11px] text-muted-foreground/80 tabular-nums"
+      className="shrink-0 font-mono text-[11px] text-muted-foreground/80 tabular-nums"
     >
       {formatDuration(new Date(at).getTime() - new Date(start).getTime())}
     </time>
@@ -263,7 +264,7 @@ function ToolActionRow({ action }: { action: ToolAction }) {
           {detail !== undefined && (
             <pre
               className={cn(
-                "max-h-60 overflow-auto rounded-md bg-muted px-2.5 py-1.5 text-xs leading-relaxed whitespace-pre-wrap wrap-anywhere",
+                "scrollbar-subtle max-h-60 overflow-auto overscroll-contain rounded-md bg-muted px-2.5 py-1.5 text-xs leading-relaxed whitespace-pre-wrap wrap-anywhere",
                 codeDetail ? "font-mono" : "font-sans",
               )}
             >
@@ -271,7 +272,7 @@ function ToolActionRow({ action }: { action: ToolAction }) {
             </pre>
           )}
           {failed && action.error !== "" && (
-            <pre className="max-h-60 overflow-auto rounded-md bg-destructive/10 px-2.5 py-1.5 font-mono text-xs leading-relaxed whitespace-pre-wrap wrap-anywhere text-destructive dark:bg-destructive/20">
+            <pre className="scrollbar-subtle max-h-60 overflow-auto overscroll-contain rounded-md bg-destructive/10 px-2.5 py-1.5 font-mono text-xs leading-relaxed whitespace-pre-wrap wrap-anywhere text-destructive dark:bg-destructive/20">
               {action.error}
             </pre>
           )}
@@ -298,10 +299,10 @@ function SubagentChanges({ runId, changes }: { runId: string; changes: SubagentC
             card?.scrollIntoView({ block: "nearest", behavior: "smooth" });
             card?.querySelector("details")?.setAttribute("open", "");
           }}
-          className="inline-flex min-h-7 items-center gap-1 rounded-full border bg-background px-2 font-mono text-[11px] text-foreground/80 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
+          className="inline-flex min-h-7 items-center gap-1 rounded-full border bg-background px-2 font-mono text-[11px] text-foreground/80 outline-none pressable hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-9 max-md:px-2.5"
         >
           {spawned ? (
-            <span className="size-1.5 rounded-full bg-sky-500" />
+            <span className="size-1.5 rounded-full bg-primary" />
           ) : (
             <SubagentStatusIcon status={agent.status} className="size-3" />
           )}
@@ -435,30 +436,39 @@ function TimelineEntry({
   return (
     <li className="relative" data-testid="log-step">
       <RailDot className={cn(lead?.kind === "text" && "bg-primary")} />
-      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-        <HeadingIcon className="size-3.5" />
-        {heading.label}
-        {at && (
-          <>
-            <span aria-hidden className="text-muted-foreground/50">
-              ·
-            </span>
-            <Offset at={at} start={start} />
-          </>
+      {/* Off-screen steps skip rendering in long logs; the side padding keeps rows' hover fills and
+          focus rings inside the containment box (the rail dot stays outside it). */}
+      <div className="content-auto -mx-2 px-2">
+        <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+          <HeadingIcon className="size-3.5" />
+          {heading.label}
+          {at && (
+            <>
+              <span aria-hidden className="text-muted-foreground/50">
+                ·
+              </span>
+              <Offset at={at} start={start} />
+            </>
+          )}
+        </div>
+        {lead?.kind === "text" ? (
+          <div
+            className={cn(
+              "rounded-lg border px-3 py-2 [overflow-wrap:anywhere]",
+              final ? "border-primary/30 bg-primary/5" : "bg-muted/30",
+            )}
+          >
+            <RichText text={lead.text} className="text-sm leading-relaxed" />
+          </div>
+        ) : (
+          lead && <ClampText text={lead.text} className="text-sm leading-relaxed text-foreground/85" />
+        )}
+        {actions.length > 0 && (
+          <div className={cn(lead && "mt-1.5", "-mx-1.5")}>
+            <StepActions runId={runId} actions={actions} live={live} />
+          </div>
         )}
       </div>
-      {lead?.kind === "text" ? (
-        <div className={cn("rounded-lg border px-3 py-2", final ? "border-primary/30 bg-primary/5" : "bg-muted/30")}>
-          <RichText text={lead.text} className="text-sm leading-relaxed" />
-        </div>
-      ) : (
-        lead && <ClampText text={lead.text} className="text-sm leading-relaxed text-foreground/85" />
-      )}
-      {actions.length > 0 && (
-        <div className={cn(lead && "mt-1.5", "-mx-1.5")}>
-          <StepActions runId={runId} actions={actions} live={live} />
-        </div>
-      )}
     </li>
   );
 }
@@ -495,7 +505,7 @@ function RunOverview({ events, agents }: { events: RunEvent[]; agents: number })
           key={label}
           title={title}
           className={cn(
-            "inline-flex h-6 items-center gap-1 rounded-md bg-muted px-2 text-[11px] text-muted-foreground tabular-nums",
+            "inline-flex h-6 items-center gap-1 rounded-md bg-muted px-2 font-mono text-[11px] text-muted-foreground tabular-nums",
             danger && "bg-destructive/10 text-destructive dark:bg-destructive/20",
           )}
         >
@@ -516,18 +526,41 @@ interface LiveOutput {
 const Caret = () => (
   <span
     aria-hidden
-    className="ml-0.5 inline-block h-[1.1em] w-1.5 translate-y-[0.2em] animate-pulse rounded-[1px] bg-foreground/50"
+    className="ml-0.5 inline-block h-[1.1em] w-1.5 translate-y-[0.2em] rounded-[1px] bg-foreground/50 motion-safe:animate-pulse"
   />
 );
+
+/** Pulsing status dot: a solid dot with a breathing halo (transform/opacity only). */
+function LiveDot({ className }: { className?: string }) {
+  return (
+    <span aria-hidden className={cn("relative inline-flex size-2 shrink-0", className)}>
+      <span className="absolute inset-0 rounded-full bg-primary animate-breathe" />
+      <span className="relative inline-flex size-full rounded-full bg-primary" />
+    </span>
+  );
+}
 
 function WorkingIndicator() {
   return (
     <div className="flex items-center gap-2 py-1 text-xs text-muted-foreground">
-      <span className="relative flex size-2">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-sky-500 opacity-60" />
-        <span className="relative inline-flex size-2 rounded-full bg-sky-500" />
-      </span>
+      <LiveDot />
       Working…
+    </div>
+  );
+}
+
+/** Placeholder shaped like the steps timeline while a run's events load. */
+function LogSkeleton() {
+  return (
+    <div aria-busy className="mt-1 ml-[5px] flex flex-col gap-5 border-l pl-4">
+      <span className="sr-only">Loading log…</span>
+      {[0.66, 0.9, 0.5].map((width, i) => (
+        <div key={i} className="flex flex-col gap-2">
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-4" style={{ width: `${width * 100}%` }} />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      ))}
     </div>
   );
 }
@@ -548,15 +581,12 @@ function LiveBlock({ live }: { live: LiveOutput }) {
       </div>
     );
   }
+  // Streamed text renders as markdown so it doesn't reflow when the persisted message replaces it.
   return (
-    <p
-      data-testid="live-output"
-      aria-live="polite"
-      className="text-sm leading-relaxed whitespace-pre-wrap break-words"
-    >
-      {live.text}
+    <div data-testid="live-output" aria-live="polite" className="text-sm leading-relaxed">
+      <RichText text={live.text} />
       <Caret />
-    </p>
+    </div>
   );
 }
 
@@ -769,7 +799,7 @@ export function AgentLog({
                     aria-pressed={selected}
                     onClick={() => setPickedRunId(run.id === sortedRuns[0].id ? null : run.id)}
                     className={cn(
-                      "flex min-h-11 w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-sm transition-[background-color,border-color,transform] outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.99] md:min-h-10",
+                      "flex min-h-11 w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-sm outline-none pressable focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-10",
                       selected ? "border-foreground/25 bg-muted" : "hover:bg-muted/50",
                     )}
                   >
@@ -781,7 +811,7 @@ export function AgentLog({
                     >
                       {formatRelative(run.startedAt, now)}
                     </time>
-                    <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+                    <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
                       {formatDuration(end - new Date(run.startedAt).getTime())}
                     </span>
                   </button>
@@ -793,7 +823,7 @@ export function AgentLog({
             <Button
               variant="ghost"
               size="sm"
-              className="self-start max-md:h-11"
+              className="self-start pressable max-md:h-11"
               onClick={() => setShowAllRuns((value) => !value)}
             >
               {showAllRuns ? "Show fewer runs" : `Show all ${sortedRuns.length} runs`}
@@ -809,7 +839,7 @@ export function AgentLog({
             <span title={formatDateTime(selectedRun.startedAt)}>
               Started {formatRelative(selectedRun.startedAt, now)}
             </span>
-            <span className="tabular-nums">
+            <span className="font-mono tabular-nums">
               ·{" "}
               {formatDuration(
                 (selectedRun.endedAt ? new Date(selectedRun.endedAt).getTime() : now) -
@@ -822,17 +852,15 @@ export function AgentLog({
                 className={cn(
                   "inline-flex h-6 items-center gap-1.5 rounded-full px-2 text-[11px] font-medium",
                   following
-                    ? "bg-sky-500/10 text-sky-700 dark:bg-sky-400/15 dark:text-sky-300"
+                    ? "bg-primary/10 text-primary dark:bg-primary/15"
                     : "bg-muted text-muted-foreground",
                 )}
               >
-                <span
-                  aria-hidden
-                  className={cn(
-                    "size-1.5 rounded-full",
-                    following ? "bg-sky-500 motion-safe:animate-pulse" : "bg-muted-foreground/60",
-                  )}
-                />
+                {following ? (
+                  <LiveDot className="size-1.5" />
+                ) : (
+                  <span aria-hidden className="size-1.5 rounded-full bg-muted-foreground/60" />
+                )}
                 {following ? "Live" : "Paused"}
               </span>
             )}
@@ -846,7 +874,7 @@ export function AgentLog({
                   title="Wrap long lines of tool calls, errors and the prompt"
                   onClick={() => setWrap(!wrap)}
                   className={cn(
-                    "h-8 gap-1.5 px-2 text-xs text-muted-foreground max-md:h-11 max-md:px-3",
+                    "h-8 gap-1.5 px-2 text-xs text-muted-foreground pressable max-md:h-11 max-md:px-3",
                     wrap && "bg-accent text-foreground",
                   )}
                 >
@@ -869,7 +897,7 @@ export function AgentLog({
                     title={title}
                     onClick={() => setView(value)}
                     className={cn(
-                      "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium outline-none focus-visible:ring-3 focus-visible:ring-ring/50 max-md:h-10 max-md:px-3",
+                      "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium outline-none pressable focus-visible:ring-3 focus-visible:ring-ring/50 max-md:h-10 max-md:px-3",
                       view === value
                         ? "bg-background text-foreground shadow-sm"
                         : "text-muted-foreground hover:text-foreground",
@@ -891,7 +919,13 @@ export function AgentLog({
                 <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
                 Prompt
               </summary>
-              <pre className={cn("max-h-72 overflow-auto border-t px-3 py-2 font-mono leading-relaxed", MONO_WRAP, "break-words")}>
+              <pre
+                className={cn(
+                  "scrollbar-subtle max-h-72 overflow-auto overscroll-contain border-t px-3 py-2 font-mono leading-relaxed",
+                  MONO_WRAP,
+                  "break-words",
+                )}
+              >
                 {selectedRun.prompt}
               </pre>
             </details>
@@ -903,10 +937,7 @@ export function AgentLog({
             <h3 className="-mb-1 text-xs font-medium text-muted-foreground">Timeline</h3>
           )}
           {loadedRunId !== runId && events.length === 0 ? (
-            <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-              <LoaderCircle className="size-4 animate-spin" />
-              Loading log…
-            </div>
+            <LogSkeleton />
           ) : events.length === 0 && !running ? (
             <p className="py-4 text-sm text-muted-foreground">No output recorded for this run.</p>
           ) : view === "steps" ? (
@@ -923,7 +954,7 @@ export function AgentLog({
               ))}
               {running && (
                 <li className="relative">
-                  <RailDot className="bg-sky-500 motion-safe:animate-pulse" />
+                  <LiveDot className="absolute top-[3px] -left-[21.5px] size-2.5" />
                   {live ? <LiveBlock live={live} /> : <WorkingIndicator />}
                 </li>
               )}
@@ -931,10 +962,16 @@ export function AgentLog({
           ) : (
             <div
               data-vaul-no-drag
-              className="flex min-w-0 flex-col gap-2.5 group-data-[wrap=false]/log:overflow-x-auto group-data-[wrap=false]/log:overscroll-x-contain group-data-[wrap=false]/log:pb-2"
+              className="flex min-w-0 flex-col gap-2.5 group-data-[wrap=false]/log:scroll-row group-data-[wrap=false]/log:pb-2"
             >
               {events.map((event) => (
-                <RawEventLine key={event.seq} event={event} />
+                <div
+                  key={event.seq}
+                  // Wrapped lines only: containment would clip unwrapped lines that scroll sideways.
+                  className="group-data-[wrap=true]/log:content-auto group-data-[wrap=true]/log:[contain-intrinsic-size:auto_24px]"
+                >
+                  <RawEventLine event={event} />
+                </div>
               ))}
               {running && (live ? <LiveBlock live={live} /> : <WorkingIndicator />)}
             </div>
@@ -948,7 +985,7 @@ export function AgentLog({
           <Button
             size="sm"
             variant="secondary"
-            className="pointer-events-auto rounded-full shadow-md max-md:h-11 max-md:px-4"
+            className="pointer-events-auto rounded-full shadow-diffuse pressable max-md:h-11 max-md:px-4"
             onClick={() => {
               followRef.current = true;
               setFollowing(true);

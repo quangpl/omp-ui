@@ -39,9 +39,11 @@ import {
   type SystemId,
 } from "@/components/visualize/agent-map";
 import { workerIdentity } from "@/components/visualize/game";
+import { agentVitals, moodTone, subagentVitals } from "@/components/visualize/mood";
+import { type AgentRole, ROLE_INFO, roleOf } from "@/components/visualize/roles";
 import type { LiveAgent } from "@/components/visualize/use-live-agents";
-import { WorkerAvatar, type WorkerMood } from "@/components/visualize/worker-avatar";
-import type { Dashboard } from "@/lib/types";
+import { ManaBar, MOOD_LABEL, WorkerAvatar, type WorkerMood } from "@/components/visualize/worker-avatar";
+import type { ContextUsage, Dashboard } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** Workers drawn per room; the rest fold into "+N". */
@@ -56,6 +58,9 @@ const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
 
 /** Before the first live event of a run arrives. */
 const STARTING: Activity = { icon: "status", label: "Starting" };
+
+/** Hue of the robots in the legend: one colour, so only the silhouette and face differ. */
+const LEGEND_HUE = 235;
 
 /**
  * Floor plan. Phones: 2 columns, rooms stacked. md: intake and rework side by side, the eight
@@ -219,12 +224,17 @@ interface TokenView {
   name: string;
   caption: ReactNode;
   mood: WorkerMood;
+  role: AgentRole;
+  /** Draws the "!" help bubble: the worker needs the user. */
+  help?: boolean;
+  /** Context window left (0..1, null unknown); undefined draws no mana bar. */
+  mana?: number | null;
   hue: number;
   /** Accessible name of the link. */
   label: string;
   details: ReactNode;
   small?: boolean;
-  tone?: "error";
+  tone?: "error" | "strain";
 }
 
 /** A worker standing in a room: robot, name tag and what it is doing; hover for the details. */
@@ -244,13 +254,24 @@ function Token({ id, origin, view }: { id: string; origin?: string; view: TokenV
               )}
             >
               <span data-waddle className="block origin-bottom">
-                <WorkerAvatar hue={view.hue} mood={view.mood} className={view.small ? "size-8" : "size-11"} />
+                <WorkerAvatar
+                  hue={view.hue}
+                  mood={view.mood}
+                  role={view.role}
+                  help={view.help}
+                  className={view.small ? "size-8" : "size-11"}
+                />
               </span>
+              {view.mana !== undefined && <ManaBar value={view.mana} className={view.small ? "w-7" : "w-9"} />}
               <span className="max-w-full truncate font-mono text-[11px] leading-tight font-medium">{view.name}</span>
               <span
                 className={cn(
                   "max-w-full truncate text-[10px] leading-tight",
-                  view.tone === "error" ? "text-destructive" : "text-muted-foreground",
+                  view.tone === "error"
+                    ? "text-destructive"
+                    : view.tone === "strain"
+                      ? "text-signal-ink"
+                      : "text-muted-foreground",
                 )}
               >
                 {view.caption}
@@ -283,6 +304,7 @@ function Details({ title, lines }: { title: string; lines: (ReactNode | null | f
 function viewOf(
   worker: FloorWorker,
   live: Record<string, LiveAgent>,
+  contexts: ReadonlyMap<string, ContextUsage | null>,
   links: Map<string, CardLink[]>,
   titleOf: TitleOf,
   now: number,
@@ -297,21 +319,27 @@ function viewOf(
       const busy = Object.values(agent?.helpers ?? {}).filter(
         (s) => s.status === "running" || s.status === "pending",
       ).length;
-      const broken = activity.icon === "error";
+      const vitals = agentVitals(agent, now, contexts.get(entry.taskId));
       return {
         href: cardHref({ boardId: entry.boardId, id: entry.taskId }),
         name,
         caption: activity.label,
-        mood: broken ? "error" : "working",
+        mood: vitals.mood,
+        role: "lead",
+        help: vitals.help !== null,
+        mana: vitals.mana,
         hue,
-        tone: broken ? "error" : undefined,
-        label: `${name}: ${activity.label}, on ${entry.title} in ${entry.boardName}`,
+        tone: moodTone(vitals.mood),
+        label: `${name}, ${MOOD_LABEL[vitals.mood].toLowerCase()}: ${activity.label}, on ${entry.title} in ${entry.boardName}`,
         details: (
           <Details
             title={entry.title}
             lines={[
-              `${name} · ${entry.boardName}${Number.isNaN(started) ? "" : ` · ${formatDuration(now - started)} on this run`}`,
+              `${name} · ${ROLE_INFO.lead.label} · ${entry.boardName}${Number.isNaN(started) ? "" : ` · ${formatDuration(now - started)} on this run`}`,
               `${activity.label}${activity.detail ? `: ${activity.detail}` : ""}`,
+              vitals.feeling,
+              ...vitals.notes,
+              vitals.help && `Needs help: ${vitals.help.text}`,
               busy > 0 && `${plural(busy, "subagent")} working`,
               ...(links.get(entry.taskId) ?? []).map((link) => linkSentence(link, titleOf)),
             ]}
@@ -323,18 +351,34 @@ function viewOf(
       const { entry, subagent } = worker;
       const parent = workerIdentity(entry.taskId).name;
       const task = subagent.description ?? subagent.agent;
+      const parentWindow = contexts.get(entry.taskId)?.contextWindow || live[entry.taskId]?.context?.contextWindow;
+      const vitals = subagentVitals(subagent, now, parentWindow);
+      const role = roleOf(subagent.agent);
+      const info = ROLE_INFO[role];
       return {
         href: cardHref({ boardId: entry.boardId, id: entry.taskId }),
         name: subagent.agent,
         caption: `for ${parent}`,
-        mood: subagent.status === "pending" ? "waiting" : "working",
+        mood: vitals.mood,
+        role,
+        help: vitals.help !== null,
+        mana: vitals.mana,
         hue: workerIdentity(`${entry.taskId}:${subagent.id}`).hue,
         small: true,
-        label: `${parent}'s ${subagent.agent} subagent${subagent.currentTool ? `, using ${subagent.currentTool}` : ""}`,
+        tone: moodTone(vitals.mood),
+        label: `${parent}'s ${subagent.agent} subagent (${info.label}), ${MOOD_LABEL[vitals.mood].toLowerCase()}${subagent.currentTool ? `, using ${subagent.currentTool}` : ""}`,
         details: (
           <Details
-            title={`${parent}'s subagent: ${subagent.agent}`}
-            lines={[task !== subagent.agent && task, subagent.currentTool && `Using ${subagent.currentTool}`, entry.title]}
+            title={`${parent}'s ${info.label.toLowerCase()}: ${subagent.agent}`}
+            lines={[
+              info.description,
+              task !== subagent.agent && task,
+              subagent.currentTool && `Using ${subagent.currentTool}`,
+              vitals.feeling,
+              ...vitals.notes,
+              vitals.help && `Needs help: ${vitals.help.text}`,
+              entry.title,
+            ]}
           />
         ),
       };
@@ -357,6 +401,7 @@ function viewOf(
           `#${position} in line`
         ),
         mood: "waiting",
+        role: "lead",
         hue,
         label: `${name}, #${position} in line: ${entry.title} in ${entry.boardName}${blocked ? `; ${blocked}` : ""}`,
         details: (
@@ -384,9 +429,12 @@ function viewOf(
         name,
         caption: failed ? "Failed" : "Stalled",
         mood: failed ? "error" : "sleeping",
+        role: "lead",
+        // Failed and stalled cards both wait on the user.
+        help: true,
         hue,
         tone: failed ? "error" : undefined,
-        label: `${name}, ${failed ? "failed" : "stalled"}: ${card.title} in ${card.boardName}`,
+        label: `${name}, ${failed ? "failed" : "stalled"}, needs help: ${card.title} in ${card.boardName}`,
         details: <Details title={card.title} lines={[`${name} · ${card.boardName}`, error]} />,
       };
     }
@@ -399,6 +447,7 @@ function viewOf(
         name,
         caption: when,
         mood: "happy",
+        role: "lead",
         hue,
         label: `${name} finished ${card.title} in ${card.boardName}, ${when}`,
         details: <Details title={card.title} lines={[`${name} · ${card.boardName}`, `Finished ${when}`]} />,
@@ -519,6 +568,10 @@ export function FactoryFloor({
     }
     return map;
   }, [queue, live, now]);
+  const contexts = useMemo(
+    () => new Map(dashboard.live.map((agent) => [agent.taskId, agent.context])),
+    [dashboard.live],
+  );
 
   // Runs after every token's layout effect: the first paint has been measured, walks may start.
   useLayoutEffect(() => {
@@ -565,13 +618,71 @@ export function FactoryFloor({
                   key={worker.id}
                   id={worker.id}
                   origin={worker.kind === "subagent" ? `card:${worker.entry.taskId}` : undefined}
-                  view={viewOf(worker, live, linksByTask, titleOf, now)}
+                  view={viewOf(worker, live, contexts, linksByTask, titleOf, now)}
                 />
               )}
             />
           ))}
         </div>
       </FloorContext.Provider>
+      <FloorLegend />
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Legend
+
+/** "Who's who": what each robot silhouette, face and the mana bar mean. Collapsed by default. */
+function FloorLegend() {
+  const roles = Object.entries(ROLE_INFO) as [AgentRole, (typeof ROLE_INFO)[AgentRole]][];
+  const moods = Object.entries(MOOD_LABEL) as [WorkerMood, string][];
+  return (
+    <details className="mt-3 text-xs text-muted-foreground">
+      <summary
+        className={cn(
+          "w-fit cursor-pointer rounded-[3px] font-mono transition-colors select-none hover:text-foreground",
+          FOCUS_RING,
+        )}
+      >
+        Who&apos;s who
+      </summary>
+      <div className="mt-3 grid gap-x-8 gap-y-4 lg:grid-cols-2">
+        <div>
+          <p className="mb-2 font-medium text-foreground">Roles</p>
+          <ul className="grid gap-2 sm:grid-cols-2">
+            {roles.map(([role, info]) => (
+              <li key={role} className="flex min-w-0 items-start gap-2">
+                <WorkerAvatar hue={LEGEND_HUE} mood="working" role={role} animated={false} className="size-7 shrink-0" />
+                <p className="min-w-0 leading-snug">
+                  <span className="font-medium text-foreground">{info.label}</span> {info.description}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <p className="mb-2 font-medium text-foreground">Moods</p>
+          <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {moods.map(([mood, label]) => (
+              <li key={mood} className="flex min-w-0 items-center gap-2">
+                <WorkerAvatar hue={LEGEND_HUE} mood={mood} animated={false} className="size-7 shrink-0" />
+                <span className="min-w-0 truncate">{label}</span>
+              </li>
+            ))}
+            <li className="flex min-w-0 items-center gap-2">
+              <WorkerAvatar hue={LEGEND_HUE} mood="working" help animated={false} className="size-7 shrink-0" />
+              <span className="min-w-0 truncate">Needs you: open the card</span>
+            </li>
+          </ul>
+          <p className="mt-3 flex items-center gap-2">
+            <ManaBar value={0.6} className="w-9 shrink-0" />
+            <span className="min-w-0">
+              Mana: how much of the agent&apos;s context window is left. It drains as the run goes on.
+            </span>
+          </p>
+        </div>
+      </div>
+    </details>
   );
 }

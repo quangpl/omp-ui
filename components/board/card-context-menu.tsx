@@ -51,6 +51,12 @@ function suppressTouchLongPress(event: ReactPointerEvent) {
   if (event.pointerType === "touch") event.preventDefault();
 }
 
+/**
+ * Touch long-press never opens these menus, but a touch-first device with a keyboard or a stylus
+ * still can: give items a thumb-sized row there; mouse users keep the dense menu.
+ */
+const MENU_CONTENT = "w-60 pointer-coarse:**:data-[slot=context-menu-item]:min-h-11";
+
 async function copy(text: string, what: string) {
   try {
     await navigator.clipboard.writeText(text);
@@ -64,7 +70,7 @@ function NewCardItems({ actions }: { actions: BoardMenuActions }) {
   return (
     <ContextMenuItem onSelect={() => actions.newCard()}>
       <Plus />
-      New card…
+      New task…
       <ContextMenuShortcut>N</ContextMenuShortcut>
     </ContextMenuItem>
   );
@@ -72,7 +78,7 @@ function NewCardItems({ actions }: { actions: BoardMenuActions }) {
 
 /**
  * Right-click menu for one card: open, quick actions (start/resume/retry/stop/revert/push),
- * duplicate, copy, delete, plus "New card". The card's column follows its agent, so there is no
+ * duplicate, copy, delete, plus "New task". The card's column follows its agent, so there is no
  * "Move to".
  */
 export function CardContextMenu({
@@ -93,7 +99,7 @@ export function CardContextMenu({
       <ContextMenuTrigger asChild onPointerDown={suppressTouchLongPress}>
         {children}
       </ContextMenuTrigger>
-      <ContextMenuContent className="w-60">
+      <ContextMenuContent className={MENU_CONTENT}>
         <ContextMenuLabel className="flex min-w-0 flex-col gap-0.5">
           <span className="truncate" title={task.title}>
             {task.title}
@@ -157,7 +163,7 @@ export function BoardContextMenu({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-      <ContextMenuContent className="w-60">
+      <ContextMenuContent className={MENU_CONTENT}>
         <NewCardItems actions={actions} />
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={actions.refresh}>

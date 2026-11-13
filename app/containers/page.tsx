@@ -145,13 +145,13 @@ function ProblemPanel({
       </div>
       <div className="flex items-center gap-3 border-t bg-muted/30 px-5 py-3 sm:px-8">
         <span className="relative flex size-2 shrink-0" aria-hidden="true">
-          <span className="absolute inset-0 animate-ping rounded-full bg-amber-500/60 motion-reduce:hidden" />
+          <span className="absolute inset-0 animate-breathe rounded-full bg-amber-500" />
           <span className="relative size-2 rounded-full bg-amber-500" />
         </span>
         <span className="min-w-0 flex-1 text-xs text-muted-foreground">Retrying every few seconds</span>
         <Button
           variant="outline"
-          className="h-11 gap-1.5 active:scale-[0.98] md:h-8"
+          className="pressable h-11 gap-1.5 md:h-8"
           onClick={onRetry}
           disabled={retrying}
         >
@@ -486,17 +486,21 @@ export default function ContainersPage() {
           <Button
             variant="ghost"
             size="icon"
-            className="size-11 rounded-full md:size-9"
+            className="pressable-icon size-11 rounded-full md:size-9"
             onClick={() => void manualRefresh()}
             aria-label="Refresh"
             title="Refresh"
           >
-            {refreshing ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon className="size-4.5 md:size-4" />}
+            {refreshing ? (
+              <Loader2Icon className="size-4.5 animate-spin motion-reduce:animate-none md:size-4" />
+            ) : (
+              <RefreshCwIcon className="size-4.5 md:size-4" />
+            )}
           </Button>
         }
       />
-      <main className="px-safe pb-safe flex-1">
-        <div className="mx-auto w-full max-w-[1400px] space-y-8 px-4 py-6 sm:px-6 md:py-8 lg:px-8">
+      <main className="px-safe pb-safe flex-1 overflow-x-clip">
+        <div className="animate-page-in mx-auto w-full max-w-[1400px] space-y-8 px-4 py-6 sm:px-6 md:py-8 lg:px-8">
           {!overview ? (
             loadError ? (
               <ProblemPanel
@@ -554,6 +558,7 @@ export default function ContainersPage() {
                       onAction={(c, action) => void containerAction(c, action)}
                       onLogs={(c) => setLogsTarget({ kind: "container", id: c.id, name: c.name })}
                       onRemove={removeContainer}
+                      onLaunch={() => launcherRef.current?.focus()}
                     />
                     <ComposeList
                       projects={overview.composeProjects}
@@ -653,7 +658,7 @@ export default function ContainersPage() {
                   actions={
                     <Button
                       variant="outline"
-                      className="h-11 gap-1.5 active:scale-[0.98] md:h-8"
+                      className="pressable h-11 gap-1.5 md:h-8"
                       onClick={() => setCatalogOpen((open) => !open)}
                       aria-expanded={catalogOpen}
                       aria-controls="app-catalog"

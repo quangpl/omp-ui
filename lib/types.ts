@@ -196,6 +196,19 @@ export interface SubagentSnapshot {
   /** Final report (truncated). */
   output?: string;
   error?: string;
+  /** Tokens in its context window as of its latest model response (its "mana" used). */
+  contextTokens?: number;
+}
+
+/**
+ * How full an agent's context window is: the agent's "mana" on the Visualize page is what is
+ * left, `1 - tokens / contextWindow`.
+ */
+export interface ContextUsage {
+  /** Tokens in the context right now. */
+  tokens: number;
+  /** Model's context window in tokens; 0 when unknown. */
+  contextWindow: number;
 }
 
 export interface RunEvent {
@@ -211,14 +224,14 @@ export interface RunEvent {
 /**
  * A recurring card: on every match of its cron expression (in its time zone) the scheduler
  * creates a regular card on its board from `prompt`, through the same free-text flow as the
- * "New card" form (card writer drafts the title and brief, then the card's agent starts).
+ * "New task" form (card writer drafts the title and brief, then the card's agent starts).
  */
 export interface Scheduler {
   id: string;
   boardId: string;
   /** Display name; defaults to the prompt's first line. */
   name: string;
-  /** Free text each created card is made from (same as the "New card" form's text). */
+  /** Free text each created card is made from (same as the "New task" form's text). */
   prompt: string;
   /** 5-field cron expression or macro (`@hourly`, `@daily`, …); see lib/cron.ts. */
   cron: string;
@@ -325,7 +338,21 @@ export interface AppSettings {
   cleanupTargets: ScheduledCleanupId[];
   /** Show a browser notification when a card on the open board finishes (moves to Done). Permission is per browser; the UI asks for it when turning this on. */
   taskCompletionNotifications: boolean;
+  /** Optional sections shown in the navigation menu (sidebar, phone tabs, home "Go to"); default: all. */
+  visibleDashboardMenus: DashboardMenuId[];
 }
+
+/** Navigation menu sections the user may hide (Settings → Menu); each one's page is `/<id>`. */
+export const DASHBOARD_MENU_IDS = [
+  "visualize",
+  "containers",
+  "terminal",
+  "memory",
+  "credentials",
+  "stats",
+  "settings",
+] as const;
+export type DashboardMenuId = (typeof DASHBOARD_MENU_IDS)[number];
 
 /**
  * Browser control for agents: `off` disables omp's browser; `headless` (default) runs an
@@ -368,6 +395,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Worktrees of shipped cards may still be wanted; they are opt-in.
   cleanupTargets: SCHEDULED_CLEANUP_IDS.filter((id) => id !== "shipped-workspaces"),
   taskCompletionNotifications: false,
+  visibleDashboardMenus: [...DASHBOARD_MENU_IDS],
 };
 
 /** An installed omp skill (from `omp skill list`): pickable with "/" when composing a card. */
@@ -414,6 +442,11 @@ export type ServerEvent =
   | { type: "task.activity"; taskId: string; boardId: string; text: string }
   /** Live, NOT persisted: subagent progress between its persisted `agent` events. */
   | { type: "run.agent"; runId: string; taskId: string; boardId: string; agent: SubagentSnapshot }
+  /**
+   * Live, NOT persisted: how full the run's context window is, after each assistant message and
+   * context compaction. The latest value is also served as `DashboardLiveAgent.context`.
+   */
+  | { type: "run.context"; runId: string; taskId: string; boardId: string; context: ContextUsage }
   /**
    * Live, NOT persisted: streaming assistant output while a message is being generated.
    * `text` is the accumulated content of the current message so far (not just the delta), so a
@@ -589,6 +622,8 @@ export interface DashboardLiveAgent {
   /** Latest thing the agent did (tool call, status or first line of its text). */
   activity: string | null;
   activityAt: string | null;
+  /** Context window fill of the current run, when the agent reported it; null otherwise. */
+  context: ContextUsage | null;
 }
 
 /** Agent runs and shipped cards in a time window. */

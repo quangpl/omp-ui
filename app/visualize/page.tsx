@@ -34,7 +34,7 @@ const BLOCK = "rounded-[3px]";
 /** Placeholder shaped like the control room, the factory floor and the worksites. */
 function LoadingSkeleton() {
   return (
-    <div className="grid gap-12 md:gap-16" aria-busy="true" aria-label="Loading">
+    <div className="grid gap-10 md:gap-16" aria-busy="true" aria-label="Loading">
       <div className="grid gap-10 lg:grid-cols-12 lg:gap-12">
         <div className="grid content-start gap-8 lg:col-span-7">
           <div className="flex flex-wrap items-end gap-x-10 gap-y-6">
@@ -73,12 +73,12 @@ function LoadingSkeleton() {
 function NoProjects() {
   return (
     <div className="mx-auto flex max-w-sm flex-col items-center gap-5 py-16 text-center">
-      <WorkerAvatar hue={235} mood="sleeping" animated={false} className="size-16" />
+      <WorkerAvatar hue={168} mood="sleeping" animated={false} className="size-16" />
       <div className="space-y-1">
         <p className="font-medium">No worksites yet</p>
         <p className="text-sm text-muted-foreground">Open a project and start a card. Its worker clocks in here.</p>
       </div>
-      <Button asChild className="h-11 md:h-9">
+      <Button asChild className="pressable h-11 w-full sm:w-auto md:h-9">
         <Link href="/">
           <Building2Icon />
           Go to projects
@@ -148,7 +148,7 @@ export default function VisualizePage() {
             <Button
               variant="ghost"
               size="icon"
-              className="size-11 md:size-9"
+              className="pressable-icon size-11 md:size-9"
               aria-label="Refresh"
               title="Refresh"
               disabled={refreshing || dashboard === null}
@@ -160,15 +160,15 @@ export default function VisualizePage() {
         }
       />
       <main className="px-safe pb-safe flex-1">
-        <div className="mx-auto w-full max-w-[1600px] px-4 py-8 sm:px-6 md:py-10 lg:px-8">
+        <div className="animate-page-in mx-auto w-full max-w-[1600px] px-4 py-6 sm:px-6 md:py-10 lg:px-8">
           {loadError && dashboard === null ? (
-            <div className="mx-auto flex max-w-sm flex-col items-center gap-4 py-16 text-center">
+            <div role="alert" className="mx-auto flex max-w-sm flex-col items-center gap-4 py-16 text-center">
               <TriangleAlertIcon className="size-8 text-destructive" aria-hidden />
               <div className="space-y-1">
                 <p className="font-medium">Couldn't load the floor</p>
                 <p className="text-sm text-muted-foreground">{loadError}</p>
               </div>
-              <Button variant="outline" onClick={() => void load()} className="h-11 md:h-9">
+              <Button variant="outline" onClick={() => void load()} className="h-11 w-full sm:w-auto md:h-9">
                 <RefreshCwIcon />
                 Try again
               </Button>
@@ -178,13 +178,13 @@ export default function VisualizePage() {
           ) : dashboard.boards.length === 0 ? (
             <NoProjects />
           ) : (
-            <div className="grid gap-12 md:gap-16">
+            <div className="grid gap-10 md:gap-16">
               {loadError && (
                 <p
                   role="alert"
                   className="flex items-center gap-2 rounded-[3px] border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
                 >
-                  <TriangleAlertIcon className="size-4 shrink-0" />
+                  <TriangleAlertIcon className="size-4 shrink-0" aria-hidden />
                   <span className="min-w-0 flex-1 truncate">Couldn't refresh: {loadError}</span>
                 </p>
               )}

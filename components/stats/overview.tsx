@@ -57,11 +57,11 @@ function ValueSlot({
   return (
     <div className={cn("flex items-end", slotClassName)}>
       {value != null ? (
-        <AnimatedNumber value={value} format={format} className={className} />
+        <AnimatedNumber value={value} format={format} className={cn("font-mono", className)} />
       ) : loading ? (
         <Skeleton className={cn("h-full", skeletonClassName)} />
       ) : (
-        <Dash className={className} />
+        <Dash className={cn("font-mono", className)} />
       )}
     </div>
   );
