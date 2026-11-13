@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 
 const RESTART_EVENT = "omp-ui:restart-server";
 const POLL_MS = 1000;
-/** The CLI waits up to 10 s for the server to drain (pm2 up to 15 s); `npx -y pm2` may download pm2 first. */
+/** The CLI waits up to 10 s for the server to drain (pm2 up to 15 s, systemd up to 30 s); `npx -y pm2` may download pm2 first. */
 const STOP_TIMEOUT_MS = 5 * 60_000;
 /** Install + build + start; a first build on a slow machine takes a few minutes. */
 const START_TIMEOUT_MS = 15 * 60_000;
@@ -194,7 +194,11 @@ export function RestartServerDialog() {
         name: "failed",
         title: "The server did not come back",
         message:
-          "On the server, check data/restart.log (or run `omp-ui logs`), then start it with `omp-ui restart`.",
+          status?.mode === "systemd"
+            ? "On the server, check `omp-ui systemd logs`, then start it with `omp-ui systemd restart`."
+            : status?.mode === "pm2"
+              ? "On the server, check data/restart.log (or run `omp-ui pm2 logs`), then start it with `omp-ui pm2 restart`."
+              : "On the server, check data/restart.log (or run `omp-ui logs`), then start it with `omp-ui restart`.",
         log: null,
       });
       return;

@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { BRIEF_MAX, DESCRIPTION_MAX, TITLE_MAX } from "@/lib/card-draft";
+import { cronError, isValidTimeZone } from "@/lib/cron";
 import type { Repository } from "@/lib/db/types";
 import { HttpError } from "@/lib/server/http";
 import {
@@ -10,6 +11,7 @@ import {
   type Board,
   type CleanupId,
   type MaintenanceAction,
+  type Scheduler,
   type Task,
   type TaskStatus,
 } from "@/lib/types";
@@ -132,6 +134,49 @@ export async function requireTask(repo: Repository, id: string): Promise<Task> {
   const task = await repo.getTask(id);
   if (!task) throw new HttpError(404, "Task not found");
   return task;
+}
+
+export async function requireScheduler(repo: Repository, id: string): Promise<Scheduler> {
+  const scheduler = await repo.getScheduler(id);
+  if (!scheduler) throw new HttpError(404, "Scheduler not found");
+  return scheduler;
+}
+
+/** Most runs a scheduler may be limited to (`maxRuns`). */
+const MAX_SCHEDULER_RUNS = 100_000;
+
+export function parseSchedulerName(value: unknown): string {
+  return text(value, "name", 1, 100);
+}
+
+/** 5-field cron expression or macro (see lib/cron.ts); runs of whitespace collapse to one space. */
+export function parseCronExpression(value: unknown): string {
+  const cron = text(value, "cron", 1, 200).replace(/\s+/g, " ");
+  const problem = cronError(cron);
+  if (problem) throw new HttpError(400, `cron: ${problem}`);
+  return cron;
+}
+
+/** IANA time zone name such as "Europe/Berlin" or "UTC". */
+export function parseTimeZone(value: unknown): string {
+  const timezone = text(value, "timezone", 1, 100);
+  if (!isValidTimeZone(timezone)) {
+    throw new HttpError(400, `timezone must be an IANA time zone such as "Europe/Berlin" or "UTC": ${timezone}`);
+  }
+  return timezone;
+}
+
+/** Stop after this many runs; null = repeat forever. */
+export function parseMaxRuns(value: unknown): number | null {
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > MAX_SCHEDULER_RUNS) {
+    throw new HttpError(400, `maxRuns must be null or a whole number from 1 to ${MAX_SCHEDULER_RUNS}`);
+  }
+  return value;
+}
+
+export function parseEnabled(value: unknown): boolean {
+  return parseBoolean(value, "enabled");
 }
 
 const MAX_BLOCKED_BY = 50;

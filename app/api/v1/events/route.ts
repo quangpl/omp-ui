@@ -4,7 +4,15 @@ import type { ServerEvent } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Heartbeat cadence. Sent as a named `ping` event (not an SSE comment) so the browser client can
+ * observe liveness: `subscribeEvents` (lib/api-client.ts) reopens the stream after ~2.5 missed
+ * pings, which catches half-open connections (sleep, network switch, proxy idle drops).
+ * Named events never reach `onmessage`, so consumers that only read data frames ignore it.
+ */
 const PING_INTERVAL_MS = 20_000;
+/** `data:` without a value still dispatches the event (empty data), unlike a bare `event:` line. */
+const PING_FRAME = "event: ping\ndata:\n\n";
 
 const g = globalThis as unknown as { __ompUiEventStreams?: Set<() => void> };
 
@@ -33,6 +41,8 @@ function eventBoardId(event: ServerEvent): string | null {
       return event.board.id;
     case "task.updated":
       return event.task.boardId;
+    case "scheduler.updated":
+      return event.scheduler.boardId;
     case "queue.updated":
       return null;
     default:
@@ -64,7 +74,7 @@ export const GET = withApi(({ req }) => {
         }
         send(`data: ${JSON.stringify(event)}\n\n`);
       });
-      const ping = setInterval(() => send(": ping\n\n"), PING_INTERVAL_MS);
+      const ping = setInterval(() => send(PING_FRAME), PING_INTERVAL_MS);
       const onAbort = () => cleanup();
 
       cleanup = () => {

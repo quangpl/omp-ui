@@ -26,6 +26,7 @@ import * as boardsRoute from "@/app/api/v1/boards/route";
 import * as commentRoute from "@/app/api/v1/comments/[id]/route";
 import * as eventsRoute from "@/app/api/v1/events/route";
 import * as browseRoute from "@/app/api/v1/fs/browse/route";
+import * as mkdirRoute from "@/app/api/v1/fs/mkdir/route";
 import * as cloneRoute from "@/app/api/v1/git/clone/route";
 import * as initRoute from "@/app/api/v1/git/init/route";
 import * as repoRoute from "@/app/api/v1/git/repo/route";
@@ -465,6 +466,7 @@ describe("protected endpoints", () => {
     ["POST /tasks/:id/git/push", taskPushRoute, "POST", `/tasks/${id}/git/push`, { id }],
     ["POST /tasks/:id/git/pr", taskPrRoute, "POST", `/tasks/${id}/git/pr`, { id }],
     ["GET /fs/browse", browseRoute, "GET", "/fs/browse"],
+    ["POST /fs/mkdir", mkdirRoute, "POST", "/fs/mkdir"],
     ["POST /git/clone", cloneRoute, "POST", "/git/clone"],
     ["GET /git/repo", repoRoute, "GET", "/git/repo"],
     ["POST /git/init", initRoute, "POST", "/git/init"],

@@ -131,5 +131,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/bin/docker-entrypoint.sh"]
 # bin/supervisor.mjs restarts the server when it crashes or its health check keeps failing (Docker
-# itself only reports "unhealthy"); `restart: unless-stopped` covers the supervisor.
+# itself only reports "unhealthy"); `restart: unless-stopped` covers the supervisor. Tune it with
+# OMP_UI_HEALTH_* (and OMP_UI_STOP_TIMEOUT_MS) in .env; see .env.example.
 CMD ["node", "bin/supervisor.mjs", "node", "server.js"]

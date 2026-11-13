@@ -17,7 +17,12 @@ services:
         # `docker compose build`. Empty = not installed.
         AGENTMEMORY_VERSION: ${AGENTMEMORY_VERSION:-}
     image: omp-ui:latest
+    # Restarts it after a crash, and at boot when the Docker daemon is enabled
+    # (`sudo systemctl enable docker`). Health-based restarts happen inside (bin/supervisor.mjs).
     restart: unless-stopped
+    # Above OMP_UI_STOP_TIMEOUT_MS (8 s) so the supervisor can stop the server and drain its
+    # agents before Docker sends SIGKILL.
+    stop_grace_period: 30s
     ports:
       - "${PORT:-3000}:3000"
     env_file:

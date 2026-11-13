@@ -15,6 +15,7 @@ import type {
   MemoryStatus,
   Dashboard,
   FsBrowseResult,
+  FsEntry,
   GitActionResult,
   GitBranches,
   GitStatus,
@@ -26,6 +27,9 @@ import type {
   RestartStatus,
   Run,
   RunEvent,
+  Scheduler,
+  SchedulerLogEntry,
+  SchedulerRunView,
   ScheduledCleanupId,
   ServerEvent,
   SystemStats,
@@ -62,7 +66,22 @@ import type {
   MemorySessionsResponse,
   MemoryStoreStats,
 } from "@/lib/memory-types";
+import type {
+  CredentialInput,
+  CredentialNotificationAction,
+  CredentialNotificationsResponse,
+  CredentialsResponse,
+  CredentialSummary,
+  CredentialTestResult,
+  CredentialUpdate,
+} from "@/lib/credential-types";
 import type { WordModelData } from "@/lib/word-completion";
+import {
+  TERMINAL_PING_INTERVAL_MS,
+  type TerminalBlock,
+  type TerminalExecuteRequest,
+  type TerminalStreamEvent,
+} from "@/lib/terminal-types";
 
 /** Thrown for non-2xx responses. `status` 401 means the session expired. */
 export class ApiRequestError extends Error {
@@ -224,6 +243,38 @@ export const api = {
     models: (refresh = false) =>
       request<{ models: OmpModel[] }>(`/omp-config/models${refresh ? "?refresh=1" : ""}`),
   },
+  /** Credentials for MCP servers and connector services (the /credentials page). */
+  credentials: {
+    list: () => request<CredentialsResponse>("/credentials"),
+    /** `test`: run the health check before answering, so the new credential starts healthy/failing. */
+    create: (input: CredentialInput, test = false) =>
+      request<CredentialSummary>("/credentials", { method: "POST", json: { ...input, test } }),
+    update: (id: string, update: CredentialUpdate, test = false) =>
+      request<CredentialSummary>(`/credentials/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        json: { ...update, test },
+      }),
+    remove: (id: string) =>
+      request<{ ok: true }>(`/credentials/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    /** Health-check a saved credential now; its stored status updates. */
+    check: (id: string) =>
+      request<{ credential: CredentialSummary; result: CredentialTestResult }>(
+        `/credentials/${encodeURIComponent(id)}/test`,
+        { method: "POST" },
+      ),
+    /** Test unsaved form values; with `id`, omitted secret fields fall back to that credential's stored ones. */
+    test: (input: CredentialInput, id?: string) =>
+      request<CredentialTestResult>("/credentials/test", { method: "POST", json: { ...input, id } }),
+    /** Health-check every credential now. */
+    checkAll: () => request<CredentialsResponse>("/credentials/check-all", { method: "POST" }),
+    notifications: () => request<CredentialNotificationsResponse>("/credentials/notifications"),
+    /** `ids` for read/dismiss; ignored by read-all/dismiss-all. */
+    updateNotifications: (action: CredentialNotificationAction, ids?: string[]) =>
+      request<CredentialNotificationsResponse>("/credentials/notifications", {
+        method: "POST",
+        json: { action, ids },
+      }),
+  },
   /** The local agentmemory server (Settings → Memory). */
   memory: {
     /** `refresh` re-probes the agentmemory CLI instead of the server's 1 min cache. */
@@ -282,6 +333,42 @@ export const api = {
       request<{ files: ProjectFileHit[] }>(`/boards/${boardId}/project-files?q=${encodeURIComponent(query)}`, {
         signal: init?.signal,
       }),
+  },
+  /** Recurring cards (Schedulers tab). Cron is evaluated in the scheduler's IANA `timezone`. */
+  schedulers: {
+    /** All schedulers, newest first; `boardId` filters to one project. */
+    list: (boardId?: string) =>
+      request<Scheduler[]>(`/schedulers${boardId ? `?boardId=${encodeURIComponent(boardId)}` : ""}`),
+    get: (id: string) => request<Scheduler>(`/schedulers/${id}`),
+    /** `name` defaults to the prompt's first line; `timezone` to UTC; `enabled` to true; `maxRuns` to null. */
+    create: (input: {
+      boardId: string;
+      prompt: string;
+      cron: string;
+      timezone?: string;
+      name?: string;
+      enabled?: boolean;
+      maxRuns?: number | null;
+    }) => request<Scheduler>("/schedulers", { method: "POST", json: input }),
+    update: (
+      id: string,
+      patch: Partial<{
+        boardId: string;
+        name: string;
+        prompt: string;
+        cron: string;
+        timezone: string;
+        enabled: boolean;
+        maxRuns: number | null;
+      }>,
+    ) => request<Scheduler>(`/schedulers/${id}`, { method: "PATCH", json: patch }),
+    remove: (id: string) => request<{ ok: true }>(`/schedulers/${id}`, { method: "DELETE" }),
+    /** Fire now (manual run, works while disabled): creates its card; 201 with the history row. */
+    run: (id: string) => request<SchedulerRunView>(`/schedulers/${id}/run`, { method: "POST" }),
+    /** Run history, newest first, with a live snapshot of each created card. */
+    runs: (id: string) => request<SchedulerRunView[]>(`/schedulers/${id}/runs`),
+    /** Aggregated log of the latest runs (scheduler lines + their cards' agent run events), oldest first. */
+    logs: (id: string) => request<SchedulerLogEntry[]>(`/schedulers/${id}/logs`),
   },
   tasks: {
     create: (
@@ -384,6 +471,9 @@ export const api = {
     /** List sub-folders of `path` (default: WORKSPACE_DIR). */
     browse: (path?: string) =>
       request<FsBrowseResult>(`/fs/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+    /** Create the folder `name` inside the absolute server folder `parent`. */
+    mkdir: (parent: string, name: string) =>
+      request<FsEntry>("/fs/mkdir", { method: "POST", json: { parent, name } }),
   },
   git: {
     /** Clone a repository into WORKSPACE_DIR/<name>; returns the absolute folder path. */
@@ -466,40 +556,203 @@ export const api = {
     composeFromUrl: (url: string) =>
       request<{ yaml: string; url: string }>(`/docker/compose-url?url=${encodeURIComponent(url)}`),
   },
+  terminal: {
+    /**
+     * Attach to the persistent terminal session. Every (re)open starts with a fresh `snapshot`
+     * from the server, so missed events never need a refetch.
+     */
+    subscribe: (
+      onEvent: (event: TerminalStreamEvent) => void,
+      opts: { onStatus?: (status: "live" | "reconnecting") => void } = {},
+    ) =>
+      subscribeSse("/terminal/stream", onEvent, {
+        onStatus: opts.onStatus,
+        staleAfterMs: TERMINAL_PING_INTERVAL_MS * 2.5,
+      }),
+    /** Start a command (default cwd: the session's); its output arrives through `subscribe`. */
+    execute: (req: TerminalExecuteRequest) =>
+      request<TerminalBlock>("/terminal/execute", { method: "POST", json: req }),
+    /** Kill a running command's process group. */
+    cancel: (id: string) => request<{ ok: true }>("/terminal/cancel", { method: "POST", json: { id } }),
+    /** Remove finished blocks; running ones stay. */
+    clear: () => request<{ ok: true }>("/terminal/session", { method: "DELETE" }),
+  },
 };
+
+/** Server heartbeat cadence: app/api/v1/events/route.ts sends a named `ping` event this often. */
+const EVENTS_PING_INTERVAL_MS = 20_000;
+/** Silence after which a stream that still claims to be open is presumed dead (~2.5 pings). */
+export const EVENTS_STALE_AFTER_MS = EVENTS_PING_INTERVAL_MS * 2.5;
+/** Backoff bounds for reopening a stream the browser gave up on; reset on every open. */
+export const EVENTS_REOPEN_MIN_MS = 1_000;
+export const EVENTS_REOPEN_MAX_MS = 30_000;
+/** A tab hidden longer than this resyncs on return (mobile browsers suspend background streams). */
+export const EVENTS_RESUME_AFTER_MS = 5_000;
+
+interface SseOptions {
+  /**
+   * Events may have been missed; refetch state here. Fires after a dropped connection reopens
+   * (native retry, watchdog or manual reopen), and when the tab returns from the background or
+   * the network comes back while the stream still looks open.
+   */
+  onReconnect?: () => void;
+  /**
+   * Fires once, when the first connection opens without a drop before it (else `onReconnect`
+   * fires). A snapshot fetched in parallel with subscribing may predate the server-side
+   * subscription, and events published in between are never sent, so refetch it here.
+   */
+  onFirstOpen?: () => void;
+  /** "live" on every successful open (including the first); "reconnecting" on drop. */
+  onStatus?: (status: "live" | "reconnecting") => void;
+}
 
 /**
  * Subscribe to live server events (SSE). Returns an unsubscribe function.
- * EventSource reconnects automatically; `onReconnect` fires after a dropped connection
- * reopens so callers can refetch state they may have missed.
+ *
+ * EventSource alone loses updates in several ways, so this wraps it:
+ * - it retries natively only while `readyState` is CONNECTING; once CLOSED (e.g. a 502 from a proxy
+ *   while the server restarts) it never retries, so we reopen it ourselves with capped backoff;
+ * - a half-open connection (sleep, network switch, proxy idle drop) never errors, so a watchdog
+ *   reopens the stream when neither data nor the server's `ping` event arrived for a while;
+ * - a backgrounded tab may be suspended, so returning to it (or the network coming back) reopens a
+ *   dead stream right away or, when it still looks healthy, asks the caller to resync.
  */
 export function subscribeEvents(
   onEvent: (event: ServerEvent) => void,
-  opts: {
-    boardId?: string;
-    onReconnect?: () => void;
-    /** "live" on every successful open (including the first); "reconnecting" on drop. */
-    onStatus?: (status: "live" | "reconnecting") => void;
-  } = {},
+  opts: SseOptions & { boardId?: string } = {},
 ): () => void {
-  const url = `${BASE}/events${opts.boardId ? `?boardId=${encodeURIComponent(opts.boardId)}` : ""}`;
-  const source = new EventSource(url, { withCredentials: true });
+  const query = opts.boardId ? `?boardId=${encodeURIComponent(opts.boardId)}` : "";
+  return subscribeSse(`/events${query}`, onEvent, opts);
+}
+
+/**
+ * The robust EventSource wrapper behind `subscribeEvents` and `api.terminal.subscribe`: unnamed
+ * frames are JSON events for `onEvent`; a named `ping` only feeds the watchdog, which reopens the
+ * stream after `staleAfterMs` (~2.5 server pings) of silence.
+ */
+function subscribeSse<T>(
+  path: string,
+  onEvent: (event: T) => void,
+  opts: SseOptions & { staleAfterMs?: number },
+): () => void {
+  const url = BASE + path;
+  const staleAfterMs = opts.staleAfterMs ?? EVENTS_STALE_AFTER_MS;
+  const doc = typeof document === "undefined" ? null : document;
+  const win = typeof window === "undefined" ? null : window;
+
+  let source: EventSource | null = null;
+  let stopped = false;
+  /** A connection opened before, so the next open is not the first. */
+  let opened = false;
+  /** The stream dropped (error or forced reopen) since the last open: the next open resyncs. */
   let dropped = false;
-  source.onmessage = (msg) => {
-    try {
-      onEvent(JSON.parse(msg.data) as ServerEvent);
-    } catch {}
+  let backoff = EVENTS_REOPEN_MIN_MS;
+  let lastActivity = Date.now();
+  let hiddenAt: number | null = doc?.visibilityState === "hidden" ? Date.now() : null;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  let reopenTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Any frame (data or ping), open or connect attempt pushes the watchdog back. */
+  const alive = () => {
+    lastActivity = Date.now();
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => reopen(0), staleAfterMs);
   };
-  source.onerror = () => {
+
+  const closeSource = () => {
+    clearTimeout(watchdog);
+    if (!source) return;
+    source.onopen = null;
+    source.onmessage = null;
+    source.onerror = null;
+    source.removeEventListener("ping", alive);
+    source.close();
+    source = null;
+  };
+
+  const connect = () => {
+    reopenTimer = undefined;
+    const es = new EventSource(url, { withCredentials: true });
+    source = es;
+    // Armed before `open` too: a connect attempt can hang without ever reaching onerror.
+    alive();
+    es.onmessage = (msg) => {
+      alive();
+      try {
+        onEvent(JSON.parse(msg.data) as T);
+      } catch {}
+    };
+    es.addEventListener("ping", alive);
+    es.onopen = () => {
+      alive();
+      backoff = EVENTS_REOPEN_MIN_MS;
+      opts.onStatus?.("live");
+      const first = !opened;
+      opened = true;
+      if (dropped) {
+        dropped = false;
+        opts.onReconnect?.();
+      } else if (first) {
+        opts.onFirstOpen?.();
+      }
+    };
+    es.onerror = () => {
+      dropped = true;
+      opts.onStatus?.("reconnecting");
+      // CONNECTING: the browser retries on its own (the server sends `retry: 3000`).
+      // CLOSED: it gave up for good, so retry ourselves.
+      if (es.readyState === EventSource.CLOSED) {
+        reopen(backoff);
+        backoff = Math.min(backoff * 2, EVENTS_REOPEN_MAX_MS);
+      }
+    };
+  };
+
+  /** Drop the current connection (if any) and open a fresh one after `delay` ms. */
+  const reopen = (delay: number) => {
+    if (stopped) return;
+    closeSource();
     dropped = true;
     opts.onStatus?.("reconnecting");
+    clearTimeout(reopenTimer);
+    if (delay > 0) reopenTimer = setTimeout(connect, delay);
+    else connect();
   };
-  source.onopen = () => {
-    opts.onStatus?.("live");
-    if (dropped) {
-      dropped = false;
+
+  /** The tab came back or the network returned: the stream may be dead or may have missed events. */
+  const resync = () => {
+    if (stopped) return;
+    const state = source?.readyState ?? EventSource.CLOSED;
+    if (state === EventSource.CLOSED || Date.now() - lastActivity > staleAfterMs) {
+      // Waiting out a backoff, given up, or silent too long (timers were frozen): reconnect now.
+      backoff = EVENTS_REOPEN_MIN_MS;
+      reopen(0);
+    } else if (state === EventSource.OPEN) {
       opts.onReconnect?.();
     }
+    // CONNECTING: its `open` resyncs (onFirstOpen / onReconnect); the watchdog covers a hang.
   };
-  return () => source.close();
+
+  const onVisibility = () => {
+    if (doc?.visibilityState === "hidden") {
+      hiddenAt ??= Date.now();
+      return;
+    }
+    const hiddenFor = hiddenAt === null ? 0 : Date.now() - hiddenAt;
+    hiddenAt = null;
+    if (hiddenFor > EVENTS_RESUME_AFTER_MS || source?.readyState !== EventSource.OPEN) resync();
+  };
+  const onOnline = () => resync();
+
+  connect();
+  doc?.addEventListener("visibilitychange", onVisibility);
+  win?.addEventListener("online", onOnline);
+
+  return () => {
+    stopped = true;
+    closeSource();
+    clearTimeout(reopenTimer);
+    doc?.removeEventListener("visibilitychange", onVisibility);
+    win?.removeEventListener("online", onOnline);
+  };
 }

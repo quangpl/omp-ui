@@ -9,8 +9,10 @@
 //                         `steer`, or `prompt` with streamingBehavior while a run is active, logged with
 //                         via: "prompt" and the streamingBehavior; like omp, an idle `prompt` with
 //                         streamingBehavior starts a prompt).
-//   FAKE_OMP_SCENARIO     Default prompt behaviour: success | question | error | crash | slow | confirm |
-//                         stream | orchestrate | board_tools | todos.
+//   FAKE_OMP_SCENARIO     Default prompt behaviour: success | question | error | quota | crash | slow |
+//                         confirm | stream | orchestrate | board_tools | todos.
+//                         "error" ends the run with an assistant error (a plain model failure); "quota"
+//                         ends it with a quota / usage-limit error (429), as a provider out of quota does.
 //                         "todos" reports two `todo` tool results (the agent's todo list), then succeeds.
 //                         "question" succeeds with a summary that ends in a question for the user.
 //                         "stream" emits 2 thinking_delta + 15 text_delta frames ~80ms apart, then succeeds.
@@ -526,7 +528,10 @@ async function startPrompt(command) {
       );
       break;
     case "error":
-      finishRun(assistant("", "error", "Fake model error: rate limited"));
+      finishRun(assistant("", "error", "Fake model error: upstream failed"));
+      break;
+    case "quota":
+      finishRun(assistant("", "error", "Fake model error: 429 You have exceeded your quota (usage limit reached)"));
       break;
     case "crash":
       process.stderr.write("fake omp: segmentation fault\n", () => process.exit(1));

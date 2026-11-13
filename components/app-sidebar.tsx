@@ -22,6 +22,7 @@ import { LogoMark } from "@/components/app-header";
 import { TOP_TABS } from "@/components/bottom-tabs";
 import { RunningContainersButton, RunningCountBadge } from "@/components/containers/running-containers-button";
 import { openCommandPalette } from "@/components/command-palette";
+import { CredentialNotificationsButton } from "@/components/credentials/credential-notifications";
 import { openKeyboardHelp } from "@/components/keyboard-help";
 import { useNewCard } from "@/components/new-card";
 import { QueueButton } from "@/components/queue-panel";
@@ -347,7 +348,7 @@ function AccountMenu() {
  */
 export function AppSidebar() {
   const pathname = usePathname() ?? "/";
-  const { isMobile, setOpenMobile } = useSidebar();
+  const { isMobile, setOpenMobile, state } = useSidebar();
   const openNewCard = useNewCard();
 
   useEffect(() => {
@@ -494,6 +495,12 @@ export function AppSidebar() {
       <SidebarFooter className="gap-1 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         <div className="flex items-center justify-between gap-0.5 px-0.5 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:px-0">
           <QueueButton />
+          <CredentialNotificationsButton
+            side={state === "collapsed" && !isMobile ? "right" : "top"}
+            align={state === "collapsed" && !isMobile ? "end" : "center"}
+            onNavigate={closeMobile}
+            className="size-11 text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:size-9"
+          />
           <ThemeToggle className="text-sidebar-foreground/75 hover:bg-sidebar-accent active:scale-95" />
           <FooterIconButton label="Keyboard shortcuts" hint="?" onClick={openKeyboardHelp}>
             <KeyboardIcon className="size-5 md:size-4" />

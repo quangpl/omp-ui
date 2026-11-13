@@ -741,18 +741,18 @@ describe("agent flow with the fake omp", () => {
       // The failure comment is written right after the error state.
       const failed = await waitForTask(created.id, (t) => t.agentState === "error" && t.commentCount === 1);
       expect(failed.task.status).toBe("in_progress");
-      expect(failed.task.agentError).toBe("Fake model error: rate limited");
+      expect(failed.task.agentError).toBe("Fake model error: upstream failed");
       const agentComments = failed.comments.filter((c) => c.author === "agent");
       // Retried automatically in its omp session after 15 s (retries are on by default).
       expect(agentComments.map((c) => c.body)).toEqual([
-        "Agent failed: Fake model error: rate limited\n\nRetrying automatically in 15s (retry 1 of 5).",
+        "Agent failed: Fake model error: upstream failed\n\nRetrying automatically in 15s (retry 1).",
       ]);
       expect(failed.task.autoRetries).toBe(1);
       expect(Date.parse(failed.task.retryAt ?? "")).toBeGreaterThan(Date.now());
 
       const runs = await listRuns(created.id);
       expect(runs).toHaveLength(1);
-      expect(runs[0]).toMatchObject({ status: "failed", error: "Fake model error: rate limited", summary: null });
+      expect(runs[0]).toMatchObject({ status: "failed", error: "Fake model error: upstream failed", summary: null });
       const events = (await runEvents(runs[0].id)).body;
       expect(events.some((e) => e.kind === "error" && e.text.includes("Fake model error"))).toBe(true);
 
@@ -953,6 +953,7 @@ describe("settings, health and system", () => {
       smartQueue: true,
       browser: "headless",
       autoRetry: true,
+      persistentRetry: true,
       maxAutoRetries: 5,
       cleanupSchedule: "off",
       cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
@@ -975,6 +976,7 @@ describe("settings, health and system", () => {
       [{ autoModel: "yes" }, "autoModel must be a boolean"],
       [{ smartQueue: 1 }, "smartQueue must be a boolean"],
       [{ autoRetry: "on" }, "autoRetry must be a boolean"],
+      [{ persistentRetry: "on" }, "persistentRetry must be a boolean"],
       [{ taskCompletionNotifications: "on" }, "taskCompletionNotifications must be a boolean"],
       [{ maxAutoRetries: 21 }, "maxAutoRetries must be an integer between 0 and 20"],
       [{ maxAutoRetries: -1 }, "maxAutoRetries must be an integer between 0 and 20"],
@@ -1003,6 +1005,7 @@ describe("settings, health and system", () => {
       smartQueue: true,
       browser: "headless",
       autoRetry: true,
+      persistentRetry: true,
       maxAutoRetries: 5,
       cleanupSchedule: "off",
       cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
@@ -1018,6 +1021,7 @@ describe("settings, health and system", () => {
         smartQueue: false,
         browser: "off",
         autoRetry: false,
+        persistentRetry: false,
         maxAutoRetries: 0,
         taskCompletionNotifications: true,
       },
@@ -1031,6 +1035,7 @@ describe("settings, health and system", () => {
       smartQueue: false,
       browser: "off",
       autoRetry: false,
+      persistentRetry: false,
       maxAutoRetries: 0,
       cleanupSchedule: "off",
       cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
@@ -1049,6 +1054,7 @@ describe("settings, health and system", () => {
         smartQueue: true,
         browser: "headless",
         autoRetry: true,
+        persistentRetry: true,
         maxAutoRetries: 5,
         taskCompletionNotifications: false,
       },

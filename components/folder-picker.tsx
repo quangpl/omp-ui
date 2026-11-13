@@ -5,6 +5,7 @@ import {
   ArrowUpIcon,
   ChevronRightIcon,
   FolderIcon,
+  FolderPlusIcon,
   GitBranchIcon,
   HomeIcon,
   Loader2Icon,
@@ -75,9 +76,21 @@ export function FolderPicker({
   const [pathInput, setPathInput] = useState("");
   const requestId = useRef(0);
   const crumbsRef = useRef<HTMLDivElement>(null);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [mkdirPending, setMkdirPending] = useState(false);
+  const [mkdirError, setMkdirError] = useState<string | null>(null);
+
+  const resetNewFolder = useCallback(() => {
+    setCreating(false);
+    setNewName("");
+    setMkdirPending(false);
+    setMkdirError(null);
+  }, []);
 
   const go = useCallback(async (path?: string, fallbackToRoot = false) => {
     const id = ++requestId.current;
+    resetNewFolder();
     setLoading(true);
     setError(null);
     try {
@@ -97,14 +110,17 @@ export function FolderPicker({
     } finally {
       if (id === requestId.current) setLoading(false);
     }
-  }, []);
+  }, [resetNewFolder]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      resetNewFolder();
+      return;
+    }
     setData(null);
     setPathInput(initialPath ?? "");
     void go(initialPath || undefined, true);
-  }, [open, initialPath, go]);
+  }, [open, initialPath, go, resetNewFolder]);
 
   // Keep the deepest breadcrumb in view.
   useEffect(() => {
@@ -118,7 +134,92 @@ export function FolderPicker({
     onOpenChange(false);
   }
 
+  async function createFolder() {
+    const name = newName.trim();
+    if (!data || !name || mkdirPending) return;
+    // Any navigation while the request is in flight bumps the request id; ignore stale results then.
+    const id = requestId.current;
+    setMkdirPending(true);
+    setMkdirError(null);
+    try {
+      const created = await api.fs.mkdir(data.path, name);
+      if (id !== requestId.current) return;
+      // Opening the new folder makes it the pick, so "Use this folder" confirms it right away.
+      void go(created.path);
+    } catch (err) {
+      if (id !== requestId.current) return;
+      setMkdirError(err instanceof Error && err.message ? err.message : "Couldn't create this folder.");
+      setMkdirPending(false);
+    }
+  }
+
+  // Escape closes the inline "New folder" row instead of the whole dialog.
+  function handleEscape(e: KeyboardEvent) {
+    if (!creating) return;
+    e.preventDefault();
+    if (!mkdirPending) resetNewFolder();
+  }
+
   const description = "Tap a folder to open it, then choose “Use this folder”.";
+
+  const newFolderRow = creating && data && (
+    <form
+      className="border-b p-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        void createFolder();
+      }}
+    >
+      <div className="flex items-center gap-2">
+        <FolderPlusIcon className="ml-2.5 size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <Input
+          autoFocus
+          value={newName}
+          onChange={(e) => {
+            setNewName(e.target.value);
+            if (mkdirError) setMkdirError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== "Escape") return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (!mkdirPending) resetNewFolder();
+          }}
+          placeholder="Folder name"
+          aria-label="New folder name"
+          aria-invalid={!!mkdirError}
+          aria-describedby={mkdirError ? "folder-picker-mkdir-error" : undefined}
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          className="h-11 min-w-0 flex-1 md:h-9"
+        />
+        <Button type="submit" className="h-11 shrink-0 px-4 md:h-9" disabled={!newName.trim() || mkdirPending}>
+          {mkdirPending && <Loader2Icon className="animate-spin" />}
+          Create
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-11 shrink-0 px-3 md:h-9"
+          onClick={resetNewFolder}
+          disabled={mkdirPending}
+        >
+          Cancel
+        </Button>
+      </div>
+      {mkdirError && (
+        <p
+          id="folder-picker-mkdir-error"
+          role="alert"
+          className="mt-1.5 px-2.5 text-sm [overflow-wrap:anywhere] text-destructive"
+        >
+          {mkdirError}
+        </p>
+      )}
+    </form>
+  );
 
   const body = (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -197,6 +298,18 @@ export function FolderPicker({
             })}
         </nav>
         {loading && <Loader2Icon className="mr-2 size-4 shrink-0 animate-spin text-muted-foreground" />}
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-11 min-w-11 shrink-0 gap-1.5 px-2.5 md:h-9 md:min-w-0"
+          onClick={() => setCreating(true)}
+          disabled={!data || loading || !!error || creating}
+          aria-label="New folder"
+          title="New folder"
+        >
+          <FolderPlusIcon />
+          <span className="hidden md:inline">New folder</span>
+        </Button>
       </div>
 
       <div className="h-[42dvh] overflow-y-auto overscroll-contain md:h-80" aria-busy={loading}>
@@ -222,38 +335,43 @@ export function FolderPicker({
               </div>
             ))}
           </div>
-        ) : data.entries.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
-            <FolderIcon className="mb-2 size-8 text-muted-foreground/60" />
-            <p className="text-sm font-medium">No folders inside</p>
-            <p className="text-sm text-muted-foreground">You can use this folder as it is.</p>
-          </div>
         ) : (
-          <ul className={cn("p-2", loading && "opacity-60")}>
-            {data.entries.map((entry) => (
-              <li key={entry.path}>
-                <button
-                  type="button"
-                  onClick={() => void go(entry.path)}
-                  disabled={loading}
-                  className="flex h-12 w-full items-center gap-3 rounded-lg px-2.5 text-left outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 active:bg-muted"
-                >
-                  <FolderIcon
-                    className={cn("size-5 shrink-0", entry.isGitRepo ? "text-primary" : "text-muted-foreground")}
-                    aria-hidden="true"
-                  />
-                  <span className="min-w-0 flex-1 truncate text-[0.95rem]">{entry.name}</span>
-                  {entry.isGitRepo && (
-                    <span className="inline-flex h-6 shrink-0 items-center gap-1 rounded-full bg-primary/10 px-2 text-xs font-medium text-primary">
-                      <GitBranchIcon className="size-3" aria-hidden="true" />
-                      Git
-                    </span>
-                  )}
-                  <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                </button>
-              </li>
-            ))}
-          </ul>
+          <div className="flex min-h-full flex-col">
+            {newFolderRow}
+            {data.entries.length === 0 ? (
+              <div className="flex flex-1 flex-col items-center justify-center gap-1 px-6 py-6 text-center">
+                <FolderIcon className="mb-2 size-8 text-muted-foreground/60" />
+                <p className="text-sm font-medium">No folders inside</p>
+                <p className="text-sm text-muted-foreground">You can use this folder as it is.</p>
+              </div>
+            ) : (
+              <ul className={cn("p-2", loading && "opacity-60")}>
+                {data.entries.map((entry) => (
+                  <li key={entry.path}>
+                    <button
+                      type="button"
+                      onClick={() => void go(entry.path)}
+                      disabled={loading}
+                      className="flex h-12 w-full items-center gap-3 rounded-lg px-2.5 text-left outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 active:bg-muted"
+                    >
+                      <FolderIcon
+                        className={cn("size-5 shrink-0", entry.isGitRepo ? "text-primary" : "text-muted-foreground")}
+                        aria-hidden="true"
+                      />
+                      <span className="min-w-0 flex-1 truncate text-[0.95rem]">{entry.name}</span>
+                      {entry.isGitRepo && (
+                        <span className="inline-flex h-6 shrink-0 items-center gap-1 rounded-full bg-primary/10 px-2 text-xs font-medium text-primary">
+                          <GitBranchIcon className="size-3" aria-hidden="true" />
+                          Git
+                        </span>
+                      )}
+                      <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
       </div>
 
@@ -284,7 +402,10 @@ export function FolderPicker({
   if (isMobile) {
     return (
       <Drawer open={open} onOpenChange={onOpenChange}>
-        <DrawerContent className="data-[vaul-drawer-direction=bottom]:max-h-[92dvh]">
+        <DrawerContent
+          className="data-[vaul-drawer-direction=bottom]:max-h-[92dvh]"
+          onEscapeKeyDown={handleEscape}
+        >
           <DrawerHeader className="text-left">
             <DrawerTitle className="text-lg">{title}</DrawerTitle>
             <DrawerDescription>{description}</DrawerDescription>
@@ -297,7 +418,7 @@ export function FolderPicker({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex flex-col gap-0 p-0 sm:max-w-lg">
+      <DialogContent className="flex flex-col gap-0 p-0 sm:max-w-lg" onEscapeKeyDown={handleEscape}>
         <DialogHeader className="p-4 pr-12">
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>

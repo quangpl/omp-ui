@@ -1,15 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   CONTACT_TTL_MS,
-  SYSTEMS,
   activitySystem,
   boardContact,
   buildLinks,
-  systemLoad,
+  floorPlan,
   toolSystem,
 } from "@/components/visualize/agent-map";
 import type { LiveAgent } from "@/components/visualize/use-live-agents";
-import type { QueueEntry, QueueSnapshot, SubagentSnapshot } from "@/lib/types";
+import type { Dashboard, QueueEntry, QueueSnapshot, SubagentSnapshot } from "@/lib/types";
 
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
@@ -158,30 +157,51 @@ describe("buildLinks", () => {
   });
 });
 
-describe("systemLoad", () => {
-  it("counts running agents and their busy helpers per system", () => {
-    const q = queue([entry(A, "running"), entry(B, "running")], [entry(C, "queued")]);
+describe("floorPlan", () => {
+  const card = (id: string) => ({ id, boardId: "board", boardName: "Project", title: `Card ${id}` }) as Dashboard["finished"][number];
+  const ids = (workers: { id: string }[]) => workers.map((worker) => worker.id);
+
+  it("puts running agents and busy subagents in the room of the system they use", () => {
+    const q = queue([entry(A, "running"), entry(B, "running")]);
     const live = {
       [A]: liveAgent({
         activity: { icon: "terminal", label: "Running a command", tool: "bash" },
         helpers: {
           h1: helper("h1", "running", "read"),
-          h2: helper("h2", "pending", "grep"),
+          h2: helper("h2", "pending"),
           h3: helper("h3", "completed", "bash"),
-          h4: helper("h4", "running"),
         },
       }),
-      [B]: liveAgent({
-        activity: { icon: "think", label: "Thinking" },
-        helpers: { h5: helper("h5", "running", "bash") },
-      }),
-      [C]: liveAgent({ activity: { icon: "terminal", label: "Running a command", tool: "bash" } }),
+      [B]: liveAgent({ activity: { icon: "think", label: "Thinking" } }),
     };
-    const load = systemLoad(q, live);
-    expect(Object.keys(load)).toEqual(SYSTEMS.map((s) => s.id));
-    expect(load.shell).toEqual({ taskIds: [A, B], helpers: 1 });
-    expect(load.files).toEqual({ taskIds: [A], helpers: 2 });
-    expect(load.model).toEqual({ taskIds: [B], helpers: 0 });
-    expect(load.web).toEqual({ taskIds: [], helpers: 0 });
+    const { rooms, placed } = floorPlan({ queue: q, attention: [], finished: [] }, live, new Map());
+    expect(ids(rooms.shell)).toEqual([`card:${A}`]);
+    expect(ids(rooms.files)).toEqual([`sub:${A}:h1`]);
+    // A busy subagent without a tool waits in the subagent room; finished ones leave the floor.
+    expect(ids(rooms.helpers)).toEqual([`sub:${A}:h2`]);
+    expect(ids(rooms.model)).toEqual([`card:${B}`]);
+    expect(placed.get(`card:${A}`)).toBe("shell");
+  });
+
+  it("keeps an agent in its previous room while its activity names no system, else starts at the model", () => {
+    const q = queue([entry(A, "running"), entry(B, "running")]);
+    const live = { [A]: liveAgent({ activity: { icon: "error", label: "Error" } }) };
+    const { rooms } = floorPlan({ queue: q, attention: [], finished: [] }, live, new Map([[`card:${A}`, "web"]]));
+    expect(ids(rooms.web)).toEqual([`card:${A}`]);
+    expect(ids(rooms.model)).toEqual([`card:${B}`]);
+  });
+
+  it("queues in intake, attention in rework, finished on the dock, each card once", () => {
+    const q = queue([entry(A, "running")], [entry(B, "queued"), entry(C, "queued")]);
+    const D = "44444444-4444-4444-8444-444444444444";
+    const { rooms } = floorPlan(
+      { queue: q, attention: [{ ...card(A), reason: "failed" }, { ...card(D), reason: "stalled" }], finished: [card(C), card(D)] },
+      {},
+      new Map(),
+    );
+    expect(rooms.intake.map((w) => (w.kind === "queued" ? w.position : null))).toEqual([1, 2]);
+    expect(ids(rooms.intake)).toEqual([`card:${B}`, `card:${C}`]);
+    expect(ids(rooms.rework)).toEqual([`card:${D}`]);
+    expect(ids(rooms.shipping)).toEqual([]);
   });
 });

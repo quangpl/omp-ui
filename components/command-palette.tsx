@@ -6,10 +6,12 @@ import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import {
   Brain,
+  CalendarClock,
   ChartColumn,
   Container,
   Copy,
   FolderKanban,
+  KeyRound,
   Keyboard,
   LayoutGrid,
   Link2,
@@ -21,6 +23,7 @@ import {
   Search,
   Settings,
   Square,
+  SquareTerminal,
   Sun,
 } from "lucide-react";
 import { StatusDot } from "@/components/board/board-column";
@@ -489,6 +492,15 @@ export function CommandPalette() {
         run: go("/"),
       },
       {
+        id: "go:schedulers",
+        group: "Go to",
+        label: "Schedulers",
+        hint: "Recurring cards",
+        keys: ["G", "C"],
+        icon: <CalendarClock className="size-4" />,
+        run: go("/schedulers"),
+      },
+      {
         id: "go:visualize",
         group: "Go to",
         label: "Visualize",
@@ -506,6 +518,15 @@ export function CommandPalette() {
         run: go("/containers"),
       },
       {
+        id: "go:terminal",
+        group: "Go to",
+        label: "Terminal",
+        hint: "Server shell",
+        keys: ["G", "X"],
+        icon: <SquareTerminal className="size-4" />,
+        run: go("/terminal"),
+      },
+      {
         id: "go:stats",
         group: "Go to",
         label: "Stats",
@@ -521,6 +542,15 @@ export function CommandPalette() {
         keys: ["G", "M"],
         icon: <Brain className="size-4" />,
         run: go("/memory"),
+      },
+      {
+        id: "go:credentials",
+        group: "Go to",
+        label: "Credentials",
+        hint: "MCP & API keys",
+        keys: ["G", "K"],
+        icon: <KeyRound className="size-4" />,
+        run: go("/credentials"),
       },
       {
         id: "go:settings",

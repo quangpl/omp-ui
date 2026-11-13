@@ -16,6 +16,7 @@ import type { Board, Comment, Run, RunEvent, ServerEvent, SubagentSnapshot, Task
 
 const FAKE_OMP = fileURLToPath(new URL("../fixtures/fake-omp.mjs", import.meta.url));
 const SUCCESS_SUMMARY = "Fake summary: implemented the task and ran the tests.";
+const QUOTA_ERROR = "Fake model error: 429 You have exceeded your quota (usage limit reached)";
 
 /** Process-wide singletons the app caches on globalThis (lib/db/index.ts, lib/agent/manager.ts, lib/agent/rpc.ts). */
 const globals = globalThis as typeof globalThis & {
@@ -36,6 +37,7 @@ const ENV_KEYS = [
   "FAKE_OMP_MODEL_ROLES",
   "FAKE_OMP_PLAN",
   "OMP_UI_RETRY_BASE_MS",
+  "OMP_UI_QUOTA_RETRY_BASE_MS",
 ] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
 
@@ -201,6 +203,7 @@ beforeEach(async () => {
   delete process.env.FAKE_OMP_MODEL_ROLES;
   delete process.env.FAKE_OMP_PLAN;
   process.env.OMP_UI_RETRY_BASE_MS = "50";
+  delete process.env.OMP_UI_QUOTA_RETRY_BASE_MS;
   globals.__ompUiRepo = undefined;
   globals.__ompUiAgentManager = undefined;
 
@@ -345,8 +348,8 @@ describe("AgentManager run lifecycle", () => {
       {
         name: "Build",
         tasks: [
-          { content: "Write the code", status: "completed" },
-          { content: "Add tests", status: "in_progress" },
+          { content: "Write the code", status: "completed", startedAt: expect.any(String), completedAt: expect.any(String) },
+          { content: "Add tests", status: "in_progress", startedAt: expect.any(String) },
         ],
       },
       {
@@ -357,6 +360,10 @@ describe("AgentManager run lifecycle", () => {
         ],
       },
     ]);
+    // "Write the code" keeps the stamp of the update that first showed it in progress.
+    const [written, testing] = done.todos[0]!.tasks;
+    expect(Date.parse(written!.startedAt!)).toBeLessThanOrEqual(Date.parse(written!.completedAt!));
+    expect(testing!.startedAt).toBe(written!.completedAt);
   });
 
   it("answers the agent's ask_advisor call with the advisor's decision", async () => {
@@ -453,16 +460,16 @@ describe("AgentManager run lifecycle", () => {
     await waitIdleManager(manager);
 
     expect(failed.status).toBe("in_progress");
-    expect(failed.agentError).toBe("Fake model error: rate limited");
+    expect(failed.agentError).toBe("Fake model error: upstream failed");
     const run = await latestRun(task.id);
-    expect(run).toMatchObject({ status: "failed", error: "Fake model error: rate limited", summary: null });
+    expect(run).toMatchObject({ status: "failed", error: "Fake model error: upstream failed", summary: null });
 
     const comments = await repo.listComments(task.id);
-    expect(agentComments(comments).map((c) => c.body)).toEqual(["Agent failed: Fake model error: rate limited"]);
+    expect(agentComments(comments).map((c) => c.body)).toEqual(["Agent failed: Fake model error: upstream failed"]);
     expect(comments.find((c) => c.id === feedback.id)).toMatchObject({ resolved: false, resolvedByRunId: null });
 
     const errors = (await runEvents(run.id)).filter((e) => e.kind === "error").map((e) => e.text);
-    expect(errors).toContain("Model error: Fake model error: rate limited");
+    expect(errors).toContain("Model error: Fake model error: upstream failed");
     expect(publishedAgentStates(task.id)).toEqual(["queued", "running", "error"]);
   });
 
@@ -1035,7 +1042,8 @@ describe("AgentManager smart queue", () => {
 
 describe("AgentManager automatic retries", () => {
   beforeEach(async () => {
-    await updateAppSettings(repo, { autoRetry: true, maxAutoRetries: 2 });
+    // Bounded retries; persistent retries have their own tests below.
+    await updateAppSettings(repo, { autoRetry: true, maxAutoRetries: 2, persistentRetry: false });
   });
 
   it("retries a failed run in its omp session and resets the count once it succeeds", async () => {
@@ -1044,11 +1052,11 @@ describe("AgentManager automatic retries", () => {
     await manager.start(task.id);
 
     const failed = await waitTask(task.id, (t) => t.agentState === "error", "the first failure");
-    expect(failed).toMatchObject({ status: "in_progress", autoRetries: 1, agentError: "Fake model error: rate limited" });
+    expect(failed).toMatchObject({ status: "in_progress", autoRetries: 1, agentError: "Fake model error: upstream failed" });
     expect(failed.retryAt).not.toBeNull();
     const firstSession = failed.sessionFile;
     expect(firstSession).toBeTruthy();
-    // The cause goes away (as a rate limit would): the retry succeeds.
+    // The cause goes away (as a flaky upstream would): the retry succeeds.
     await repo.updateTask(task.id, { description: "Now it works" });
 
     const done = await waitDone(task.id);
@@ -1057,7 +1065,7 @@ describe("AgentManager automatic retries", () => {
     expect(argv).toHaveLength(2);
     expect(flagValues(argv[1]!.argv, "--resume")).toEqual([firstSession]);
     const bodies = agentComments(await repo.listComments(task.id)).map((c) => c.body);
-    expect(bodies[0]).toMatch(/^Agent failed: Fake model error: rate limited\n\nRetrying automatically in 0s \(retry 1 of 2\)\.$/);
+    expect(bodies[0]).toMatch(/^Agent failed: Fake model error: upstream failed\n\nRetrying automatically in 0s \(retry 1 of 2\)\.$/);
   });
 
   it("stops retrying once the budget is used up; a manual run gets a fresh budget", async () => {
@@ -1103,6 +1111,56 @@ describe("AgentManager automatic retries", () => {
     expect(argvEntries()).toHaveLength(2);
     expect(manager.stats()).toEqual({ running: [], queued: [] });
   });
+
+  it("with persistent retries, keeps retrying a quota failure past the budget until it succeeds", async () => {
+    await updateAppSettings(repo, { persistentRetry: true, maxAutoRetries: 1 });
+    process.env.OMP_UI_QUOTA_RETRY_BASE_MS = "20";
+    const task = await createTask("Out of quota", "[fake:quota]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+
+    const waiting = await waitTask(
+      task.id,
+      (t) => t.agentState === "error" && t.autoRetries >= 3,
+      "the third quota retry to be scheduled",
+    );
+    expect(waiting).toMatchObject({ status: "in_progress", agentError: QUOTA_ERROR });
+    expect(waiting.retryAt).not.toBeNull();
+    // The quota comes back: the next retry succeeds.
+    await repo.updateTask(task.id, { description: "Quota is back" });
+
+    const done = await waitDone(task.id);
+    expect(done).toMatchObject({ autoRetries: 0, retryAt: null, agentError: null });
+    const failures = agentComments(await repo.listComments(task.id))
+      .map((c) => c.body)
+      .filter((body) => body.startsWith("Agent failed"));
+    expect(failures.slice(0, 3)).toEqual(
+      [1, 2, 3].map((n) => `Agent failed: ${QUOTA_ERROR}\n\nWaiting for quota: retrying automatically in 0s (retry ${n}).`),
+    );
+  });
+
+  it("with persistent retries, keeps retrying any failed run past the budget", async () => {
+    await updateAppSettings(repo, { persistentRetry: true, maxAutoRetries: 1 });
+    const task = await createTask("Keeps failing", "[fake:error]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+
+    const retrying = await waitTask(
+      task.id,
+      (t) => t.agentState === "error" && t.autoRetries >= 2 && t.retryAt !== null,
+      "a retry beyond the budget to be scheduled",
+    );
+    expect(retrying.status).toBe("in_progress");
+    const bodies = agentComments(await repo.listComments(task.id)).map((c) => c.body);
+    expect(bodies).toContain(
+      "Agent failed: Fake model error: upstream failed\n\nRetrying automatically in 0s (retry 2).",
+    );
+    expect(bodies.some((body) => body.includes("used up"))).toBe(false);
+
+    await manager.stop(task.id);
+    await waitIdleManager(manager);
+    expect((await getTask(task.id)).retryAt).toBeNull();
+  });
 });
 
 describe("AgentManager boot recovery", () => {
@@ -1145,6 +1203,27 @@ describe("AgentManager boot recovery", () => {
     await waitDone(task.id);
     expect(argvEntries()).toHaveLength(1);
     expect(agentComments(await repo.listComments(task.id))).toHaveLength(1);
+  });
+
+  it("with persistent retries, reschedules a pending quota retry but bounds restart interruptions", async () => {
+    await updateAppSettings(repo, { autoRetry: true, maxAutoRetries: 2, persistentRetry: true });
+    const quota = await createTask("Waiting for quota", "", "in_progress");
+    const retryAt = new Date(Date.now() + 300).toISOString();
+    await repo.updateTask(quota.id, { agentState: "error", agentError: QUOTA_ERROR, autoRetries: 3, retryAt });
+    const running = await createTask("Keeps getting interrupted", "", "in_progress");
+    await repo.updateTask(running.id, { agentState: "running", autoRetries: 2 });
+
+    await getAgentManager();
+
+    expect(await getTask(quota.id)).toMatchObject({ agentState: "error", agentError: QUOTA_ERROR, autoRetries: 3, retryAt });
+    expect(await getTask(running.id)).toMatchObject({
+      agentState: "error",
+      agentError: "Interrupted by server restart (automatic retries used up)",
+      retryAt: null,
+    });
+    expect(await waitDone(quota.id)).toMatchObject({ autoRetries: 0 });
+    expect(argvEntries()).toHaveLength(1);
+    expect(await getTask(running.id)).toMatchObject({ agentState: "error", status: "in_progress" });
   });
 
   it("with automatic retries off, interrupts started runs and re-queues cards that were waiting", async () => {

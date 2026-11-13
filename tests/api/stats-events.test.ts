@@ -440,7 +440,13 @@ describe("GET /events (SSE)", () => {
       // queue.updated is global: every stream gets it.
       if (event.type === "queue.updated") continue;
       const boardId =
-        event.type === "board.updated" ? event.board.id : event.type === "task.updated" ? event.task.boardId : event.boardId;
+        event.type === "board.updated"
+          ? event.board.id
+          : event.type === "task.updated"
+            ? event.task.boardId
+            : event.type === "scheduler.updated"
+              ? event.scheduler.boardId
+              : event.boardId;
       expect(boardId).toBe(boardB.id);
     }
     stream.close();

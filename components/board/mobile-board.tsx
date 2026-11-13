@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { STATUS_LABELS, TASK_STATUSES, type Task, type TaskStatus } from "@/lib/types";
 import type { TasksByStatus } from "@/hooks/use-board";
+import { cardLayoutKey, useCardFlip } from "@/hooks/use-card-flip";
 import { EMPTY_COLUMN_TEXT } from "@/components/board/board-column";
 import type { BoardMenuActions } from "@/components/board/card-context-menu";
 import { quickActionsFor, runQuickAction, type QuickActionId } from "@/components/board/quick-actions";
@@ -133,6 +134,10 @@ export function MobileBoard({
   activeRef.current = active;
   const onActiveChangeRef = useRef(onActiveChange);
   onActiveChangeRef.current = onActiveChange;
+  // Cards glide when they change column or order: siblings on the visible page slide, a card
+  // leaving it flies off toward its new page, and one that arrived on another page glides in once
+  // that page is shown.
+  const flip = useCardFlip(cardLayoutKey(columns), { disabled: false });
 
   // Bring the track to the active column when it changes from outside the track (segment tap,
   // a new card landing in another column, a deep-linked card). Swipes already sit there. The
@@ -256,17 +261,19 @@ export function MobileBoard({
             >
               <div className="flex flex-col gap-3 px-3 pt-3 pb-[calc(6.5rem+env(safe-area-inset-bottom))]">
                 {tasks.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    activity={activity[task.id]}
-                    onOpen={() => onOpen(task.id)}
-                    onAnswer={() => {
-                      void actions.revertToTodo(task.id);
-                      onOpen(task.id);
-                    }}
-                    actions={<QuickActions task={task} onOpen={() => onOpen(task.id)} actions={actions} />}
-                  />
+                  // FLIP layer; the card's own markup stays untouched (and memoized).
+                  <div key={task.id} ref={flip.register(task.id)} className="rounded-lg">
+                    <TaskCard
+                      task={task}
+                      activity={activity[task.id]}
+                      onOpen={() => onOpen(task.id)}
+                      onAnswer={() => {
+                        void actions.revertToTodo(task.id);
+                        onOpen(task.id);
+                      }}
+                      actions={<QuickActions task={task} onOpen={() => onOpen(task.id)} actions={actions} />}
+                    />
+                  </div>
                 ))}
                 {tasks.length === 0 && (
                   <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed px-6 py-12 text-center">

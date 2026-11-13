@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -12,6 +12,7 @@ import * as boardBranchesRoute from "@/app/api/v1/boards/[id]/git/branches/route
 import * as boardTasksRoute from "@/app/api/v1/boards/[id]/tasks/route";
 import * as boardsRoute from "@/app/api/v1/boards/route";
 import * as browseRoute from "@/app/api/v1/fs/browse/route";
+import * as mkdirRoute from "@/app/api/v1/fs/mkdir/route";
 import * as cloneRoute from "@/app/api/v1/git/clone/route";
 import * as initRoute from "@/app/api/v1/git/init/route";
 import * as repoRoute from "@/app/api/v1/git/repo/route";
@@ -20,7 +21,17 @@ import * as taskPushRoute from "@/app/api/v1/tasks/[id]/git/push/route";
 import * as taskRoute from "@/app/api/v1/tasks/[id]/route";
 import * as taskRunRoute from "@/app/api/v1/tasks/[id]/run/route";
 import * as taskStopRoute from "@/app/api/v1/tasks/[id]/stop/route";
-import type { Board, BoardPushResult, Comment, FsBrowseResult, GitActionResult, GitBranches, GitStatus, Task } from "@/lib/types";
+import type {
+  Board,
+  BoardPushResult,
+  Comment,
+  FsBrowseResult,
+  FsEntry,
+  GitActionResult,
+  GitBranches,
+  GitStatus,
+  Task,
+} from "@/lib/types";
 
 interface Repo {
   work: string;
@@ -649,6 +660,89 @@ describe("folder browser", () => {
     const notDir = await browse(`?path=${encodeURIComponent(file)}`);
     expect(notDir.status).toBe(400);
     expect(notDir.body.error).toContain(file);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("create folder", () => {
+  let base: string;
+
+  beforeAll(async () => {
+    await freshEnv();
+    await setupAdmin();
+    base = tempDir("mkdir");
+    mkdirSync(path.join(base, "existing"));
+    writeFileSync(path.join(base, "file.txt"), "not a folder\n");
+  });
+
+  async function mkdir(body: Record<string, unknown>) {
+    return api<FsEntry & { error?: string }>(mkdirRoute, "POST", "/fs/mkdir", { body });
+  }
+
+  it("creates the folder, returns 201 with its entry, and it shows up in the browser", async () => {
+    const res = await mkdir({ parent: base, name: "projects" });
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ name: "projects", path: path.join(base, "projects"), isGitRepo: false });
+    expect(statSync(path.join(base, "projects")).isDirectory()).toBe(true);
+
+    const listed = await api<FsBrowseResult>(browseRoute, "GET", `/fs/browse?path=${encodeURIComponent(base)}`);
+    expect(listed.body.entries).toContainEqual({
+      name: "projects",
+      path: path.join(base, "projects"),
+      isGitRepo: false,
+    });
+  });
+
+  it("trims the name", async () => {
+    const res = await mkdir({ parent: base, name: "  my folder  " });
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ name: "my folder", path: path.join(base, "my folder"), isGitRepo: false });
+    expect(existsSync(path.join(base, "my folder"))).toBe(true);
+  });
+
+  it("answers 409 when something with that name already exists", async () => {
+    const folder = await mkdir({ parent: base, name: "existing" });
+    expect(folder.status).toBe(409);
+    expect(folder.body.error).toContain(path.join(base, "existing"));
+
+    const file = await mkdir({ parent: base, name: "file.txt" });
+    expect(file.status).toBe(409);
+    expect(file.body.error).toContain(path.join(base, "file.txt"));
+  });
+
+  it("rejects a relative, missing or nonexistent parent with 400", async () => {
+    const relative = await mkdir({ parent: "projects", name: "new" });
+    expect(relative.status).toBe(400);
+    expect(relative.body.error).toContain('full folder path starting with "/"');
+
+    const absent = await mkdir({ name: "new" });
+    expect(absent.status).toBe(400);
+    expect(absent.body.error).toContain('full folder path starting with "/"');
+
+    const ghost = path.join(base, "ghost");
+    const missing = await mkdir({ parent: ghost, name: "new" });
+    expect(missing.status).toBe(400);
+    expect(missing.body.error).toContain(ghost);
+    expect(existsSync(ghost)).toBe(false);
+
+    const file = path.join(base, "file.txt");
+    const notDir = await mkdir({ parent: file, name: "new" });
+    expect(notDir.status).toBe(400);
+    expect(notDir.body.error).toContain(file);
+  });
+
+  it("rejects empty, nested, dot and hidden names with 400", async () => {
+    for (const name of ["", "   ", "a/b", "/abs", ".", "..", ".hidden", "x".repeat(256)]) {
+      const res = await mkdir({ parent: base, name });
+      expect(res.status, JSON.stringify(name)).toBe(400);
+      expect(res.body.error).toBeTruthy();
+    }
+    expect(existsSync(path.join(base, "a"))).toBe(false);
+    expect(existsSync(path.join(base, ".hidden"))).toBe(false);
+
+    const missingName = await mkdir({ parent: base });
+    expect(missingName.status).toBe(400);
   });
 });
 

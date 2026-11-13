@@ -946,43 +946,61 @@ async function assertPortFree(cfg) {
   );
 }
 
-/** Who started the running server: "pm2", "fg" (start -f) or "cli" (background). */
+/** Owners (pid file second line) that are service managers restarting whatever we stop. */
+const SERVICE_MANAGERS = new Set(["pm2", "systemd"]);
+
+/** Who started the running server: "pm2", "systemd", "fg" (start -f) or "cli" (background). */
 function serverOwner(cfg) {
   return readText(statePaths(cfg).pid).split("\n")[1]?.trim() || "cli";
 }
 
-/** Pid of a pm2-supervised server, or null. */
-function pm2ManagedPid(cfg) {
-  const pid = runningPid(statePaths(cfg).pid, SERVER_MARK);
-  return pid && serverOwner(cfg) === "pm2" ? pid : null;
+/** The service manager running this CLI (`up --foreground` from pm2 or omp-ui.service), or null. */
+function serviceManager() {
+  if (process.env.pm_id !== undefined) return "pm2";
+  if (process.env.OMP_UI_SERVICE_MANAGER === "systemd") return "systemd";
+  return null;
 }
 
-/** Refuse to fight pm2: it would restart whatever we stop. */
-function assertNotPm2(cfg, action) {
-  const pid = pm2ManagedPid(cfg);
-  if (pid) {
-    throw new CliError(`AgentMan is managed by pm2 (pid ${pid}).`, { hint: `Run: omp-ui pm2 ${action}` });
+/** The running server when pm2 or systemd supervises it ({ pid, manager }), or null. */
+function managedServer(cfg) {
+  const pid = runningPid(statePaths(cfg).pid, SERVER_MARK);
+  const owner = pid ? serverOwner(cfg) : null;
+  return pid && SERVICE_MANAGERS.has(owner) ? { pid, manager: owner } : null;
+}
+
+/** Refuse to fight pm2/systemd: they would restart whatever we stop. */
+function assertNotManaged(cfg, action) {
+  const managed = managedServer(cfg);
+  if (managed) {
+    throw new CliError(`AgentMan is managed by ${managed.manager} (pid ${managed.pid}).`, {
+      hint: `Run: omp-ui ${managed.manager} ${action}`,
+    });
   }
+}
+
+/** "pid 123, managed by pm2"-style note for an already running server. */
+function ownerNote(pid, owner) {
+  return `pid ${pid}${SERVICE_MANAGERS.has(owner) ? `, managed by ${owner}` : ""}`;
 }
 
 async function startServer(cfg, { foreground = false } = {}) {
   requireNode();
   const paths = statePaths(cfg);
-  const underPm2 = process.env.pm_id !== undefined;
+  const manager = serviceManager();
   const existing = runningPid(paths.pid, SERVER_MARK);
   if (existing) {
     const owner = serverOwner(cfg);
-    if (foreground && underPm2 && owner === "pm2") {
-      // Left over from a previous pm2 run whose supervisor was killed: replace it.
-      log.warn(`Stopping a leftover server from a previous pm2 run (pid ${existing})`);
+    if (foreground && manager && owner === manager) {
+      // Left over from a previous pm2/systemd run whose supervisor was killed: replace it.
+      log.warn(`Stopping a leftover server from a previous ${manager} run (pid ${existing})`);
       await terminate(existing);
       rmQuiet(paths.pid);
     } else if (foreground) {
-      throw new CliError(`AgentMan is already running (pid ${existing}${owner === "pm2" ? ", managed by pm2" : ""}).`, {
-        hint: owner === "pm2" ? "Use: omp-ui pm2 restart" : "Stop it first: omp-ui stop",
+      throw new CliError(`AgentMan is already running (${ownerNote(existing, owner)}).`, {
+        hint: SERVICE_MANAGERS.has(owner) ? `Use: omp-ui ${owner} restart` : "Stop it first: omp-ui stop",
       });
     } else {
-      log.info(`Already running ${c.dim(`(pid ${existing}${owner === "pm2" ? ", managed by pm2" : ""})`)}`);
+      log.info(`Already running ${c.dim(`(${ownerNote(existing, owner)})`)}`);
       return { pid: existing, health: await getHealth(cfg), already: true };
     }
   }
@@ -995,8 +1013,8 @@ async function startServer(cfg, { foreground = false } = {}) {
 
   if (foreground) {
     const child = spawn(process.execPath, SERVER_ARGS, { cwd: ROOT, env: serverEnv(cfg), stdio: "inherit" });
-    fs.writeFileSync(paths.pid, `${child.pid}\n${underPm2 ? "pm2" : "fg"}\n`);
-    log.info(`Serving at ${c.cyan(localUrl(cfg))} ${c.dim(underPm2 ? "(supervised by pm2)" : "(Ctrl+C to stop)")}`);
+    fs.writeFileSync(paths.pid, `${child.pid}\n${manager ?? "fg"}\n`);
+    log.info(`Serving at ${c.cyan(localUrl(cfg))} ${c.dim(manager ? `(supervised by ${manager})` : "(Ctrl+C to stop)")}`);
     const forward = (sig) => () => {
       if (sig === "SIGINT" && process.stdin.isTTY) return;
       child.kill(sig);
@@ -1069,8 +1087,9 @@ async function ensureMemory(cfg) {
   }
 }
 
-async function stopServer(cfg, { allowPm2 = false } = {}) {
-  if (!allowPm2) assertNotPm2(cfg, "stop");
+/** `allowManaged`: under pm2/systemd, stop a server owned by that same manager (a leftover of our previous run). */
+async function stopServer(cfg, { allowManaged = false } = {}) {
+  if (!(allowManaged && serverOwner(cfg) === serviceManager())) assertNotManaged(cfg, "stop");
   const paths = statePaths(cfg);
   const pid = runningPid(paths.pid, SERVER_MARK);
   if (!pid) {
@@ -1158,6 +1177,162 @@ async function pm2Start() {
   log.step(known ? "Restarting AgentMan under pm2" : "Starting AgentMan under pm2");
   await pm2(known ? ["restart", PM2_APP] : ["start", ECOSYSTEM_FILE]);
   await pm2WaitAndReport();
+}
+
+// ─── systemd ────────────────────────────────────────────────────────────────
+
+const SYSTEMD_UNIT = "omp-ui.service";
+/** Unit template with {{ROOT}}, {{NODE}} and {{PATH}} placeholders. */
+const SYSTEMD_TEMPLATE = path.join(ROOT, "omp-ui.service");
+const SYSTEMD_USAGE = "omp-ui systemd [install|uninstall|start|stop|restart|status|logs|unit]";
+
+/** Where the user manager loads the unit from: $XDG_CONFIG_HOME/systemd/user (default ~/.config). */
+function systemdUnitPath() {
+  const xdg = process.env.XDG_CONFIG_HOME;
+  const base = xdg && path.isAbsolute(xdg) ? xdg : path.join(os.homedir(), ".config");
+  return path.join(base, "systemd", "user", SYSTEMD_UNIT);
+}
+
+/** PATH captured for the unit, with node's own directory added when missing; entries systemd cannot take unquoted are dropped. */
+function systemdPath() {
+  const raw = process.env.PATH || "/usr/local/bin:/usr/bin:/bin";
+  if (/[\r\n]/.test(raw)) throw new CliError("Cannot write the systemd unit: PATH contains a line break.");
+  const dirs = raw.split(":").filter((d) => path.isAbsolute(d) && !/[\s"'\\]/.test(d));
+  const nodeDir = path.dirname(process.execPath);
+  if (!dirs.includes(nodeDir)) dirs.unshift(nodeDir);
+  return [...new Set(dirs)].join(":");
+}
+
+/** omp-ui.service with the placeholders filled in for this checkout and this node. */
+function renderSystemdUnit() {
+  for (const [what, value] of [["project", ROOT], ["node", process.execPath]]) {
+    if (/[\s"'\\]/.test(value)) {
+      throw new CliError(`Cannot write the systemd unit: the ${what} path contains spaces or quotes (${value}).`, {
+        hint: "Move it to a path without them.",
+      });
+    }
+  }
+  const values = { ROOT, NODE: process.execPath, PATH: systemdPath() };
+  let text = fs.readFileSync(SYSTEMD_TEMPLATE, "utf8");
+  // "%" starts a systemd specifier; "%%" is a literal one.
+  for (const [key, value] of Object.entries(values)) text = text.replaceAll(`{{${key}}}`, value.replaceAll("%", "%%"));
+  return text;
+}
+
+/** Refuse unless this is Linux with a reachable systemd user manager. */
+function assertSystemd() {
+  const hint = "Use pm2 instead: omp-ui up --pm2";
+  if (process.platform !== "linux") throw new CliError("systemd services are Linux-only.", { hint });
+  if (!which("systemctl")) throw new CliError("systemctl was not found — this system does not run systemd.", { hint });
+  if (capture("systemctl", ["--user", "show-environment"]) === null) {
+    throw new CliError("The systemd user manager is not reachable (systemctl --user failed).", {
+      hint: `Run it from a regular login session (not su/sudo), or: ${hint}`,
+    });
+  }
+}
+
+async function systemctl(args, { allowFail = false } = {}) {
+  const code = await run("systemctl", ["--user", ...args]);
+  if (code !== 0 && !allowFail) {
+    throw new CliError(`systemctl --user ${args[0]} failed (exit ${code}).`, { hint: "See: omp-ui systemd logs" });
+  }
+  return code;
+}
+
+/** `systemctl --user is-active` of the unit: "active", "inactive", "failed", "activating", … */
+function systemdUnitState() {
+  const r = spawnSync("systemctl", ["--user", "is-active", SYSTEMD_UNIT], { encoding: "utf8", timeout: 15_000 });
+  return `${r.stdout ?? ""}`.trim() || "unknown";
+}
+
+function assertSystemdInstalled() {
+  if (!fs.existsSync(systemdUnitPath())) {
+    throw new CliError(`The systemd service is not installed (${systemdUnitPath()}).`, { hint: "Install it: omp-ui systemd install" });
+  }
+}
+
+/** Stop a server this CLI started (background or attached) so the service can bind the port. */
+async function systemdTakeOver() {
+  const cfg = loadConfig();
+  if (runningPid(statePaths(cfg).pid, SERVER_MARK) && serverOwner(cfg) !== "systemd") {
+    log.info("Stopping the background server so systemd can take over");
+    await stopServer(cfg);
+  }
+}
+
+/** Let the user manager (and so the service) start at boot without a login. */
+function ensureLinger() {
+  const user = os.userInfo().username;
+  if (capture("loginctl", ["show-user", user, "-p", "Linger", "--value"]) === "yes") return;
+  if (which("loginctl") && capture("loginctl", ["enable-linger", user]) !== null) {
+    log.ok(`Enabled lingering for ${user} — AgentMan starts at boot without a login`);
+    return;
+  }
+  log.warn(`Could not enable lingering for ${user}: AgentMan starts only once ${user} logs in.`);
+  log.hint(`To start it at boot, run: sudo loginctl enable-linger ${user}`);
+}
+
+/** The generated admin password banner from a first run under systemd, if any. */
+function systemdGeneratedPassword() {
+  const out = capture("journalctl", ["--user", "-u", SYSTEMD_UNIT, "-n", "400", "--no-pager", "-o", "cat"]) ?? "";
+  const m = /AgentMan ADMIN PASSWORD \(generated\): (\S+)/.exec(out.replace(/\x1b\[[0-9;]*m/g, ""));
+  return m?.[1] ?? null;
+}
+
+async function systemdWaitAndReport() {
+  const cfg = loadConfig();
+  log.info(`Waiting for the server… ${c.dim("(a first run installs and builds — follow with: omp-ui systemd logs -f)")}`);
+  const health = await waitForHealth(cfg, { timeoutMs: 15 * 60_000 });
+  if (!health) {
+    throw new CliError("AgentMan did not come up under systemd.", { hint: "See: omp-ui systemd logs" });
+  }
+  log.ok(`Running under systemd ${c.dim(`(v${health.version} · ${health.db})`)}`);
+  printUrls(cfg, { tunnelUrl: tunnelInfo(cfg)?.url });
+  const generated = systemdGeneratedPassword();
+  if (generated && readEnvFile()?.ADMIN_PASSWORD === generated) {
+    console.log(`  ${c.bold("Admin password (generated):")} ${c.green(generated)} ${c.dim("— change it with: omp-ui passwd")}\n`);
+  }
+  console.log(c.bold("systemd"));
+  console.log(`  ${c.dim("·")} Logs: ${c.cyan("omp-ui systemd logs")}   Status: ${c.cyan("omp-ui systemd status")}   Stop: ${c.cyan("omp-ui systemd stop")}`);
+  console.log(`  ${c.dim("·")} Starts on boot · unit: ${c.dim(systemdUnitPath())}\n`);
+}
+
+/** Write the unit, enable it at boot and (re)start it, taking over from a CLI-started server. Idempotent. */
+async function systemdInstall() {
+  assertSystemd();
+  const unit = renderSystemdUnit();
+  await systemdTakeOver();
+  const file = systemdUnitPath();
+  const changed = readText(file) !== unit.trim();
+  if (changed) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, unit);
+    log.ok(`Wrote ${file}`);
+  } else {
+    log.info(`Unit is up to date ${c.dim(`(${file})`)}`);
+  }
+  await systemctl(["daemon-reload"]);
+  const wasActive = systemdUnitState() === "active";
+  log.step(wasActive ? "Restarting AgentMan under systemd" : "Starting AgentMan under systemd");
+  await systemctl(["enable", "--now", SYSTEMD_UNIT]);
+  // Already running: restart so a changed unit (or new sources: `up` rebuilds on start) applies.
+  if (wasActive) await systemctl(["restart", SYSTEMD_UNIT]);
+  ensureLinger();
+  await systemdWaitAndReport();
+}
+
+async function systemdUninstall() {
+  assertSystemd();
+  const file = systemdUnitPath();
+  if (!fs.existsSync(file)) {
+    log.info(`The systemd service is not installed ${c.dim(`(${file})`)}`);
+    return;
+  }
+  await systemctl(["disable", "--now", SYSTEMD_UNIT], { allowFail: true });
+  rmQuiet(file);
+  await systemctl(["daemon-reload"]);
+  log.ok(`Removed ${file}`);
+  log.hint("Start it without systemd: omp-ui up");
 }
 
 function printUrls(cfg, { tunnelUrl } = {}) {
@@ -1488,24 +1663,31 @@ const COMMANDS = {
       rebuild: { type: "boolean", desc: "Force a fresh production build" },
       open: { type: "boolean", short: "o", desc: "Open the browser when ready" },
       pm2: { type: "boolean", desc: "Hand the server to pm2 (restarts on crash, can start on boot)" },
-      foreground: { type: "boolean", short: "f", desc: "Stay attached instead of running in the background (used by pm2)" },
+      systemd: { type: "boolean", desc: "Install it as a systemd user service (restarts on crash, starts on boot; Linux)" },
+      foreground: { type: "boolean", short: "f", desc: "Stay attached instead of running in the background (used by pm2 and systemd)" },
     },
     examples: [
       "omp-ui up",
       "omp-ui up --port 8080 --public",
       "omp-ui up --pm2",
+      "omp-ui up --systemd",
       "ADMIN_PASSWORD='s3cret-pass' omp-ui up",
     ],
     async run(values) {
       requireNode();
-      if (values.pm2 && values.foreground) throw new CliError("Choose either --pm2 or --foreground.");
-      if (values.public && (values.pm2 || values.foreground)) {
+      const managers = [values.pm2 && "--pm2", values.systemd && "--systemd", values.foreground && "--foreground"].filter(Boolean);
+      if (managers.length > 1) throw new CliError(`Choose only one of ${managers.join(", ")}.`);
+      if (values.public && managers.length) {
         throw new CliError("--public only works in the default background mode.", {
           hint: "Open the link separately once it runs: omp-ui public",
         });
       }
+      if (values.systemd) {
+        assertSystemd();
+        renderSystemdUnit(); // fail before building when the paths cannot go into a unit
+      }
       const prevPort = fs.existsSync(ENV_FILE) ? loadConfig().port : null;
-      if (prevPort !== null && !values.pm2 && !values.foreground) assertNotPm2(loadConfig(), "restart");
+      if (prevPort !== null && !managers.length) assertNotManaged(loadConfig(), "restart");
       if (prevPort === null) {
         log.step("First run — creating .env");
         await initProject({ password: values.password, port: values.port, yes: true }, { fromUp: true });
@@ -1515,30 +1697,39 @@ const COMMANDS = {
       let cfg = loadConfig();
       await ensureDeps();
 
-      if (values.pm2 && pm2ManagedPid(cfg)) {
-        // pm2's own `up --foreground` rebuilds if needed after the restart.
+      const managed = managedServer(cfg);
+      // The manager's own `up --foreground` rebuilds if needed after the restart.
+      if (values.pm2 && managed?.manager === "pm2") {
         await pm2Start();
+        return;
+      }
+      if (values.systemd && managed?.manager === "systemd") {
+        await systemdInstall();
         return;
       }
 
       const state = values.rebuild ? "forced" : buildState();
       const runningBefore = runningPid(statePaths(cfg).pid, SERVER_MARK);
-      // Under pm2, a pm2-owned server still running is a leftover of our previous incarnation.
-      const allowPm2 = Boolean(values.foreground && process.env.pm_id !== undefined);
+      // Under pm2/systemd, a server owned by that manager still running is a leftover of our previous incarnation.
+      const allowManaged = Boolean(values.foreground && serviceManager());
       if (state !== "fresh") {
         if (runningBefore) {
           log.info(state === "stale" ? "Sources changed — rebuilding" : "Rebuilding");
-          await stopServer(cfg, { allowPm2 });
+          await stopServer(cfg, { allowManaged });
         }
         await buildOrKeepPrevious();
       } else if (runningBefore && prevPort !== null && cfg.port !== prevPort) {
         log.info(`Port changed — restarting on ${cfg.port}`);
-        await stopServer(loadConfig({ PORT: prevPort }), { allowPm2 });
+        await stopServer(loadConfig({ PORT: prevPort }), { allowManaged });
       }
       cfg = loadConfig();
 
       if (values.pm2) {
         await pm2Start();
+        return;
+      }
+      if (values.systemd) {
+        await systemdInstall();
         return;
       }
       await ensureMemory(cfg);
@@ -1602,7 +1793,7 @@ const COMMANDS = {
     options: {},
     async run() {
       const cfg = loadConfig();
-      assertNotPm2(cfg, "stop");
+      assertNotManaged(cfg, "stop");
       await tunnelStop(cfg, { quiet: true });
       await stopServer(cfg);
     },
@@ -1617,7 +1808,7 @@ const COMMANDS = {
     },
     async run(values) {
       const before = loadConfig();
-      assertNotPm2(before, "restart");
+      assertNotManaged(before, "restart");
       applyPortFlag(values);
       await stopServer(before);
       const state = values.rebuild ? "forced" : buildState();
@@ -1672,9 +1863,10 @@ const COMMANDS = {
         );
       } else {
         const row = (k, v) => console.log(`  ${c.dim(k.padEnd(9))}${v}`);
-        const byPm2 = pid && serverOwner(cfg) === "pm2";
+        const owner = pid ? serverOwner(cfg) : null;
+        const manager = SERVICE_MANAGERS.has(owner) ? owner : null;
         const state = pid
-          ? `${c.green(byPm2 ? "● running under pm2" : "● running")} ${c.dim(`pid ${pid}${startedAt ? ` · up ${formatDuration(Date.now() - startedAt.getTime())}` : ""}`)}`
+          ? `${c.green(manager ? `● running under ${manager}` : "● running")} ${c.dim(`pid ${pid}${startedAt ? ` · up ${formatDuration(Date.now() - startedAt.getTime())}` : ""}`)}`
           : health
             ? `${c.yellow("● running elsewhere")} ${c.dim("(not started by this CLI, e.g. Docker)")}`
             : c.red("● stopped");
@@ -1689,8 +1881,12 @@ const COMMANDS = {
           row("Health", c.red("unreachable"));
         }
         row("Public", tunnel?.url ? c.magenta(tunnel.url) : c.dim("off (omp-ui public)"));
-        row("Logs", c.dim(byPm2 ? `${rel(PM2_OUT_LOG)} (omp-ui pm2 logs)` : rel(paths.log)));
-        if (byPm2) row("Manage", c.dim("omp-ui pm2 stop | restart | logs | status"));
+        const logs = {
+          pm2: `${rel(PM2_OUT_LOG)} (omp-ui pm2 logs)`,
+          systemd: `journalctl --user -u ${SYSTEMD_UNIT} (omp-ui systemd logs)`,
+        };
+        row("Logs", c.dim(logs[manager] ?? rel(paths.log)));
+        if (manager) row("Manage", c.dim(`omp-ui ${manager} stop | restart | logs | status`));
         console.log("");
       }
       if (!pid && !health) process.exitCode = 3;
@@ -1805,9 +2001,11 @@ const COMMANDS = {
       updateEnvFile({ ADMIN_PASSWORD: pw });
       log.ok("Admin password saved to .env");
       const cfg = loadConfig();
-      if (pm2ManagedPid(cfg)) {
-        log.info("Restarting under pm2 to apply it…");
-        await pm2(["restart", PM2_APP]);
+      const managed = managedServer(cfg);
+      if (managed) {
+        log.info(`Restarting under ${managed.manager} to apply it…`);
+        if (managed.manager === "pm2") await pm2(["restart", PM2_APP]);
+        else await systemctl(["restart", SYSTEMD_UNIT]);
         await waitForHealth(cfg, { timeoutMs: 120_000 });
         log.ok("New password is active — all previous sessions were signed out");
       } else if (runningPid(statePaths(cfg).pid, SERVER_MARK)) {
@@ -1902,6 +2100,89 @@ const COMMANDS = {
           throw new CliError(`Unknown pm2 action "${action}".`, {
             hint: "Use: omp-ui pm2 [start|stop|restart|logs|status|save|startup|delete]",
           });
+      }
+    },
+  },
+
+  systemd: {
+    summary: "Run it as a systemd user service (restarts on crash, starts on boot; Linux)",
+    usage: SYSTEMD_USAGE,
+    positionals: true,
+    options: {
+      lines: { type: "string", short: "n", arg: "<lines>", desc: "Lines of history (logs, default 100)" },
+      follow: { type: "boolean", short: "f", desc: "Keep printing new lines (logs)" },
+      rebuild: { type: "boolean", desc: "Stop, force a fresh production build, then start (restart)" },
+    },
+    description: [
+      "install    Write ~/.config/systemd/user/omp-ui.service from omp-ui.service, enable and start it,",
+      "           and enable lingering so it starts at boot without a login. Rerun after moving node.",
+      "uninstall  Stop and disable the service and delete the unit.",
+      "start      systemctl --user start omp-ui.service (stops a server started by `omp-ui up` first).",
+      "stop       systemctl --user stop omp-ui.service.",
+      "restart    systemctl --user restart omp-ui.service (--rebuild: stop, build, start).",
+      "status     systemctl --user status omp-ui.service plus a health check. Default action.",
+      "logs       journalctl --user -u omp-ui.service (-n <lines>, -f to follow).",
+      "unit       Print the rendered unit, to review or install by hand.",
+      "The service runs `omp-ui up --foreground`: it rebuilds when the sources changed, and bin/supervisor.mjs",
+      "restarts a server that crashes or stops answering /api/v1/health.",
+    ].join("\n"),
+    examples: [
+      "omp-ui systemd install",
+      "omp-ui systemd restart --rebuild",
+      "omp-ui systemd logs -f",
+      "omp-ui systemd unit > ~/.config/systemd/user/omp-ui.service",
+    ],
+    async run(values, positionals) {
+      const [action = "status"] = positionals;
+      if (action === "unit") {
+        process.stdout.write(renderSystemdUnit());
+        return;
+      }
+      if (!["install", "uninstall", "start", "stop", "restart", "status", "logs"].includes(action)) {
+        throw new CliError(`Unknown systemd action "${action}".`, { hint: `Use: ${SYSTEMD_USAGE}` });
+      }
+      assertSystemd();
+      switch (action) {
+        case "install":
+          return systemdInstall();
+        case "uninstall":
+          return systemdUninstall();
+        case "start":
+          assertSystemdInstalled();
+          await systemdTakeOver();
+          await systemctl(["start", SYSTEMD_UNIT]);
+          return systemdWaitAndReport();
+        case "restart":
+          assertSystemdInstalled();
+          await systemdTakeOver();
+          if (values.rebuild) {
+            // Stop first: building over dist/ breaks the running server's lazily loaded chunks.
+            await systemctl(["stop", SYSTEMD_UNIT]);
+            await buildOrKeepPrevious();
+            await systemctl(["start", SYSTEMD_UNIT]);
+          } else {
+            // `up --foreground` rebuilds on start when the sources changed.
+            await systemctl(["restart", SYSTEMD_UNIT]);
+          }
+          return systemdWaitAndReport();
+        case "stop":
+          assertSystemdInstalled();
+          return systemctl(["stop", SYSTEMD_UNIT]);
+        case "logs": {
+          const n = Number(values.lines ?? 100);
+          if (!Number.isInteger(n) || n < 0) throw new CliError(`Invalid line count "${values.lines}".`);
+          const code = await run("journalctl", ["--user", "-u", SYSTEMD_UNIT, "-n", String(n), "--no-pager", ...(values.follow ? ["-f"] : [])]);
+          if (code !== 0) process.exitCode = code;
+          return;
+        }
+        default: {
+          if (!fs.existsSync(systemdUnitPath())) log.hint("Not installed — install it with: omp-ui systemd install");
+          await systemctl(["status", "--no-pager", SYSTEMD_UNIT], { allowFail: true });
+          const cfg = loadConfig();
+          const health = await getHealth(cfg);
+          console.log(health ? `${c.green("✓")} Healthy ${c.dim(`v${health.version} · ${health.db}`)}` : `${c.red("✗")} Not answering at ${localUrl(cfg)}`);
+          return;
+        }
       }
     },
   },
@@ -2055,7 +2336,8 @@ const COMMANDS = {
         row(port === "free" ? "ok" : "fail", "Port", port === "free" ? `${cfg.port} free` : `${cfg.port} ${port === "denied" ? "not permitted" : "in use by another process"} — change PORT in .env`);
       }
       if (health) {
-        const owner = pid ? (serverOwner(cfg) === "pm2" ? `pid ${pid} under pm2` : `pid ${pid}`) : "running (external/Docker)";
+        const by = pid ? serverOwner(cfg) : null;
+        const owner = pid ? (SERVICE_MANAGERS.has(by) ? `pid ${pid} under ${by}` : `pid ${pid}`) : "running (external/Docker)";
         row("ok", "Server", `${owner} · v${health.version} · ${localUrl(cfg)}`);
         row("ok", "Database", `${health.db} reachable`);
       } else if (pid) {
@@ -2148,7 +2430,7 @@ function printMainHelp() {
   const groups = [
     ["Start", ["up", "init", "start", "stop", "restart", "status", "logs", "open"]],
     ["Configure", ["passwd", "public", "doctor"]],
-    ["Deploy", ["pm2", "docker", "deploy"]],
+    ["Deploy", ["pm2", "systemd", "docker", "deploy"]],
     ["Develop", ["dev", "build", "version"]],
   ];
   const width = Math.max(...Object.keys(COMMANDS).map((k) => k.length)) + 2;

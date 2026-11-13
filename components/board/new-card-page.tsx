@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { createCardFromText } from "@/hooks/use-board";
 import { useDocumentTitle } from "@/hooks/use-document-title";
+import { useKeyboardViewport } from "@/hooks/use-keyboard-viewport";
 import { api } from "@/lib/api-client";
 import { LAST_BOARD_KEY, newCardHref, setMobileColumnHint } from "@/lib/new-card-route";
 import type { BoardWithCounts } from "@/lib/types";
@@ -39,38 +40,6 @@ function takeDraft(boardId: string): string {
   } catch {
     return "";
   }
-}
-
-interface KeyboardViewport {
-  height: number;
-  top: number;
-}
-
-/**
- * The visible area while an on-screen keyboard is up, else null. Mobile browsers shrink only the
- * visual viewport for the keyboard (the root viewport has no `interactive-widget=resizes-content`),
- * so `h-dvh` alone would leave the Create bar underneath it.
- */
-function useKeyboardViewport(): KeyboardViewport | null {
-  const [box, setBox] = useState<KeyboardViewport | null>(null);
-  useEffect(() => {
-    const vv = window.visualViewport;
-    if (!vv) return;
-    const update = () => {
-      // Pinch zoom shrinks the visual viewport too; at scale 1 only a keyboard does.
-      const keyboard = Math.abs(vv.scale - 1) < 0.01 && document.documentElement.clientHeight - vv.height > 120;
-      const next = keyboard ? { height: Math.round(vv.height), top: Math.round(vv.offsetTop) } : null;
-      setBox((prev) => (prev && next && prev.height === next.height && prev.top === next.top ? prev : next));
-    };
-    update();
-    vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
-    return () => {
-      vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
-    };
-  }, []);
-  return box;
 }
 
 /**

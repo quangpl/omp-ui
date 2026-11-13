@@ -64,6 +64,7 @@ function sanitize(s: AppSettings): AppSettings {
     maxAutoRetries: Number.isFinite(Number(s.maxAutoRetries))
       ? Math.min(20, Math.max(0, Math.floor(Number(s.maxAutoRetries))))
       : DEFAULT_SETTINGS.maxAutoRetries,
+    persistentRetry: typeof s.persistentRetry === "boolean" ? s.persistentRetry : DEFAULT_SETTINGS.persistentRetry,
     cleanupSchedule: CLEANUP_SCHEDULES.includes(s.cleanupSchedule) ? s.cleanupSchedule : DEFAULT_SETTINGS.cleanupSchedule,
     // Known ids only, each once, in the canonical order.
     cleanupTargets: Array.isArray(s.cleanupTargets)

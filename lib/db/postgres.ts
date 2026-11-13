@@ -10,6 +10,8 @@ import type {
   RunEvent,
   RunEventKind,
   RunStatus,
+  Scheduler,
+  SchedulerRun,
   Task,
   TaskStatus,
 } from "@/lib/types";
@@ -18,10 +20,13 @@ import type {
   CreateBoardInput,
   CreateCommentInput,
   CreateRunInput,
+  CreateSchedulerInput,
+  CreateSchedulerRunInput,
   CreateTaskInput,
   Repository,
   UpdateBoardInput,
   UpdateRunInput,
+  UpdateSchedulerInput,
   UpdateTaskInput,
 } from "@/lib/db/types";
 import {
@@ -79,6 +84,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   auto_retries INTEGER NOT NULL DEFAULT 0,
   retry_at TEXT,
   todos TEXT NOT NULL DEFAULT '[]',
+  scheduler_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -89,8 +95,10 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pushed_at TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS auto_retries INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS retry_at TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS todos TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS scheduler_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_tasks_board_status_position ON tasks (board_id, status, position);
 CREATE INDEX IF NOT EXISTS idx_tasks_agent_state ON tasks (agent_state);
+CREATE INDEX IF NOT EXISTS idx_tasks_scheduler ON tasks (scheduler_id);
 
 CREATE TABLE IF NOT EXISTS comments (
   id TEXT PRIMARY KEY,
@@ -128,6 +136,39 @@ CREATE TABLE IF NOT EXISTS run_events (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_run_events_run_seq ON run_events (run_id, seq);
+
+CREATE TABLE IF NOT EXISTS schedulers (
+  id TEXT PRIMARY KEY,
+  board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  cron TEXT NOT NULL,
+  timezone TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  max_runs INTEGER,
+  run_count INTEGER NOT NULL DEFAULT 0,
+  last_run_at TEXT,
+  next_run_at TEXT,
+  last_status TEXT CHECK (last_status IN ('created', 'failed')),
+  last_task_id TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_schedulers_board ON schedulers (board_id);
+
+-- task_id has no foreign key: run history outlives the card it created.
+CREATE TABLE IF NOT EXISTS scheduler_runs (
+  id TEXT PRIMARY KEY,
+  scheduler_id TEXT NOT NULL REFERENCES schedulers(id) ON DELETE CASCADE,
+  task_id TEXT,
+  trigger TEXT NOT NULL CHECK (trigger IN ('scheduled', 'manual')),
+  scheduled_for TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('created', 'failed')),
+  error TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scheduler_runs_scheduler_created ON scheduler_runs (scheduler_id, created_at);
 `;
 
 const TASK_SELECT = `
@@ -169,6 +210,7 @@ interface TaskRow {
   auto_retries: number;
   retry_at: string | null;
   todos: string;
+  scheduler_id: string | null;
   created_at: string;
   updated_at: string;
   comment_count: number;
@@ -208,6 +250,36 @@ interface RunEventRow {
   created_at: string;
 }
 
+interface SchedulerRow {
+  id: string;
+  board_id: string;
+  name: string;
+  prompt: string;
+  cron: string;
+  timezone: string;
+  enabled: boolean;
+  max_runs: number | null;
+  run_count: number;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  last_status: Scheduler["lastStatus"];
+  last_task_id: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface SchedulerRunRow {
+  id: string;
+  scheduler_id: string;
+  task_id: string | null;
+  trigger: SchedulerRun["trigger"];
+  scheduled_for: string;
+  status: SchedulerRun["status"];
+  error: string | null;
+  created_at: string;
+}
+
 function toBoard(r: BoardRow): Board {
   return {
     id: r.id,
@@ -241,6 +313,7 @@ function toTask(r: TaskRow): Task {
     autoRetries: Number(r.auto_retries),
     retryAt: r.retry_at,
     todos: parseTodoPhases(r.todos),
+    schedulerId: r.scheduler_id ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     commentCount: Number(r.comment_count),
@@ -284,6 +357,46 @@ function toRunEvent(r: RunEventRow): RunEvent {
     text: r.text,
     createdAt: r.created_at,
   };
+}
+
+function toScheduler(r: SchedulerRow): Scheduler {
+  return {
+    id: r.id,
+    boardId: r.board_id,
+    name: r.name,
+    prompt: r.prompt,
+    cron: r.cron,
+    timezone: r.timezone,
+    enabled: r.enabled,
+    maxRuns: r.max_runs == null ? null : Number(r.max_runs),
+    runCount: Number(r.run_count),
+    lastRunAt: r.last_run_at,
+    nextRunAt: r.next_run_at,
+    lastStatus: r.last_status,
+    lastTaskId: r.last_task_id,
+    lastError: r.last_error,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function toSchedulerRun(r: SchedulerRunRow): SchedulerRun {
+  return {
+    id: r.id,
+    schedulerId: r.scheduler_id,
+    taskId: r.task_id,
+    trigger: r.trigger,
+    scheduledFor: r.scheduled_for,
+    status: r.status,
+    error: r.error,
+    createdAt: r.created_at,
+  };
+}
+
+/** Normalizes the `limit` of `listSchedulerRuns` into 1..1000 (default 100). */
+function normalizeSchedulerRunLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit)) return 100;
+  return Math.min(1000, Math.max(1, Math.floor(limit)));
 }
 
 /** Builds `a = $1, b = $2` for an UPDATE from the defined entries only (undefined = leave as is). */
@@ -469,8 +582,8 @@ export class PostgresRepository implements Repository {
         position = max == null ? POSITION_STEP : Number(max) + POSITION_STEP;
       }
       await this.query(
-        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, blocked_by, created_by_task_id, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'idle', $7, $8, $9, $9)`,
+        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, blocked_by, created_by_task_id, scheduler_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'idle', $7, $8, $9, $10, $10)`,
         [
           id,
           input.boardId,
@@ -480,6 +593,7 @@ export class PostgresRepository implements Repository {
           position,
           JSON.stringify(input.blockedBy ?? []),
           input.createdByTaskId ?? null,
+          input.schedulerId ?? null,
           now,
         ],
         client,
@@ -657,5 +771,106 @@ export class PostgresRepository implements Repository {
       [runId, normalizeAfter(after), normalizeLimit(limit)],
     );
     return res.rows.map(toRunEvent);
+  }
+
+  // -------------------------------------------------------------- schedulers
+
+  async listSchedulers(boardId?: string): Promise<Scheduler[]> {
+    const res =
+      boardId === undefined
+        ? await this.query<SchedulerRow>("SELECT * FROM schedulers ORDER BY created_at DESC, id DESC")
+        : await this.query<SchedulerRow>(
+            "SELECT * FROM schedulers WHERE board_id = $1 ORDER BY created_at DESC, id DESC",
+            [boardId],
+          );
+    return res.rows.map(toScheduler);
+  }
+
+  async getScheduler(id: string): Promise<Scheduler | null> {
+    const res = await this.query<SchedulerRow>("SELECT * FROM schedulers WHERE id = $1", [id]);
+    return res.rows[0] ? toScheduler(res.rows[0]) : null;
+  }
+
+  async createScheduler(input: CreateSchedulerInput): Promise<Scheduler> {
+    const now = nowIso();
+    const res = await this.query<SchedulerRow>(
+      `INSERT INTO schedulers (id, board_id, name, prompt, cron, timezone, enabled, max_runs, run_count,
+         last_run_at, next_run_at, last_status, last_task_id, last_error, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, NULL, $9, NULL, NULL, NULL, $10, $10) RETURNING *`,
+      [
+        newId(),
+        input.boardId,
+        input.name,
+        input.prompt,
+        input.cron,
+        input.timezone,
+        input.enabled ?? true,
+        input.maxRuns ?? null,
+        input.nextRunAt ?? null,
+        now,
+      ],
+    );
+    return toScheduler(res.rows[0]);
+  }
+
+  async updateScheduler(id: string, patch: UpdateSchedulerInput): Promise<Scheduler | null> {
+    const { sql, params } = buildSet([
+      ["board_id", patch.boardId],
+      ["name", patch.name],
+      ["prompt", patch.prompt],
+      ["cron", patch.cron],
+      ["timezone", patch.timezone],
+      ["enabled", patch.enabled],
+      ["max_runs", patch.maxRuns],
+      ["run_count", patch.runCount],
+      ["last_run_at", patch.lastRunAt],
+      ["next_run_at", patch.nextRunAt],
+      ["last_status", patch.lastStatus],
+      ["last_task_id", patch.lastTaskId],
+      ["last_error", patch.lastError],
+      ["updated_at", nowIso()],
+    ]);
+    const res = await this.query<SchedulerRow>(
+      `UPDATE schedulers SET ${sql} WHERE id = $${params.length + 1} RETURNING *`,
+      [...params, id],
+    );
+    return res.rows[0] ? toScheduler(res.rows[0]) : null;
+  }
+
+  async deleteScheduler(id: string): Promise<boolean> {
+    return this.transaction(async (client) => {
+      // Its cards stay on the board, detached; its run history goes with it (FK cascade).
+      await this.query("UPDATE tasks SET scheduler_id = NULL WHERE scheduler_id = $1", [id], client);
+      const res = await this.query("DELETE FROM schedulers WHERE id = $1", [id], client);
+      return (res.rowCount ?? 0) > 0;
+    });
+  }
+
+  // ---------------------------------------------------------- scheduler runs
+
+  async listSchedulerRuns(schedulerId: string, limit?: number): Promise<SchedulerRun[]> {
+    const res = await this.query<SchedulerRunRow>(
+      "SELECT * FROM scheduler_runs WHERE scheduler_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2",
+      [schedulerId, normalizeSchedulerRunLimit(limit)],
+    );
+    return res.rows.map(toSchedulerRun);
+  }
+
+  async createSchedulerRun(input: CreateSchedulerRunInput): Promise<SchedulerRun> {
+    const res = await this.query<SchedulerRunRow>(
+      `INSERT INTO scheduler_runs (id, scheduler_id, task_id, trigger, scheduled_for, status, error, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [
+        newId(),
+        input.schedulerId,
+        input.taskId,
+        input.trigger,
+        input.scheduledFor,
+        input.status,
+        input.error ?? null,
+        nowIso(),
+      ],
+    );
+    return toSchedulerRun(res.rows[0]);
   }
 }

@@ -27,6 +27,9 @@ export type CreateFromText = (text: string) => Promise<boolean>;
  * `layout="page"` fills its flex-column parent (the phone "New card" page): the textarea takes
  * all the free height and scrolls inside, and Create is a full-width bar pinned to the bottom.
  * The page owns Cancel there, so `onCancel` is only rendered in the dialog layout.
+ *
+ * The copy, extra fields (`children`) and submit gating are overridable so other free-text flows
+ * (e.g. the "New scheduler" page) reuse the same composer.
  */
 export function NewTaskForm({
   onSubmit,
@@ -37,6 +40,14 @@ export function NewTaskForm({
   onTextChange,
   className,
   boardId,
+  submitLabel = "Create card",
+  busyLabel = "Creating…",
+  label = "What should the agent do?",
+  hint,
+  children,
+  canSubmit = true,
+  resetOnSubmit = true,
+  autoFocus = true,
 }: {
   onSubmit: CreateFromText;
   onCancel?: () => void;
@@ -50,6 +61,21 @@ export function NewTaskForm({
   className?: string;
   /** Project whose files the "@" picker searches; without one "@" is plain text. */
   boardId?: string | null;
+  /** Submit button text. */
+  submitLabel?: string;
+  /** Submit button text while `onSubmit` is pending. */
+  busyLabel?: string;
+  /** Label of the textarea. */
+  label?: ReactNode;
+  /** Replaces the default explanation under the textarea (shown next to the word count). */
+  hint?: ReactNode;
+  /** Extra fields after the text block, before the submit button(s). */
+  children?: ReactNode;
+  /** Extra submit gate, AND'ed with "the text is not empty" (e.g. the extra fields are valid). */
+  canSubmit?: boolean;
+  /** Clear the text after a successful submit. */
+  resetOnSubmit?: boolean;
+  autoFocus?: boolean;
 }) {
   const id = useId();
   const [text, setTextState] = useState(initialText);
@@ -64,11 +90,11 @@ export function NewTaskForm({
 
   const create = async () => {
     const value = text.trim();
-    if (!value || busy) return;
+    if (!value || busy || !canSubmit) return;
     setBusy(true);
     const ok = await onSubmit(value);
     setBusy(false);
-    if (ok) setText("");
+    if (ok && resetOnSubmit) setText("");
   };
 
   const submitKeys = (event: KeyboardEvent) => {
@@ -86,7 +112,7 @@ export function NewTaskForm({
   const page = layout === "page";
   const words = text.trim() ? text.trim().split(/\s+/).length : 0;
   const wordCount = words > 0 && <span className="shrink-0 tabular-nums">{words.toLocaleString()} words</span>;
-  const label = <Label htmlFor={`${id}-text`}>What should the agent do?</Label>;
+  const labelNode = <Label htmlFor={`${id}-text`}>{label}</Label>;
   const textarea = (
     // `relative` anchors the word ghost on the textarea; on the page the wrapper takes over the
     // textarea's flex sizing (and its minimum) so the textarea still fills the free height.
@@ -94,7 +120,7 @@ export function NewTaskForm({
       <Textarea
         id={`${id}-text`}
         ref={composeRef}
-        autoFocus
+        autoFocus={autoFocus}
         value={text}
         readOnly={busy}
         placeholder="Goal, details, pasted errors or logs, links…"
@@ -120,10 +146,10 @@ export function NewTaskForm({
   const submitContent = (
     <>
       {busy ? <Loader2 className="animate-spin" aria-hidden /> : <Sparkles aria-hidden />}
-      {busy ? "Creating…" : "Create card"}
+      {busy ? busyLabel : submitLabel}
     </>
   );
-  const disabled = !text.trim() || busy;
+  const disabled = !text.trim() || busy || !canSubmit;
 
   if (page) {
     return (
@@ -133,7 +159,7 @@ export function NewTaskForm({
         <div className="scrollbar-subtle mx-auto flex min-h-0 w-full max-w-2xl flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 pt-4 pb-3 sm:px-6">
           {projectField}
           <div className="flex flex-1 flex-col gap-2">
-            {label}
+            {labelNode}
             {textarea}
             {slash.suggestion}
             {slash.menu ?? (
@@ -141,14 +167,19 @@ export function NewTaskForm({
                 <span className="flex items-start gap-1.5">
                   <Sparkles className="mt-px size-3.5 shrink-0" aria-hidden />
                   <span>
-                    Lands in In progress; an agent writes the title and brief, then starts. Type <Kbd>/</Kbd> for
-                    skills, <Kbd>@</Kbd> for files; <Kbd>Tab</Kbd> completes words.
+                    {hint ?? (
+                      <>
+                        Lands in In progress; an agent writes the title and brief, then starts. Type <Kbd>/</Kbd> for
+                        skills, <Kbd>@</Kbd> for files; <Kbd>Tab</Kbd> completes words.
+                      </>
+                    )}
                   </span>
                 </span>
                 {wordCount}
               </p>
             )}
           </div>
+          {children}
         </div>
         {/* `--new-card-bottom-inset` lets the page drop the home-indicator gap while the keyboard covers it. */}
         <div className="px-safe shrink-0 border-t bg-background/85 backdrop-blur-lg supports-backdrop-filter:bg-background/70">
@@ -175,7 +206,7 @@ export function NewTaskForm({
     <form className={cn("flex flex-col gap-4", className)} onSubmit={onFormSubmit}>
       {projectField}
       <div className="flex flex-col gap-2">
-        {label}
+        {labelNode}
         {textarea}
         {slash.suggestion}
         {slash.menu}
@@ -183,14 +214,19 @@ export function NewTaskForm({
           <span className="flex items-start gap-1.5">
             <Sparkles className="mt-px size-3.5 shrink-0" aria-hidden />
             <span>
-              Goes straight to In progress. An agent writes the title and brief from your text and the project,
-              then starts work. Type <Kbd>/</Kbd> for OMP skills and shortcuts, <Kbd>@</Kbd> to mention project files.{" "}
-              <Kbd>Tab</Kbd> completes words.
+              {hint ?? (
+                <>
+                  Goes straight to In progress. An agent writes the title and brief from your text and the project,
+                  then starts work. Type <Kbd>/</Kbd> for OMP skills and shortcuts, <Kbd>@</Kbd> to mention project
+                  files. <Kbd>Tab</Kbd> completes words.
+                </>
+              )}
             </span>
           </span>
           {wordCount}
         </p>
       </div>
+      {children}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
         {onCancel && (
           <Button type="button" variant="ghost" className="h-11 md:h-9 sm:mr-auto" onClick={onCancel}>

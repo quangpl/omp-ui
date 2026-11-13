@@ -34,9 +34,12 @@ import type { Repository, UpdateTaskInput } from "@/lib/db/types";
 import { publish } from "@/lib/events";
 import { dataDir, ensureFilesFolder } from "@/lib/files";
 import { extractQuestion } from "@/lib/question";
+import { isQuotaError, QUOTA_RETRY_STEPS_MS } from "@/lib/quota";
+import { startSchedulerService } from "@/lib/scheduler";
 import { agentmemoryEnabled, memoryProjectName, tagMemorySession } from "@/lib/server/agentmemory";
+import { startCredentialHealthChecks } from "@/lib/server/credentials";
 import { getAppSettings } from "@/lib/settings";
-import { parseTodoPhases } from "@/lib/todos";
+import { parseTodoPhases, stampTodos } from "@/lib/todos";
 import { ensureWorkspace } from "@/lib/workspaces";
 import type {
   AppSettings,
@@ -47,6 +50,7 @@ import type {
   SubagentSnapshot,
   Task,
   TaskStatus,
+  TodoPhase,
 } from "@/lib/types";
 
 const READY_TIMEOUT_MS = 60_000;
@@ -65,7 +69,10 @@ const MAX_THINKING_DELTA = 4_000;
 const SUBAGENT_LIVE_THROTTLE_MS = 300;
 /** Smart queue: a board's plan waits this long after its latest queued card, so a burst is planned together. */
 const PLAN_DEBOUNCE_MS = 1_500;
-/** Automatic retries of a failed run: 15 s, 30 s, 1 min, 2 min, 4 min, … at most 10 min apart. */
+/**
+ * Automatic retries of a failed run: 15 s, 30 s, 1 min, 2 min, 4 min, … at most 10 min apart.
+ * Quota failures wait longer instead (QUOTA_RETRY_STEPS_MS: 5, 10, 15, 30 min, then hourly).
+ */
 const RETRY_BASE_MS = 15_000;
 const RETRY_MAX_MS = 10 * 60_000;
 
@@ -122,8 +129,12 @@ interface ActiveRun {
   advisor: Omit<AdvisorScope, "signal" | "onActivity"> | null;
   /** This run addresses advisor feedback: its own questions go to the user, not back to the agent. */
   advisorFollowUp: boolean;
-  /** JSON of the todo list this run last stored on the card; repeated `todo` views write nothing. */
+  /** JSON of the omp todo list this run last stored on the card; repeated `todo` views write nothing. */
   todos: string | null;
+  /** When this run was launched (ISO); bounds which `startedAt` todo stamps count as this run's work. */
+  launchedAt: string;
+  /** The stamped todo list this run last stored, and when; null before its first update. */
+  stampedTodos: { list: TodoPhase[]; at: string } | null;
   /** Serializes startup, frame handling and teardown so persistence stays ordered. */
   chain: Promise<void>;
 }
@@ -433,9 +444,10 @@ class OmpAgentManager implements AgentManager {
 
   /**
    * Boot recovery: the omp processes died with the previous server. Queued cards are queued
-   * again; interrupted runs resume their omp session and failed In progress cards are retried,
-   * each while its automatic-retry budget lasts (a restart that keeps killing a card's run, e.g.
-   * an agent restarting this server, stops once the budget is used up).
+   * again, pending automatic retries are rescheduled at their time, and interrupted runs resume
+   * their omp session and failed In progress cards are retried, each while its automatic-retry
+   * budget lasts — even with persistent retries on (a restart that keeps killing a card's run,
+   * e.g. an agent restarting this server, stops once the budget is used up).
    */
   async recover(): Promise<void> {
     const settings = await getAppSettings(this.repo);
@@ -463,12 +475,12 @@ class OmpAgentManager implements AgentManager {
       return;
     }
     const interrupted = task.agentState === "running";
-    const plan = planRetry(task, settings);
+    const plan = planRetry(task, settings, { kind: "restart" });
     if (plan && plan !== "exhausted") {
       await this.repo.updateTask(task.id, { autoRetries: plan.attempt });
       await this.addAgentComment(
         task,
-        `${interrupted ? "The server restarted while the agent was working" : "The server restarted"}: resuming automatically (retry ${plan.attempt} of ${plan.max}).`,
+        `${interrupted ? "The server restarted while the agent was working" : "The server restarted"}: resuming automatically (${retryCount(plan)}).`,
       );
       await this.queueRun(task.id, true);
       return;
@@ -517,7 +529,7 @@ class OmpAgentManager implements AgentManager {
   }
 
   /**
-   * Records a failed card (agentState "error") with its next automatic retry, if it has one left.
+   * Records a failed card (agentState "error") with its next automatic retry, if it gets one.
    * Returns the retry time (the caller schedules it once the run is released) and a note for the
    * failure comment.
    */
@@ -527,7 +539,8 @@ class OmpAgentManager implements AgentManager {
     canRetry: boolean,
   ): Promise<{ task: Task | null; retryAt: string | null; note: string }> {
     const current = await this.repo.getTask(taskId);
-    const plan = current && canRetry ? planRetry(current, await getAppSettings(this.repo)) : null;
+    const plan =
+      current && canRetry ? planRetry(current, await getAppSettings(this.repo), { kind: "failure", message }) : null;
     const retry = plan === "exhausted" ? null : plan;
     const retryAt = retry ? new Date(Date.now() + retry.delayMs).toISOString() : null;
     const task = await this.repo.updateTask(taskId, {
@@ -538,7 +551,7 @@ class OmpAgentManager implements AgentManager {
     });
     if (task) publish({ type: "task.updated", task });
     const note = retry
-      ? `Retrying automatically in ${formatDelay(retry.delayMs)} (retry ${retry.attempt} of ${retry.max}).`
+      ? retryNote(retry)
       : plan === "exhausted"
         ? "Automatic retries are used up; press Run to try again."
         : "";
@@ -795,6 +808,8 @@ class OmpAgentManager implements AgentManager {
       advisor: null,
       advisorFollowUp: false,
       todos: null,
+      launchedAt: new Date().toISOString(),
+      stampedTodos: null,
       chain: Promise.resolve(),
     };
     this.active.set(taskId, run);
@@ -1567,14 +1582,23 @@ class OmpAgentManager implements AgentManager {
     }
   }
 
-  /** Stores the agent's todo list (`todo` tool result `details.phases`) on the card. */
+  /** Stores the agent's todo list (`todo` tool result `details.phases`) on the card, with item timing stamps. */
   private async trackTodos(run: ActiveRun, result: unknown): Promise<void> {
     if (!isObject(result) || !isObject(result.details) || !Array.isArray(result.details.phases)) return;
-    const todos = parseTodoPhases(result.details.phases);
-    const json = JSON.stringify(todos);
+    const fresh = parseTodoPhases(result.details.phases);
+    const json = JSON.stringify(fresh);
     if (json === run.todos) return;
     run.todos = json;
+    const now = new Date().toISOString();
     try {
+      // A run's first update carries the stamps of the list stored by an earlier run.
+      const previous = run.stampedTodos?.list ?? (await this.repo.getTask(run.taskId))?.todos ?? [];
+      const todos = stampTodos(previous, fresh, {
+        now,
+        runStart: run.launchedAt,
+        lastUpdate: run.stampedTodos?.at ?? run.launchedAt,
+      });
+      run.stampedTodos = { list: todos, at: now };
       const task = await this.repo.updateTask(run.taskId, { todos });
       if (task) publish({ type: "task.updated", task });
     } catch (err) {
@@ -1806,28 +1830,72 @@ function nowIso(): string {
 interface RetryPlan {
   /** Retries used once this one starts (1-based). */
   attempt: number;
-  max: number;
+  /** Retry budget; null when unlimited (persistent retries). */
+  max: number | null;
+  /** The run failed on a quota / usage limit: a long backoff ("Waiting for quota"). */
+  quota: boolean;
   delayMs: number;
 }
 
+/** Why a card is retried: its run failed with `message`, or the server restart interrupted it. */
+type RetryCause = { kind: "failure"; message: string } | { kind: "restart" };
+
 /**
  * The card's next automatic retry; "exhausted" when its budget is used up, null when it is not
- * retried at all (retries off, or the card is not In progress anymore).
+ * retried at all (retries off, or the card is not In progress anymore). With persistent retries
+ * on, a failed run is always retried (never exhausted, whatever maxAutoRetries says); restart
+ * interruptions stay bounded by maxAutoRetries so a server-restarting agent cannot loop forever.
+ * Quota failures back off along QUOTA_RETRY_STEPS_MS, other failures exponentially.
  */
-function planRetry(task: Task, settings: AppSettings): RetryPlan | "exhausted" | null {
-  if (!settings.autoRetry || settings.maxAutoRetries === 0 || task.status !== "in_progress") return null;
-  if (task.autoRetries >= settings.maxAutoRetries) return "exhausted";
+function planRetry(task: Task, settings: AppSettings, cause: RetryCause): RetryPlan | "exhausted" | null {
+  if (!settings.autoRetry || task.status !== "in_progress") return null;
+  const unlimited = cause.kind === "failure" && settings.persistentRetry;
+  if (!unlimited) {
+    if (settings.maxAutoRetries === 0) return null;
+    if (task.autoRetries >= settings.maxAutoRetries) return "exhausted";
+  }
   const attempt = task.autoRetries + 1;
+  const quota = cause.kind === "failure" && isQuotaError(cause.message);
+  return {
+    attempt,
+    max: unlimited ? null : settings.maxAutoRetries,
+    quota,
+    delayMs: quota ? quotaRetryDelay(attempt) : retryDelay(attempt),
+  };
+}
+
+function retryDelay(attempt: number): number {
   // OMP_UI_RETRY_BASE_MS: first backoff step (default 15 s), doubling per retry.
   const base = Number(process.env.OMP_UI_RETRY_BASE_MS) || RETRY_BASE_MS;
-  return { attempt, max: settings.maxAutoRetries, delayMs: Math.min(RETRY_MAX_MS, base * 2 ** (attempt - 1)) };
+  return Math.min(RETRY_MAX_MS, base * 2 ** (attempt - 1));
+}
+
+function quotaRetryDelay(attempt: number): number {
+  const step = QUOTA_RETRY_STEPS_MS[Math.min(attempt, QUOTA_RETRY_STEPS_MS.length) - 1];
+  // OMP_UI_QUOTA_RETRY_BASE_MS: first step (default 5 min); later steps scale along.
+  const base = Number(process.env.OMP_UI_QUOTA_RETRY_BASE_MS);
+  return base ? Math.round((step * base) / QUOTA_RETRY_STEPS_MS[0]) : step;
+}
+
+function retryCount(plan: RetryPlan): string {
+  return plan.max === null ? `retry ${plan.attempt}` : `retry ${plan.attempt} of ${plan.max}`;
+}
+
+/** Failure-comment note of a scheduled retry. */
+function retryNote(plan: RetryPlan): string {
+  const delay = formatDelay(plan.delayMs);
+  return plan.quota
+    ? `Waiting for quota: retrying automatically in ${delay} (${retryCount(plan)}).`
+    : `Retrying automatically in ${delay} (${retryCount(plan)}).`;
 }
 
 function formatDelay(ms: number): string {
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
-  return s % 60 === 0 ? `${m} min` : `${m} min ${s % 60}s`;
+  if (m < 60) return s % 60 === 0 ? `${m} min` : `${m} min ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return m % 60 === 0 ? `${h} h` : `${h} h ${m % 60} min`;
 }
 
 /** Per-run omp config overlay (`--config`): browser control for this card. JSON is valid YAML. */
@@ -1872,6 +1940,8 @@ async function createAgentManager(): Promise<AgentManager> {
   const manager = new OmpAgentManager(repo);
   await manager.recover();
   startCleanupScheduler(repo, manager);
+  startCredentialHealthChecks(repo);
+  startSchedulerService(repo, manager);
   return manager;
 }
 

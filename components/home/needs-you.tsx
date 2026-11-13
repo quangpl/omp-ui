@@ -21,6 +21,7 @@ import { canShip, shipLabels, shipTask } from "@/components/board/ship-actions";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { api } from "@/lib/api-client";
+import { isQuotaError } from "@/lib/quota";
 import { isModalOpen, isTypingTarget } from "@/lib/hotkeys";
 import type { DashboardBoard, NeedsYouCard, NeedsYouReason } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -54,6 +55,7 @@ function detailFor(card: NeedsYouCard, now: number): string {
     case "failed":
       return card.agentError?.split("\n", 1)[0] || REASON.failed.label;
     case "retrying":
+      if (isQuotaError(card.agentError)) return `Quota limit · retrying ${card.retryAt ? formatRelative(card.retryAt, now) : "soon"}`;
       return `Retrying ${card.retryAt ? formatRelative(card.retryAt, now) : "soon"}${card.agentError ? ` · ${card.agentError.split("\n", 1)[0]}` : ""}`;
     case "feedback":
       return `${plural(card.openCommentCount, "open comment")} waiting for the agent`;
@@ -85,6 +87,10 @@ function NeedsYouRow({
     .filter((action) => action.id !== "revert")
     .slice(0, 2);
   const top = REASON[card.reasons[0]];
+  // A retry waiting out a quota or usage limit reads as such.
+  const labels = card.reasons.map((reason) =>
+    reason === "retrying" && isQuotaError(card.agentError) ? "Waiting for quota" : REASON[reason].label,
+  );
   const pushTarget = shipLabels(board?.git ?? []).pushTarget;
   const enter = useEntrance()(index);
 
@@ -128,15 +134,15 @@ function NeedsYouRow({
           </span>
           {card.reasons.length > 1 && (
             <span className="ml-auto hidden shrink-0 gap-1 md:flex">
-              {card.reasons.slice(1).map((reason) => (
+              {card.reasons.slice(1).map((reason, i) => (
                 <span key={reason} className="rounded border px-1 text-[11px] leading-4 whitespace-nowrap">
-                  {REASON[reason].label}
+                  {labels[i + 1]}
                 </span>
               ))}
             </span>
           )}
         </span>
-        <span className="sr-only">. {card.reasons.map((reason) => REASON[reason].label).join(", ")}</span>
+        <span className="sr-only">. {labels.join(", ")}</span>
       </Link>
       <div className="flex shrink-0 items-center gap-1 self-center">
         {card.reasons[0] === "question" && (
