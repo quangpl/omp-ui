@@ -39,7 +39,7 @@ export function fileListRoutes(scope: FileScope) {
   };
 }
 
-/** GET serves one file (`?download=1` forces a download); DELETE removes it. */
+/** GET serves one file (`?download=1` forces a download; a `Range` header gets a 206 slice); DELETE removes it. */
 export function fileItemRoutes(scope: FileScope) {
   type Params = { id: string; path: string[] | string };
   const nameOf = (params: Params) => (Array.isArray(params.path) ? params.path.join("/") : params.path);
@@ -47,7 +47,7 @@ export function fileItemRoutes(scope: FileScope) {
     GET: withApi<Params>(async (ctx) => {
       await owner(ctx, scope);
       const download = new URL(ctx.req.url).searchParams.get("download") === "1";
-      return fileResponse(scope, ctx.params.id, nameOf(ctx.params), download);
+      return fileResponse(scope, ctx.params.id, nameOf(ctx.params), download, ctx.req.headers.get("range"));
     }),
     DELETE: withApi<Params>(async (ctx) => {
       const where = await owner(ctx, scope);

@@ -85,6 +85,71 @@ describe("shared files", () => {
     expect(escape.status).toBe(400);
   });
 
+  it("serves the viewer's media types inline", async () => {
+    const task = await createTask("Media files");
+    await upload(task.id, "voice.m4a", "audio");
+    await upload(task.id, "photo.avif", "image");
+    await upload(task.id, "rows.tsv", "a\tb");
+    for (const [name, type] of [
+      ["voice.m4a", "audio/mp4"],
+      ["photo.avif", "image/avif"],
+      ["rows.tsv", "text/plain; charset=utf-8"],
+    ]) {
+      const served = await call(taskFileRoute, "GET", `/tasks/${task.id}/files/${name}`, {
+        params: { id: task.id, path: name },
+      });
+      expect(served.status).toBe(200);
+      expect(served.headers.get("content-type")).toBe(type);
+      expect(served.headers.get("content-disposition")).toMatch(/^inline;/);
+    }
+  });
+
+  it("answers byte ranges so media can seek", async () => {
+    const task = await createTask("Ranged file");
+    await upload(task.id, "clip.mp4", "0123456789");
+    const get = (range?: string) =>
+      call(taskFileRoute, "GET", `/tasks/${task.id}/files/clip.mp4`, {
+        params: { id: task.id, path: "clip.mp4" },
+        headers: range ? { range } : {},
+      });
+
+    const full = await get();
+    expect(full.status).toBe(200);
+    expect(full.headers.get("accept-ranges")).toBe("bytes");
+    expect(full.headers.get("content-length")).toBe("10");
+    expect(await full.text()).toBe("0123456789");
+
+    const middle = await get("bytes=2-5");
+    expect(middle.status).toBe(206);
+    expect(middle.headers.get("content-range")).toBe("bytes 2-5/10");
+    expect(middle.headers.get("content-length")).toBe("4");
+    expect(middle.headers.get("accept-ranges")).toBe("bytes");
+    expect(middle.headers.get("content-type")).toBe("video/mp4");
+    expect(middle.headers.get("content-disposition")).toMatch(/^inline;/);
+    expect(middle.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await middle.text()).toBe("2345");
+
+    const open = await get("bytes=7-");
+    expect(open.status).toBe(206);
+    expect(open.headers.get("content-range")).toBe("bytes 7-9/10");
+    expect(await open.text()).toBe("789");
+
+    const suffix = await get("bytes=-3");
+    expect(suffix.status).toBe(206);
+    expect(suffix.headers.get("content-range")).toBe("bytes 7-9/10");
+    expect(await suffix.text()).toBe("789");
+
+    const beyond = await get("bytes=100-");
+    expect(beyond.status).toBe(416);
+    expect(beyond.headers.get("content-range")).toBe("bytes */10");
+    expect(await beyond.text()).toBe("");
+
+    const several = await get("bytes=0-1,4-5");
+    expect(several.status).toBe(200);
+    expect(several.headers.get("content-range")).toBeNull();
+    expect(await several.text()).toBe("0123456789");
+  });
+
   it("removes a card's files when the card is deleted", async () => {
     const task = await createTask("Doomed");
     const { body } = await upload(task.id, "a.txt", "x");

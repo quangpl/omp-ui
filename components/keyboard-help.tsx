@@ -144,9 +144,19 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
   {
     title: "Attachment viewer",
     shortcuts: [
-      { label: "Previous / next attachment", keys: ["←", "→"] },
+      { label: "Previous / next file", keys: ["←", "→"] },
+      { label: "First / last file", keys: ["Home", "End"] },
+      { label: "Download", keys: ["D"] },
       { label: "Toggle fit / 100% zoom", keys: ["Z"] },
       { label: "Close", keys: ["Esc"] },
+    ],
+  },
+  {
+    title: "Files list",
+    shortcuts: [
+      { label: "Previous / next file", keys: ["↑", "↓"] },
+      { label: "First / last file", keys: ["Home", "End"] },
+      { label: "Preview the focused file", keys: ["↵", "Space"] },
     ],
   },
   {

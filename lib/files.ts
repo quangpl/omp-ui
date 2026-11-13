@@ -157,35 +157,88 @@ export async function removeFilesFolder(scope: FileScope, id: string): Promise<v
   }
 }
 
+/**
+ * Extensions served inline (with this content type) so the in-app viewer can preview them; anything
+ * missing here is a download. Text-like formats the viewer parses itself (CSV/TSV, YAML, notebooks,
+ * patches...) are sent as `text/plain` so the browser never interprets them.
+ */
 const INLINE_TYPES: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
+  ".ico": "image/x-icon",
   ".pdf": "application/pdf",
   ".mp4": "video/mp4",
+  ".m4v": "video/x-m4v",
   ".webm": "video/webm",
   ".mov": "video/quicktime",
+  ".ogv": "video/ogg",
   ".mp3": "audio/mpeg",
   ".wav": "audio/wav",
   ".ogg": "audio/ogg",
+  ".oga": "audio/ogg",
+  ".opus": "audio/ogg",
+  ".m4a": "audio/mp4",
+  ".flac": "audio/flac",
+  ".aac": "audio/aac",
   ".txt": "text/plain; charset=utf-8",
   ".md": "text/plain; charset=utf-8",
   ".log": "text/plain; charset=utf-8",
   ".json": "text/plain; charset=utf-8",
+  ".jsonl": "text/plain; charset=utf-8",
+  ".ndjson": "text/plain; charset=utf-8",
   ".csv": "text/plain; charset=utf-8",
+  ".tsv": "text/plain; charset=utf-8",
+  ".yaml": "text/plain; charset=utf-8",
+  ".yml": "text/plain; charset=utf-8",
+  ".toml": "text/plain; charset=utf-8",
+  ".ini": "text/plain; charset=utf-8",
+  ".diff": "text/plain; charset=utf-8",
+  ".patch": "text/plain; charset=utf-8",
+  ".ipynb": "text/plain; charset=utf-8",
 };
 
 /**
+ * The byte range a `Range` header asks for in a file of `size` bytes: `null` = serve the whole file
+ * (no header, another unit, several ranges or an empty file), `"unsatisfiable"` = answer 416.
+ * Only a single `bytes=start-end`, `bytes=start-` or suffix `bytes=-N` range is honoured.
+ */
+function parseRange(header: string | null | undefined, size: number): { start: number; end: number } | "unsatisfiable" | null {
+  if (!header || size === 0) return null;
+  const value = header.trim();
+  if (!value.toLowerCase().startsWith("bytes=")) return null;
+  const spec = value.slice("bytes=".length).trim();
+  if (spec.includes(",")) return null;
+  const match = /^(\d*)-(\d*)$/.exec(spec);
+  if (!match || (match[1] === "" && match[2] === "")) return "unsatisfiable";
+  if (match[1] === "") {
+    const suffix = Number(match[2]);
+    if (!Number.isSafeInteger(suffix) || suffix === 0) return "unsatisfiable";
+    return { start: Math.max(0, size - suffix), end: size - 1 };
+  }
+  const start = Number(match[1]);
+  const end = match[2] === "" ? size - 1 : Number(match[2]);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= size || end < start) {
+    return "unsatisfiable";
+  }
+  return { start, end: Math.min(end, size - 1) };
+}
+
+/**
  * Serve a file. Images, video, audio, PDFs and plain text open inline; everything else (HTML, SVG, scripts)
- * is always a download so uploaded content never runs on this origin.
+ * is always a download so uploaded content never runs on this origin. A single byte `range` (the
+ * request's `Range` header) is answered with 206 so media can seek; an unsatisfiable one with 416.
  */
 export async function fileResponse(
   scope: FileScope,
   id: string,
   name: string,
   download: boolean,
+  range?: string | null,
 ): Promise<Response> {
   const target = resolveFile(scope, id, name);
   let size: number;
@@ -200,15 +253,29 @@ export async function fileResponse(
   const inlineType = INLINE_TYPES[path.extname(target).toLowerCase()];
   const filename = path.basename(target);
   const disposition = `${download || !inlineType ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(filename)}`;
+  const headers: Record<string, string> = {
+    "content-type": inlineType ?? "application/octet-stream",
+    "content-disposition": disposition,
+    "accept-ranges": "bytes",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
+    "cache-control": "no-store",
+  };
+  const slice = parseRange(range, size);
+  if (slice === "unsatisfiable") {
+    return new Response(null, { status: 416, headers: { ...headers, "content-range": `bytes */${size}` } });
+  }
+  if (slice) {
+    const stream = Readable.toWeb(createReadStream(target, slice)) as ReadableStream<Uint8Array>;
+    return new Response(stream, {
+      status: 206,
+      headers: {
+        ...headers,
+        "content-length": String(slice.end - slice.start + 1),
+        "content-range": `bytes ${slice.start}-${slice.end}/${size}`,
+      },
+    });
+  }
   const stream = Readable.toWeb(createReadStream(target)) as ReadableStream<Uint8Array>;
-  return new Response(stream, {
-    headers: {
-      "content-type": inlineType ?? "application/octet-stream",
-      "content-length": String(size),
-      "content-disposition": disposition,
-      "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
-      "cache-control": "no-store",
-    },
-  });
+  return new Response(stream, { headers: { ...headers, "content-length": String(size) } });
 }
