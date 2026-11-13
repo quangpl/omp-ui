@@ -33,6 +33,7 @@ import type {
 } from "@/lib/db/types";
 import {
   POSITION_STEP,
+  boardPatchUpdatedAt,
   compareTasks,
   emptyStatusCounts,
   newId,
@@ -59,6 +60,8 @@ interface BoardDoc {
   autoRun: boolean;
   /** Missing on documents created before dedicated workspaces. */
   worktrees?: boolean;
+  /** Missing on documents created before projects could be pinned. */
+  pinned?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -181,6 +184,7 @@ function toBoard(d: BoardDoc): Board {
     model: d.model ?? null,
     autoRun: d.autoRun,
     worktrees: d.worktrees ?? false,
+    pinned: d.pinned ?? false,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
   };
@@ -294,7 +298,7 @@ function pickDefined<T extends object, K extends keyof T>(patch: T, keys: readon
   return out;
 }
 
-const BOARD_PATCH_KEYS = ["name", "workdir", "extraFolders", "model", "autoRun", "worktrees"] as const satisfies readonly (keyof UpdateBoardInput)[];
+const BOARD_PATCH_KEYS = ["name", "workdir", "extraFolders", "model", "autoRun", "worktrees", "pinned"] as const satisfies readonly (keyof UpdateBoardInput)[];
 const TASK_PATCH_KEYS = [
   "title",
   "description",
@@ -480,6 +484,7 @@ export class MongoRepository implements Repository {
       model: input.model ?? null,
       autoRun: input.autoRun ?? true,
       worktrees: input.worktrees ?? false,
+      pinned: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -488,9 +493,10 @@ export class MongoRepository implements Repository {
   }
 
   async updateBoard(id: string, patch: UpdateBoardInput): Promise<Board | null> {
+    const updatedAt = boardPatchUpdatedAt(patch);
     const doc = await this.boards.findOneAndUpdate(
       { _id: id },
-      { $set: { ...pickDefined(patch, BOARD_PATCH_KEYS), updatedAt: nowIso() } },
+      { $set: { ...pickDefined(patch, BOARD_PATCH_KEYS), ...(updatedAt && { updatedAt }) } },
       { returnDocument: "after" },
     );
     return doc ? toBoard(doc) : null;

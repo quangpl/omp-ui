@@ -1,8 +1,9 @@
-// Short read-only omp helper agents (the card writer, the advisor, the queue planner) over omp's
-// native RPC protocol (`omp --mode rpc`, JSONL on stdio), on warm pooled workers: streaming tool
-// activity, optionally steering the agent to answer, resolving with its final assistant text.
+// Short omp helper agents (the card writer, the advisor, the queue planner, the chat assistant) over
+// omp's native RPC protocol (`omp --mode rpc`, JSONL on stdio), on warm pooled workers: streaming
+// tool activity, optionally steering the agent to answer or serving host tools, resolving with its
+// final assistant text.
 import { stat } from "node:fs/promises";
-import { describeExit } from "@/lib/agent/rpc";
+import { describeExit, type OmpRpcProcess } from "@/lib/agent/rpc";
 import { acquireWorker } from "@/lib/agent/rpc-pool";
 import { clip } from "@/lib/card-draft";
 
@@ -36,14 +37,24 @@ export interface HelperRunOptions {
   steer?: { afterTools: number; message: string; activity: string };
   /** Keep the worker warm for later calls with the same arguments (default true). */
   reusable?: boolean;
+  /** omp `--tools` list (default READ_ONLY_TOOLS); "" disables every built-in tool (`--no-tools`), leaving only host tools. */
+  tools?: string;
+  /** Host tools (`set_host_tools`) the agent may call; `run` executes one and returns its text result. */
+  hostTools?: HostTools;
+}
+
+export interface HostTools {
+  tools: readonly object[];
+  run(name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<string>;
 }
 
 /**
  * omp arguments of a read-only helper worker. No `--max-time`: omp counts it from process start,
  * which a warm worker outlives; the host enforces `timeoutSeconds` per call instead.
  */
-export function helperArgs(options: Pick<HelperRunOptions, "cwd" | "addDirs" | "model" | "thinking">): string[] {
-  const args = ["--mode", "rpc", "--no-session", "--no-title", "--no-lsp", "--tools", READ_ONLY_TOOLS, "--cwd", options.cwd];
+export function helperArgs(options: Pick<HelperRunOptions, "cwd" | "addDirs" | "model" | "thinking" | "tools">): string[] {
+  const tools = options.tools ?? READ_ONLY_TOOLS;
+  const args = ["--mode", "rpc", "--no-session", "--no-title", "--no-lsp", ...(tools ? ["--tools", tools] : ["--no-tools"]), "--cwd", options.cwd];
   for (const folder of options.addDirs) args.push("--add-dir", folder);
   if (options.model) args.push("--model", options.model);
   if (options.thinking) args.push("--thinking", options.thinking);
@@ -54,7 +65,7 @@ export function helperArgs(options: Pick<HelperRunOptions, "cwd" | "addDirs" | "
 
 /** Run the helper agent; resolves with its final assistant text. Rejects on failure, timeout or abort. */
 export async function runOmpHelper(options: HelperRunOptions): Promise<string> {
-  const { command, signal, label, timeoutSeconds, steer } = options;
+  const { command, signal, label, timeoutSeconds, steer, hostTools } = options;
   const onActivity = options.onActivity ?? (() => undefined);
   signal.throwIfAborted();
   const worker = acquireWorker({
@@ -70,8 +81,13 @@ export async function runOmpHelper(options: HelperRunOptions): Promise<string> {
   let failure: string | null = null;
   let tools = 0;
   let timedOut = false;
+  /** Host tool calls in flight (`host_tool_call` id → abort); all abort when the call ends. */
+  const hostCalls = new Map<string, AbortController>();
+  let finished = false;
   const onFrame = (frame: Json) => {
-    if (frame.type === "tool_execution_start") {
+    if (frame.type === "host_tool_call" || frame.type === "host_tool_cancel") {
+      if (hostTools && !finished) onHostTool(proc, hostTools, hostCalls, frame, () => finished);
+    } else if (frame.type === "tool_execution_start") {
       onActivity(describeTool(frame));
       tools += 1;
       if (steer && tools === steer.afterTools) {
@@ -106,6 +122,8 @@ export async function runOmpHelper(options: HelperRunOptions): Promise<string> {
   let clean = false;
   try {
     await proc.waitReady(READY_TIMEOUT_MS);
+    // Pooled workers are reused: register the host tools on every call.
+    if (hostTools) await proc.send({ type: "set_host_tools", tools: hostTools.tools });
     const response = await proc.send({ type: "prompt", message: options.prompt });
     if (isObject(response.data) && response.data.agentInvoked === false) throw new Error(`The ${label} did not start.`);
     await ended.promise;
@@ -116,6 +134,9 @@ export async function runOmpHelper(options: HelperRunOptions): Promise<string> {
       throw code === "ENOENT" ? new Error(`omp not found at ${command}. Install it from https://omp.sh or set OMP_PATH.`) : err;
     }
   } finally {
+    finished = true;
+    for (const call of hostCalls.values()) call.abort();
+    hostCalls.clear();
     clearTimeout(timer);
     signal.removeEventListener("abort", onAbort);
     proc.off("frame", onFrame);
@@ -129,6 +150,47 @@ export async function runOmpHelper(options: HelperRunOptions): Promise<string> {
   if (failure) throw new Error(`The ${label} failed: ${failure}`);
   const exit = proc.exited ? describeExit(await proc.waitExit()) : "it ended without a reply";
   throw new Error(`The ${label} stopped without an answer (${exit}).`);
+}
+
+/** `host_tool_call`: run a host tool and answer with `host_tool_result`; `host_tool_cancel` aborts it. */
+function onHostTool(
+  proc: OmpRpcProcess,
+  hostTools: HostTools,
+  hostCalls: Map<string, AbortController>,
+  frame: Json,
+  isFinished: () => boolean,
+): void {
+  if (frame.type === "host_tool_cancel") {
+    if (typeof frame.targetId === "string") hostCalls.get(frame.targetId)?.abort();
+    return;
+  }
+  const id = frame.id;
+  if (typeof id !== "string" || !id) return;
+  const name = typeof frame.toolName === "string" ? frame.toolName : "";
+  const args = isObject(frame.arguments) ? frame.arguments : {};
+  const controller = new AbortController();
+  hostCalls.set(id, controller);
+  const reply = (text: string, isError: boolean) => {
+    hostCalls.delete(id);
+    // A released worker may already serve another call: never answer after this one ended.
+    if (isFinished()) return;
+    proc.notify({
+      type: "host_tool_result",
+      id,
+      result: { content: [{ type: "text", text }] },
+      ...(isError ? { isError: true } : {}),
+    });
+  };
+  let pending: Promise<string>;
+  try {
+    pending = hostTools.run(name, args, controller.signal);
+  } catch (err) {
+    pending = Promise.reject(err);
+  }
+  pending.then(
+    (text) => reply(text, false),
+    (err: unknown) => reply(err instanceof Error ? err.message : String(err), true),
+  );
 }
 
 /** The JSON object in an agent's reply, possibly fenced or surrounded by prose; null when none. */

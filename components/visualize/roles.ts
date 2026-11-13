@@ -41,6 +41,14 @@ export function roleOf(agentName: string | undefined): AgentRole {
   return "helper";
 }
 
+/**
+ * Name a subagent goes by: the name its lead gave it (`AuthScout`), the last segment of the omp
+ * agent id (nested ids are dot-qualified, `Parent.Child`). Falls back to the definition name.
+ */
+export function subagentName(id: string, agentName: string): string {
+  return id.slice(id.lastIndexOf(".") + 1).trim() || agentName;
+}
+
 /** Human name and one-line job description per role. Card agents are always "lead". */
 export const ROLE_INFO: Record<AgentRole, { label: string; description: string }> = {
   lead: { label: "Lead", description: "Card agent: owns the card, plans and delegates" },

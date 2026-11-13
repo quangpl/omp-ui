@@ -2,6 +2,9 @@
 
 import type {
   AppSettings,
+  ArtifactPeriod,
+  ArtifactProject,
+  ArtifactProjectResults,
   Board,
   BoardWithCounts,
   BoardPushResult,
@@ -261,6 +264,16 @@ export const api = {
   wordCompletions: () => request<{ model: WordModelData }>("/system/word-completions"),
   /** Home dashboard aggregate: projects, totals, cards needing attention, recent results, queue. */
   dashboard: () => request<Dashboard>("/dashboard"),
+  /** Artifacts page: every project with its final results in the period (newest result first). */
+  artifacts: {
+    projects: (period: ArtifactPeriod = {}) =>
+      request<ArtifactProject[]>(`/artifacts${memoryQuery({ from: period.from, to: period.to })}`),
+    /** One project's cards with a final result in the period: summary and final attachments only. */
+    results: (boardId: string, period: ArtifactPeriod = {}) =>
+      request<ArtifactProjectResults>(
+        `/artifacts/${encodeURIComponent(boardId)}${memoryQuery({ from: period.from, to: period.to })}`,
+      ),
+  },
   settings: {
     get: () => request<AppSettings>("/settings"),
     update: (patch: Partial<AppSettings>) =>
@@ -379,6 +392,7 @@ export const api = {
         model: string | null;
         autoRun: boolean;
         worktrees: boolean;
+        pinned: boolean;
       }>,
     ) => request<Board>(`/boards/${id}`, { method: "PATCH", json: patch }),
     remove: (id: string) => request<{ ok: true }>(`/boards/${id}`, { method: "DELETE" }),
@@ -551,6 +565,24 @@ export const api = {
     /** Create the folder `name` inside the absolute server folder `parent`. */
     mkdir: (parent: string, name: string) =>
       request<FsEntry>("/fs/mkdir", { method: "POST", json: { parent, name } }),
+    /**
+     * Files page, folder scope: entries of the absolute folder `root`, like `boards.projectFiles`
+     * ("" or a query ending in "/" lists a directory; ids are relative to `root`). `limit` ≤ 1000.
+     */
+    files: (root: string, query: string, init?: { signal?: AbortSignal; limit?: number }) =>
+      request<{ files: ProjectFileHit[] }>(
+        `/fs/files?root=${encodeURIComponent(root)}&q=${encodeURIComponent(query)}${init?.limit ? `&limit=${init.limit}` : ""}`,
+        { signal: init?.signal },
+      ),
+    /** Text of one file under `root` (`path` relative to it); same limits as `boards.readProjectFile`. */
+    readFile: (root: string, path: string, init?: { signal?: AbortSignal }) =>
+      request<ProjectFileContent>(
+        `/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`,
+        { signal: init?.signal },
+      ),
+    /** Overwrite an existing file under `root`; 409 when it changed on disk since `baseMtimeMs`. */
+    writeFile: (input: { root: string; path: string; content: string; baseMtimeMs: number }) =>
+      request<ProjectFileContent>("/fs/file", { method: "PUT", json: input }),
   },
   git: {
     /** Clone a repository into WORKSPACE_DIR/<name>; returns the absolute folder path. */

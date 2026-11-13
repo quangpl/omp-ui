@@ -11,6 +11,8 @@ import {
   ChevronsUpDownIcon,
   KeyboardIcon,
   LogOutIcon,
+  PinIcon,
+  PinOffIcon,
   PlusIcon,
   RotateCwIcon,
   SearchIcon,
@@ -19,6 +21,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { LogoMark } from "@/components/app-header";
+import { BOARD_PIN_EVENT, setBoardPinned } from "@/components/boards/pin-board";
 import { TOP_TABS } from "@/components/bottom-tabs";
 import { RunningContainersButton, RunningCountBadge } from "@/components/containers/running-containers-button";
 import { openCommandPalette } from "@/components/command-palette";
@@ -29,6 +32,7 @@ import { QueueButton } from "@/components/queue-panel";
 import { openRestartServer } from "@/components/restart-server";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -87,13 +91,17 @@ function isActivePath(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-/** All projects with live counts; refreshed on navigation, focus, and every 30 s while visible. */
+/**
+ * All projects with live counts, pinned ones first; refreshed on navigation, focus, (un)pinning,
+ * and every 30 s while visible.
+ */
 function useSidebarBoards(refreshKey: unknown): BoardWithCounts[] | null {
   const [boards, setBoards] = useState<BoardWithCounts[] | null>(null);
 
   const load = useCallback(async () => {
     try {
-      setBoards(await api.boards.list());
+      const list = await api.boards.list();
+      setBoards([...list.filter((board) => board.pinned), ...list.filter((board) => !board.pinned)]);
     } catch {
       // Keep the last list; an empty one ends the loading skeleton.
       setBoards((prev) => prev ?? []);
@@ -111,10 +119,12 @@ function useSidebarBoards(refreshKey: unknown): BoardWithCounts[] | null {
     };
     const timer = window.setInterval(onVisibility, BOARDS_REFRESH_MS);
     window.addEventListener("focus", onFocus);
+    window.addEventListener(BOARD_PIN_EVENT, onFocus);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener(BOARD_PIN_EVENT, onFocus);
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [load]);
@@ -246,32 +256,47 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
                 const pending = board.counts.todo + board.counts.in_progress;
                 return (
                   <SidebarMenuItem key={board.id}>
-                    <SidebarMenuButton asChild isActive={active} className={cn(ROW, ACTIVE_ROW)}>
-                      <Link
-                        href={href}
-                        // Distinct from the project's own name so page links stay uniquely named.
-                        aria-label={`Project ${board.name}${running > 0 ? `, ${running} running` : ""}`}
-                        aria-current={active ? "page" : undefined}
-                        title={board.name}
-                        onClick={onNavigate}
-                      >
-                        <ProjectTile name={board.name} active={active} />
-                        <span className="min-w-0 flex-1 truncate">{board.name}</span>
-                        {running > 0 ? (
-                          <span className="flex shrink-0 items-center gap-1.5 font-mono text-xs font-medium text-sidebar-primary tabular-nums">
-                            <span aria-hidden="true" className="relative flex size-1.5">
-                              <span className="absolute inset-0 rounded-full bg-current motion-safe:animate-breathe" />
-                              <span className="relative size-1.5 rounded-full bg-current" />
-                            </span>
-                            {running}
-                          </span>
-                        ) : (
-                          pending > 0 && (
-                            <span className="shrink-0 font-mono text-xs text-sidebar-foreground/45 tabular-nums">{pending}</span>
-                          )
-                        )}
-                      </Link>
-                    </SidebarMenuButton>
+                    <ContextMenu>
+                      <ContextMenuTrigger asChild>
+                        <SidebarMenuButton asChild isActive={active} className={cn(ROW, ACTIVE_ROW)}>
+                          <Link
+                            href={href}
+                            // Distinct from the project's own name so page links stay uniquely named.
+                            aria-label={`Project ${board.name}${board.pinned ? ", pinned" : ""}${running > 0 ? `, ${running} running` : ""}`}
+                            aria-current={active ? "page" : undefined}
+                            title={board.name}
+                            onClick={onNavigate}
+                          >
+                            <ProjectTile name={board.name} active={active} />
+                            <span className="min-w-0 flex-1 truncate">{board.name}</span>
+                            {board.pinned && (
+                              <PinIcon aria-hidden="true" className="size-3! shrink-0 text-sidebar-foreground/45" />
+                            )}
+                            {running > 0 ? (
+                              <span className="flex shrink-0 items-center gap-1.5 font-mono text-xs font-medium text-sidebar-primary tabular-nums">
+                                <span aria-hidden="true" className="relative flex size-1.5">
+                                  <span className="absolute inset-0 rounded-full bg-current motion-safe:animate-breathe" />
+                                  <span className="relative size-1.5 rounded-full bg-current" />
+                                </span>
+                                {running}
+                              </span>
+                            ) : (
+                              pending > 0 && (
+                                <span className="shrink-0 font-mono text-xs text-sidebar-foreground/45 tabular-nums">
+                                  {pending}
+                                </span>
+                              )
+                            )}
+                          </Link>
+                        </SidebarMenuButton>
+                      </ContextMenuTrigger>
+                      <ContextMenuContent className="w-56">
+                        <ContextMenuItem onSelect={() => void setBoardPinned(board, !board.pinned)}>
+                          {board.pinned ? <PinOffIcon /> : <PinIcon />}
+                          {board.pinned ? "Unpin from dashboard" : "Pin to dashboard"}
+                        </ContextMenuItem>
+                      </ContextMenuContent>
+                    </ContextMenu>
                   </SidebarMenuItem>
                 );
               })}

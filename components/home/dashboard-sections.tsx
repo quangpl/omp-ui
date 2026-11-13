@@ -11,6 +11,7 @@ import {
   ContainerIcon,
   FolderPlusIcon,
   KeyboardIcon,
+  PackageCheckIcon,
   PlusIcon,
   RadarIcon,
   RefreshCwIcon,
@@ -170,6 +171,7 @@ function QuickAction({
 const GO_TO: { href: string; label: string; icon: ReactNode; keys: string[] }[] = [
   { href: "/containers", label: "Containers", icon: <ContainerIcon />, keys: ["G", "D"] },
   { href: "/visualize", label: "Visualize", icon: <RadarIcon />, keys: ["G", "V"] },
+  { href: "/artifacts", label: "Artifacts", icon: <PackageCheckIcon />, keys: ["G", "A"] },
   { href: "/stats", label: "Stats", icon: <ChartColumnIcon />, keys: ["G", "T"] },
   { href: "/settings", label: "Settings", icon: <SettingsIcon />, keys: ["G", "S"] },
 ];

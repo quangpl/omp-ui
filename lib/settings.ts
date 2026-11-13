@@ -14,6 +14,25 @@ import {
 } from "@/lib/types";
 
 const KEY = "app_settings";
+/**
+ * DASHBOARD_MENU_IDS before `knownDashboardMenus` was stored: settings saved then treat these as the
+ * menus the user chose from, so every id added since shows until hidden.
+ */
+const LEGACY_DASHBOARD_MENUS: readonly string[] = [
+  "visualize",
+  "containers",
+  "terminal",
+  "memory",
+  "credentials",
+  "stats",
+  "settings",
+];
+
+/**
+ * The stored record: AppSettings plus `knownDashboardMenus`, the DASHBOARD_MENU_IDS that existed when
+ * it was saved (internal, never in the API), so menus added later show by default.
+ */
+type StoredSettings = AppSettings & { knownDashboardMenus?: unknown };
 const APPROVAL_MODES: ApprovalMode[] = ["yolo", "write", "always-ask"];
 /** Highest explicit agent limit (the automatic one has its own cap). */
 export const MAX_EXPLICIT_AGENTS = 16;
@@ -31,7 +50,11 @@ export async function getAppSettings(repo: Repository): Promise<AppSettings> {
   const raw = await repo.getSetting(KEY);
   if (!raw) return base;
   try {
-    return sanitize({ ...base, ...(JSON.parse(raw) as Partial<AppSettings>) });
+    const { knownDashboardMenus, ...settings } = JSON.parse(raw) as Partial<StoredSettings>;
+    return sanitize(
+      { ...base, ...settings },
+      Array.isArray(knownDashboardMenus) ? knownDashboardMenus : LEGACY_DASHBOARD_MENUS,
+    );
   } catch {
     return base;
   }
@@ -41,8 +64,10 @@ export async function updateAppSettings(
   repo: Repository,
   patch: Partial<AppSettings>,
 ): Promise<AppSettings> {
-  const next = sanitize({ ...(await getAppSettings(repo)), ...patch });
-  await repo.setSetting(KEY, JSON.stringify(next));
+  // Already current (read through getAppSettings), so every menu is known.
+  const next = sanitize({ ...(await getAppSettings(repo)), ...patch }, DASHBOARD_MENU_IDS);
+  const stored: StoredSettings = { ...next, knownDashboardMenus: [...DASHBOARD_MENU_IDS] };
+  await repo.setSetting(KEY, JSON.stringify(stored));
   return next;
 }
 
@@ -54,7 +79,8 @@ export function parseAgentLimit(value: unknown): AppSettings["maxConcurrentAgent
   return Math.min(MAX_EXPLICIT_AGENTS, n);
 }
 
-function sanitize(s: AppSettings): AppSettings {
+/** `knownMenus`: the menu ids the stored `visibleDashboardMenus` was chosen from; any other id shows. */
+function sanitize(s: AppSettings, knownMenus: readonly unknown[]): AppSettings {
   return {
     // Stored numbers (older versions only had numbers) stay explicit limits.
     maxConcurrentAgents: parseAgentLimit(s.maxConcurrentAgents) ?? DEFAULT_SETTINGS.maxConcurrentAgents,
@@ -78,9 +104,12 @@ function sanitize(s: AppSettings): AppSettings {
       typeof s.taskCompletionNotifications === "boolean"
         ? s.taskCompletionNotifications
         : DEFAULT_SETTINGS.taskCompletionNotifications,
-    // Known ids only, each once, in the canonical order; missing (older settings) shows every menu.
+    // Known ids only, each once, in the canonical order; ids added after the list was saved show,
+    // and missing (older settings) shows every menu.
     visibleDashboardMenus: Array.isArray(s.visibleDashboardMenus)
-      ? DASHBOARD_MENU_IDS.filter((id) => (s.visibleDashboardMenus as unknown[]).includes(id))
+      ? DASHBOARD_MENU_IDS.filter(
+          (id) => (s.visibleDashboardMenus as unknown[]).includes(id) || !knownMenus.includes(id),
+        )
       : [...DEFAULT_SETTINGS.visibleDashboardMenus],
     // Sealed chat bot tokens (lib/server/chat/store.ts); "" when none.
     telegramBotToken: typeof s.telegramBotToken === "string" ? s.telegramBotToken : "",

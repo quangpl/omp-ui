@@ -32,6 +32,7 @@ import type {
 import {
   POSITION_STEP,
   type SchemaSnapshot,
+  boardPatchUpdatedAt,
   emptyStatusCounts,
   logSchemaMigrations,
   newId,
@@ -61,12 +62,14 @@ CREATE TABLE IF NOT EXISTS boards (
   model TEXT,
   auto_run BOOLEAN NOT NULL DEFAULT TRUE,
   worktrees BOOLEAN NOT NULL DEFAULT FALSE,
+  pinned BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 -- Migrations for databases created before these columns existed.
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS extra_folders TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS worktrees BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_boards_created ON boards (created_at);
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -192,6 +195,7 @@ interface BoardRow {
   model: string | null;
   auto_run: boolean;
   worktrees: boolean;
+  pinned: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -293,6 +297,7 @@ function toBoard(r: BoardRow): Board {
     model: r.model,
     autoRun: r.auto_run,
     worktrees: r.worktrees,
+    pinned: r.pinned,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -555,7 +560,8 @@ export class PostgresRepository implements Repository {
       ["model", patch.model],
       ["auto_run", patch.autoRun],
       ["worktrees", patch.worktrees],
-      ["updated_at", nowIso()],
+      ["pinned", patch.pinned],
+      ["updated_at", boardPatchUpdatedAt(patch)],
     ]);
     const res = await this.query<BoardRow>(
       `UPDATE boards SET ${sql} WHERE id = $${params.length + 1} RETURNING *`,

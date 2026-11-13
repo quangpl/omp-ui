@@ -40,9 +40,9 @@ import {
 } from "@/components/visualize/agent-map";
 import { workerIdentity } from "@/components/visualize/game";
 import { agentVitals, moodTone, subagentVitals } from "@/components/visualize/mood";
-import { type AgentRole, ROLE_INFO, roleOf } from "@/components/visualize/roles";
+import { type AgentRole, ROLE_INFO, roleOf, subagentName } from "@/components/visualize/roles";
 import type { LiveAgent } from "@/components/visualize/use-live-agents";
-import { ManaBar, MOOD_LABEL, WorkerAvatar, type WorkerMood } from "@/components/visualize/worker-avatar";
+import { ManaBar, MOOD_LABEL, RoleTag, WorkerAvatar, type WorkerMood } from "@/components/visualize/worker-avatar";
 import type { ContextUsage, Dashboard } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -61,6 +61,9 @@ const STARTING: Activity = { icon: "status", label: "Starting" };
 
 /** Hue of the robots in the legend: one colour, so only the silhouette and face differ. */
 const LEGEND_HUE = 235;
+
+/** Card agents are always leads. */
+const LEAD = ROLE_INFO.lead.label;
 
 /**
  * Floor plan. Phones: 2 columns, rooms stacked. md: intake and rework side by side, the eight
@@ -221,10 +224,13 @@ function useWalk(id: string, origin?: string) {
 
 interface TokenView {
   href: string;
+  /** Who the worker is: the card's robot name, or the name its lead gave a subagent. */
   name: string;
   caption: ReactNode;
   mood: WorkerMood;
   role: AgentRole;
+  /** The role's human label, drawn as a tag under the name. */
+  roleLabel: string;
   /** Draws the "!" help bubble: the worker needs the user. */
   help?: boolean;
   /** Context window left (0..1, null unknown); undefined draws no mana bar. */
@@ -237,11 +243,11 @@ interface TokenView {
   tone?: "error" | "strain";
 }
 
-/** A worker standing in a room: robot, name tag and what it is doing; hover for the details. */
+/** A worker standing in a room: robot, name, role tag and what it is doing; hover for the details. */
 function Token({ id, origin, view }: { id: string; origin?: string; view: TokenView }) {
   const { outer, inner } = useWalk(id, origin);
   return (
-    <li ref={outer} className={cn("min-w-0", view.small ? "w-16" : "w-20")}>
+    <li ref={outer} className="w-20 min-w-0">
       <div ref={inner} className="relative">
         <Tooltip>
           <TooltipTrigger asChild>
@@ -264,6 +270,7 @@ function Token({ id, origin, view }: { id: string; origin?: string; view: TokenV
               </span>
               {view.mana !== undefined && <ManaBar value={view.mana} className={view.small ? "w-7" : "w-9"} />}
               <span className="max-w-full truncate font-mono text-[11px] leading-tight font-medium">{view.name}</span>
+              <RoleTag hue={view.hue}>{view.roleLabel}</RoleTag>
               <span
                 className={cn(
                   "max-w-full truncate text-[10px] leading-tight",
@@ -326,16 +333,17 @@ function viewOf(
         caption: activity.label,
         mood: vitals.mood,
         role: "lead",
+        roleLabel: LEAD,
         help: vitals.help !== null,
         mana: vitals.mana,
         hue,
         tone: moodTone(vitals.mood),
-        label: `${name}, ${MOOD_LABEL[vitals.mood].toLowerCase()}: ${activity.label}, on ${entry.title} in ${entry.boardName}`,
+        label: `${name} (${LEAD}), ${MOOD_LABEL[vitals.mood].toLowerCase()}: ${activity.label}, on ${entry.title} in ${entry.boardName}`,
         details: (
           <Details
             title={entry.title}
             lines={[
-              `${name} · ${ROLE_INFO.lead.label} · ${entry.boardName}${Number.isNaN(started) ? "" : ` · ${formatDuration(now - started)} on this run`}`,
+              `${name} · ${LEAD} · ${entry.boardName}${Number.isNaN(started) ? "" : ` · ${formatDuration(now - started)} on this run`}`,
               `${activity.label}${activity.detail ? `: ${activity.detail}` : ""}`,
               vitals.feeling,
               ...vitals.notes,
@@ -350,6 +358,7 @@ function viewOf(
     case "subagent": {
       const { entry, subagent } = worker;
       const parent = workerIdentity(entry.taskId).name;
+      const name = subagentName(subagent.id, subagent.agent);
       const task = subagent.description ?? subagent.agent;
       const parentWindow = contexts.get(entry.taskId)?.contextWindow || live[entry.taskId]?.context?.contextWindow;
       const vitals = subagentVitals(subagent, now, parentWindow);
@@ -357,20 +366,22 @@ function viewOf(
       const info = ROLE_INFO[role];
       return {
         href: cardHref({ boardId: entry.boardId, id: entry.taskId }),
-        name: subagent.agent,
+        name,
         caption: `for ${parent}`,
         mood: vitals.mood,
         role,
+        roleLabel: info.label,
         help: vitals.help !== null,
         mana: vitals.mana,
         hue: workerIdentity(`${entry.taskId}:${subagent.id}`).hue,
         small: true,
         tone: moodTone(vitals.mood),
-        label: `${parent}'s ${subagent.agent} subagent (${info.label}), ${MOOD_LABEL[vitals.mood].toLowerCase()}${subagent.currentTool ? `, using ${subagent.currentTool}` : ""}`,
+        label: `${name}, ${parent}'s ${info.label.toLowerCase()} (${subagent.agent} agent), ${MOOD_LABEL[vitals.mood].toLowerCase()}${subagent.currentTool ? `, using ${subagent.currentTool}` : ""}`,
         details: (
           <Details
-            title={`${parent}'s ${info.label.toLowerCase()}: ${subagent.agent}`}
+            title={name}
             lines={[
+              `${info.label} · ${subagent.agent} agent · working for ${parent}`,
               info.description,
               task !== subagent.agent && task,
               subagent.currentTool && `Using ${subagent.currentTool}`,
@@ -402,13 +413,14 @@ function viewOf(
         ),
         mood: "waiting",
         role: "lead",
+        roleLabel: LEAD,
         hue,
         label: `${name}, #${position} in line: ${entry.title} in ${entry.boardName}${blocked ? `; ${blocked}` : ""}`,
         details: (
           <Details
             title={entry.title}
             lines={[
-              `${name} · ${entry.boardName} · #${position} in line`,
+              `${name} · ${LEAD} · ${entry.boardName} · #${position} in line`,
               blocked && `Blocked: ${blocked}`,
               entry.planning && "Being planned",
               entry.drafting && "Being written",
@@ -430,12 +442,13 @@ function viewOf(
         caption: failed ? "Failed" : "Stalled",
         mood: failed ? "error" : "sleeping",
         role: "lead",
+        roleLabel: LEAD,
         // Failed and stalled cards both wait on the user.
         help: true,
         hue,
         tone: failed ? "error" : undefined,
         label: `${name}, ${failed ? "failed" : "stalled"}, needs help: ${card.title} in ${card.boardName}`,
-        details: <Details title={card.title} lines={[`${name} · ${card.boardName}`, error]} />,
+        details: <Details title={card.title} lines={[`${name} · ${LEAD} · ${card.boardName}`, error]} />,
       };
     }
     case "shipped": {
@@ -448,9 +461,10 @@ function viewOf(
         caption: when,
         mood: "happy",
         role: "lead",
+        roleLabel: LEAD,
         hue,
         label: `${name} finished ${card.title} in ${card.boardName}, ${when}`,
-        details: <Details title={card.title} lines={[`${name} · ${card.boardName}`, `Finished ${when}`]} />,
+        details: <Details title={card.title} lines={[`${name} · ${LEAD} · ${card.boardName}`, `Finished ${when}`]} />,
       };
     }
   }

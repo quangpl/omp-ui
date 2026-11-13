@@ -32,9 +32,9 @@ import { FilePicker } from "@/components/board/file-picker";
 import { FileTree } from "@/components/board/file-tree";
 import { errorMessage } from "@/components/board/format";
 import { formatSize } from "@/components/viewer/common";
-import { ApiRequestError, api } from "@/lib/api-client";
+import { ApiRequestError } from "@/lib/api-client";
+import { type FileSource, fileSourceFolders, fileSourceKey, readSourceFile, writeSourceFile } from "@/lib/file-source";
 import { modKeyLabel } from "@/lib/hotkeys";
-import type { Board } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** The file in the editor: `content` is the text on disk as of `mtimeMs`, `draft` the edited text. */
@@ -81,22 +81,28 @@ function loadErrorOf(err: unknown): LoadError {
 }
 
 /**
- * The Files tab: project file tree, file search and a code editor next to the card's agent chat.
- * Side by side on desktop (chat under the editor below lg), stacked on phones. `chat` renders the
- * card's thread and gets `openFile` so "@" mentions open the file in the editor. Fills its parent's
- * height on desktop.
+ * File tree, file search and a code editor, optionally next to an agent chat (the card panel's
+ * Files tab, the Files page). Side by side on desktop (chat under the editor below lg), stacked on
+ * phones. `chat` renders the thread and gets `openFile` so "@" mentions open the file in the
+ * editor; without it the editor takes the full width. Fills its parent's height on desktop.
  */
 export function FilesWorkspace({
-  board,
+  source,
   isMobile,
   chat,
+  chatTitle = "Agent chat",
+  chatHint = "@ a file to open it here",
   onDirtyChange,
+  className,
 }: {
-  board: Board;
+  source: FileSource;
   isMobile: boolean;
-  chat: (openFile: (path: string) => void) => ReactNode;
+  chat?: (openFile: (path: string) => void) => ReactNode;
+  chatTitle?: string;
+  chatHint?: string;
   /** Name of the file with unsaved edits, or null once there are none (also on unmount). */
   onDirtyChange?: (dirtyFile: string | null) => void;
+  className?: string;
 }) {
   /** Path id of the file shown (loaded, loading or failed); null before the first pick. */
   const [target, setTarget] = useState<string | null>(null);
@@ -114,11 +120,14 @@ export function FilesWorkspace({
 
   const loadAbortRef = useRef<AbortController | null>(null);
   const savingRef = useRef(false);
+  // Callers may pass a fresh source object every render; effects follow its key instead.
+  const sourceKey = fileSourceKey(source);
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
   // Latest state for the stable callbacks below (the chat and the tree keep one `openFile`).
-  const latestRef = useRef({ target, file, error });
-  latestRef.current = { target, file, error };
+  const latestRef = useRef({ target, file, error, sourceKey });
+  latestRef.current = { target, file, error, sourceKey };
 
-  const boardId = board.id;
   const dirty = file !== null && file.draft !== file.content;
   const dirtyFile = file && dirty ? baseName(file.path) : null;
 
@@ -126,6 +135,20 @@ export function FilesWorkspace({
   onDirtyChangeRef.current = onDirtyChange;
   useEffect(() => onDirtyChangeRef.current?.(dirtyFile), [dirtyFile]);
   useEffect(() => () => onDirtyChangeRef.current?.(null), []);
+
+  // A different source starts with no file open (callers confirm dropping unsaved edits first).
+  const shownSourceRef = useRef(sourceKey);
+  useEffect(() => {
+    if (shownSourceRef.current === sourceKey) return;
+    shownSourceRef.current = sourceKey;
+    loadAbortRef.current?.abort();
+    setTarget(null);
+    setFile(null);
+    setError(null);
+    setLoading(false);
+    setPendingPath(null);
+    setTreeOpen(true);
+  }, [sourceKey]);
 
   /** Reads `path` into the editor, dropping any draft; a newer load cancels this one. */
   const load = useCallback(
@@ -138,8 +161,7 @@ export function FilesWorkspace({
       setLoading(true);
       // A reload keeps the stale text on screen until the fresh copy arrives.
       setFile((current) => (current?.path === path ? current : null));
-      api.boards
-        .readProjectFile(boardId, path, { signal: controller.signal })
+      readSourceFile(sourceRef.current, path, { signal: controller.signal })
         .then((data) => {
           if (controller.signal.aborted) return;
           setFile({ path, content: data.content, draft: data.content, mtimeMs: data.mtimeMs, size: data.size });
@@ -153,7 +175,7 @@ export function FilesWorkspace({
           if (!controller.signal.aborted) setLoading(false);
         });
     },
-    [boardId],
+    [],
   );
 
   useEffect(() => () => loadAbortRef.current?.abort(), []);
@@ -178,12 +200,15 @@ export function FilesWorkspace({
     if (!current || current.draft === current.content || savingRef.current) return;
     const { path, draft } = current;
     const name = baseName(path);
+    const savedSourceKey = latestRef.current.sourceKey;
     savingRef.current = true;
     setSaving(true);
     try {
-      const saved = await api.boards.writeProjectFile(boardId, { path, content: draft, baseMtimeMs: current.mtimeMs });
-      // Edits typed while saving stay in the draft (still dirty).
-      setFile((f) => (f?.path === path ? { ...f, content: draft, mtimeMs: saved.mtimeMs, size: saved.size } : f));
+      const saved = await writeSourceFile(sourceRef.current, { path, content: draft, baseMtimeMs: current.mtimeMs });
+      // Edits typed while saving stay in the draft (still dirty); a switched source has moved on.
+      if (latestRef.current.sourceKey === savedSourceKey) {
+        setFile((f) => (f?.path === path ? { ...f, content: draft, mtimeMs: saved.mtimeMs, size: saved.size } : f));
+      }
       toast.success(`Saved ${name}`);
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 409) {
@@ -192,7 +217,7 @@ export function FilesWorkspace({
           action: {
             label: "Reload",
             onClick: () => {
-              if (latestRef.current.target === path) load(path);
+              if (latestRef.current.target === path && latestRef.current.sourceKey === savedSourceKey) load(path);
             },
           },
         });
@@ -203,7 +228,7 @@ export function FilesWorkspace({
       savingRef.current = false;
       setSaving(false);
     }
-  }, [boardId, load]);
+  }, [load]);
 
   const revert = () => setFile((f) => (f ? { ...f, draft: f.content } : f));
 
@@ -220,9 +245,10 @@ export function FilesWorkspace({
 
   // Desktop chat: start at the newest message and follow new ones while scrolled to the bottom.
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  const hasChat = chat !== undefined;
   useEffect(() => {
     const el = chatScrollRef.current;
-    if (isMobile || !el) return;
+    if (isMobile || !hasChat || !el) return;
     let stick = true;
     el.scrollTop = el.scrollHeight;
     const onScroll = () => {
@@ -237,17 +263,15 @@ export function FilesWorkspace({
       observer.disconnect();
       el.removeEventListener("scroll", onScroll);
     };
-  }, [isMobile]);
+  }, [isMobile, hasChat]);
 
   const name = target ? baseName(target) : null;
-  const shownPath = target ? displayPath(target, board.extraFolders) : null;
+  const shownPath = target ? displayPath(target, fileSourceFolders(source).extraFolders) : null;
   const nameStart = shownPath ? shownPath.lastIndexOf("/") + 1 : 0;
 
   const tree = (
     <FileTree
-      boardId={boardId}
-      workdir={board.workdir}
-      extraFolders={board.extraFolders}
+      source={source}
       selectedPath={target}
       onOpenFile={(path) => {
         if (isMobile) setTreeOpen(false);
@@ -362,7 +386,9 @@ export function FilesWorkspace({
         </span>
         <p className="text-sm font-medium">No file open</p>
         <p className="max-w-xs text-xs text-muted-foreground">
-          Pick a file from the tree, search with Open file…, or mention one with @ in the chat.
+          {hasChat
+            ? "Pick a file from the tree, search with Open file…, or mention one with @ in the chat."
+            : "Pick a file from the tree, or search with Open file…"}
         </p>
       </div>
     );
@@ -398,21 +424,23 @@ export function FilesWorkspace({
   const chatHeader = (
     <div className="flex h-11 shrink-0 items-center gap-2 border-b px-4 md:px-3">
       <MessageSquare aria-hidden className="size-4 text-muted-foreground" />
-      <span className="text-sm font-medium">Agent chat</span>
-      <span className="min-w-0 truncate text-xs text-muted-foreground">@ a file to open it here</span>
+      <span className="shrink-0 text-sm font-medium">{chatTitle}</span>
+      {chatHint && <span className="min-w-0 truncate text-xs text-muted-foreground">{chatHint}</span>}
     </div>
   );
 
   if (isMobile) {
+    // Every section keeps its natural/fixed height (shrink-0) so the stack works in any parent: in a
+    // height-constrained flex column (the /files page) the parent scrolls instead of squashing the editor.
     return (
-      <div className="flex flex-col">
-        <div className="flex items-center gap-2 border-b px-3 py-2">
-          <FilePicker boardId={boardId} onPick={openFile} className="min-w-0 flex-1" />
+      <div className={cn("flex shrink-0 flex-col", className)}>
+        <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
+          <FilePicker source={source} onPick={openFile} className="min-w-0 flex-1" />
           {revertButton}
           {saveButton}
         </div>
-        {target && <div className="flex min-h-9 items-center border-b px-4">{pathLabel}</div>}
-        <div className="border-b">
+        {target && <div className="flex min-h-9 shrink-0 items-center border-b px-4">{pathLabel}</div>}
+        <div className="shrink-0 border-b">
           <Button
             variant="ghost"
             className="h-11 w-full justify-between rounded-none px-4 font-medium"
@@ -429,19 +457,36 @@ export function FilesWorkspace({
             <div className="max-h-[40dvh] overflow-auto overscroll-contain border-t">{tree}</div>
           )}
         </div>
-        <div className="h-[55dvh] min-w-0 overflow-hidden border-b">{editorPane}</div>
-        {chatHeader}
-        {chat(openFile)}
+        <div className={cn("min-w-0 shrink-0 overflow-hidden", chat ? "h-[55dvh] border-b" : "h-[70dvh]")}>
+          {editorPane}
+        </div>
+        {chat && (
+          <>
+            {chatHeader}
+            <div className="shrink-0">{chat(openFile)}</div>
+          </>
+        )}
         {discardDialog}
       </div>
     );
   }
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[minmax(0,3fr)_minmax(0,2fr)] lg:grid-cols-[minmax(0,1fr)_minmax(18rem,22rem)] lg:grid-rows-1">
-      <section aria-label="Project files" className="flex min-h-0 min-w-0 flex-col">
+    <div
+      className={cn(
+        "grid h-full min-h-0",
+        chat
+          ? "grid-rows-[minmax(0,3fr)_minmax(0,2fr)] lg:grid-cols-[minmax(0,1fr)_minmax(18rem,22rem)] lg:grid-rows-1"
+          : "grid-rows-1",
+        className,
+      )}
+    >
+      <section
+        aria-label={source.kind === "board" ? "Project files" : "Files"}
+        className="flex min-h-0 min-w-0 flex-col"
+      >
         <div className="flex h-11 shrink-0 items-center gap-2 border-b px-2">
-          <FilePicker boardId={boardId} onPick={openFile} className="shrink-0" />
+          <FilePicker source={source} onPick={openFile} className="shrink-0" />
           <div className="flex min-w-0 flex-1 items-center">{pathLabel}</div>
           {revertButton}
           {saveButton}
@@ -451,12 +496,14 @@ export function FilesWorkspace({
           <div className="min-h-0 min-w-0 overflow-hidden">{editorPane}</div>
         </div>
       </section>
-      <aside aria-label="Agent chat" className="flex min-h-0 min-w-0 flex-col border-t lg:border-t-0 lg:border-l">
-        {chatHeader}
-        <div ref={chatScrollRef} className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto overscroll-contain">
-          {chat(openFile)}
-        </div>
-      </aside>
+      {chat && (
+        <aside aria-label={chatTitle} className="flex min-h-0 min-w-0 flex-col border-t lg:border-t-0 lg:border-l">
+          {chatHeader}
+          <div ref={chatScrollRef} className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            {chat(openFile)}
+          </div>
+        </aside>
+      )}
       {discardDialog}
     </div>
   );

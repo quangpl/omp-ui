@@ -346,6 +346,24 @@ describe("boards", () => {
     expect(blankName.body.error).toBe("name is required");
   });
 
+  it("pins and unpins a board without bumping its updatedAt", async () => {
+    const board = await createBoard({ name: "Pinnable", workdir: projectA });
+    expect(board.pinned).toBe(false);
+
+    const pinned = await patchBoard(board.id, { pinned: true });
+    expect(pinned.status).toBe(200);
+    expect(pinned.body).toMatchObject({ pinned: true, updatedAt: board.updatedAt });
+    const listed = await api<BoardWithCounts[]>(boardsRoute, "GET", "/boards");
+    expect(listed.body.find((b) => b.id === board.id)?.pinned).toBe(true);
+
+    const unpinned = await patchBoard(board.id, { pinned: false });
+    expect(unpinned.body).toMatchObject({ pinned: false, updatedAt: board.updatedAt });
+
+    const invalid = await patchBoard(board.id, { pinned: "yes" });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toBe("pinned must be a boolean");
+  });
+
   it("deletes a board and cascades to its tasks and comments", async () => {
     const board = await createBoard({ name: "Doomed", workdir: projectA, autoRun: false });
     const task = await createTask(board.id, { title: "will vanish" });

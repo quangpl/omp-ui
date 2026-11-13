@@ -61,4 +61,42 @@ describe("/settings visibleDashboardMenus", () => {
     await (await getRepo()).setSetting("app_settings", JSON.stringify({ ompPath: "omp" }));
     expect((await getSettings()).visibleDashboardMenus).toEqual([...DASHBOARD_MENU_IDS]);
   });
+
+  it("menus added since a legacy list was saved show by default", async () => {
+    const legacy = ["visualize", "terminal", "settings"];
+    await (await getRepo()).setSetting("app_settings", JSON.stringify({ ompPath: "omp", visibleDashboardMenus: legacy }));
+    expect((await getSettings()).visibleDashboardMenus).toEqual(["visualize", "terminal", "files", "artifacts", "settings"]);
+  });
+
+  it("a menu hidden after it existed stays hidden", async () => {
+    await (await getRepo()).setSetting(
+      "app_settings",
+      JSON.stringify({ ompPath: "omp", visibleDashboardMenus: ["visualize", "stats"] }),
+    );
+    expect((await getSettings()).visibleDashboardMenus).toEqual(["visualize", "files", "artifacts", "stats"]);
+
+    const saved = await patchSettings({ visibleDashboardMenus: ["visualize", "stats"] });
+    expect(saved.visibleDashboardMenus).toEqual(["visualize", "stats"]);
+    const settings = await getSettings();
+    expect(settings.visibleDashboardMenus).toEqual(["visualize", "stats"]);
+    // Internal bookkeeping, never part of the API.
+    expect(settings).not.toHaveProperty("knownDashboardMenus");
+  });
+
+  it("saving another setting keeps a hidden menu hidden", async () => {
+    await patchSettings({ visibleDashboardMenus: ["memory"] });
+    await patchSettings({ smartQueue: false });
+    expect((await getSettings()).visibleDashboardMenus).toEqual(["memory"]);
+  });
+
+  it("stored ids that are no longer menus are dropped", async () => {
+    await (await getRepo()).setSetting(
+      "app_settings",
+      JSON.stringify({
+        visibleDashboardMenus: ["projects", "stats", "files"],
+        knownDashboardMenus: [...DASHBOARD_MENU_IDS, "projects"],
+      }),
+    );
+    expect((await getSettings()).visibleDashboardMenus).toEqual(["files", "stats"]);
+  });
 });

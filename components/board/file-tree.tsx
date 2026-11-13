@@ -5,7 +5,7 @@ import { ChevronRight, Folder, FolderOpen, RotateCw, TriangleAlert } from "lucid
 import { fileIcon } from "@/components/board/file-icon";
 import { errorMessage } from "@/components/board/format";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "@/lib/api-client";
+import { type FileSource, fileSourceFolders, fileSourceKey, listSourceFiles } from "@/lib/file-source";
 import type { ProjectFileHit } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -17,7 +17,7 @@ type Listing =
   | { status: "error"; error: string }
   | { status: "ok"; hits: ProjectFileHit[] };
 
-/** One project folder shown as a top-level node; `id` is also its listing query. */
+/** One folder of the source shown as a top-level node; `id` is also its listing query. */
 interface Root {
   id: string;
   label: string;
@@ -57,14 +57,14 @@ function basename(path: string): string {
   return trimmed.slice(trimmed.lastIndexOf("/") + 1) || path;
 }
 
-/** `folder` with exactly one trailing slash: the listing query (and node id) of an extra project folder. */
+/** `folder` with exactly one trailing slash: the listing query (and node id) of an extra folder. */
 function folderQuery(folder: string): string {
   const trimmed = trimSlashes(folder);
   return trimmed === "/" ? "/" : `${trimmed}/`;
 }
 
 /**
- * Directory ids to expand so `id` becomes visible: its project folder root (when roots are shown)
+ * Directory ids to expand so `id` becomes visible: its folder root (when roots are shown)
  * and every directory between that root and the file.
  */
 function ancestorIds(id: string, extraRoots: string[], showRoots: boolean): string[] {
@@ -96,25 +96,26 @@ function treeItems(tree: HTMLElement | null): HTMLElement[] {
 }
 
 /**
- * Lazily loaded tree of the board's project files. With extra project folders each folder
- * (workdir first) is a top-level node; otherwise the workdir's entries are the top level.
+ * Lazily loaded tree of the source's files. With extra folders each folder (workdir first) is a
+ * top-level node; otherwise the workdir's (or the folder source's) entries are the top level.
  * Node ids are `ProjectFileHit.insert` path ids; a directory's id is also its listing query.
  */
 export function FileTree({
-  boardId,
-  workdir,
-  extraFolders,
+  source,
   selectedPath,
   onOpenFile,
   className,
 }: {
-  boardId: string;
-  workdir: string;
-  extraFolders: string[];
+  source: FileSource;
   selectedPath: string | null;
   onOpenFile: (path: string) => void;
   className?: string;
 }) {
+  // Callers may pass a fresh source object every render; effects follow its key instead.
+  const sourceKey = fileSourceKey(source);
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
+  const { workdir, extraFolders } = fileSourceFolders(source);
   const extraKey = extraFolders.join("\n");
   const showRoots = extraFolders.length > 0;
   const extraRoots = useMemo(() => (extraKey ? extraKey.split("\n").map(folderQuery) : []), [extraKey]);
@@ -135,16 +136,16 @@ export function FileTree({
   /** The selected path last scrolled into view, so the tree scrolls once per selection. */
   const scrolledRef = useRef<string | null>(null);
 
-  // A different board or folder set starts over; unmounting stops pending listings.
+  // A different source starts over; unmounting stops pending listings.
   useEffect(() => {
     const inflight = inflightRef.current;
     setListings({});
-    setExpanded(new Set(extraKey ? [""] : []));
+    setExpanded(new Set(fileSourceFolders(sourceRef.current).extraFolders.length > 0 ? [""] : []));
     return () => {
       for (const controller of inflight.values()) controller.abort();
       inflight.clear();
     };
-  }, [boardId, workdir, extraKey]);
+  }, [sourceKey]);
 
   const load = useCallback(
     (query: string) => {
@@ -153,8 +154,7 @@ export function FileTree({
       const controller = new AbortController();
       inflight.set(query, controller);
       setListings((prev) => ({ ...prev, [query]: { status: "loading" } }));
-      api.boards
-        .projectFiles(boardId, query, { limit: TREE_LIMIT, signal: controller.signal })
+      listSourceFiles(sourceRef.current, query, { limit: TREE_LIMIT, signal: controller.signal })
         .then(({ files }) => {
           if (!controller.signal.aborted) setListings((prev) => ({ ...prev, [query]: { status: "ok", hits: files } }));
         })
@@ -167,7 +167,7 @@ export function FileTree({
           if (inflight.get(query) === controller) inflight.delete(query);
         });
     },
-    [boardId],
+    [],
   );
 
   // Every open directory (and the implicit top level) gets listed once; results stay cached.

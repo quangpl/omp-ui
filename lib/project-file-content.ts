@@ -1,7 +1,8 @@
-// Read and save one text file of a board's project folders for the card's Files tab. A file is
-// addressed by its "@" mention id: relative to the workdir, or absolute inside an extra project
-// folder. Ids are confined to those folders (no `..` or symlink escape, never inside `.git`), only
-// existing regular files are served, and saves are atomic and refused when the file changed on disk.
+// Read and save one text file of a board's project folders (or of a standalone folder) for the
+// Files views. A file is addressed by its "@" mention id: relative to the workdir, or absolute
+// inside an extra project folder. Ids are confined to those folders (no `..` or symlink escape,
+// never inside `.git`), only existing regular files are served, and saves are atomic and refused
+// when the file changed on disk.
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -18,6 +19,29 @@ type ProjectFolders = Pick<Board, "workdir" | "extraFolders">;
 /** `rel` (from path.relative) names something strictly inside its base folder. */
 function isInside(rel: string): boolean {
   return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
+/**
+ * Real path of a folder used as a standalone file source (Files page), searched and edited as
+ * `{ workdir: root, extraFolders: [] }`. 400 missing/relative/not a folder, 403 inside `.git`, 404 missing.
+ */
+export async function resolveFolderRoot(root: unknown): Promise<string> {
+  if (typeof root !== "string" || !root.trim()) throw new HttpError(400, "A folder path is required");
+  if (root.includes("\0")) throw new HttpError(400, "Invalid folder path");
+  if (!path.isAbsolute(root)) {
+    throw new HttpError(400, `Please use a full folder path starting with "/" (got "${root}").`);
+  }
+  let real: string;
+  try {
+    real = await fs.realpath(root);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP") throw new HttpError(404, "Folder not found");
+    throw err;
+  }
+  if (!(await fs.stat(real)).isDirectory()) throw new HttpError(400, "Not a folder");
+  if (real.split(path.sep).includes(".git")) throw new HttpError(403, "Files inside .git cannot be opened");
+  return real;
 }
 
 /**

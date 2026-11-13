@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { AgentRole } from "@/components/visualize/roles";
 import { cn } from "@/lib/utils";
 
@@ -198,6 +198,21 @@ export function ManaBar({ value, className }: { value: number | null; className?
         />
       )}
     </div>
+  );
+}
+
+/** The job a worker does ("Lead", "Scout", …) as a small tag in the worker's own paint. */
+export function RoleTag({ hue, children, className }: { hue: number; children: ReactNode; className?: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-block max-w-full truncate rounded-[3px] border px-1 text-[10px] leading-[14px] font-medium text-foreground/80",
+        className,
+      )}
+      style={{ borderColor: `oklch(0.7 0.12 ${hue} / 0.55)`, backgroundColor: `oklch(0.7 0.12 ${hue} / 0.12)` }}
+    >
+      {children}
+    </span>
   );
 }
 

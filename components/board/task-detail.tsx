@@ -84,6 +84,7 @@ import { isQuotaError } from "@/lib/quota";
 import { todoProgress } from "@/lib/todos";
 import { FilesPanel } from "@/components/files-panel";
 import { FilesWorkspace } from "@/components/board/files-workspace";
+import type { FileSource } from "@/lib/file-source";
 
 export interface TaskDetailProps {
   /** Selected card, or null when the panel is closed. */
@@ -383,6 +384,10 @@ function TaskDetailBody({
   const tabBarRef = useRef<HTMLDivElement>(null);
   const detailsRef = useRef<HTMLDivElement>(null);
   const filesRef = useRef<HTMLDivElement>(null);
+  const fileSource = useMemo<FileSource>(
+    () => ({ kind: "board", boardId: board.id, workdir: board.workdir, extraFolders: board.extraFolders }),
+    [board.id, board.workdir, board.extraFolders],
+  );
   const [agentBusy, setAgentBusy] = useState(false);
   const [shipRequested, setShipRequested] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -1013,7 +1018,7 @@ function TaskDetailBody({
             {filesOpened && (
               <div ref={filesRef} className={isMobile ? undefined : "sticky top-0 h-[calc(100dvh-7rem)] min-h-96"}>
                 <FilesWorkspace
-                  board={board}
+                  source={fileSource}
                   isMobile={isMobile}
                   onDirtyChange={(name) => onDirtyChange(name ? { taskId, name } : null)}
                   chat={(openFile) =>
