@@ -35,6 +35,7 @@ import { formatSize } from "@/components/viewer/common";
 import { ApiRequestError } from "@/lib/api-client";
 import { type FileSource, fileSourceFolders, fileSourceKey, readSourceFile, writeSourceFile } from "@/lib/file-source";
 import { modKeyLabel } from "@/lib/hotkeys";
+import type { FileOp, FileOpResult } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** The file in the editor: `content` is the text on disk as of `mtimeMs`, `draft` the edited text. */
@@ -180,6 +181,42 @@ export function FilesWorkspace({
 
   useEffect(() => () => loadAbortRef.current?.abort(), []);
 
+  /** Tree ops: the editor follows a renamed/moved file and closes one that was deleted. */
+  const onFileOp = useCallback(
+    (op: FileOp, result: FileOpResult) => {
+      if (op.op !== "rename" && op.op !== "delete") return;
+      const { target: shown, file: current } = latestRef.current;
+      if (!shown) return;
+      const from = op.op === "rename" ? op.from : op.path;
+      // A folder takes the open file with it.
+      const folder = result.kind === "dir" ? (from.endsWith("/") ? from : `${from}/`) : null;
+      if (folder ? !shown.startsWith(folder) : shown !== from) return;
+      if (op.op === "rename") {
+        const next = folder ? `${result.path.replace(/\/*$/, "/")}${shown.slice(folder.length)}` : result.path;
+        if (current?.path !== shown) {
+          // Loading or failed: nothing to keep.
+          load(next);
+          return;
+        }
+        // Same text on disk under a new name: keep the draft and mtime.
+        loadAbortRef.current?.abort();
+        setLoading(false);
+        setTarget(next);
+        setFile((f) => (f?.path === shown ? { ...f, path: next } : f));
+        return;
+      }
+      loadAbortRef.current?.abort();
+      setTarget(null);
+      setFile(null);
+      setError(null);
+      setLoading(false);
+      if (current && current.draft !== current.content) {
+        toast.warning(`Unsaved edits to ${baseName(shown)} were discarded`);
+      }
+    },
+    [load],
+  );
+
   /** Opens `path` in the editor, asking first when that would drop unsaved edits. */
   const openFile = useCallback(
     (path: string) => {
@@ -273,6 +310,7 @@ export function FilesWorkspace({
     <FileTree
       source={source}
       selectedPath={target}
+      onFileOp={onFileOp}
       onOpenFile={(path) => {
         if (isMobile) setTreeOpen(false);
         openFile(path);

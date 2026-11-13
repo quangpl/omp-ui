@@ -1,7 +1,8 @@
 // "@" mention candidates for the card composer: files and directories of a board's project folders,
 // ranked like OMP's own "@" file picker. Folders are listed with `git ls-files` (so .gitignore'd
 // files never show), falling back to a bounded directory walk outside git. Listings are cached
-// briefly because the composer queries on every keystroke.
+// briefly because the composer queries on every keystroke; file operations drop them right away.
+// Browsing a directory also reads it from disk, so folders without listed files (empty) show too.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -32,8 +33,15 @@ interface Entry {
   parent: string;
 }
 
+/** One folder's cached listing. */
+interface Listing {
+  entries: Entry[];
+  /** Listed by git (ignore rules apply) rather than by the fallback walk. */
+  git: boolean;
+}
+
 const g = globalThis as unknown as {
-  __ompUiProjectFiles?: Map<string, { at: number; entries: Promise<Entry[]> }>;
+  __ompUiProjectListings?: Map<string, { at: number; listing: Promise<Listing> }>;
 };
 
 function makeEntry(p: string, kind: Entry["kind"]): Entry {
@@ -109,27 +117,95 @@ async function walkFiles(folder: string): Promise<string[]> {
   return files;
 }
 
-async function loadEntries(folder: string): Promise<Entry[]> {
+async function loadListing(folder: string): Promise<Listing> {
   try {
-    if (!(await fs.promises.stat(folder)).isDirectory()) return [];
-    return toEntries((await gitFiles(folder)) ?? (await walkFiles(folder)));
+    if (!(await fs.promises.stat(folder)).isDirectory()) return { entries: [], git: false };
+    const files = await gitFiles(folder);
+    if (files) return { entries: toEntries(files), git: true };
+    return { entries: toEntries(await walkFiles(folder)), git: false };
   } catch {
-    return [];
+    return { entries: [], git: false };
   }
 }
 
 /** Cached listing of one absolute folder; concurrent callers share the same load. Never rejects. */
-function folderEntries(folder: string): Promise<Entry[]> {
-  const cache = (g.__ompUiProjectFiles ??= new Map());
+function folderListing(folder: string): Promise<Listing> {
+  const cache = (g.__ompUiProjectListings ??= new Map());
   const now = Date.now();
   const cached = cache.get(folder);
-  if (cached && now - cached.at <= CACHE_TTL_MS) return cached.entries;
+  if (cached && now - cached.at <= CACHE_TTL_MS) return cached.listing;
   for (const [key, value] of cache) {
     if (now - value.at > CACHE_TTL_MS) cache.delete(key);
   }
-  const entries = loadEntries(folder);
-  cache.set(folder, { at: now, entries });
-  return entries;
+  const listing = loadListing(folder);
+  cache.set(folder, { at: now, listing });
+  return listing;
+}
+
+/**
+ * Drop the cached listings of `folders` (and of folders nested in or containing them, whose
+ * listings overlap); every listing when omitted. Called after files are created, moved or deleted.
+ */
+export function invalidateProjectFiles(folders?: string[]): void {
+  const cache = g.__ompUiProjectListings;
+  if (!cache) return;
+  if (!folders) return cache.clear();
+  const changed = folders.map((folder) => path.resolve(folder));
+  for (const key of cache.keys()) {
+    const cached = path.resolve(key);
+    const overlaps = changed.some(
+      (folder) =>
+        folder === cached || cached.startsWith(`${folder}${path.sep}`) || folder.startsWith(`${cached}${path.sep}`),
+    );
+    if (overlaps) cache.delete(key);
+  }
+}
+
+/** The subset of `paths` (relative to `folder`) git ignores; null when git fails. */
+function gitIgnored(folder: string, paths: string[]): Promise<Set<string> | null> {
+  const { promise, resolve } = Promise.withResolvers<Set<string> | null>();
+  const child = execFile(
+    "git",
+    ["check-ignore", "--stdin", "-z"],
+    { cwd: folder, timeout: GIT_TIMEOUT_MS, env: GIT_ENV, maxBuffer: MAX_BUFFER, windowsHide: true },
+    (err, stdout) => {
+      // Exit code 1: none of the paths is ignored.
+      if (err && err.code !== 1) return resolve(null);
+      resolve(new Set(stdout.split("\0").filter(Boolean)));
+    },
+  );
+  // git may exit before reading everything (EPIPE); the exit callback reports the outcome.
+  child.stdin?.on("error", () => {});
+  child.stdin?.end(`${paths.join("\0")}\0`);
+  return promise;
+}
+
+/**
+ * Real sub-directories of `folder`/`rel` (`rel` "" or ending with "/") whose lowercased names are
+ * not in `known`: never `.git`, nor git-ignored ones (git listings) or hidden/generated ones (walked
+ * listings). `rel` comes from the client, so it must stay inside the folder. Never rejects.
+ */
+async function unlistedDirs(folder: string, rel: string, known: Set<string>, git: boolean): Promise<string[]> {
+  if (rel.split("/").slice(0, -1).some((name) => !name || name === "." || name === ".." || name === ".git")) {
+    return [];
+  }
+  try {
+    const dir = path.join(folder, rel);
+    const [realFolder, realDir] = await Promise.all([fs.promises.realpath(folder), fs.promises.realpath(dir)]);
+    const inside = path.relative(realFolder, realDir);
+    if (inside === ".." || inside.startsWith(`..${path.sep}`) || path.isAbsolute(inside)) return [];
+    const names: string[] = [];
+    for (const d of await fs.promises.readdir(dir, { withFileTypes: true })) {
+      if (!d.isDirectory() || d.name === ".git" || known.has(d.name.toLowerCase())) continue;
+      if (!git && (d.name.startsWith(".") || Object.hasOwn(WALK_SKIP_DIRS, d.name))) continue;
+      names.push(d.name);
+    }
+    if (!git || !names.length) return names;
+    const ignored = await gitIgnored(folder, names.map((name) => `${rel}${name}`));
+    return ignored ? names.filter((name) => !ignored.has(`${rel}${name}`)) : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Width of the tightest-ending window holding `query` as a subsequence of `text`; -1 when absent. */
@@ -207,15 +283,26 @@ export async function searchProjectFiles(
   } else if (!rel) {
     scopes = [0];
   }
-  const listings = await Promise.all(scopes.map((i) => folderEntries(folders[i])));
+  const listings = await Promise.all(scopes.map((i) => folderListing(folders[i])));
   const max = Math.max(0, limit);
   const q = rel.toLowerCase();
 
   if (!q || q.endsWith("/")) {
     const children: { folder: number; entry: Entry }[] = [];
-    listings.forEach((entries, s) => {
-      for (const entry of entries) if (entry.parent === q) children.push({ folder: scopes[s], entry });
-    });
+    await Promise.all(
+      listings.map(async (listing, s) => {
+        const known = new Set<string>();
+        for (const entry of listing.entries) {
+          if (entry.parent !== q) continue;
+          children.push({ folder: scopes[s], entry });
+          // A nested repo may be listed as "name/" by git.
+          known.add(entry.base.replace(/\/$/, ""));
+        }
+        for (const name of await unlistedDirs(folders[scopes[s]], rel, known, listing.git)) {
+          children.push({ folder: scopes[s], entry: makeEntry(`${rel}${name}/`, "dir") });
+        }
+      }),
+    );
     children.sort(
       (a, b) =>
         a.folder - b.folder ||
@@ -226,8 +313,8 @@ export async function searchProjectFiles(
   }
 
   const matches: Scored[] = [];
-  listings.forEach((entries, s) => {
-    for (const entry of entries) {
+  listings.forEach((listing, s) => {
+    for (const entry of listing.entries) {
       const scored = score(entry, q);
       if (scored) matches.push({ folder: scopes[s], entry, ...scored });
     }

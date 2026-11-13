@@ -33,7 +33,7 @@ function cardElement(id: string): HTMLElement | null {
  * Focus a card and keep re-asserting focus for a few frames: after a quick action the card can
  * re-mount in another list and the first focused element unmounts.
  */
-function focusCard(id: string): void {
+export function focusCard(id: string): void {
   let tries = 0;
   const tick = () => {
     const el = cardElement(id);

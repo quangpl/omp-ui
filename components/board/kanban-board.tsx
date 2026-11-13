@@ -19,11 +19,13 @@ import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { STATUS_LABELS, TASK_STATUSES, type Task, type TaskStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { positionBetween, type TasksByStatus } from "@/hooks/use-board";
+import { type BoardSearchResult, filterColumns } from "@/lib/board-search";
 import type { QuickCreate } from "@/components/board/inline-composer";
-import { BOARD_ROOT_ATTR, useBoardHotkeys } from "@/hooks/use-board-hotkeys";
+import { BOARD_ROOT_ATTR, focusCard, useBoardHotkeys } from "@/hooks/use-board-hotkeys";
 import { useCardSelection } from "@/hooks/use-card-selection";
 import { cardLayoutKey, useCardFlip } from "@/hooks/use-card-flip";
 import { BoardColumn, COLUMN_DROPPABLE_PREFIX, StatusDot } from "@/components/board/board-column";
+import { BoardSearch } from "@/components/board/board-search";
 import { useBulkRunner } from "@/components/board/bulk-actions";
 import { BoardContextMenu, type BoardMenuActions } from "@/components/board/card-context-menu";
 import { MobileBoard, MobileBoardSkeleton } from "@/components/board/mobile-board";
@@ -39,10 +41,13 @@ type ColumnIds = Record<TaskStatus, string[]>;
  * open) scroll sideways inside the board, one column per snap, with the next column peeking in.
  */
 const COLUMN_TRACK = cn(
-  "scrollbar-subtle grid min-h-0 flex-1 grid-flow-col grid-rows-[minmax(0,1fr)] gap-3 overflow-x-auto overflow-y-hidden overscroll-x-contain p-3 lg:gap-4 lg:p-4",
+  "scrollbar-subtle grid min-h-0 flex-1 grid-flow-col grid-rows-[minmax(0,1fr)] gap-3 overflow-x-auto overflow-y-hidden overscroll-x-contain px-3 pt-2 pb-3 lg:gap-4 lg:px-4 lg:pt-3 lg:pb-4",
   "snap-x snap-mandatory scroll-px-3 auto-cols-[minmax(15rem,80%)] @min-[40rem]:auto-cols-[minmax(16rem,40%)] lg:scroll-px-4",
   "@min-[60rem]:grid-flow-row @min-[60rem]:grid-cols-3 @min-[60rem]:snap-none",
 );
+
+/** The search row above the column track, aligned with the track's left edge. */
+const BOARD_TOOLBAR = "flex shrink-0 items-center px-3 pt-3 lg:px-4 lg:pt-4";
 
 /** Card placeholders per column (title lines), uneven so the skeleton reads as a real board. */
 const SKELETON_CARDS: Record<TaskStatus, number[]> = {
@@ -70,6 +75,9 @@ export function BoardBodySkeleton() {
     <div aria-hidden className="flex min-h-0 flex-1 flex-col">
       <MobileBoardSkeleton />
       <div className="@container hidden min-h-0 flex-1 flex-col md:flex">
+        <div className={BOARD_TOOLBAR}>
+          <Skeleton className="h-8 w-full max-w-80" />
+        </div>
         <div className={COLUMN_TRACK}>
           {TASK_STATUSES.map((status) => (
             <div
@@ -126,38 +134,64 @@ export interface KanbanBoardProps {
   onMobileColumnChange: (status: TaskStatus) => void;
 }
 
+/** The board's card search: the query, its change handler and the filtered result. */
+interface BoardSearchState {
+  query: string;
+  onQueryChange: (query: string) => void;
+  search: BoardSearchResult;
+}
+
 export function KanbanBoard(props: KanbanBoardProps) {
+  // Owned here so the query survives desktop/phone switches; the result re-filters on every
+  // card update and is `props.columns` itself while the query is blank.
+  const [query, setQuery] = useState("");
+  const search = useMemo(() => filterColumns(props.columns, query), [props.columns, query]);
   if (props.isMobile) {
     return (
       <MobileBoard
-        columns={props.columns}
+        columns={search.columns}
         activity={props.activity}
         active={props.mobileColumn}
         onActiveChange={props.onMobileColumnChange}
         onOpen={props.menuActions.openCard}
         actions={props.menuActions}
         onAdd={props.onAdd}
+        query={query}
+        onQueryChange={setQuery}
+        search={search}
       />
     );
   }
   return (
     <DesktopBoard
-      columns={props.columns}
+      columns={search.columns}
+      allColumns={props.columns}
       activity={props.activity}
       menuActions={props.menuActions}
       reorderTask={props.reorderTask}
       onQuickCreate={props.onQuickCreate}
+      query={query}
+      onQueryChange={setQuery}
+      search={search}
     />
   );
 }
 
 function DesktopBoard({
   columns,
+  allColumns,
   activity,
   menuActions,
   reorderTask,
   onQuickCreate,
-}: Pick<KanbanBoardProps, "columns" | "activity" | "menuActions" | "reorderTask" | "onQuickCreate">) {
+  query,
+  onQueryChange,
+  search,
+}: Pick<KanbanBoardProps, "columns" | "activity" | "menuActions" | "reorderTask" | "onQuickCreate"> &
+  BoardSearchState & {
+    /** The unfiltered columns: per-column totals while searching. */
+    allColumns: TasksByStatus;
+  }) {
   const sensors = useSensors(
     useSensor(FinePointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 8 } }),
@@ -250,6 +284,12 @@ function DesktopBoard({
 
   const activeTask = activeId ? taskById.get(activeId) : undefined;
 
+  /** Enter/↓ in the search: on to the first card still showing, in board order. */
+  const focusFirstMatch = () => {
+    const status = TASK_STATUSES.find((s) => columns[s].length > 0);
+    if (status) focusCard(columns[status][0].id);
+  };
+
   return (
     <DndContext
       sensors={sensors}
@@ -268,6 +308,17 @@ function DesktopBoard({
       {/* The board area is a size container: column layout follows the space next to the sidebar,
           not the viewport. */}
       <div {...{ [BOARD_ROOT_ATTR]: "" }} className="@container relative flex min-h-0 flex-1 flex-col">
+        <div className={BOARD_TOOLBAR}>
+          <BoardSearch
+            value={query}
+            onValueChange={onQueryChange}
+            matches={search.matches}
+            total={search.total}
+            fuzzy={search.fuzzy}
+            onSubmit={focusFirstMatch}
+            className="w-full max-w-80"
+          />
+        </div>
         <BoardContextMenu actions={menuActions}>
           <div className={cn(COLUMN_TRACK, selectedTasks.length > 0 && "pb-20 lg:pb-20")}>
             {TASK_STATUSES.map((status) => (
@@ -281,6 +332,9 @@ function DesktopBoard({
                 onToggleSelect={selection.toggle}
                 onCreate={status === "todo" ? onQuickCreate : undefined}
                 flip={flip}
+                searching={search.active}
+                total={allColumns[status].length}
+                highlights={search.highlights}
               />
             ))}
           </div>
@@ -293,7 +347,9 @@ function DesktopBoard({
           onClear={selection.clear}
         />
       </div>
-      <DragOverlay>{activeTask ? <TaskCard task={activeTask} overlay /> : null}</DragOverlay>
+      <DragOverlay>
+        {activeTask ? <TaskCard task={activeTask} overlay highlight={search.highlights.get(activeTask.id)} /> : null}
+      </DragOverlay>
     </DndContext>
   );
 }

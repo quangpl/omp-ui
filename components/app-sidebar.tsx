@@ -11,7 +11,6 @@ import {
   ChevronsUpDownIcon,
   KeyboardIcon,
   LogOutIcon,
-  PinIcon,
   PinOffIcon,
   PlusIcon,
   RotateCwIcon,
@@ -91,17 +90,13 @@ function isActivePath(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-/**
- * All projects with live counts, pinned ones first; refreshed on navigation, focus, (un)pinning,
- * and every 30 s while visible.
- */
+/** All projects with live counts; refreshed on navigation, focus, (un)pinning, and every 30 s while visible. */
 function useSidebarBoards(refreshKey: unknown): BoardWithCounts[] | null {
   const [boards, setBoards] = useState<BoardWithCounts[] | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const list = await api.boards.list();
-      setBoards([...list.filter((board) => board.pinned), ...list.filter((board) => !board.pinned)]);
+      setBoards(await api.boards.list());
     } catch {
       // Keep the last list; an empty one ends the loading skeleton.
       setBoards((prev) => prev ?? []);
@@ -216,7 +211,9 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
   // Opening the phone sheet refreshes too, so it never shows a stale list.
   const boards = useSidebarBoards(`${pathname}|${openMobile}`);
 
-  let listed = boards ?? [];
+  // Only pinned projects are listed; "All projects" leads to the rest on the dashboard.
+  const pinned = boards?.filter((board) => board.pinned) ?? [];
+  let listed = pinned;
   if (listed.length > MAX_LISTED_BOARDS) {
     const active = listed.find((board) => pathname === `/b/${board.id}`);
     listed = listed.slice(0, MAX_LISTED_BOARDS);
@@ -231,9 +228,7 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
         <SidebarGroupLabel asChild>
           <Collapsible.Trigger className="w-full gap-1 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground max-md:h-11 max-md:px-3">
             Your projects
-            {boards && boards.length > 0 && (
-              <span className="ml-1 text-sidebar-foreground/50 tabular-nums">{boards.length}</span>
-            )}
+            {pinned.length > 0 && <span className="ml-1 text-sidebar-foreground/50 tabular-nums">{pinned.length}</span>}
             <ChevronRightIcon className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90 motion-reduce:transition-none" />
           </Collapsible.Trigger>
         </SidebarGroupLabel>
@@ -249,6 +244,11 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
               {boards?.length === 0 && (
                 <li className="px-2 py-1.5 text-xs text-sidebar-foreground/60 max-md:px-3">No projects yet.</li>
               )}
+              {boards && boards.length > 0 && pinned.length === 0 && (
+                <li className="px-2 py-1.5 text-xs text-pretty text-sidebar-foreground/60 max-md:px-3">
+                  No pinned projects. Pin one from its ⋯ menu on the Projects page.
+                </li>
+              )}
               {listed.map((board) => {
                 const href = `/b/${board.id}`;
                 const active = pathname === href;
@@ -262,16 +262,13 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
                           <Link
                             href={href}
                             // Distinct from the project's own name so page links stay uniquely named.
-                            aria-label={`Project ${board.name}${board.pinned ? ", pinned" : ""}${running > 0 ? `, ${running} running` : ""}`}
+                            aria-label={`Project ${board.name}${running > 0 ? `, ${running} running` : ""}`}
                             aria-current={active ? "page" : undefined}
                             title={board.name}
                             onClick={onNavigate}
                           >
                             <ProjectTile name={board.name} active={active} />
                             <span className="min-w-0 flex-1 truncate">{board.name}</span>
-                            {board.pinned && (
-                              <PinIcon aria-hidden="true" className="size-3! shrink-0 text-sidebar-foreground/45" />
-                            )}
                             {running > 0 ? (
                               <span className="flex shrink-0 items-center gap-1.5 font-mono text-xs font-medium text-sidebar-primary tabular-nums">
                                 <span aria-hidden="true" className="relative flex size-1.5">
@@ -291,9 +288,9 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
                         </SidebarMenuButton>
                       </ContextMenuTrigger>
                       <ContextMenuContent className="w-56">
-                        <ContextMenuItem onSelect={() => void setBoardPinned(board, !board.pinned)}>
-                          {board.pinned ? <PinOffIcon /> : <PinIcon />}
-                          {board.pinned ? "Unpin from dashboard" : "Pin to dashboard"}
+                        <ContextMenuItem onSelect={() => void setBoardPinned(board, false)}>
+                          <PinOffIcon />
+                          Unpin from dashboard
                         </ContextMenuItem>
                       </ContextMenuContent>
                     </ContextMenu>

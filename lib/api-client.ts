@@ -20,6 +20,8 @@ import type {
   OmpModel,
   MemoryStatus,
   Dashboard,
+  FileOp,
+  FileOpResult,
   FsBrowseResult,
   FsEntry,
   GitActionResult,
@@ -417,6 +419,9 @@ export const api = {
     /** Overwrite an existing project file; 409 when it changed on disk since `baseMtimeMs`. */
     writeProjectFile: (boardId: string, input: { path: string; content: string; baseMtimeMs: number }) =>
       request<ProjectFileContent>(`/boards/${boardId}/project-files/content`, { method: "PUT", json: input }),
+    /** Create, rename/move, copy or delete a file or folder in the project folders (Files tree). */
+    projectFileOp: (boardId: string, op: FileOp) =>
+      request<FileOpResult>(`/boards/${boardId}/project-files/ops`, { method: "POST", json: op }),
   },
   /** Recurring cards (Schedulers tab). Cron is evaluated in the scheduler's IANA `timezone`. */
   schedulers: {
@@ -583,6 +588,9 @@ export const api = {
     /** Overwrite an existing file under `root`; 409 when it changed on disk since `baseMtimeMs`. */
     writeFile: (input: { root: string; path: string; content: string; baseMtimeMs: number }) =>
       request<ProjectFileContent>("/fs/file", { method: "PUT", json: input }),
+    /** `boards.projectFileOp` for one folder: paths relative to `root`. */
+    fileOp: (root: string, op: FileOp) =>
+      request<FileOpResult>("/fs/ops", { method: "POST", json: { root, ...op } }),
   },
   git: {
     /** Clone a repository into WORKSPACE_DIR/<name>; returns the absolute folder path. */

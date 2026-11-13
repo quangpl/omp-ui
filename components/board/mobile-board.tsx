@@ -1,7 +1,7 @@
 "use client";
 
 import { type CSSProperties, type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { EllipsisVertical, LoaderCircle, PanelRightOpen, Plus, Trash2 } from "lucide-react";
+import { EllipsisVertical, LoaderCircle, PanelRightOpen, Plus, SearchX, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -14,8 +14,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { STATUS_LABELS, TASK_STATUSES, type Task, type TaskStatus } from "@/lib/types";
 import type { TasksByStatus } from "@/hooks/use-board";
+import type { BoardSearchResult } from "@/lib/board-search";
 import { type CardFlip, cardLayoutKey, useCardFlip } from "@/hooks/use-card-flip";
-import { EMPTY_COLUMN_ICON, EMPTY_COLUMN_TEXT } from "@/components/board/board-column";
+import { EMPTY_COLUMN_ICON, EMPTY_COLUMN_TEXT, NO_MATCHES_TEXT } from "@/components/board/board-column";
+import { BoardSearch } from "@/components/board/board-search";
 import type { BoardMenuActions } from "@/components/board/card-context-menu";
 import { quickActionsFor, runQuickAction, type QuickActionId } from "@/components/board/quick-actions";
 import { TaskCard } from "@/components/board/task-card";
@@ -111,6 +113,7 @@ function MobileCard({
   flip,
   onOpen,
   actions,
+  highlight,
 }: {
   task: Task;
   /** Position in the column; staggers the entry animation. */
@@ -119,6 +122,8 @@ function MobileCard({
   flip: CardFlip;
   onOpen: (taskId: string) => void;
   actions: BoardMenuActions;
+  /** Title characters matched by the board search. */
+  highlight: readonly number[] | undefined;
 }) {
   // Same rule as the desktop columns: a card that changed column remounts on its new page and the
   // FLIP carries it there, so only cards new to the board play the entry cascade.
@@ -140,6 +145,7 @@ function MobileCard({
           onOpen(task.id);
         }}
         actions={<QuickActions task={task} onOpen={() => onOpen(task.id)} actions={actions} />}
+        highlight={highlight}
       />
     </div>
   );
@@ -157,6 +163,9 @@ export function MobileBoard({
   onOpen,
   actions,
   onAdd,
+  query,
+  onQueryChange,
+  search,
 }: {
   columns: TasksByStatus;
   activity: Record<string, string>;
@@ -165,6 +174,10 @@ export function MobileBoard({
   onOpen: (taskId: string) => void;
   actions: BoardMenuActions;
   onAdd: () => void;
+  /** Board search query; `columns` are already filtered by it. */
+  query: string;
+  onQueryChange: (query: string) => void;
+  search: Pick<BoardSearchResult, "matches" | "total" | "active" | "fuzzy" | "highlights">;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const tablistRef = useRef<HTMLDivElement>(null);
@@ -181,6 +194,18 @@ export function MobileBoard({
   // leaving it flies off toward its new page, and one that arrived on another page glides in once
   // that page is shown.
   const flip = useCardFlip(cardLayoutKey(columns), { disabled: false });
+
+  // Typing a query that leaves the shown page empty jumps to the first page with matches, so
+  // results never sit unseen behind another tab. Only query edits move it (not card updates), and
+  // a blank query never does, so the board opens on its usual page.
+  const columnsRef = useRef(columns);
+  columnsRef.current = columns;
+  useEffect(() => {
+    const shown = columnsRef.current;
+    if (!query.trim() || shown[activeRef.current].length > 0) return;
+    const target = TASK_STATUSES.find((status) => shown[status].length > 0);
+    if (target) onActiveChangeRef.current(target);
+  }, [query]);
 
   // Bring the track to the active column when it changes from outside the track (segment tap,
   // a new card landing in another column, a deep-linked card). Swipes already sit there. The
@@ -248,6 +273,18 @@ export function MobileBoard({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="glass-edge shrink-0 border-b bg-background/85 px-4 py-2 backdrop-blur-lg supports-backdrop-filter:bg-background/70">
+        <BoardSearch
+          value={query}
+          onValueChange={onQueryChange}
+          matches={search.matches}
+          total={search.total}
+          fuzzy={search.fuzzy}
+          // Search key on the phone keyboard: the results are already showing, put the keyboard away.
+          onSubmit={() => {
+            if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+          }}
+          className="mb-2"
+        />
         <div
           ref={tablistRef}
           role="tablist"
@@ -302,7 +339,8 @@ export function MobileBoard({
         {TASK_STATUSES.map((status) => {
           const selected = status === active;
           const tasks = columns[status];
-          const EmptyIcon = EMPTY_COLUMN_ICON[status];
+          // While searching, an empty page means nothing here matches, not an empty column.
+          const EmptyIcon = search.active ? SearchX : EMPTY_COLUMN_ICON[status];
           return (
             <div
               key={status}
@@ -336,6 +374,7 @@ export function MobileBoard({
                     flip={flip}
                     onOpen={onOpen}
                     actions={actions}
+                    highlight={search.highlights.get(task.id)}
                   />
                 ))}
                 {tasks.length === 0 && (
@@ -343,8 +382,10 @@ export function MobileBoard({
                     <span className="flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground ring-1 ring-border/60">
                       <EmptyIcon aria-hidden className="size-5" />
                     </span>
-                    <p className="max-w-60 text-sm text-pretty text-muted-foreground">{EMPTY_COLUMN_TEXT[status]}</p>
-                    {status === "todo" && (
+                    <p className="max-w-60 text-sm text-pretty text-muted-foreground">
+                      {search.active ? NO_MATCHES_TEXT : EMPTY_COLUMN_TEXT[status]}
+                    </p>
+                    {status === "todo" && !search.active && (
                       <Button variant="outline" className="pressable h-11 px-4" onClick={onAdd}>
                         <Plus />
                         Add a task
@@ -377,6 +418,7 @@ export function MobileBoardSkeleton() {
   return (
     <div className="flex min-h-0 flex-1 flex-col md:hidden">
       <div className="shrink-0 border-b px-4 py-2">
+        <Skeleton className="mb-2 h-11 w-full rounded-lg" />
         <div className="relative grid grid-cols-3 rounded-xl bg-muted p-1">
           <span
             aria-hidden
