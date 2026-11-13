@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
@@ -10,6 +11,7 @@ import {
   useState,
 } from "react";
 import { BookOpen, FileText, Folder, Zap } from "lucide-react";
+import { Kbd } from "@/components/ui/kbd";
 import { api } from "@/lib/api-client";
 import {
   applyCompletion,
@@ -20,6 +22,7 @@ import {
 import { filterSlashItems, type SlashItem, slashItems } from "@/lib/slash-skills";
 import type { OmpSkill, ProjectFileHit } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { suggestWord, type WordModel, wordCompletionQuery, wordModelFromData, type WordQuery } from "@/lib/word-completion";
 
 /** Skills are fetched once per page; every composer shares the promise. */
 let skillsPromise: Promise<OmpSkill[]> | null = null;
@@ -32,6 +35,19 @@ function fetchSkills(): Promise<OmpSkill[]> {
       return [];
     });
   return skillsPromise;
+}
+
+/** The word model (learned from past prompts) is fetched once per page and shared like the skills. */
+let wordModelPromise: Promise<WordModel> | null = null;
+function fetchWordModel(): Promise<WordModel> {
+  wordModelPromise ??= api
+    .wordCompletions()
+    .then((response) => wordModelFromData(response.model))
+    .catch(() => {
+      wordModelPromise = null;
+      return wordModelFromData(null);
+    });
+  return wordModelPromise;
 }
 
 /** Recent "@" searches keyed `${boardId}\n${query}`, so backspacing and retyping is instant. */
@@ -57,6 +73,62 @@ interface FileResults {
   hits: ProjectFileHit[];
 }
 
+/** The inline word suggestion at the caret, plus what the ghost overlay needs to line up with it. */
+interface WordSuggestion {
+  /** The textarea value the suggestion was made for. */
+  value: string;
+  query: WordQuery;
+  /** Rest of the word, appended after `query.prefix`. */
+  suffix: string;
+  /** Overlay box and text layout mirrored from the textarea. */
+  box: CSSProperties;
+  scrollTop: number;
+  scrollLeft: number;
+}
+
+/**
+ * The textarea's text layout for the ghost overlay, so the suggestion lands right after the caret.
+ * The box is the textarea's border box minus any scrollbar (client size plus borders): with
+ * inset-0 a vertical scrollbar would leave the overlay's lines wider than the textarea's.
+ */
+function ghostBox(el: HTMLTextAreaElement): CSSProperties {
+  const style = getComputedStyle(el);
+  const px = (value: string) => Number.parseFloat(value) || 0;
+  return {
+    boxSizing: "border-box",
+    width: el.clientWidth + px(style.borderLeftWidth) + px(style.borderRightWidth),
+    height: el.clientHeight + px(style.borderTopWidth) + px(style.borderBottomWidth),
+    borderStyle: "solid",
+    borderColor: "transparent",
+    borderTopWidth: style.borderTopWidth,
+    borderRightWidth: style.borderRightWidth,
+    borderBottomWidth: style.borderBottomWidth,
+    borderLeftWidth: style.borderLeftWidth,
+    paddingTop: style.paddingTop,
+    paddingRight: style.paddingRight,
+    paddingBottom: style.paddingBottom,
+    paddingLeft: style.paddingLeft,
+    fontFamily: style.fontFamily,
+    fontSize: style.fontSize,
+    fontWeight: style.fontWeight,
+    fontStyle: style.fontStyle,
+    fontStretch: style.fontStretch,
+    fontFeatureSettings: style.fontFeatureSettings,
+    fontKerning: style.fontKerning as CSSProperties["fontKerning"],
+    letterSpacing: style.letterSpacing,
+    lineHeight: style.lineHeight,
+    textIndent: style.textIndent,
+    textTransform: style.textTransform,
+    textAlign: style.textAlign as CSSProperties["textAlign"],
+    direction: style.direction as CSSProperties["direction"],
+    tabSize: style.tabSize,
+    wordSpacing: style.wordSpacing,
+    whiteSpace: "pre-wrap",
+    overflowWrap: style.overflowWrap === "normal" ? "break-word" : (style.overflowWrap as CSSProperties["overflowWrap"]),
+    wordBreak: style.wordBreak as CSSProperties["wordBreak"],
+  };
+}
+
 const MENU_LABELS: Record<AutocompleteToken["trigger"], { hint: string; aria: string }> = {
   slash: { hint: "OMP skills & shortcuts", aria: "OMP skills and shortcuts" },
   mention: { hint: "Project files", aria: "Project files" },
@@ -68,10 +140,19 @@ export interface ComposerAutocomplete {
   menu: ReactNode;
   /** Whether the picker is showing (for `aria-expanded`, and so Escape closes only the picker). */
   open: boolean;
-  /** Call first in the textarea's onKeyDown; true means the menu handled the key. */
+  /** Call first in the textarea's onKeyDown; true means the menu or the word suggestion handled the key. */
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
-  /** Attach as the textarea's onSelect, so caret moves open and close the menu. */
+  /** Attach as the textarea's onSelect, so caret moves open and close the menu and the word suggestion. */
   onSelect: () => void;
+  /**
+   * Dim inline rest-of-word after the caret; render right after the textarea inside a `relative`
+   * wrapper whose top-left corner is the textarea's. Null without a suggestion.
+   */
+  ghost: ReactNode;
+  /** Tappable chip with the suggested word (touch has no Tab), rendered below the textarea; null without one. */
+  suggestion: ReactNode;
+  /** Whether a word suggestion is showing, so Escape only hides it (like `open` for the picker). */
+  suggesting: boolean;
 }
 
 /**
@@ -80,7 +161,10 @@ export interface ComposerAutocomplete {
  *   and inserts `skill://<name>` or the keyword;
  * - `skill://` lists skills by name;
  * - `@` fuzzy-searches the board's project files (only with a `boardId`); picking a directory
- *   inserts `@dir/` and keeps listing its children, picking a file inserts `@path `.
+ *   inserts `@dir/` and keeps listing its children, picking a file inserts `@path `;
+ * - elsewhere, typing a prose word shows the rest of the likeliest word (learned from past
+ *   prompts and this draft) as ghost text after the caret; Tab or → inserts it, Esc hides it.
+ *   Enter is never taken.
  */
 export function useComposerAutocomplete(
   ref: RefObject<HTMLTextAreaElement | null>,
@@ -97,6 +181,12 @@ export function useComposerAutocomplete(
   /** Bumped per file search, so a slow stale response never overwrites a newer one. */
   const fileSeqRef = useRef(0);
   const listRef = useRef<HTMLUListElement>(null);
+  const [wordModel, setWordModel] = useState<WordModel | null>(null);
+  const [word, setWord] = useState<WordSuggestion | null>(null);
+  /** Start offset of the word Escape hid; that word stays bare until the caret leaves it. */
+  const wordDismissedRef = useRef<number | null>(null);
+  /** True during IME composition, when the ghost would sit inside the uncommitted text. */
+  const composingRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -108,6 +198,31 @@ export function useComposerAutocomplete(
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    fetchWordModel().then((model) => {
+      if (active) setWordModel(model);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const suggestionAt = (el: HTMLTextAreaElement): WordSuggestion | null => {
+    if (!wordModel || composingRef.current || el.ownerDocument.activeElement !== el) return null;
+    const caret = el.selectionStart;
+    if (caret !== el.selectionEnd) return null;
+    const query = wordCompletionQuery(el.value, caret);
+    if (query === null) {
+      wordDismissedRef.current = null;
+      return null;
+    }
+    if (wordDismissedRef.current === query.start) return null;
+    const suffix = suggestWord(wordModel, el.value, query);
+    if (!suffix) return null;
+    return { value: el.value, query, suffix, box: ghostBox(el), scrollTop: el.scrollTop, scrollLeft: el.scrollLeft };
+  };
+
   const sync = () => {
     const el = ref.current;
     let next = el && enabled ? autocompleteTokenAt(el.value, el.selectionStart ?? el.value.length) : null;
@@ -117,11 +232,61 @@ export function useComposerAutocomplete(
       if (next === null) dismissedRef.current = null;
       setToken(next);
     }
+    // Words complete only outside trigger tokens: there the menu owns Tab and the arrows.
+    setWord(el && enabled && next === null ? suggestionAt(el) : null);
   };
 
   // Typing changes the text (and the caret with it); caret-only moves are caught by onSelect.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(sync, [text, enabled, boardId]);
+  useEffect(sync, [text, enabled, boardId, wordModel]);
+
+  // Focus, blur and IME composition change whether the ghost belongs there without an onSelect.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled) return;
+    const hide = () => setWord(null);
+    const onCompositionStart = () => {
+      composingRef.current = true;
+      hide();
+    };
+    const onCompositionEnd = () => {
+      composingRef.current = false;
+      sync();
+    };
+    el.addEventListener("focus", sync);
+    el.addEventListener("blur", hide);
+    el.addEventListener("compositionstart", onCompositionStart);
+    el.addEventListener("compositionend", onCompositionEnd);
+    return () => {
+      composingRef.current = false;
+      el.removeEventListener("focus", sync);
+      el.removeEventListener("blur", hide);
+      el.removeEventListener("compositionstart", onCompositionStart);
+      el.removeEventListener("compositionend", onCompositionEnd);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ref, enabled, boardId, wordModel]);
+
+  // While the ghost shows, follow the textarea's scrolling and resizing (the page layout's flex
+  // height, the dialog's content sizing, window resizes) so it stays on the caret.
+  const suggesting = word !== null;
+  useEffect(() => {
+    const el = ref.current;
+    if (!suggesting || !el) return;
+    const onScroll = () => {
+      setWord((current) => current && { ...current, scrollTop: el.scrollTop, scrollLeft: el.scrollLeft });
+    };
+    el.addEventListener("scroll", onScroll);
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => setWord((current) => current && { ...current, box: ghostBox(el) }));
+    observer?.observe(el);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      observer?.disconnect();
+    };
+  }, [ref, suggesting]);
 
   const mentionQuery = token?.trigger === "mention" ? token.query : null;
   const mentionStart = token?.start ?? -1;
@@ -211,11 +376,46 @@ export function useComposerAutocomplete(
     setToken(null);
   };
 
+  /** Inserts the suggested rest of the word at the caret (no trailing space, like the OMP CLI). */
+  const acceptWord = (): boolean => {
+    const el = ref.current;
+    if (!el || !word) return false;
+    const { query, suffix } = word;
+    // Only the exact state the suggestion was made for; anything else waits for the next sync.
+    if (el.value !== word.value || el.selectionStart !== query.end || el.selectionEnd !== query.end) return false;
+    const next = el.value.slice(0, query.end) + suffix + el.value.slice(query.end);
+    const caret = query.end + suffix.length;
+    // Write the DOM first so the caret is already after the word when React commits the same
+    // value (and leaves it alone); the text effect then reads the final caret, no frame later.
+    el.value = next;
+    el.setSelectionRange(caret, caret);
+    el.focus();
+    setWord(null);
+    setText(next);
+    return true;
+  };
+
+  const onWordKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if (!word || event.nativeEvent.isComposing) return false;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      wordDismissedRef.current = word.query.start;
+      setWord(null);
+      return true;
+    }
+    if (event.key !== "Tab" && event.key !== "ArrowRight") return false;
+    // Shift+Tab keeps moving focus back; modified arrows keep selecting and jumping words.
+    if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return false;
+    if (!acceptWord()) return false;
+    event.preventDefault();
+    return true;
+  };
+
   /** `index` clamped to the list, which can shrink when newer file results arrive. */
   const selected = Math.min(index, entries.length - 1);
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
-    if (!open) return false;
+    if (!open) return onWordKeyDown(event);
     if (event.key === "Escape") {
       event.preventDefault();
       dismiss();
@@ -285,7 +485,38 @@ export function useComposerAutocomplete(
     </div>
   ) : null;
 
-  return { menu, open, onKeyDown, onSelect: sync };
+  const ghost = word ? (
+    <div aria-hidden className="pointer-events-none absolute top-0 left-0 overflow-hidden select-none" style={word.box}>
+      {/* The whole value keeps wrapping identical to the textarea; only the suffix is visible. */}
+      <div style={{ transform: `translate(${-word.scrollLeft}px, ${-word.scrollTop}px)` }}>
+        <span className="text-transparent">{word.value.slice(0, word.query.end)}</span>
+        <span className="text-muted-foreground/70">{word.suffix}</span>
+        <span className="text-transparent">{word.value.slice(word.query.end)}</span>
+      </div>
+    </div>
+  ) : null;
+
+  const suggestion = word ? (
+    <div className="flex">
+      <button
+        type="button"
+        tabIndex={-1}
+        className="inline-flex max-w-full items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+        aria-label={`Complete word: ${word.query.prefix}${word.suffix}`}
+        // Keep the textarea focused (and its caret) through the tap.
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={acceptWord}
+      >
+        <span className="truncate">
+          <span className="text-foreground">{word.query.prefix}</span>
+          {word.suffix}
+        </span>
+        <Kbd className="h-4 min-w-0 px-1 text-[10px]">tab</Kbd>
+      </button>
+    </div>
+  ) : null;
+
+  return { menu, open, onKeyDown, onSelect: sync, ghost, suggestion, suggesting };
 }
 
 const BADGE = "shrink-0 rounded-full border px-1.5 py-px text-[10px] font-normal text-muted-foreground";

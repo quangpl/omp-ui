@@ -70,31 +70,37 @@ export function InlineComposer({
         void submit();
       }}
     >
-      <Textarea
-        ref={inputRef}
-        autoFocus
-        value={text}
-        readOnly={busy}
-        rows={2}
-        placeholder="Type a title or describe the task…"
-        aria-label="Card title"
-        className="max-h-48 min-h-16 resize-none bg-card shadow-xs"
-        onChange={(event) => setText(event.target.value)}
-        onSelect={slash.onSelect}
-        onKeyDown={(event) => {
-          if (slash.onKeyDown(event)) return;
-          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-            event.preventDefault();
-            void submit();
-          } else if (event.key === "Escape") {
-            event.preventDefault();
-            close();
-          }
-        }}
-        onBlur={() => {
-          if (!text.trim() && !busy) close();
-        }}
-      />
+      {/* `relative` anchors the word ghost on the textarea. */}
+      <div className="relative">
+        <Textarea
+          ref={inputRef}
+          autoFocus
+          value={text}
+          readOnly={busy}
+          rows={2}
+          placeholder="Type a title or describe the task…"
+          aria-label="Card title"
+          className="max-h-48 min-h-16 resize-none bg-card shadow-xs"
+          onChange={(event) => setText(event.target.value)}
+          onSelect={slash.onSelect}
+          onKeyDown={(event) => {
+            // Escape with a word suggestion showing only hides it; the composer stays open.
+            if (slash.onKeyDown(event)) return;
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              void submit();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              close();
+            }
+          }}
+          onBlur={() => {
+            if (!text.trim() && !busy) close();
+          }}
+        />
+        {slash.ghost}
+      </div>
+      {slash.suggestion}
       {slash.menu}
       <div className="flex items-center gap-1.5">
         <Button
