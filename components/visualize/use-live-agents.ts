@@ -4,10 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api-client";
 import { parseToolCall } from "@/lib/run-log";
 import type { RunEvent, ServerEvent, SubagentSnapshot } from "@/lib/types";
-import { boardContact } from "./factory";
-import { type Activity, describeActivity } from "./game";
+import { boardContact } from "./agent-map";
+import { type Activity, describeActivity } from "./activity";
 
-/** One board interaction of a worker with other cards (a board_* tool call). */
+/** One board interaction of an agent with other cards (a board_* tool call). */
 export interface Contact {
   kind: "message" | "wait" | "inspect";
   /** Cards it messaged, waited for or read. */
@@ -16,10 +16,10 @@ export interface Contact {
   at: string;
 }
 
-/** What the Visualize floor knows live about one running card, beyond the dashboard snapshot. */
-export interface LiveWorker {
+/** What the Visualize page knows live about one running card, beyond the dashboard snapshot. */
+export interface LiveAgent {
   runId?: string;
-  /** Start of the current run: the worker's shift clock. */
+  /** Start of the current run. */
   startedAt?: string;
   /** Latest thing the agent did; unknown until its first event after the page opened. */
   activity?: Activity;
@@ -29,11 +29,11 @@ export interface LiveWorker {
   contacts: Contact[];
 }
 
-type LiveMap = Record<string, LiveWorker>;
+type LiveMap = Record<string, LiveAgent>;
 
-const EMPTY: LiveWorker = { helpers: {}, contacts: [] };
+const EMPTY: LiveAgent = { helpers: {}, contacts: [] };
 
-/** Board contacts kept per worker. */
+/** Board contacts kept per agent. */
 const MAX_CONTACTS = 12;
 
 /** A persisted tool event → the board contact it records; null for anything else. */
@@ -75,7 +75,7 @@ const EVENTS_PAGE = 1000;
 
 /**
  * The running run of `taskId` and what its log says so far: latest activity, subagents and board
- * contacts. Lets the floor show the right state right after a reload instead of waiting for the
+ * contacts. Lets the page show the right state right after a reload instead of waiting for the
  * next event.
  */
 async function replayRun(taskId: string) {
@@ -103,14 +103,14 @@ async function replayRun(taskId: string) {
 }
 
 /**
- * Per-card live state for the agents on the floor, fed by the page's event stream (`onEvent`).
+ * Per-card live state for the running agents, fed by the page's event stream (`onEvent`).
  * Cards in `runningIds` the page has not seen yet get their run's log replayed once.
  */
-export function useLiveFloor(runningIds: readonly string[]) {
+export function useLiveAgents(runningIds: readonly string[]) {
   const [live, setLive] = useState<LiveMap>({});
   const fetched = useRef(new Set<string>());
 
-  const patch = useCallback((taskId: string, update: (worker: LiveWorker) => LiveWorker | null) => {
+  const patch = useCallback((taskId: string, update: (agent: LiveAgent) => LiveAgent | null) => {
     setLive((prev) => {
       const next = update(prev[taskId] ?? EMPTY);
       return next === null ? prev : { ...prev, [taskId]: next };
@@ -120,7 +120,7 @@ export function useLiveFloor(runningIds: readonly string[]) {
   const runningKey = runningIds.join(",");
   useEffect(() => {
     const running = new Set(runningKey ? runningKey.split(",") : []);
-    // Drop workers that left the floor so a later run starts fresh.
+    // Drop agents that stopped running so a later run starts fresh.
     setLive((prev) => {
       const gone = Object.keys(prev).filter((id) => !running.has(id));
       if (gone.length === 0) return prev;
@@ -159,7 +159,7 @@ export function useLiveFloor(runningIds: readonly string[]) {
         case "run.updated": {
           const { run } = event;
           if (run.status !== "running") return;
-          // Same run (or the run this worker's live events already belong to): just learn the
+          // Same run (or the run this agent's live events already belong to): just learn the
           // start time. A new run of the card starts with a clean slate.
           patch(run.taskId, (w) => {
             if (w.runId === run.id) return w.startedAt ? null : { ...w, startedAt: run.startedAt };
@@ -189,7 +189,7 @@ export function useLiveFloor(runningIds: readonly string[]) {
           patch(event.taskId, (w) => ({ ...w, helpers: { ...w.helpers, [event.agent.id]: event.agent } }));
           return;
         case "run.delta": {
-          // Deltas stream many times a second; only a change of kind changes the worker.
+          // Deltas stream many times a second; only a change of kind changes the activity.
           const activity = describeActivity(event.kind, event.text);
           if (!activity) return;
           patch(event.taskId, (w) => (w.activity?.icon === activity.icon ? null : { ...w, activity }));

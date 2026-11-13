@@ -34,6 +34,7 @@ const task: Task = {
   pushedAt: null,
   autoRetries: 0,
   retryAt: null,
+  todos: [],
   createdAt: NOW,
   updatedAt: NOW,
   commentCount: 0,

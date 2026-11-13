@@ -63,7 +63,7 @@ import {
 } from "@/lib/types";
 import { type BoardStreamListener, useQueueDrafting } from "@/hooks/use-board";
 import { AgentLog } from "@/components/board/agent-log";
-import { StatusDot } from "@/components/board/board-column";
+import { TaskProgressIcon, TodoListSection } from "@/components/board/task-progress";
 import { CommentThread } from "@/components/board/comment-thread";
 import { DETAIL_HEADING_CLASS, DetailSection } from "@/components/board/detail-section";
 import { errorMessage, formatDateTime, formatRelative } from "@/components/board/format";
@@ -73,6 +73,7 @@ import { ShipActions, canShip, shipLabels, shipTask, useTaskGitStatus } from "@/
 import { AgentStateBadge } from "@/components/board/task-card";
 import { CreatedByNote, DelegatedCards, DependenciesSection } from "@/components/board/task-relations";
 import { WorkspaceSection } from "@/components/board/task-workspace";
+import { todoProgress } from "@/lib/todos";
 import { FilesPanel } from "@/components/files-panel";
 
 export interface TaskDetailProps {
@@ -517,6 +518,7 @@ function TaskDetailBody({
     (latest, run) => (!latest || run.startedAt > latest.startedAt ? run : latest),
     null,
   );
+  const todos = todoProgress(task.todos);
 
   const moreMenu = (
     <DropdownMenu>
@@ -562,8 +564,13 @@ function TaskDetailBody({
               title="Status follows the agent. Use the quick actions to change it."
               className="inline-flex h-6 items-center gap-1.5 rounded-full border bg-background px-2.5 text-xs font-medium"
             >
-              <StatusDot status={task.status} />
+              <TaskProgressIcon task={task} className="size-3.5" />
               {STATUS_LABELS[task.status]}
+              {todos && (
+                <span className="font-normal text-muted-foreground tabular-nums">
+                  · {todos.done}/{todos.total}
+                </span>
+              )}
             </span>
             <AgentStateBadge state={task.agentState} retryAt={task.retryAt} drafting={drafting} />
             {task.pushedAt && (
@@ -680,6 +687,8 @@ function TaskDetailBody({
               )}
             </MetaItem>
           </dl>
+
+          <TodoListSection task={task} />
 
           <DescriptionEditor task={task} onSave={(description) => save({ description })} />
 

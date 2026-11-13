@@ -81,12 +81,30 @@ export interface Task {
   autoRetries: number;
   /** When the next automatic retry of a failed run starts; null when none is scheduled. */
   retryAt: string | null;
+  /**
+   * The agent's todo list (omp `todo` tool), as of its latest update; replaced on every update
+   * and kept after the run ends. [] when the agent never kept one.
+   */
+  todos: TodoPhase[];
   createdAt: string;
   updatedAt: string;
   /** Derived: total comments. */
   commentCount: number;
   /** Derived: unresolved user comments (pending feedback). */
   openCommentCount: number;
+}
+
+export type TodoItemStatus = "pending" | "in_progress" | "completed" | "abandoned";
+
+export interface TodoItem {
+  content: string;
+  status: TodoItemStatus;
+}
+
+/** One phase of an agent's todo list; `name` may be "". */
+export interface TodoPhase {
+  name: string;
+  tasks: TodoItem[];
 }
 
 export type CommentAuthor = "user" | "agent";

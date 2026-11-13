@@ -1,23 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Building2Icon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
+import { formatRelative, useNow } from "@/components/board/format";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  ControlRoom,
-  formatRelative,
-  LINE_GRID,
-  type Pop,
-  ProductionLine,
-  useNow,
-  WorksitesSection,
-} from "@/components/visualize/factory-floor";
-import { crewLevel, XP_PER_CARD } from "@/components/visualize/game";
-import { useLiveFloor } from "@/components/visualize/use-live-floor";
+import { ControlRoom } from "@/components/visualize/control-room";
+import { AgentMap, MAP_GRID } from "@/components/visualize/sections";
+import { useLiveAgents } from "@/components/visualize/use-live-agents";
 import { WorkerAvatar } from "@/components/visualize/worker-avatar";
+import { Worksites } from "@/components/visualize/worksites";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { api, subscribeEvents } from "@/lib/api-client";
 import type { Dashboard, ServerEvent } from "@/lib/types";
@@ -34,57 +28,64 @@ const REFRESH_EVENTS: Partial<Record<ServerEvent["type"], true>> = {
 };
 const REFRESH_DEBOUNCE_MS = 250;
 const CLOCK_TICK_MS = 30_000;
-const POP_MS = 2_800;
 
-/** Placeholder shaped like the control room, the production line (zones + systems bus) and worksites. */
+const BLOCK = "rounded-[3px]";
+
+/** Placeholder shaped like the control room, the floor map and the worksites. */
 function LoadingSkeleton() {
   return (
-    <div className="grid gap-6" aria-busy="true" aria-label="Loading the floor">
-      <Skeleton className="h-64 w-full rounded-none md:h-48" />
-      <div className="border">
-        <Skeleton className="h-10 w-full rounded-none" />
-        <div className={LINE_GRID}>
-          <div className="grid content-start gap-2 border-b p-3 lg:border-r">
-            <Skeleton className="h-10 w-36 rounded-none" />
-            {Array.from({ length: 3 }, (_, i) => (
-              <Skeleton key={i} className="h-20 w-full rounded-none" />
-            ))}
-          </div>
-          <div className="@container grid content-start gap-3 border-b p-3 xl:border-r">
-            <Skeleton className="h-10 w-44 rounded-none" />
-            <div className="grid gap-4 @lg:grid-cols-2 @4xl:grid-cols-3">
+    <div className="grid gap-12 md:gap-16" aria-busy="true" aria-label="Loading">
+      <div className="grid gap-10 lg:grid-cols-12 lg:gap-12">
+        <div className="grid content-start gap-8 lg:col-span-7">
+          <div className="flex flex-wrap items-end gap-x-10 gap-y-6">
+            <Skeleton className={cn(BLOCK, "h-24 w-48")} />
+            <div className="flex gap-5">
               {Array.from({ length: 3 }, (_, i) => (
-                <Skeleton key={i} className="h-72 w-full rounded-none" />
+                <Skeleton key={i} className={cn(BLOCK, "h-14 w-20")} />
               ))}
             </div>
           </div>
-          <div className="grid content-start gap-2 border-b p-3 lg:col-span-2 xl:col-span-1">
-            <Skeleton className="h-10 w-40 rounded-none" />
+          <div className="grid gap-3 border-t pt-3">
             {Array.from({ length: 3 }, (_, i) => (
-              <Skeleton key={i} className="h-14 w-full rounded-none" />
-            ))}
-          </div>
-          <div className="grid grid-cols-2 gap-2 p-3 sm:grid-cols-4 lg:col-span-full xl:grid-cols-8">
-            {Array.from({ length: 8 }, (_, i) => (
-              <Skeleton key={i} className="h-28 w-full rounded-none" />
+              <Skeleton key={i} className={cn(BLOCK, "h-10 w-full")} />
             ))}
           </div>
         </div>
+        <Skeleton className={cn(BLOCK, "h-80 w-full lg:col-span-5")} />
       </div>
-      <Skeleton className="h-48 w-full rounded-none" />
+      <div className={cn(MAP_GRID, "gap-px border-y")}>
+        <div className="grid content-start gap-2 p-3">
+          {Array.from({ length: 3 }, (_, i) => (
+            <Skeleton key={i} className={cn(BLOCK, "h-16 w-full")} />
+          ))}
+        </div>
+        <div className="grid content-start gap-3 p-3 sm:grid-cols-2">
+          {Array.from({ length: 2 }, (_, i) => (
+            <Skeleton key={i} className={cn(BLOCK, "h-40 w-full")} />
+          ))}
+        </div>
+        <div className="grid content-start gap-2 p-3 lg:col-span-2 xl:col-span-1">
+          {Array.from({ length: 3 }, (_, i) => (
+            <Skeleton key={i} className={cn(BLOCK, "h-14 w-full")} />
+          ))}
+        </div>
+      </div>
+      <div className="grid gap-3">
+        {Array.from({ length: 3 }, (_, i) => (
+          <Skeleton key={i} className={cn(BLOCK, "h-16 w-full")} />
+        ))}
+      </div>
     </div>
   );
 }
 
 function NoProjects() {
   return (
-    <div className="mx-auto flex max-w-sm flex-col items-center gap-4 py-16 text-center">
-      <WorkerAvatar hue={272} mood="sleeping" className="size-20" />
+    <div className="mx-auto flex max-w-sm flex-col items-center gap-5 py-16 text-center">
+      <WorkerAvatar hue={235} mood="sleeping" animated={false} className="size-16" />
       <div className="space-y-1">
-        <p className="font-medium">The floor is empty</p>
-        <p className="text-sm text-muted-foreground">
-          Create a project and start a card. Its agent shows up here as a worker.
-        </p>
+        <p className="font-medium">No worksites yet</p>
+        <p className="text-sm text-muted-foreground">Open a project and start a card. Its worker clocks in here.</p>
       </div>
       <Button asChild className="h-11 md:h-9">
         <Link href="/">
@@ -96,19 +97,14 @@ function NoProjects() {
   );
 }
 
-// ---------------------------------------------------------------------------------------------
-
 export default function VisualizePage() {
   useDocumentTitle("Visualize");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [pops, setPops] = useState<Pop[]>([]);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const now = useNow(CLOCK_TICK_MS);
-  const { live, onEvent } = useLiveFloor(dashboard?.queue.running.map((entry) => entry.taskId) ?? []);
-  const seen = useRef<{ finished: Set<string>; level: number } | null>(null);
-  const popId = useRef(0);
+  const { live, onEvent } = useLiveAgents(dashboard?.queue.running.map((entry) => entry.taskId) ?? []);
 
   const load = useCallback(async () => {
     try {
@@ -116,26 +112,9 @@ export default function VisualizePage() {
       setUpdatedAt(Date.now());
       setLoadError(null);
     } catch (err) {
-      setLoadError(err instanceof Error && err.message ? err.message : "Couldn't load the overview.");
+      setLoadError(err instanceof Error && err.message ? err.message : "Couldn't load the floor.");
     }
   }, []);
-
-  // Celebrate cards shipped (and levels gained) while the page is open.
-  useEffect(() => {
-    if (!dashboard) return;
-    const level = crewLevel(dashboard.totals.done).level;
-    const previous = seen.current;
-    seen.current = { finished: new Set(dashboard.finished.map((card) => card.id)), level };
-    if (!previous) return;
-    const fresh: Pop[] = dashboard.finished
-      .filter((card) => !previous.finished.has(card.id))
-      .map((card) => ({ id: ++popId.current, text: `+${XP_PER_CARD} XP · ${card.title}` }));
-    if (level > previous.level) fresh.push({ id: ++popId.current, text: `Level up! Level ${level}` });
-    if (fresh.length === 0) return;
-    setPops((current) => [...current, ...fresh]);
-    const ids = new Set(fresh.map((pop) => pop.id));
-    window.setTimeout(() => setPops((current) => current.filter((pop) => !ids.has(pop.id))), POP_MS);
-  }, [dashboard]);
 
   useEffect(() => {
     void load();
@@ -169,22 +148,18 @@ export default function VisualizePage() {
     <div className="flex min-h-dvh flex-col">
       <AppHeader
         title="Visualize"
-        subtitle="Your agents at work, live"
+        subtitle="Your agent crew at work, live across every project"
         actions={
           <div className="flex items-center gap-2">
             {updatedAt !== null && (
-              <span className="hidden items-center gap-1.5 text-xs text-muted-foreground tabular-nums sm:flex">
-                <span className="relative flex size-2" aria-hidden>
-                  <span className="absolute inset-0 animate-ping rounded-full bg-success/60 motion-reduce:animate-none" />
-                  <span className="relative size-2 rounded-full bg-success" />
-                </span>
-                Live · updated {formatRelative(new Date(updatedAt).toISOString(), now)}
+              <span className="hidden font-mono text-xs text-muted-foreground sm:inline">
+                Updated {formatRelative(new Date(updatedAt).toISOString(), now)}
               </span>
             )}
             <Button
               variant="ghost"
               size="icon"
-              className="size-11 active:scale-[0.96] md:size-9"
+              className="size-11 md:size-9"
               aria-label="Refresh"
               title="Refresh"
               disabled={refreshing || dashboard === null}
@@ -195,39 +170,41 @@ export default function VisualizePage() {
           </div>
         }
       />
-      <main className="px-safe pb-safe mx-auto w-full max-w-[1600px] flex-1 px-4 py-6 sm:px-6 md:py-8 lg:px-8">
-        {loadError && dashboard === null ? (
-          <div className="mx-auto flex max-w-sm flex-col items-center gap-4 py-16 text-center">
-            <WorkerAvatar hue={25} mood="error" className="size-16" />
-            <div className="space-y-1">
-              <p className="font-medium">Couldn't load the floor</p>
-              <p className="text-sm text-muted-foreground">{loadError}</p>
+      <main className="px-safe pb-safe flex-1">
+        <div className="mx-auto w-full max-w-[1600px] px-4 py-8 sm:px-6 md:py-10 lg:px-8">
+          {loadError && dashboard === null ? (
+            <div className="mx-auto flex max-w-sm flex-col items-center gap-4 py-16 text-center">
+              <TriangleAlertIcon className="size-8 text-destructive" aria-hidden />
+              <div className="space-y-1">
+                <p className="font-medium">Couldn't load the floor</p>
+                <p className="text-sm text-muted-foreground">{loadError}</p>
+              </div>
+              <Button variant="outline" onClick={() => void load()} className="h-11 md:h-9">
+                <RefreshCwIcon />
+                Try again
+              </Button>
             </div>
-            <Button variant="outline" onClick={() => void load()} className="h-11 active:scale-[0.98] md:h-9">
-              <RefreshCwIcon />
-              Try again
-            </Button>
-          </div>
-        ) : dashboard === null ? (
-          <LoadingSkeleton />
-        ) : dashboard.boards.length === 0 ? (
-          <NoProjects />
-        ) : (
-          <div className="grid gap-6">
-            {loadError && (
-              <p
-                role="alert"
-                className="animate-fade-in-soft flex items-center gap-2 border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-              >
-                <TriangleAlertIcon className="size-4 shrink-0" />
-                <span className="min-w-0 flex-1 truncate">Couldn't refresh: {loadError}</span>
-              </p>
-            )}
-            <ControlRoom dashboard={dashboard} pops={pops} />
-            <ProductionLine dashboard={dashboard} live={live} now={now} attentionTotal={attentionTotal} />
-            <WorksitesSection dashboard={dashboard} now={now} />
-          </div>
-        )}
+          ) : dashboard === null ? (
+            <LoadingSkeleton />
+          ) : dashboard.boards.length === 0 ? (
+            <NoProjects />
+          ) : (
+            <div className="grid gap-12 md:gap-16">
+              {loadError && (
+                <p
+                  role="alert"
+                  className="flex items-center gap-2 rounded-[3px] border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+                >
+                  <TriangleAlertIcon className="size-4 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">Couldn't refresh: {loadError}</span>
+                </p>
+              )}
+              <ControlRoom dashboard={dashboard} live={live} now={now} />
+              <AgentMap dashboard={dashboard} live={live} now={now} attentionTotal={attentionTotal} />
+              <Worksites dashboard={dashboard} now={now} />
+            </div>
+          )}
+        </div>
       </main>
     </div>
   );

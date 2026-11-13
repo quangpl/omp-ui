@@ -323,8 +323,32 @@
   animation-play-state: paused;
 }
 
-/* ── Visualize: agents as workers ───────────────────────────────────
-   Robot worker idle loops (transform/opacity only) and the XP pop. */
+/* ── Visualize: the factory floor ──────────────────────────────────
+   One signal accent (safety amber) for everything live on the floor:
+   lamps, stamped XP, the plugged-in sockets of the power bus. Text that
+   needs the accent uses --color-signal-ink (AA on card and background).
+   All motion is transform/opacity/background-position only. */
+
+:root {
+  --floor-signal: oklch(0.8 0.16 75);
+  --floor-signal-ink: oklch(0.52 0.13 62);
+  --floor-signal-soft: oklch(0.8 0.16 75 / 14%);
+  --floor-paint: oklch(0.17 0.01 270 / 9%);
+}
+
+.dark {
+  --floor-signal: oklch(0.82 0.15 78);
+  --floor-signal-ink: oklch(0.86 0.13 80);
+  --floor-signal-soft: oklch(0.82 0.15 78 / 12%);
+  --floor-paint: oklch(1 0 0 / 8%);
+}
+
+@theme inline {
+  --color-signal: var(--floor-signal);
+  --color-signal-ink: var(--floor-signal-ink);
+  --color-signal-soft: var(--floor-signal-soft);
+  --color-floor-paint: var(--floor-paint);
+}
 
 @keyframes worker-bob {
   0%,
@@ -371,22 +395,67 @@
   }
 }
 
-@keyframes xp-pop {
-  0% {
+/* Entry of a floor element; stagger with style={{ "--i": index }}. */
+@keyframes floor-in {
+  from {
     opacity: 0;
-    transform: translateY(6px) scale(0.9);
+    transform: translateY(8px);
   }
-  15% {
+  to {
     opacity: 1;
-    transform: translateY(0) scale(1.04);
+    transform: none;
   }
-  80% {
-    opacity: 1;
-    transform: translateY(-4px) scale(1);
+}
+
+/* Live lamp: a ring that breathes out of a solid dot (scale + opacity). */
+@keyframes lamp-ring {
+  0% {
+    opacity: 0.7;
+    transform: scale(1);
   }
   100% {
     opacity: 0;
-    transform: translateY(-14px) scale(1);
+    transform: scale(2.6);
+  }
+}
+
+/* A changed number rolls up into place. Re-key the element on value change. */
+@keyframes digit-roll {
+  from {
+    opacity: 0;
+    transform: translateY(0.35em);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Stamped "+100 XP" on a freshly shipped card. */
+@keyframes stamp {
+  0% {
+    opacity: 0;
+    transform: rotate(-8deg) scale(1.6);
+  }
+  60% {
+    opacity: 1;
+    transform: rotate(-8deg) scale(0.94);
+  }
+  100% {
+    opacity: 1;
+    transform: rotate(-8deg) scale(1);
+  }
+}
+
+@keyframes belt {
+  to {
+    background-position: 16px 0;
+  }
+}
+
+@keyframes wire-flow {
+  to {
+    stroke-dashoffset: -12;
   }
 }
 
@@ -408,72 +477,46 @@
   animation: worker-snore 2.4s ease-out infinite;
 }
 
-@utility animate-xp-pop {
-  animation: xp-pop 2.8s var(--ease-out-smooth) both;
+@utility animate-floor-in {
+  animation: floor-in 0.45s var(--ease-out-smooth) both;
+  animation-delay: calc(var(--i, 0) * 55ms);
 }
 
-/* ── Visualize: factory schematic ──────────────────────────────────
-   Wire flow (stroke-dashoffset), conveyor belts (background-position),
-   blueprint grid backdrop and hazard stripes. */
-
-@keyframes wire-flow {
-  to {
-    stroke-dashoffset: -12;
-  }
+@utility animate-lamp {
+  animation: lamp-ring 1.8s var(--ease-out-smooth) infinite;
 }
 
-@keyframes belt-x {
-  to {
-    background-position: 12px 0;
-  }
+@utility animate-digit-roll {
+  display: inline-block;
+  animation: digit-roll 0.4s var(--ease-out-smooth) both;
 }
 
-@keyframes belt-y {
-  to {
-    background-position: 0 12px;
-  }
+@utility animate-stamp {
+  animation: stamp 0.5s var(--ease-out-smooth) both;
 }
 
-/* Flowing dashes along an SVG stroke; period (4 + 8) matches the keyframe offset. */
+/* Conveyor texture: short painted bars sliding along the intake lane. */
+@utility animate-belt {
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--color-floor-paint) 0 8px,
+    transparent 8px 16px
+  );
+  animation: belt 0.9s linear infinite;
+}
+
+/* Flowing dashes along an active SVG wire; period (4 + 8) matches the keyframe offset. */
 @utility animate-wire-flow {
   stroke-dasharray: 4 8;
   animation: wire-flow 1s linear infinite;
 }
 
-/* Self-contained conveyor texture: vertical bars sliding right. */
-@utility animate-belt {
-  background-image: repeating-linear-gradient(
-    90deg,
-    color-mix(in oklch, var(--color-foreground) 14%, transparent) 0 2px,
-    transparent 2px 12px
-  );
-  background-size: 12px 100%;
-  animation: belt-x 1.2s linear infinite;
-}
-
-/* Vertical conveyor: horizontal bars sliding down. */
-@utility animate-belt-y {
-  background-image: repeating-linear-gradient(
-    180deg,
-    color-mix(in oklch, var(--color-foreground) 14%, transparent) 0 2px,
-    transparent 2px 12px
-  );
-  background-size: 100% 12px;
-  animation: belt-y 1.2s linear infinite;
-}
-
-@utility bg-blueprint {
-  background-image:
-    linear-gradient(color-mix(in oklch, var(--color-foreground) 6%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in oklch, var(--color-foreground) 6%, transparent) 1px, transparent 1px);
-  background-size: 24px 24px;
-}
-
+/* Safety striping for the rework bay edge (static). */
 @utility bg-hazard {
   background-image: repeating-linear-gradient(
     -45deg,
-    color-mix(in oklch, var(--color-destructive) 18%, transparent) 0 10px,
-    transparent 10px 20px
+    var(--color-signal) 0 6px,
+    transparent 6px 12px
   );
 }
 
@@ -485,20 +528,27 @@
     animation-duration: 0.01ms;
     animation-delay: 0ms;
   }
-  .animate-shimmer,
-  .animate-worker-bob,
-  .animate-worker-blink,
-  .animate-worker-signal,
-  .animate-worker-snore,
-  .animate-xp-pop,
-  .animate-wire-flow,
-  .animate-belt,
-  .animate-belt-y {
+  .animate-shimmer {
     animation: none;
   }
   .animate-success-ring,
   .animate-success-spark {
     animation: none;
     opacity: 0;
+  }
+  .animate-worker-bob,
+  .animate-worker-blink,
+  .animate-worker-signal,
+  .animate-worker-snore,
+  .animate-lamp,
+  .animate-belt,
+  .animate-wire-flow {
+    animation: none;
+  }
+  .animate-floor-in,
+  .animate-digit-roll,
+  .animate-stamp {
+    animation-duration: 0.01ms;
+    animation-delay: 0ms;
   }
 }

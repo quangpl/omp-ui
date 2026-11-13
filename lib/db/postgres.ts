@@ -33,6 +33,7 @@ import {
   nowIso,
   parseFolderList,
 } from "@/lib/db/util";
+import { parseTodoPhases } from "@/lib/todos";
 
 /** Arbitrary constant key for the advisory lock serializing schema creation across processes. */
 const SCHEMA_LOCK_KEY = 4_708_312_655;
@@ -77,6 +78,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   pushed_at TEXT,
   auto_retries INTEGER NOT NULL DEFAULT 0,
   retry_at TEXT,
+  todos TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -86,6 +88,7 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pushed_at TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS auto_retries INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS retry_at TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS todos TEXT NOT NULL DEFAULT '[]';
 CREATE INDEX IF NOT EXISTS idx_tasks_board_status_position ON tasks (board_id, status, position);
 CREATE INDEX IF NOT EXISTS idx_tasks_agent_state ON tasks (agent_state);
 
@@ -165,6 +168,7 @@ interface TaskRow {
   pushed_at: string | null;
   auto_retries: number;
   retry_at: string | null;
+  todos: string;
   created_at: string;
   updated_at: string;
   comment_count: number;
@@ -236,6 +240,7 @@ function toTask(r: TaskRow): Task {
     pushedAt: r.pushed_at,
     autoRetries: Number(r.auto_retries),
     retryAt: r.retry_at,
+    todos: parseTodoPhases(r.todos),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     commentCount: Number(r.comment_count),
@@ -500,6 +505,7 @@ export class PostgresRepository implements Repository {
       ["pushed_at", patch.pushedAt],
       ["auto_retries", patch.autoRetries],
       ["retry_at", patch.retryAt],
+      ["todos", patch.todos === undefined ? undefined : JSON.stringify(patch.todos)],
       ["updated_at", nowIso()],
     ]);
     const res = await this.query(`UPDATE tasks SET ${sql} WHERE id = $${params.length + 1}`, [

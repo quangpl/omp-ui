@@ -1,31 +1,31 @@
-// Factory model of the Visualize page: the shared systems agents plug into, which system each
+// Data model of the Visualize page: the shared systems agents use, which system each
 // tool call touches, and the agent-to-agent links (delegation, dependencies, board contacts)
-// drawn as wires between stations. Pure: no React.
+// drawn as wires between cards. Pure: no React.
 import type { QueueSnapshot } from "@/lib/types";
-import type { Activity } from "./game";
-import type { LiveWorker } from "./use-live-floor";
+import type { Activity } from "./activity";
+import type { LiveAgent } from "./use-live-agents";
 
-/** Shared system components agents plug into (the factory's utility bus). Order = display order. */
+/** Shared systems agents use. Order = display order. */
 export type SystemId = "model" | "files" | "shell" | "web" | "memory" | "board" | "advisor" | "helpers";
 
 export interface SystemComponent {
   id: SystemId;
-  /** Short uppercase-able label: "Model core", "File store", … */
+  /** Short label: "Model", "Files", … */
   label: string;
   /** One line: what it is. */
   description: string;
 }
 
-/** Every system on the bus, in display order. */
+/** Every system, in display order. */
 export const SYSTEMS: readonly SystemComponent[] = [
-  { id: "model", label: "Model core", description: "The language model that thinks, plans and writes." },
-  { id: "files", label: "File store", description: "The card's workspace files: read, searched and edited." },
-  { id: "shell", label: "Shell / container", description: "Runs commands and code in the card's workspace." },
-  { id: "web", label: "Web gateway", description: "Web search, page fetches and the browser." },
-  { id: "memory", label: "Memory bank", description: "Long-term agent memory: recalled and saved across runs." },
-  { id: "board", label: "Board bus", description: "Board tools: list, read, create, message and wait for cards." },
+  { id: "model", label: "Model", description: "The language model that thinks, plans and writes." },
+  { id: "files", label: "Files", description: "The card's workspace files: read, searched and edited." },
+  { id: "shell", label: "Shell", description: "Runs commands and code in the card's workspace." },
+  { id: "web", label: "Web", description: "Web search, page fetches and the browser." },
+  { id: "memory", label: "Memory", description: "Long-term agent memory: recalled and saved across runs." },
+  { id: "board", label: "Board", description: "Board tools: list, read, create, message and wait for cards." },
   { id: "advisor", label: "Advisor", description: "A second model consulted on hard decisions." },
-  { id: "helpers", label: "Subagent pool", description: "Helper agents a run delegates work to." },
+  { id: "helpers", label: "Subagents", description: "Agents a run delegates work to." },
 ];
 
 const TOOL_SYSTEMS: Record<string, SystemId> = {
@@ -88,7 +88,7 @@ export const CONTACT_TTL_MS = 5 * 60_000;
  * dependencies of queued cards, delegations (creator → created card) and board contacts of the
  * last CONTACT_TTL_MS.
  */
-export function buildLinks(queue: QueueSnapshot, live: Record<string, LiveWorker>, now: number): CardLink[] {
+export function buildLinks(queue: QueueSnapshot, live: Record<string, LiveAgent>, now: number): CardLink[] {
   const links = new Map<string, CardLink>();
   const add = (kind: LinkKind, from: string, to: string) => {
     const key = `${kind}:${from}:${to}`;
@@ -101,8 +101,8 @@ export function buildLinks(queue: QueueSnapshot, live: Record<string, LiveWorker
     if (entry.createdByTaskId) add("delegate", entry.createdByTaskId, entry.taskId);
   }
   const since = now - CONTACT_TTL_MS;
-  for (const [taskId, worker] of Object.entries(live)) {
-    for (const contact of worker.contacts) {
+  for (const [taskId, agent] of Object.entries(live)) {
+    for (const contact of agent.contacts) {
       if (!(Date.parse(contact.at) >= since)) continue;
       for (const cardId of contact.cardIds) add(contact.kind, taskId, cardId);
     }
@@ -122,17 +122,17 @@ export interface SystemLoad {
  * Load of every system: a running card counts for its agent's current activity, and each of its
  * running/pending helpers with a current tool counts for that tool's system.
  */
-export function systemLoad(queue: QueueSnapshot, live: Record<string, LiveWorker>): Record<SystemId, SystemLoad> {
+export function systemLoad(queue: QueueSnapshot, live: Record<string, LiveAgent>): Record<SystemId, SystemLoad> {
   const load = Object.fromEntries(
     SYSTEMS.map((system): [SystemId, SystemLoad] => [system.id, { taskIds: [], helpers: 0 }]),
   ) as Record<SystemId, SystemLoad>;
   for (const entry of queue.running) {
-    const worker = live[entry.taskId];
-    if (!worker) continue;
+    const agent = live[entry.taskId];
+    if (!agent) continue;
     const used = new Set<SystemId>();
-    const own = activitySystem(worker.activity);
+    const own = activitySystem(agent.activity);
     if (own) used.add(own);
-    for (const helper of Object.values(worker.helpers)) {
+    for (const helper of Object.values(agent.helpers)) {
       if ((helper.status !== "running" && helper.status !== "pending") || !helper.currentTool) continue;
       const system = toolSystem(helper.currentTool);
       if (!system) continue;

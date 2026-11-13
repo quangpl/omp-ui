@@ -10,7 +10,8 @@
 //                         via: "prompt" and the streamingBehavior; like omp, an idle `prompt` with
 //                         streamingBehavior starts a prompt).
 //   FAKE_OMP_SCENARIO     Default prompt behaviour: success | question | error | crash | slow | confirm |
-//                         stream | orchestrate | board_tools.
+//                         stream | orchestrate | board_tools | todos.
+//                         "todos" reports two `todo` tool results (the agent's todo list), then succeeds.
 //                         "question" succeeds with a summary that ends in a question for the user.
 //                         "stream" emits 2 thinking_delta + 15 text_delta frames ~80ms apart, then succeeds.
 //                         "orchestrate" runs a `task` call with two subagents (Scout succeeds, Builder
@@ -471,6 +472,32 @@ async function cardWriter(prompt) {
   finishRun(assistant(text, "stop"));
 }
 
+/** Fake `todo` tool results as omp reports them (`result.details.phases`); the last one stays. */
+const FAKE_TODO_PHASES = [
+  [
+    { name: "Build", tasks: [{ content: "Write the code", status: "in_progress" }, { content: "Add tests", status: "pending" }] },
+    { name: "Ship", tasks: [{ content: "Update docs", status: "pending" }] },
+  ],
+  [
+    { name: "Build", tasks: [{ content: "Write the code", status: "completed" }, { content: "Add tests", status: "in_progress" }] },
+    { name: "Ship", tasks: [{ content: "Update docs", status: "pending" }, { content: "Old idea", status: "abandoned" }] },
+  ],
+];
+
+function emitTodos() {
+  FAKE_TODO_PHASES.forEach((phases, i) => {
+    const toolCallId = `todo-${i + 1}`;
+    emit({ type: "tool_execution_start", toolCallId, toolName: "todo", args: { op: i === 0 ? "init" : "done" } });
+    emit({
+      type: "tool_execution_end",
+      toolCallId,
+      toolName: "todo",
+      result: { content: [{ type: "text", text: "Remaining items…" }], details: { op: "update", phases, storage: "session" } },
+      isError: false,
+    });
+  });
+}
+
 async function startPrompt(command) {
   const cardWriterPrompt = String(command.message ?? "").startsWith("You are the card writer");
   const scenario = cardWriterPrompt ? "card_writer" : scenarioOf(command.message);
@@ -512,6 +539,10 @@ async function startPrompt(command) {
       break;
     case "orchestrate":
       await orchestrate(run);
+      break;
+    case "todos":
+      emitTodos();
+      completeSuccessfully("Fake summary: worked through the todo list.");
       break;
     case "board_tools":
       await boardTools(command.message);

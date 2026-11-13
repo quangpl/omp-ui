@@ -16,9 +16,9 @@ import {
   UsersIcon,
   WrenchIcon,
 } from "lucide-react";
-import type { ActivityIcon } from "@/components/visualize/game";
+import type { ActivityIcon } from "@/components/visualize/activity";
 
-/** Icon of each kind of agent activity (Visualize floor, agent log). */
+/** Icon of each kind of agent activity (Visualize page, agent log). */
 export const ACTIVITY_ICON: Record<ActivityIcon, ComponentType<{ className?: string }>> = {
   terminal: TerminalIcon,
   read: BookOpenIcon,
