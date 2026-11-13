@@ -343,6 +343,9 @@ export const api = {
     ) => request<Board>(`/boards/${id}`, { method: "PATCH", json: patch }),
     remove: (id: string) => request<{ ok: true }>(`/boards/${id}`, { method: "DELETE" }),
     tasks: (id: string) => request<Task[]>(`/boards/${id}/tasks`),
+    /** Delete these cards of the board (ids elsewhere are skipped); resolves with the deleted ids. */
+    deleteTasks: (id: string, ids: string[]) =>
+      request<{ deleted: string[] }>(`/boards/${id}/tasks`, { method: "DELETE", json: { ids } }),
     /** "@" mention candidates from the board's project folders; pass `signal` to drop stale queries. */
     projectFiles: (boardId: string, query: string, init?: { signal?: AbortSignal }) =>
       request<{ files: ProjectFileHit[] }>(`/boards/${boardId}/project-files?q=${encodeURIComponent(query)}`, {

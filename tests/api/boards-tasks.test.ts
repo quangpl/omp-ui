@@ -594,6 +594,30 @@ describe("tasks and comments", () => {
     expect(patch.status).toBe(404);
   });
 
+  it("bulk-deletes the listed cards of the board only", async () => {
+    const bulk = await createBoard({ name: "Bulk", workdir: board.workdir, autoRun: false });
+    const doneA = await createTask(bulk.id, { title: "Done A", status: "done" });
+    const doneB = await createTask(bulk.id, { title: "Done B", status: "done" });
+    const kept = await createTask(bulk.id, { title: "Kept", status: "done" });
+    const elsewhere = await createTask(board.id, { title: "Other board", status: "done" });
+    const res = await api<{ deleted: string[] }>(boardTasksRoute, "DELETE", `/boards/${bulk.id}/tasks`, {
+      params: { id: bulk.id },
+      body: { ids: [doneA.id, doneB.id, doneA.id, elsewhere.id, MISSING_ID] },
+    });
+    expect(res.status).toBe(200);
+    expect([...res.body.deleted].sort()).toEqual([doneA.id, doneB.id].sort());
+    expect((await listTasks(bulk.id)).map((t) => t.id)).toEqual([kept.id]);
+    expect((await listTasks(board.id)).some((t) => t.id === elsewhere.id)).toBe(true);
+
+    for (const ids of [undefined, [], ["  "], "x", [1]]) {
+      const bad = await api(boardTasksRoute, "DELETE", `/boards/${bulk.id}/tasks`, {
+        params: { id: bulk.id },
+        body: { ids },
+      });
+      expect(bad.status, JSON.stringify(ids)).toBe(400);
+    }
+  });
+
   it("answers 404 for run events of an unknown run", async () => {
     const res = await runEvents(MISSING_ID);
     expect(res.status).toBe(404);

@@ -1,6 +1,6 @@
 import type { UpdateTaskInput } from "@/lib/db/types";
 import { publish } from "@/lib/events";
-import { removeFilesFolder } from "@/lib/files";
+import { deleteCard } from "@/lib/server/delete-card";
 import { error, json, readJson, withApi } from "@/lib/server/http";
 import {
   parseBlockedBy,
@@ -11,7 +11,6 @@ import {
   parseTitle,
   requireTask,
 } from "@/lib/server/validate";
-import { removeWorkspace } from "@/lib/workspaces";
 
 export const dynamic = "force-dynamic";
 
@@ -52,10 +51,6 @@ export const PATCH = withApi<Params>(async ({ req, repo, manager, params }) => {
 /** Deletes the card with its agent run, files and dedicated workspace (worktrees + branch). */
 export const DELETE = withApi<Params>(async ({ repo, manager, params }) => {
   const task = await requireTask(repo, params.id);
-  await manager.onTaskDeleted(task.id);
-  await repo.deleteTask(task.id);
-  publish({ type: "task.deleted", taskId: task.id, boardId: task.boardId });
-  const board = await repo.getBoard(task.boardId);
-  await Promise.all([removeFilesFolder("tasks", task.id), removeWorkspace(board, task)]);
+  await deleteCard(repo, manager, task, await repo.getBoard(task.boardId));
   return json({ ok: true });
 });

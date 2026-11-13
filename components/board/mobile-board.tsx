@@ -1,7 +1,7 @@
 "use client";
 
 import { type CSSProperties, type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { EllipsisVertical, LoaderCircle, PanelRightOpen, Plus } from "lucide-react";
+import { EllipsisVertical, LoaderCircle, PanelRightOpen, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -315,6 +315,18 @@ export function MobileBoard({
               className="h-full w-full shrink-0 snap-start snap-always overflow-x-hidden overflow-y-auto overscroll-y-contain"
             >
               <div className="flex flex-col gap-3 px-4 pt-3 pb-[calc(6.5rem+env(safe-area-inset-bottom))]">
+                {status === "done" && tasks.length > 0 && (
+                  // Column-wide action; the desktop column has it in its header.
+                  <Button
+                    variant="ghost"
+                    className="pressable -mr-2 -mb-2 h-11 gap-2 self-end px-3 text-[13px] text-muted-foreground hover:bg-destructive/10 hover:text-destructive active:bg-destructive/10"
+                    aria-label={`Delete all (${tasks.length})`}
+                    onClick={() => actions.requestDeleteAll(tasks)}
+                  >
+                    <Trash2 aria-hidden />
+                    Delete all
+                  </Button>
+                )}
                 {tasks.map((task, index) => (
                   <MobileCard
                     key={task.id}

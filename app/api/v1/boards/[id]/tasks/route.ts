@@ -1,6 +1,7 @@
 import { createCardFromText } from "@/lib/agent/compose";
 import type { CreateTaskInput } from "@/lib/db/types";
 import { publish } from "@/lib/events";
+import { deleteCard } from "@/lib/server/delete-card";
 import { json, readJson, withApi } from "@/lib/server/http";
 import {
   parseBlockedBy,
@@ -8,6 +9,7 @@ import {
   parseDescription,
   parsePosition,
   parseStatus,
+  parseTaskIds,
   parseTitle,
   requireBoard,
 } from "@/lib/server/validate";
@@ -51,4 +53,16 @@ export const POST = withApi<Params>(async ({ req, repo, manager, params }) => {
     return json((await repo.getTask(task.id)) ?? task, { status: 201 });
   }
   return json(task, { status: 201 });
+});
+
+/**
+ * Delete several cards of the board at once: `{ ids }` (e.g. every Done card). Ids not on this
+ * board are skipped. Cards go one at a time (see deleteCard). Answers `{ deleted }`.
+ */
+export const DELETE = withApi<Params>(async ({ req, repo, manager, params }) => {
+  const board = await requireBoard(repo, params.id);
+  const ids = parseTaskIds((await readJson(req)).ids);
+  const tasks = (await repo.listTasks(board.id)).filter((task) => ids.has(task.id));
+  for (const task of tasks) await deleteCard(repo, manager, task, board);
+  return json({ deleted: tasks.map((task) => task.id) });
 });

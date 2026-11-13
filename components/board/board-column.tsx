@@ -1,7 +1,7 @@
 "use client";
 
 import { type CSSProperties, useRef, useState } from "react";
-import { CircleCheckBig, CircleDashed, Inbox, LoaderCircle, type LucideIcon, Play, Square } from "lucide-react";
+import { CircleCheckBig, CircleDashed, Inbox, LoaderCircle, type LucideIcon, Play, Square, Trash2 } from "lucide-react";
 import { useDndContext, useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -255,13 +255,25 @@ export function BoardColumn({
   const highlighted = isOver && dragStatus === status;
   const listRef = useRef<HTMLDivElement | null>(null);
   const bulk = useBulkRunner(menuActions);
-  // To do offers "Start all", In progress "Stop all"; Done has no column-wide action.
+  // To do offers "Start all", In progress "Stop all", Done "Delete all" (after a confirmation).
   const headerAction =
     status === "todo"
-      ? { key: "R" as const, label: "Start all", icon: Play, targets: bulkTargets(tasks, "R", false) }
+      ? {
+          label: "Start all",
+          icon: Play,
+          destructive: false,
+          tasks: bulkTargets(tasks, "R", false).map((target) => target.task),
+          run: (targets: Task[]) => bulk.run(targets, "R"),
+        }
       : status === "in_progress"
-        ? { key: "S" as const, label: "Stop all", icon: Square, targets: bulkTargets(tasks, "S", false) }
-        : null;
+        ? {
+            label: "Stop all",
+            icon: Square,
+            destructive: false,
+            tasks: bulkTargets(tasks, "S", false).map((target) => target.task),
+            run: (targets: Task[]) => bulk.run(targets, "S"),
+          }
+        : { label: "Delete all", icon: Trash2, destructive: true, tasks, run: menuActions.requestDeleteAll };
 
   return (
     <section
@@ -278,30 +290,35 @@ export function BoardColumn({
         <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-background px-1.5 font-mono text-[11px] font-medium text-muted-foreground tabular-nums ring-1 ring-border">
           {tasks.length}
         </span>
-        {headerAction && headerAction.targets.length > 0 && (
+        {headerAction.tasks.length > 0 && (
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 type="button"
                 variant="ghost"
                 size="xs"
-                aria-label={`${headerAction.label} (${headerAction.targets.length})`}
+                aria-label={`${headerAction.label} (${headerAction.tasks.length})`}
                 aria-busy={bulk.pending !== null || undefined}
                 disabled={bulk.pending !== null}
-                onClick={() => bulk.run(headerAction.targets.map((target) => target.task), headerAction.key)}
-                className="ml-auto h-7 shrink-0 gap-1.5 px-2 text-muted-foreground hover:text-foreground active:translate-y-px"
+                onClick={() => headerAction.run(headerAction.tasks)}
+                className={cn(
+                  "ml-auto h-7 shrink-0 gap-1.5 px-2 text-muted-foreground active:translate-y-px",
+                  headerAction.destructive
+                    ? "hover:bg-destructive/10 hover:text-destructive dark:hover:bg-destructive/20"
+                    : "hover:text-foreground",
+                )}
               >
                 {bulk.pending ? (
                   <LoaderCircle aria-hidden className="animate-spin motion-reduce:animate-none" />
                 ) : (
-                  <headerAction.icon aria-hidden className="fill-current" />
+                  <headerAction.icon aria-hidden className={cn(!headerAction.destructive && "fill-current")} />
                 )}
                 {headerAction.label}
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom">
-              {headerAction.label} · {headerAction.targets.length}{" "}
-              {headerAction.targets.length === 1 ? "card" : "cards"}
+              {headerAction.label} · {headerAction.tasks.length}{" "}
+              {headerAction.tasks.length === 1 ? "card" : "cards"}
             </TooltipContent>
           </Tooltip>
         )}

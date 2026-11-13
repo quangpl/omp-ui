@@ -281,6 +281,8 @@ export interface BoardController {
   stopAgent: (taskId: string) => Promise<void>;
   /** Delete a card; toasts on success and failure. */
   deleteTask: (taskId: string) => Promise<void>;
+  /** Delete several cards in one request (e.g. all Done); toasts one summary or the failure. */
+  deleteTasks: (taskIds: string[]) => Promise<void>;
   /** Listen to the board's live event stream (shared SSE connection). Returns an unsubscribe fn. */
   subscribe: (listener: BoardStreamListener) => () => void;
   /** Latest one-line agent activity per task id ("▸ bash: npm test", "Writing…"); show while running. */
@@ -694,6 +696,20 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
     [removeTask],
   );
 
+  const deleteTasks = useCallback(
+    async (taskIds: string[]) => {
+      try {
+        const { deleted } = await api.boards.deleteTasks(boardId, taskIds);
+        for (const id of deleted) removeTask(id);
+        toast.success(`Deleted ${deleted.length} ${deleted.length === 1 ? "card" : "cards"}`);
+      } catch (err) {
+        // Cards deleted before the failure already left the board through the event stream.
+        toast.error("Couldn't delete cards", { description: message(err) });
+      }
+    },
+    [boardId, removeTask],
+  );
+
   return {
     board,
     setBoard,
@@ -712,6 +728,7 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
     runAgent,
     stopAgent,
     deleteTask,
+    deleteTasks,
     subscribe,
     activity,
     connection,
