@@ -27,6 +27,8 @@ import * as commentRoute from "@/app/api/v1/comments/[id]/route";
 import * as eventsRoute from "@/app/api/v1/events/route";
 import * as browseRoute from "@/app/api/v1/fs/browse/route";
 import * as cloneRoute from "@/app/api/v1/git/clone/route";
+import * as initRoute from "@/app/api/v1/git/init/route";
+import * as repoRoute from "@/app/api/v1/git/repo/route";
 import * as healthRoute from "@/app/api/v1/health/route";
 import * as runEventsRoute from "@/app/api/v1/runs/[id]/events/route";
 import * as settingsRoute from "@/app/api/v1/settings/route";
@@ -464,6 +466,8 @@ describe("protected endpoints", () => {
     ["POST /tasks/:id/git/pr", taskPrRoute, "POST", `/tasks/${id}/git/pr`, { id }],
     ["GET /fs/browse", browseRoute, "GET", "/fs/browse"],
     ["POST /git/clone", cloneRoute, "POST", "/git/clone"],
+    ["GET /git/repo", repoRoute, "GET", "/git/repo"],
+    ["POST /git/init", initRoute, "POST", "/git/init"],
     ["GET /system", systemRoute, "GET", "/system"],
     ["GET /settings", settingsRoute, "GET", "/settings"],
     ["PATCH /settings", settingsRoute, "PATCH", "/settings"],

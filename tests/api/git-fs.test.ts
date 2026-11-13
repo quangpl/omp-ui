@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -13,6 +13,8 @@ import * as boardTasksRoute from "@/app/api/v1/boards/[id]/tasks/route";
 import * as boardsRoute from "@/app/api/v1/boards/route";
 import * as browseRoute from "@/app/api/v1/fs/browse/route";
 import * as cloneRoute from "@/app/api/v1/git/clone/route";
+import * as initRoute from "@/app/api/v1/git/init/route";
+import * as repoRoute from "@/app/api/v1/git/repo/route";
 import * as taskPrRoute from "@/app/api/v1/tasks/[id]/git/pr/route";
 import * as taskPushRoute from "@/app/api/v1/tasks/[id]/git/push/route";
 import * as taskRoute from "@/app/api/v1/tasks/[id]/route";
@@ -757,4 +759,146 @@ describe("git clone", () => {
     },
     GIT_TIMEOUT,
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("git init", () => {
+  let base: string;
+  let existing: Repo;
+
+  beforeAll(async () => {
+    await freshEnv();
+    await setupAdmin();
+    base = tempDir("init");
+    for (const dir of ["plain", "main", "extra", "locked"]) mkdirSync(path.join(base, dir), { recursive: true });
+    writeFileSync(path.join(base, "file.txt"), "not a folder\n");
+    existing = makeRepo("existing");
+    mkdirSync(path.join(existing.work, "nested"), { recursive: true });
+  });
+
+  async function check(folder: string) {
+    return api<{ path: string; isGitRepo: boolean; error?: string }>(
+      repoRoute,
+      "GET",
+      `/git/repo?path=${encodeURIComponent(folder)}`,
+    );
+  }
+
+  async function init(body?: Record<string, unknown>) {
+    return api<{ path: string; output: string; error?: string }>(
+      initRoute,
+      "POST",
+      "/git/init",
+      body ? { body } : {},
+    );
+  }
+
+  it("reports whether a folder is inside a git repository", async () => {
+    const plain = await check(path.join(base, "plain"));
+    expect(plain.status).toBe(200);
+    expect(plain.body).toEqual({ path: path.join(base, "plain"), isGitRepo: false });
+
+    expect((await check(existing.work)).body).toEqual({ path: existing.work, isGitRepo: true });
+    const nested = path.join(existing.work, "nested");
+    expect((await check(nested)).body).toEqual({ path: nested, isGitRepo: true });
+
+    const normalized = await check(`${base}/plain/../plain/`);
+    expect(normalized.status).toBe(200);
+    expect(normalized.body.path).toBe(path.join(base, "plain"));
+  });
+
+  it("rejects a missing, relative, nonexistent or non-folder path when checking", async () => {
+    const missing = await api<{ error?: string }>(repoRoute, "GET", "/git/repo");
+    expect(missing.status).toBe(400);
+    expect(missing.body.error).toBe("Please choose a folder.");
+    expect((await check("  ")).status).toBe(400);
+
+    const relative = await check("projects");
+    expect(relative.status).toBe(400);
+    expect(relative.body.error).toContain('full folder path starting with "/"');
+
+    const ghost = path.join(base, "ghost");
+    const notFound = await check(ghost);
+    expect(notFound.status).toBe(400);
+    expect(notFound.body.error).toBe(`This folder doesn't exist (or isn't a folder): ${ghost}`);
+
+    const file = path.join(base, "file.txt");
+    const notDir = await check(file);
+    expect(notDir.status).toBe(400);
+    expect(notDir.body.error).toContain(file);
+  });
+
+  it("initializes a plain folder as a git repository", async () => {
+    const folder = path.join(base, "plain");
+    const res = await init({ path: folder });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.path).toBe(folder);
+    expect(typeof res.body.output).toBe("string");
+    expect(existsSync(path.join(folder, ".git"))).toBe(true);
+    expect(git(folder, "rev-parse", "--is-inside-work-tree")).toBe("true");
+    expect((await check(folder)).body).toEqual({ path: folder, isGitRepo: true });
+  });
+
+  it("answers 409 when the folder is already inside a git repository", async () => {
+    const again = await init({ path: path.join(base, "plain") });
+    expect(again.status).toBe(409);
+    expect(again.body.error).toBe(`This folder is already a git repository: ${path.join(base, "plain")}`);
+
+    const nested = path.join(existing.work, "nested");
+    const sub = await init({ path: nested });
+    expect(sub.status).toBe(409);
+    expect(sub.body.error).toBe(`This folder is already a git repository: ${nested}`);
+    expect(existsSync(path.join(nested, ".git"))).toBe(false);
+  });
+
+  it("rejects a missing, relative, nonexistent or non-folder path", async () => {
+    const noBody = await init();
+    expect(noBody.status).toBe(400);
+    expect(noBody.body.error).toBe("Please choose the folder to initialize.");
+    expect((await init({ path: "   " })).status).toBe(400);
+    expect((await init({ path: 42 })).body.error).toBe("Please choose the folder to initialize.");
+
+    const relative = await init({ path: "init/extra" });
+    expect(relative.status).toBe(400);
+    expect(relative.body.error).toContain('full folder path starting with "/"');
+
+    const ghost = path.join(base, "ghost");
+    const notFound = await init({ path: ghost });
+    expect(notFound.status).toBe(400);
+    expect(notFound.body.error).toBe(`This folder doesn't exist (or isn't a folder): ${ghost}`);
+    expect(existsSync(ghost)).toBe(false);
+
+    const file = path.join(base, "file.txt");
+    const notDir = await init({ path: file });
+    expect(notDir.status).toBe(400);
+    expect(notDir.body.error).toContain(file);
+  });
+
+  it.skipIf(process.getuid?.() === 0)("answers 400 with a plain reason when git init fails", async () => {
+    const locked = path.join(base, "locked");
+    chmodSync(locked, 0o555);
+    try {
+      const res = await init({ path: locked });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("Couldn't initialize git: The server isn't allowed to write to this folder.");
+      expect(existsSync(path.join(locked, ".git"))).toBe(false);
+    } finally {
+      chmodSync(locked, 0o755);
+    }
+  });
+
+  it("initialized workdir and extra folders show up as repositories on the board", async () => {
+    const main = path.join(base, "main");
+    const extra = path.join(base, "extra");
+    expect((await init({ path: main })).status).toBe(201);
+    expect((await init({ path: extra })).status).toBe(201);
+
+    const board = await createBoard({ name: "Fresh repos", workdir: main, extraFolders: [extra], autoRun: false });
+    const res = await boardGit(board.id);
+    expect(res.status).toBe(200);
+    expect(res.body.map((s) => s.folder)).toEqual([main, extra]);
+    expect(res.body[0]).toMatchObject({ folder: main, isRepo: true, remoteUrl: null, dirty: false });
+    expect(res.body[1]).toMatchObject({ folder: extra, isRepo: true, remoteUrl: null, dirty: false });
+  });
 });

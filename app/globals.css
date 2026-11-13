@@ -412,6 +412,71 @@
   animation: xp-pop 2.8s var(--ease-out-smooth) both;
 }
 
+/* ── Visualize: factory schematic ──────────────────────────────────
+   Wire flow (stroke-dashoffset), conveyor belts (background-position),
+   blueprint grid backdrop and hazard stripes. */
+
+@keyframes wire-flow {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+@keyframes belt-x {
+  to {
+    background-position: 12px 0;
+  }
+}
+
+@keyframes belt-y {
+  to {
+    background-position: 0 12px;
+  }
+}
+
+/* Flowing dashes along an SVG stroke; period (4 + 8) matches the keyframe offset. */
+@utility animate-wire-flow {
+  stroke-dasharray: 4 8;
+  animation: wire-flow 1s linear infinite;
+}
+
+/* Self-contained conveyor texture: vertical bars sliding right. */
+@utility animate-belt {
+  background-image: repeating-linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--color-foreground) 14%, transparent) 0 2px,
+    transparent 2px 12px
+  );
+  background-size: 12px 100%;
+  animation: belt-x 1.2s linear infinite;
+}
+
+/* Vertical conveyor: horizontal bars sliding down. */
+@utility animate-belt-y {
+  background-image: repeating-linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--color-foreground) 14%, transparent) 0 2px,
+    transparent 2px 12px
+  );
+  background-size: 100% 12px;
+  animation: belt-y 1.2s linear infinite;
+}
+
+@utility bg-blueprint {
+  background-image:
+    linear-gradient(color-mix(in oklch, var(--color-foreground) 6%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklch, var(--color-foreground) 6%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+@utility bg-hazard {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in oklch, var(--color-destructive) 18%, transparent) 0 10px,
+    transparent 10px 20px
+  );
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-card-in,
   .animate-fade-in-soft,
@@ -425,7 +490,10 @@
   .animate-worker-blink,
   .animate-worker-signal,
   .animate-worker-snore,
-  .animate-xp-pop {
+  .animate-xp-pop,
+  .animate-wire-flow,
+  .animate-belt,
+  .animate-belt-y {
     animation: none;
   }
   .animate-success-ring,

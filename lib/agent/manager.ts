@@ -195,6 +195,7 @@ class OmpAgentManager implements AgentManager {
         planning: state === "queued" && this.awaitsPlan(taskId),
         drafting: state === "queued" && this.preparing.has(taskId),
         planNote: this.planNotes.get(taskId) ?? null,
+        createdByTaskId: task.createdByTaskId ?? null,
       };
     };
     const isEntry = (e: QueueEntry | null): e is QueueEntry => e !== null;
@@ -1681,22 +1682,55 @@ function assistantError(message: Json): string | undefined {
   return asString(message.errorMessage) ?? asString(message.error);
 }
 
-function describeToolStart(frame: RpcFrame): string {
-  const name = asString(frame.toolName) ?? "tool";
-  const args = isObject(frame.args) ? frame.args : undefined;
-  const intent = asString(frame.intent) ?? asString(args?.intent);
-  const detail =
-    (name === "task" ? describeTaskCall(args, intent) || undefined : undefined) ??
-    asString(args?.command) ??
-    intent ??
-    asString(args?.path) ??
-    (args && Object.keys(args).length > 0 ? JSON.stringify(args) : "");
+/**
+ * Persisted log line for a `tool_execution_start` frame: `▸ name: detail`, plus the call's intent
+ * on a second line when it differs from the detail. Board tool calls keep their JSON args as the
+ * detail so readers (the Visualize tab) can recover the card ids they touch.
+ */
+export function describeToolStart(frame: RpcFrame): string {
+  const rawArgs = isObject(frame.args) ? frame.args : undefined;
+  const { name, args } = unwrapDeviceCall(asString(frame.toolName) ?? "tool", rawArgs);
+  const intent = asString(frame.intent) ?? asString(rawArgs?.intent) ?? asString(args?.intent);
+  const detail = name.startsWith("board_")
+    ? boardToolDetail(name, args)
+    : ((name === "task" ? describeTaskCall(args, intent) || undefined : undefined) ??
+      asString(args?.command) ??
+      intent ??
+      asString(args?.path) ??
+      (args && Object.keys(args).length > 0 ? JSON.stringify(args) : ""));
   const line = oneLineTrim(detail);
   const head = truncate(`▸ ${name}${line ? `: ${line}` : ""}`, MAX_TOOL_TEXT);
   // The intent rides on a second line (readers that want one line take the first): the log shows
   // "why" first and keeps the raw command as detail. `task` already folds the intent into its line.
   const why = intent && name !== "task" ? oneLineTrim(intent) : "";
   return why && why !== line ? `${head}\n${truncate(why, MAX_TOOL_INTENT_TEXT)}` : head;
+}
+
+/**
+ * Some omp builds expose host tools as `xd://<tool>` devices: the agent calls `write` with the
+ * tool's JSON args as `content`. Such a call is logged as the device tool itself.
+ */
+function unwrapDeviceCall(name: string, args: Json | undefined): { name: string; args: Json | undefined } {
+  const target = name === "write" ? asString(args?.path) : undefined;
+  const content = asString(args?.content);
+  if (!target?.startsWith("xd://") || content === undefined) return { name, args };
+  const device = target.slice("xd://".length).split("/")[0];
+  if (!device) return { name, args };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return { name, args };
+  }
+  return isObject(parsed) ? { name: device, args: parsed } : { name, args };
+}
+
+/** Board tool args as one-line JSON without the intent; `board_message_card` leads with its card id. */
+function boardToolDetail(name: string, args: Json | undefined): string {
+  const rest: Json = { ...args };
+  delete rest.intent;
+  const ordered = name === "board_message_card" && "cardId" in rest ? { cardId: rest.cardId, ...rest } : rest;
+  return Object.keys(ordered).length > 0 ? JSON.stringify(ordered) : "";
 }
 
 function resultText(result: unknown): string {

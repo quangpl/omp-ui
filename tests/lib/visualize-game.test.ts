@@ -22,11 +22,12 @@ describe("describeActivity", () => {
       icon: "terminal",
       label: "Running a command",
       detail: "pnpm test -- --run",
+      tool: "bash",
     });
     expect(describeActivity("tool", "▸ board_message_card: ping")).toMatchObject({ icon: "team", detail: "ping" });
     // A recorded intent reads better than the raw command.
     expect(describeActivity("tool", "▸ bash: pnpm test\nRunning the tests")).toMatchObject({ detail: "Running the tests" });
-    expect(describeActivity("tool", "▸ mystery")).toEqual({ icon: "tool", label: "Using mystery", detail: undefined });
+    expect(describeActivity("tool", "▸ mystery")).toEqual({ icon: "tool", label: "Using mystery", detail: undefined, tool: "mystery" });
   });
 
   it("ignores subagent snapshots and empty status lines", () => {
