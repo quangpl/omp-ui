@@ -231,6 +231,7 @@ function AgentSettingsSection() {
       saved.autoModel !== draft.autoModel ||
       saved.smartQueue !== draft.smartQueue ||
       saved.autoRetry !== draft.autoRetry ||
+      saved.persistentRetry !== draft.persistentRetry ||
       saved.maxAutoRetries !== draft.maxAutoRetries ||
       saved.browser !== draft.browser);
 
@@ -255,6 +256,7 @@ function AgentSettingsSection() {
         autoModel: draft.autoModel,
         smartQueue: draft.smartQueue,
         autoRetry: draft.autoRetry,
+        persistentRetry: draft.persistentRetry,
         maxAutoRetries: draft.maxAutoRetries,
         browser: draft.browser,
       });
@@ -478,13 +480,34 @@ function AgentSettingsSection() {
                     disabled={saving}
                   />
                 </SettingsToggle>
+
+                {draft.autoRetry && (
+                  <div className="animate-fade-in-soft">
+                    <SettingsToggle
+                      htmlFor="persistent-retry"
+                      title="Keep retrying until done"
+                      description="Failed cards keep retrying until they're Done or you stop them. Quota and usage-limit errors wait 5, 10, 15, 30 min, then hourly (the card shows Waiting for quota); other errors retry up to 10 min apart."
+                    >
+                      <Switch
+                        id="persistent-retry"
+                        checked={draft.persistentRetry}
+                        onCheckedChange={(checked) => setDraft({ ...draft, persistentRetry: checked })}
+                        disabled={saving}
+                      />
+                    </SettingsToggle>
+                  </div>
+                )}
               </div>
 
               {draft.autoRetry && (
                 <SettingsField
-                  label="Retries per card"
+                  label={draft.persistentRetry ? "Resumes after a server restart" : "Retries per card"}
                   htmlFor="max-auto-retries"
-                  hint="Then the card stays failed until you run it (0–20)."
+                  hint={
+                    draft.persistentRetry
+                      ? "Only limits resuming runs interrupted by a server restart; failed runs keep retrying (0–20)."
+                      : "Limits all retries; then the card stays failed until you run it (0–20)."
+                  }
                   className="animate-fade-in-soft sm:max-w-xs"
                 >
                   <Input

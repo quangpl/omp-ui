@@ -197,6 +197,16 @@
   animation-delay: calc(min(var(--stagger, 0), 12) * 28ms);
 }
 
+/* Card FLIP ghosts (hooks/use-card-flip.ts): frozen copies of a card flying between columns.
+   They must not replay the card's entry/feedback animations or transitions, and never take
+   input (hover-revealed quick actions set pointer-events back to auto). */
+.card-flip-ghosts,
+.card-flip-ghosts * {
+  animation: none !important;
+  transition: none !important;
+  pointer-events: none !important;
+}
+
 @utility animate-fade-in-soft {
   animation: fade-in-soft 0.2s ease-out both;
 }
@@ -325,9 +335,10 @@
 
 /* ── Visualize: the factory floor ──────────────────────────────────
    One signal accent (safety amber) for everything live on the floor:
-   lamps, stamped XP, the plugged-in sockets of the power bus. Text that
+   lamps, stamped XP, the departments with a worker in them. Text that
    needs the accent uses --color-signal-ink (AA on card and background).
-   All motion is transform/opacity/background-position only. */
+   All CSS motion is transform/opacity only; workers walk between rooms
+   with the Web Animations API (factory-floor.tsx). */
 
 :root {
   --floor-signal: oklch(0.8 0.16 75);
@@ -447,18 +458,6 @@
   }
 }
 
-@keyframes belt {
-  to {
-    background-position: 16px 0;
-  }
-}
-
-@keyframes wire-flow {
-  to {
-    stroke-dashoffset: -12;
-  }
-}
-
 @utility animate-worker-bob {
   animation: worker-bob 1.6s ease-in-out infinite;
 }
@@ -495,22 +494,6 @@
   animation: stamp 0.5s var(--ease-out-smooth) both;
 }
 
-/* Conveyor texture: short painted bars sliding along the intake lane. */
-@utility animate-belt {
-  background-image: repeating-linear-gradient(
-    90deg,
-    var(--color-floor-paint) 0 8px,
-    transparent 8px 16px
-  );
-  animation: belt 0.9s linear infinite;
-}
-
-/* Flowing dashes along an active SVG wire; period (4 + 8) matches the keyframe offset. */
-@utility animate-wire-flow {
-  stroke-dasharray: 4 8;
-  animation: wire-flow 1s linear infinite;
-}
-
 /* Safety striping for the rework bay edge (static). */
 @utility bg-hazard {
   background-image: repeating-linear-gradient(
@@ -540,9 +523,7 @@
   .animate-worker-blink,
   .animate-worker-signal,
   .animate-worker-snore,
-  .animate-lamp,
-  .animate-belt,
-  .animate-wire-flow {
+  .animate-lamp {
     animation: none;
   }
   .animate-floor-in,

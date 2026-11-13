@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { STATUS_LABELS, type Task } from "@/lib/types";
 
-const DURATION_MS = 5000;
+const DURATION_MS = 1000;
 /** Burst angles (deg) for the sparks around the check badge. */
 const SPARKS = [0, 60, 120, 180, 240, 300];
 

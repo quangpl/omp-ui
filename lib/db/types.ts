@@ -9,6 +9,8 @@ import type {
   RunEvent,
   RunEventKind,
   RunStatus,
+  Scheduler,
+  SchedulerRun,
   Task,
   TaskStatus,
   AgentState,
@@ -39,6 +41,8 @@ export interface CreateTaskInput {
   blockedBy?: string[];
   /** Default null. */
   createdByTaskId?: string | null;
+  /** Default null. Scheduler whose run creates this card. */
+  schedulerId?: string | null;
 }
 export type UpdateTaskInput = Partial<
   Pick<
@@ -59,6 +63,48 @@ export type UpdateTaskInput = Partial<
     | "todos"
   >
 >;
+
+export interface CreateSchedulerInput {
+  boardId: string;
+  name: string;
+  prompt: string;
+  cron: string;
+  timezone: string;
+  /** Default true. */
+  enabled?: boolean;
+  /** Default null (forever). */
+  maxRuns?: number | null;
+  /** Default null. Computed by the caller (lib/scheduler.ts), never by the driver. */
+  nextRunAt?: string | null;
+}
+export type UpdateSchedulerInput = Partial<
+  Pick<
+    Scheduler,
+    | "boardId"
+    | "name"
+    | "prompt"
+    | "cron"
+    | "timezone"
+    | "enabled"
+    | "maxRuns"
+    | "runCount"
+    | "lastRunAt"
+    | "nextRunAt"
+    | "lastStatus"
+    | "lastTaskId"
+    | "lastError"
+  >
+>;
+
+export interface CreateSchedulerRunInput {
+  schedulerId: string;
+  taskId: string | null;
+  trigger: SchedulerRun["trigger"];
+  scheduledFor: string;
+  status: SchedulerRun["status"];
+  /** Default null. */
+  error?: string | null;
+}
 
 export interface CreateCommentInput {
   taskId: string;
@@ -111,7 +157,7 @@ export interface Repository {
   getBoard(id: string): Promise<Board | null>;
   createBoard(input: CreateBoardInput): Promise<Board>;
   updateBoard(id: string, patch: UpdateBoardInput): Promise<Board | null>;
-  /** Cascades: tasks, comments, runs, run events. */
+  /** Cascades: tasks, comments, runs, run events, schedulers and their scheduler runs. */
   deleteBoard(id: string): Promise<boolean>;
 
   /** Ordered by status then position ascending. */
@@ -144,6 +190,21 @@ export interface Repository {
   appendRunEvent(input: AppendRunEventInput): Promise<RunEvent>;
   /** Events with seq > after, ascending, at most `limit` (default 500). */
   listRunEvents(runId: string, after?: number, limit?: number): Promise<RunEvent[]>;
+
+  /** All schedulers (or one board's), newest first. */
+  listSchedulers(boardId?: string): Promise<Scheduler[]>;
+  getScheduler(id: string): Promise<Scheduler | null>;
+  /** runCount 0, last* null; createdAt/updatedAt now. */
+  createScheduler(input: CreateSchedulerInput): Promise<Scheduler>;
+  /** Bumps updatedAt. */
+  updateScheduler(id: string, patch: UpdateSchedulerInput): Promise<Scheduler | null>;
+  /** Cascades: its scheduler runs. Cards it created stay, with `schedulerId` cleared to null. */
+  deleteScheduler(id: string): Promise<boolean>;
+
+  /** Newest first (createdAt desc), at most `limit` (default 100, max 1000). */
+  listSchedulerRuns(schedulerId: string, limit?: number): Promise<SchedulerRun[]>;
+  /** createdAt now. */
+  createSchedulerRun(input: CreateSchedulerRunInput): Promise<SchedulerRun>;
 }
 
 export type { RunStatus };

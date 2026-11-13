@@ -57,6 +57,10 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
     if (typeof body.autoRetry !== "boolean") throw new HttpError(400, "autoRetry must be a boolean");
     patch.autoRetry = body.autoRetry;
   }
+  if (body.persistentRetry !== undefined) {
+    if (typeof body.persistentRetry !== "boolean") throw new HttpError(400, "persistentRetry must be a boolean");
+    patch.persistentRetry = body.persistentRetry;
+  }
   if (body.maxAutoRetries !== undefined) {
     const n = body.maxAutoRetries;
     if (typeof n !== "number" || !Number.isInteger(n) || n < 0 || n > 20) {

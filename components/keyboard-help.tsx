@@ -53,10 +53,13 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
     title: "Go to",
     shortcuts: [
       { label: "Projects home", keys: ["G P", "G H"] },
+      { label: "Schedulers", keys: ["G C"] },
       { label: "Visualize", keys: ["G V"] },
       { label: "Containers (Docker)", keys: ["G D"] },
+      { label: "Terminal", keys: ["G X"] },
       { label: "Stats", keys: ["G T"] },
       { label: "Memory", keys: ["G M"] },
+      { label: "Credentials", keys: ["G K"] },
       { label: "Settings", keys: ["G S"] },
     ],
   },

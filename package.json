@@ -64,7 +64,8 @@
     "Dockerfile",
     "docker-compose.yml",
     ".dockerignore",
-    ".env.example"
+    ".env.example",
+    "omp-ui.service"
   ],
   "scripts": {
     "dev": "vite dev",

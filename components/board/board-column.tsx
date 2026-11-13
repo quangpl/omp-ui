@@ -19,6 +19,7 @@ import {
   runQuickAction,
 } from "@/components/board/quick-actions";
 import { TaskCard } from "@/components/board/task-card";
+import type { CardFlip } from "@/hooks/use-card-flip";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -132,6 +133,7 @@ function SortableTaskCard({
   menuActions,
   selected,
   onToggleSelect,
+  flip,
 }: {
   task: Task;
   /** Position in the column; staggers the entry animation. */
@@ -140,6 +142,7 @@ function SortableTaskCard({
   menuActions: BoardMenuActions;
   selected: boolean;
   onToggleSelect: (taskId: string) => void;
+  flip: CardFlip;
 }) {
   const {
     active,
@@ -151,9 +154,10 @@ function SortableTaskCard({
     transition,
     isDragging,
   } = useSortable({ id: task.id, data: { type: "task", status: task.status } });
-  // Cards remount when their agent moves them to another column; skip the entry animation for
-  // anything mounting mid-drag.
-  const [animateIn] = useState(() => active === null);
+  // Cards remount when their agent moves them to another column; the board's FLIP ghost carries
+  // those over, so the entry animation is only for cards new to the board, and never for anything
+  // mounting mid-drag.
+  const [animateIn] = useState(() => active === null && !flip.wasOnBoard(task.id));
   const { pending, run } = useQuickActionRunner(task.id, menuActions);
   const canPush = menuActions.pushToMain !== null;
   // Corner slots (from the right) up to the last always-visible action; the title stays clear of them.
@@ -169,10 +173,11 @@ function SortableTaskCard({
         style={{ transform: CSS.Translate.toString(transform), transition }}
         className="touch-manipulation rounded-lg data-[state=open]:*:ring-2 data-[state=open]:*:ring-ring/50"
       >
-        {/* Entry animation lives on its own layer: it animates `transform` (and holds it via
-            fill-mode), which would override dnd-kit's inline transform on the sortable node
-            and the placeholder opacity on the card itself. */}
+        {/* Entry and FLIP animations live on their own layer: they animate `transform` (the entry
+            one holds it via fill-mode), which would override dnd-kit's inline transform on the
+            sortable node and the placeholder opacity on the card itself. */}
         <div
+          ref={flip.register(task.id)}
           className={cn("rounded-lg", animateIn && "animate-card-in")}
           style={animateIn ? ({ "--stagger": index } as CSSProperties) : undefined}
         >
@@ -213,6 +218,7 @@ export function BoardColumn({
   selected,
   onToggleSelect,
   onCreate,
+  flip,
 }: {
   status: TaskStatus;
   tasks: Task[];
@@ -225,6 +231,8 @@ export function BoardColumn({
   onToggleSelect: (taskId: string) => void;
   /** When set, shows the inline "Add a card" composer at the bottom. */
   onCreate?: QuickCreate;
+  /** Board-wide card motion (see useCardFlip); each card registers its animated layer. */
+  flip: CardFlip;
 }) {
   const openNewCard = useNewCard();
   // Cards only reorder within their own column: while a card is dragged, every other column
@@ -313,6 +321,7 @@ export function BoardColumn({
                 menuActions={menuActions}
                 selected={selected.has(task.id)}
                 onToggleSelect={onToggleSelect}
+                flip={flip}
               />
             ))}
             {tasks.length === 0 &&

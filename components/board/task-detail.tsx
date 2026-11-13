@@ -1,9 +1,11 @@
 "use client";
 
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import {
   AlignLeft,
   ArrowUp,
+  CalendarClock,
   CircleHelp,
   Ellipsis,
   FileDiff,
@@ -18,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useComposerAutocomplete } from "@/components/board/composer-autocomplete";
 import { RichText } from "@/components/board/rich-text";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -73,6 +76,7 @@ import { ShipActions, canShip, shipLabels, shipTask, useTaskGitStatus } from "@/
 import { AgentStateBadge } from "@/components/board/task-card";
 import { CreatedByNote, DelegatedCards, DependenciesSection } from "@/components/board/task-relations";
 import { WorkspaceSection } from "@/components/board/task-workspace";
+import { isQuotaError } from "@/lib/quota";
 import { todoProgress } from "@/lib/todos";
 import { FilesPanel } from "@/components/files-panel";
 
@@ -173,11 +177,16 @@ function focusPanel(event: Event) {
   if (event.currentTarget instanceof HTMLElement) event.currentTarget.focus({ preventScroll: true });
 }
 
-/** Esc inside a text field leaves the field (fields revert their own edits) instead of closing the panel. */
+/**
+ * Esc inside a text field leaves the field (fields revert their own edits) instead of closing the panel.
+ * Radix sees Escape before the field does: with autocomplete suggestions or a word completion showing,
+ * Escape only hides them (the field's handler) and the field keeps focus.
+ */
 function keepOpenWhileEditing(event: KeyboardEvent) {
   const target = event.target;
   if (target instanceof HTMLElement && target.matches("textarea, input")) {
     event.preventDefault();
+    if (target.getAttribute("aria-expanded") === "true" || target.hasAttribute("data-suggesting")) return;
     requestAnimationFrame(() => target.blur());
   }
 }
@@ -572,7 +581,12 @@ function TaskDetailBody({
                 </span>
               )}
             </span>
-            <AgentStateBadge state={task.agentState} retryAt={task.retryAt} drafting={drafting} />
+            <AgentStateBadge
+              state={task.agentState}
+              retryAt={task.retryAt}
+              agentError={task.agentError}
+              drafting={drafting}
+            />
             {task.pushedAt && (
               <span
                 title={`Pushed to main ${formatDateTime(task.pushedAt)}`}
@@ -587,6 +601,18 @@ function TaskDetailBody({
             <div className="mt-2">
               <CreatedByNote task={task} cards={tasks} onOpenCard={onOpenTask} />
             </div>
+          )}
+          {task.schedulerId && (
+            <p className="mt-2 flex flex-wrap items-center gap-x-1 px-1.5 text-xs text-muted-foreground">
+              <CalendarClock className="size-3.5 shrink-0 text-primary" />
+              Created by a
+              <Link
+                href={`/schedulers/${encodeURIComponent(task.schedulerId)}`}
+                className="relative rounded font-medium text-foreground underline-offset-2 outline-none after:absolute after:-inset-x-1 after:-inset-y-3 hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              >
+                scheduler
+              </Link>
+            </p>
           )}
         </div>
         {!isMobile && (
@@ -620,7 +646,9 @@ function TaskDetailBody({
             <Alert variant="destructive">
               <TriangleAlert />
               <AlertTitle>
-                {task.retryAt ? `Agent failed — retrying automatically (retry ${task.autoRetries})` : "Agent failed"}
+                {task.retryAt
+                  ? `${isQuotaError(task.agentError) ? "Waiting for quota" : "Agent failed"} — retrying automatically (retry ${task.autoRetries})`
+                  : "Agent failed"}
               </AlertTitle>
               <AlertDescription className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words">
                 {task.agentError || "The last run ended with an error."}
@@ -1010,6 +1038,9 @@ function DescriptionEditor({
   const [draft, setDraft] = useState(task.description);
   const [saving, setSaving] = useState(false);
   const dirty = draft !== base;
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+  // "/" skills and shortcuts, "@" project files, "skill://" skill names, like the new-card composer.
+  const slash = useComposerAutocomplete(fieldRef, draft, setDraft, { boardId: task.boardId });
 
   useEffect(() => {
     if (task.description === base) return;
@@ -1034,22 +1065,34 @@ function DescriptionEditor({
         <AlignLeft aria-hidden />
         Description
       </label>
-      <Textarea
-        id={`description-${task.id}`}
-        value={draft}
-        placeholder="Add more detail for the agent: context, acceptance criteria, files to look at…"
-        className="max-h-[50dvh] min-h-24 resize-none leading-relaxed"
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && dirty) {
-            event.preventDefault();
-            void save();
-          } else if (event.key === "Escape" && dirty) {
-            event.preventDefault();
-            setDraft(base);
-          }
-        }}
-      />
+      {/* `relative` anchors the word ghost on the textarea. */}
+      <div className="relative">
+        <Textarea
+          id={`description-${task.id}`}
+          ref={fieldRef}
+          value={draft}
+          placeholder="Add more detail for the agent: context, acceptance criteria, files to look at…"
+          className="max-h-[50dvh] min-h-24 resize-none leading-relaxed"
+          aria-autocomplete="list"
+          aria-expanded={slash.open}
+          data-suggesting={slash.suggesting || undefined}
+          onChange={(event) => setDraft(event.target.value)}
+          onSelect={slash.onSelect}
+          onKeyDown={(event) => {
+            if (slash.onKeyDown(event)) return;
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && dirty) {
+              event.preventDefault();
+              void save();
+            } else if (event.key === "Escape" && dirty) {
+              event.preventDefault();
+              setDraft(base);
+            }
+          }}
+        />
+        {slash.ghost}
+      </div>
+      {slash.suggestion}
+      {slash.menu}
       {dirty && (
         <div className="flex justify-end gap-2">
           <Button variant="ghost" className="h-11 max-md:flex-1 md:h-8" disabled={saving} onClick={() => setDraft(base)}>

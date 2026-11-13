@@ -1,0 +1,37 @@
+# AgentMan (omp-ui) as a systemd *user* service: starts at boot, restarts on crash.
+#
+# `omp-ui systemd install` (or `omp-ui up --systemd`) fills in the ROOT, NODE and PATH
+# placeholders, writes ~/.config/systemd/user/omp-ui.service, enables and starts it.
+# To install by hand instead:
+#   omp-ui systemd unit > ~/.config/systemd/user/omp-ui.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now omp-ui.service
+#   loginctl enable-linger "$USER"   # start at boot without logging in (may need sudo)
+# Logs: journalctl --user -u omp-ui.service -f   (or: omp-ui systemd logs -f)
+#
+# Health monitoring: `up --foreground` runs bin/supervisor.mjs, which restarts the server when it
+# crashes or stops answering /api/v1/health (OMP_UI_HEALTH_* in .env). systemd restarts the
+# whole tree when the CLI itself exits. On start, `up` rebuilds first when the sources changed.
+# On stop, only the CLI gets SIGTERM: it forwards it to the supervisor, the server drains its
+# agents (boot recovery resumes them), and whatever is left after TimeoutStopSec is SIGKILLed.
+
+[Unit]
+Description=AgentMan (omp-ui) kanban board for omp coding agents
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ROOT}}
+Environment=PATH={{PATH}}
+Environment=NODE_ENV=production
+Environment=OMP_UI_SERVICE_MANAGER=systemd
+ExecStart={{NODE}} {{ROOT}}/bin/omp-ui.mjs up --foreground
+SyslogIdentifier=omp-ui
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

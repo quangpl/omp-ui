@@ -265,6 +265,7 @@ export function runRepositoryContract(
           lastRunId: null,
           blockedBy: [],
           createdByTaskId: null,
+          schedulerId: null,
           todos: [],
           commentCount: 0,
           openCommentCount: 0,
@@ -843,6 +844,290 @@ export function runRepositoryContract(
         expect(seqs.every((s, i) => i === 0 || s > seqs[i - 1])).toBe(true);
         expect(byDefault).toEqual(capped.slice(0, 500));
         expect(await repo.listRunEvents(run.id, capped[1_999].seq, 100_000)).toHaveLength(total - 2_000);
+      });
+    });
+
+    // ------------------------------------------------------------- schedulers
+
+    describe("schedulers", () => {
+      const newScheduler = (boardId: string, name = "Daily report") =>
+        repo.createScheduler({
+          boardId,
+          name,
+          prompt: `${name}: summarise yesterday's commits`,
+          cron: "0 9 * * 1-5",
+          timezone: "Europe/Berlin",
+        });
+
+      it("creates a scheduler with defaults", async () => {
+        const board = await newBoard();
+        const scheduler = await newScheduler(board.id);
+
+        expect(scheduler).toMatchObject({
+          boardId: board.id,
+          name: "Daily report",
+          prompt: "Daily report: summarise yesterday's commits",
+          cron: "0 9 * * 1-5",
+          timezone: "Europe/Berlin",
+          enabled: true,
+          maxRuns: null,
+          runCount: 0,
+          lastRunAt: null,
+          nextRunAt: null,
+          lastStatus: null,
+          lastTaskId: null,
+          lastError: null,
+        });
+        expect(typeof scheduler.id).toBe("string");
+        expect(scheduler.id.length).toBeGreaterThan(0);
+        expect(scheduler.createdAt).toBe(scheduler.updatedAt);
+        expect(Number.isNaN(Date.parse(scheduler.createdAt))).toBe(false);
+        expect(await repo.getScheduler(scheduler.id)).toEqual(scheduler);
+      });
+
+      it("round-trips explicit enabled, maxRuns and nextRunAt", async () => {
+        const board = await newBoard();
+        const nextRunAt = "2026-11-16T08:00:00.000Z";
+        const scheduler = await repo.createScheduler({
+          boardId: board.id,
+          name: "Once",
+          prompt: "p",
+          cron: "@daily",
+          timezone: "UTC",
+          enabled: false,
+          maxRuns: 3,
+          nextRunAt,
+        });
+
+        expect(scheduler).toMatchObject({ enabled: false, maxRuns: 3, nextRunAt, runCount: 0 });
+        expect(await repo.getScheduler(scheduler.id)).toEqual(scheduler);
+      });
+
+      it("lists schedulers newest first, optionally per board", async () => {
+        const a = await newBoard("a");
+        const b = await newBoard("b");
+        expect(await repo.listSchedulers()).toEqual([]);
+
+        const s1 = await newScheduler(a.id, "s1");
+        const s2 = await newScheduler(b.id, "s2");
+        const s3 = await newScheduler(a.id, "s3");
+        // Updating an older scheduler must not change the creation-based order.
+        const touched = await repo.updateScheduler(s1.id, { name: "touched" });
+
+        expect(ids(await repo.listSchedulers())).toEqual([s3.id, s2.id, s1.id]);
+        expect(await repo.listSchedulers(a.id)).toEqual([s3, touched]);
+        expect(ids(await repo.listSchedulers(b.id))).toEqual([s2.id]);
+        expect(await repo.listSchedulers("no-such-board")).toEqual([]);
+      });
+
+      it("updates patched fields only and refreshes updatedAt", async () => {
+        const a = await newBoard("a");
+        const b = await newBoard("b");
+        const scheduler = await newScheduler(a.id);
+
+        const edited = await repo.updateScheduler(scheduler.id, {
+          boardId: b.id,
+          name: "Weekly",
+          prompt: "new prompt",
+          cron: "0 9 * * 1",
+          timezone: "UTC",
+          enabled: false,
+          maxRuns: 5,
+        });
+        expect(edited).toEqual({
+          ...scheduler,
+          boardId: b.id,
+          name: "Weekly",
+          prompt: "new prompt",
+          cron: "0 9 * * 1",
+          timezone: "UTC",
+          enabled: false,
+          maxRuns: 5,
+          updatedAt: edited!.updatedAt,
+        });
+        expect(edited!.updatedAt > scheduler.updatedAt).toBe(true);
+        expect(await repo.getScheduler(scheduler.id)).toEqual(edited);
+
+        const task = await repo.createTask({ boardId: b.id, title: "made", schedulerId: scheduler.id });
+        const ran = await repo.updateScheduler(scheduler.id, {
+          runCount: 1,
+          lastRunAt: "2026-11-16T08:00:00.000Z",
+          nextRunAt: "2026-11-23T08:00:00.000Z",
+          lastStatus: "created",
+          lastTaskId: task.id,
+          lastError: null,
+        });
+        expect(ran).toMatchObject({
+          name: "Weekly",
+          enabled: false,
+          maxRuns: 5,
+          runCount: 1,
+          lastRunAt: "2026-11-16T08:00:00.000Z",
+          nextRunAt: "2026-11-23T08:00:00.000Z",
+          lastStatus: "created",
+          lastTaskId: task.id,
+          lastError: null,
+          createdAt: scheduler.createdAt,
+        });
+        expect(ran!.updatedAt > edited!.updatedAt).toBe(true);
+        expect(await repo.getScheduler(scheduler.id)).toEqual(ran);
+
+        const failed = await repo.updateScheduler(scheduler.id, {
+          enabled: true,
+          maxRuns: null,
+          nextRunAt: null,
+          lastStatus: "failed",
+          lastTaskId: null,
+          lastError: "card writer failed",
+        });
+        expect(failed).toMatchObject({
+          enabled: true,
+          maxRuns: null,
+          runCount: 1,
+          nextRunAt: null,
+          lastStatus: "failed",
+          lastTaskId: null,
+          lastError: "card writer failed",
+        });
+        expect(await repo.getScheduler(scheduler.id)).toEqual(failed);
+      });
+
+      it("returns null / false for unknown ids", async () => {
+        expect(await repo.getScheduler("no-such-scheduler")).toBeNull();
+        expect(await repo.updateScheduler("no-such-scheduler", { name: "x" })).toBeNull();
+        expect(await repo.deleteScheduler("no-such-scheduler")).toBe(false);
+        expect(await repo.listSchedulerRuns("no-such-scheduler")).toEqual([]);
+      });
+
+      it("round-trips Task.schedulerId (default null)", async () => {
+        const board = await newBoard();
+        const scheduler = await newScheduler(board.id);
+        const manual = await repo.createTask({ boardId: board.id, title: "manual" });
+        const scheduled = await repo.createTask({
+          boardId: board.id,
+          title: "scheduled",
+          status: "in_progress",
+          schedulerId: scheduler.id,
+        });
+
+        expect(manual.schedulerId).toBeNull();
+        expect(scheduled.schedulerId).toBe(scheduler.id);
+        expect(await repo.getTask(scheduled.id)).toEqual(scheduled);
+        expect(await repo.listTasks(board.id)).toEqual([manual, scheduled]);
+        // Patching other fields keeps the link.
+        expect((await repo.updateTask(scheduled.id, { title: "renamed" }))!.schedulerId).toBe(scheduler.id);
+      });
+
+      it("creates scheduler runs and lists them newest first, scoped and limited", async () => {
+        const board = await newBoard();
+        const scheduler = await newScheduler(board.id, "a");
+        const other = await newScheduler(board.id, "b");
+        const task = await repo.createTask({ boardId: board.id, title: "t", schedulerId: scheduler.id });
+
+        const r1 = await repo.createSchedulerRun({
+          schedulerId: scheduler.id,
+          taskId: task.id,
+          trigger: "scheduled",
+          scheduledFor: "2026-11-16T08:00:00.000Z",
+          status: "created",
+        });
+        expect(r1).toMatchObject({
+          schedulerId: scheduler.id,
+          taskId: task.id,
+          trigger: "scheduled",
+          scheduledFor: "2026-11-16T08:00:00.000Z",
+          status: "created",
+          error: null,
+        });
+        expect(typeof r1.id).toBe("string");
+        expect(Number.isNaN(Date.parse(r1.createdAt))).toBe(false);
+
+        const r2 = await repo.createSchedulerRun({
+          schedulerId: scheduler.id,
+          taskId: null,
+          trigger: "manual",
+          scheduledFor: "2026-11-16T10:30:00.000Z",
+          status: "failed",
+          error: "board is gone",
+        });
+        expect(r2).toMatchObject({ taskId: null, trigger: "manual", status: "failed", error: "board is gone" });
+        await repo.createSchedulerRun({
+          schedulerId: other.id,
+          taskId: null,
+          trigger: "manual",
+          scheduledFor: "2026-11-16T10:31:00.000Z",
+          status: "failed",
+          error: "x",
+        });
+        const r3 = await repo.createSchedulerRun({
+          schedulerId: scheduler.id,
+          taskId: null,
+          trigger: "scheduled",
+          scheduledFor: "2026-11-17T08:00:00.000Z",
+          status: "failed",
+          error: "y",
+        });
+
+        expect(await repo.listSchedulerRuns(scheduler.id)).toEqual([r3, r2, r1]);
+        expect(ids(await repo.listSchedulerRuns(scheduler.id, 2))).toEqual([r3.id, r2.id]);
+        expect(ids(await repo.listSchedulerRuns(scheduler.id, 0))).toEqual([r3.id]);
+        expect(ids(await repo.listSchedulerRuns(other.id))).toHaveLength(1);
+
+        // History outlives the card it created.
+        await repo.deleteTask(task.id);
+        expect(await repo.listSchedulerRuns(scheduler.id)).toEqual([r3, r2, r1]);
+      });
+
+      it("deleteScheduler removes its runs and unlinks (but keeps) its cards", async () => {
+        const board = await newBoard();
+        const doomed = await newScheduler(board.id, "doomed");
+        const survivor = await newScheduler(board.id, "survivor");
+        const doomedTask = await repo.createTask({ boardId: board.id, title: "d", schedulerId: doomed.id });
+        const survivorTask = await repo.createTask({ boardId: board.id, title: "s", schedulerId: survivor.id });
+        const run = {
+          trigger: "scheduled" as const,
+          scheduledFor: "2026-11-16T08:00:00.000Z",
+          status: "created" as const,
+        };
+        await repo.createSchedulerRun({ ...run, schedulerId: doomed.id, taskId: doomedTask.id });
+        const survivorRun = await repo.createSchedulerRun({
+          ...run,
+          schedulerId: survivor.id,
+          taskId: survivorTask.id,
+        });
+
+        expect(await repo.deleteScheduler(doomed.id)).toBe(true);
+
+        expect(await repo.getScheduler(doomed.id)).toBeNull();
+        expect(await repo.listSchedulerRuns(doomed.id)).toEqual([]);
+        expect(await repo.getTask(doomedTask.id)).toMatchObject({ id: doomedTask.id, schedulerId: null });
+        expect(await repo.getTask(survivorTask.id)).toEqual(survivorTask);
+        expect(await repo.listSchedulerRuns(survivor.id)).toEqual([survivorRun]);
+        expect(ids(await repo.listSchedulers())).toEqual([survivor.id]);
+        expect(await repo.deleteScheduler(doomed.id)).toBe(false);
+      });
+
+      it("deleteBoard removes its schedulers and their runs", async () => {
+        const board = await newBoard("doomed");
+        const keepBoard = await newBoard("keep");
+        const doomed = await newScheduler(board.id, "doomed");
+        const survivor = await newScheduler(keepBoard.id, "survivor");
+        const run = {
+          taskId: null,
+          trigger: "manual" as const,
+          scheduledFor: "2026-11-16T08:00:00.000Z",
+          status: "failed" as const,
+        };
+        await repo.createSchedulerRun({ ...run, schedulerId: doomed.id });
+        const survivorRun = await repo.createSchedulerRun({ ...run, schedulerId: survivor.id });
+
+        expect(await repo.deleteBoard(board.id)).toBe(true);
+
+        expect(await repo.getScheduler(doomed.id)).toBeNull();
+        expect(await repo.listSchedulers(board.id)).toEqual([]);
+        expect(await repo.listSchedulerRuns(doomed.id)).toEqual([]);
+        expect(await repo.listSchedulers()).toEqual([survivor]);
+        expect(await repo.listSchedulerRuns(survivor.id)).toEqual([survivorRun]);
       });
     });
 

@@ -20,6 +20,7 @@ function card(title: string, description = ""): Task {
     lastRunId: null,
     blockedBy: [],
     createdByTaskId: null,
+    schedulerId: null,
     pushedAt: null,
     autoRetries: 0,
     retryAt: null,

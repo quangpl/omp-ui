@@ -10,6 +10,9 @@ import type {
   RunEvent,
   RunEventKind,
   RunStatus,
+  Scheduler,
+  SchedulerRun,
+  SchedulerRunStatus,
   Task,
   TaskStatus,
   TodoPhase,
@@ -19,10 +22,13 @@ import type {
   CreateBoardInput,
   CreateCommentInput,
   CreateRunInput,
+  CreateSchedulerInput,
+  CreateSchedulerRunInput,
   CreateTaskInput,
   Repository,
   UpdateBoardInput,
   UpdateRunInput,
+  UpdateSchedulerInput,
   UpdateTaskInput,
 } from "@/lib/db/types";
 import {
@@ -79,6 +85,8 @@ interface TaskDoc {
   retryAt?: string | null;
   /** Missing on documents created before agent todo lists. */
   todos?: TodoPhase[];
+  /** Missing on documents created before schedulers. */
+  schedulerId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -117,6 +125,36 @@ interface RunEventDoc {
   createdAt: string;
 }
 
+interface SchedulerDoc {
+  _id: string;
+  boardId: string;
+  name: string;
+  prompt: string;
+  cron: string;
+  timezone: string;
+  enabled: boolean;
+  maxRuns: number | null;
+  runCount: number;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  lastStatus: SchedulerRunStatus | null;
+  lastTaskId: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface SchedulerRunDoc {
+  _id: string;
+  schedulerId: string;
+  taskId: string | null;
+  trigger: SchedulerRun["trigger"];
+  scheduledFor: string;
+  status: SchedulerRunStatus;
+  error: string | null;
+  createdAt: string;
+}
+
 interface CounterDoc {
   _id: string;
   seq: number;
@@ -128,6 +166,10 @@ interface CommentStats {
 }
 
 const RUN_EVENTS_COUNTER = "run_events";
+
+/** `listSchedulerRuns` limit bounds. */
+const DEFAULT_SCHEDULER_RUN_LIMIT = 100;
+const MAX_SCHEDULER_RUN_LIMIT = 1000;
 
 function toBoard(d: BoardDoc): Board {
   return {
@@ -162,6 +204,7 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     autoRetries: d.autoRetries ?? 0,
     retryAt: d.retryAt ?? null,
     todos: parseTodoPhases(d.todos),
+    schedulerId: d.schedulerId ?? null,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
     commentCount: stats?.total ?? 0,
@@ -207,6 +250,40 @@ function toRunEvent(d: RunEventDoc): RunEvent {
   };
 }
 
+function toScheduler(d: SchedulerDoc): Scheduler {
+  return {
+    id: d._id,
+    boardId: d.boardId,
+    name: d.name,
+    prompt: d.prompt,
+    cron: d.cron,
+    timezone: d.timezone,
+    enabled: d.enabled,
+    maxRuns: d.maxRuns ?? null,
+    runCount: d.runCount ?? 0,
+    lastRunAt: d.lastRunAt ?? null,
+    nextRunAt: d.nextRunAt ?? null,
+    lastStatus: d.lastStatus ?? null,
+    lastTaskId: d.lastTaskId ?? null,
+    lastError: d.lastError ?? null,
+    createdAt: d.createdAt,
+    updatedAt: d.updatedAt,
+  };
+}
+
+function toSchedulerRun(d: SchedulerRunDoc): SchedulerRun {
+  return {
+    id: d._id,
+    schedulerId: d.schedulerId,
+    taskId: d.taskId ?? null,
+    trigger: d.trigger,
+    scheduledFor: d.scheduledFor,
+    status: d.status,
+    error: d.error ?? null,
+    createdAt: d.createdAt,
+  };
+}
+
 /** Copies only the whitelisted, defined keys of `patch` (request bodies may carry extra fields). */
 function pickDefined<T extends object, K extends keyof T>(patch: T, keys: readonly K[]): Partial<Pick<T, K>> {
   const out: Partial<Pick<T, K>> = {};
@@ -234,6 +311,21 @@ const TASK_PATCH_KEYS = [
   "todos",
 ] as const satisfies readonly (keyof UpdateTaskInput)[];
 const RUN_PATCH_KEYS = ["status", "summary", "error", "endedAt"] as const satisfies readonly (keyof UpdateRunInput)[];
+const SCHEDULER_PATCH_KEYS = [
+  "boardId",
+  "name",
+  "prompt",
+  "cron",
+  "timezone",
+  "enabled",
+  "maxRuns",
+  "runCount",
+  "lastRunAt",
+  "nextRunAt",
+  "lastStatus",
+  "lastTaskId",
+  "lastError",
+] as const satisfies readonly (keyof UpdateSchedulerInput)[];
 
 export class MongoRepository implements Repository {
   readonly driver = "mongodb" as const;
@@ -245,6 +337,8 @@ export class MongoRepository implements Repository {
   private readonly runs: Collection<RunDoc>;
   private readonly runEvents: Collection<RunEventDoc>;
   private readonly counters: Collection<CounterDoc>;
+  private readonly schedulers: Collection<SchedulerDoc>;
+  private readonly schedulerRuns: Collection<SchedulerRunDoc>;
 
   constructor(url: string, dbName: string) {
     this.client = new MongoClient(url, { appName: "omp-ui" });
@@ -256,6 +350,8 @@ export class MongoRepository implements Repository {
     this.runs = db.collection<RunDoc>("runs");
     this.runEvents = db.collection<RunEventDoc>("run_events");
     this.counters = db.collection<CounterDoc>("counters");
+    this.schedulers = db.collection<SchedulerDoc>("schedulers");
+    this.schedulerRuns = db.collection<SchedulerRunDoc>("scheduler_runs");
   }
 
   async init(): Promise<void> {
@@ -264,11 +360,15 @@ export class MongoRepository implements Repository {
       this.boards.createIndex({ createdAt: -1 }),
       this.tasks.createIndex({ boardId: 1, status: 1, position: 1 }),
       this.tasks.createIndex({ agentState: 1 }),
+      this.tasks.createIndex({ schedulerId: 1 }),
       this.comments.createIndex({ taskId: 1, createdAt: 1 }),
       this.runs.createIndex({ taskId: 1, startedAt: -1 }),
       this.runs.createIndex({ status: 1 }),
       this.runEvents.createIndex({ runId: 1, _id: 1 }),
       this.runEvents.createIndex({ taskId: 1 }),
+      this.schedulers.createIndex({ boardId: 1 }),
+      this.schedulers.createIndex({ createdAt: -1 }),
+      this.schedulerRuns.createIndex({ schedulerId: 1, createdAt: -1 }),
     ]);
   }
 
@@ -402,6 +502,13 @@ export class MongoRepository implements Repository {
     );
     await this.cascadeTasks(taskIds);
     await this.tasks.deleteMany({ boardId: id });
+    const schedulerIds = (
+      await this.schedulers.find({ boardId: id }, { projection: { _id: 1 } }).toArray()
+    ).map((s) => s._id);
+    if (schedulerIds.length > 0) {
+      await this.schedulerRuns.deleteMany({ schedulerId: { $in: schedulerIds } });
+      await this.schedulers.deleteMany({ _id: { $in: schedulerIds } });
+    }
     return true;
   }
 
@@ -460,6 +567,7 @@ export class MongoRepository implements Repository {
       autoRetries: 0,
       retryAt: null,
       todos: [],
+      schedulerId: input.schedulerId ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -636,5 +744,99 @@ export class MongoRepository implements Repository {
       .limit(normalizeLimit(limit))
       .toArray();
     return docs.map(toRunEvent);
+  }
+
+  // -------------------------------------------------------------- schedulers
+
+  async listSchedulers(boardId?: string): Promise<Scheduler[]> {
+    const docs = await this.schedulers
+      .find(boardId === undefined ? {} : { boardId })
+      .sort({ createdAt: -1 })
+      .toArray();
+    return docs.map(toScheduler);
+  }
+
+  async getScheduler(id: string): Promise<Scheduler | null> {
+    const doc = await this.schedulers.findOne({ _id: id });
+    return doc ? toScheduler(doc) : null;
+  }
+
+  async createScheduler(input: CreateSchedulerInput): Promise<Scheduler> {
+    if ((await this.boards.countDocuments({ _id: input.boardId }, { limit: 1 })) === 0) {
+      throw new Error(`Board ${input.boardId} does not exist`);
+    }
+    const now = nowIso();
+    const doc: SchedulerDoc = {
+      _id: newId(),
+      boardId: input.boardId,
+      name: input.name,
+      prompt: input.prompt,
+      cron: input.cron,
+      timezone: input.timezone,
+      enabled: input.enabled ?? true,
+      maxRuns: input.maxRuns ?? null,
+      runCount: 0,
+      lastRunAt: null,
+      nextRunAt: input.nextRunAt ?? null,
+      lastStatus: null,
+      lastTaskId: null,
+      lastError: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.schedulers.insertOne(doc);
+    return toScheduler(doc);
+  }
+
+  async updateScheduler(id: string, patch: UpdateSchedulerInput): Promise<Scheduler | null> {
+    const doc = await this.schedulers.findOneAndUpdate(
+      { _id: id },
+      { $set: { ...pickDefined(patch, SCHEDULER_PATCH_KEYS), updatedAt: nowIso() } },
+      { returnDocument: "after" },
+    );
+    return doc ? toScheduler(doc) : null;
+  }
+
+  async deleteScheduler(id: string): Promise<boolean> {
+    const res = await this.schedulers.deleteOne({ _id: id });
+    if (res.deletedCount === 0) return false;
+    await Promise.all([
+      this.schedulerRuns.deleteMany({ schedulerId: id }),
+      this.tasks.updateMany({ schedulerId: id }, { $set: { schedulerId: null } }),
+    ]);
+    return true;
+  }
+
+  // ---------------------------------------------------------- scheduler runs
+
+  async listSchedulerRuns(schedulerId: string, limit?: number): Promise<SchedulerRun[]> {
+    const n =
+      limit === undefined || !Number.isFinite(limit)
+        ? DEFAULT_SCHEDULER_RUN_LIMIT
+        : Math.min(MAX_SCHEDULER_RUN_LIMIT, Math.max(1, Math.floor(limit)));
+    const docs = await this.schedulerRuns
+      .find({ schedulerId })
+      .sort({ createdAt: -1 })
+      .limit(n)
+      .toArray();
+    return docs.map(toSchedulerRun);
+  }
+
+  async createSchedulerRun(input: CreateSchedulerRunInput): Promise<SchedulerRun> {
+    if ((await this.schedulers.countDocuments({ _id: input.schedulerId }, { limit: 1 })) === 0) {
+      throw new Error(`Scheduler ${input.schedulerId} does not exist`);
+    }
+    const doc: SchedulerRunDoc = {
+      _id: newId(),
+      schedulerId: input.schedulerId,
+      taskId: input.taskId,
+      trigger: input.trigger,
+      scheduledFor: input.scheduledFor,
+      status: input.status,
+      error: input.error ?? null,
+      createdAt: nowIso(),
+    };
+    await this.schedulerRuns.insertOne(doc);
+    return toSchedulerRun(doc);
   }
 }

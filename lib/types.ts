@@ -92,6 +92,8 @@ export interface Task {
   commentCount: number;
   /** Derived: unresolved user comments (pending feedback). */
   openCommentCount: number;
+  /** Scheduler whose run created this card; null when a person or an agent created it. */
+  schedulerId: string | null;
 }
 
 export type TodoItemStatus = "pending" | "in_progress" | "completed" | "abandoned";
@@ -99,6 +101,13 @@ export type TodoItemStatus = "pending" | "in_progress" | "completed" | "abandone
 export interface TodoItem {
   content: string;
   status: TodoItemStatus;
+  /**
+   * Stamped by the server, never by omp: when the item was first seen in progress during the
+   * current run (completed without being seen in progress: the run's previous list update).
+   */
+  startedAt?: string;
+  /** Stamped by the server: when the item was first seen completed. */
+  completedAt?: string;
 }
 
 /** One phase of an agent's todo list; `name` may be "". */
@@ -199,6 +208,77 @@ export interface RunEvent {
   createdAt: string;
 }
 
+/**
+ * A recurring card: on every match of its cron expression (in its time zone) the scheduler
+ * creates a regular card on its board from `prompt`, through the same free-text flow as the
+ * "New card" form (card writer drafts the title and brief, then the card's agent starts).
+ */
+export interface Scheduler {
+  id: string;
+  boardId: string;
+  /** Display name; defaults to the prompt's first line. */
+  name: string;
+  /** Free text each created card is made from (same as the "New card" form's text). */
+  prompt: string;
+  /** 5-field cron expression or macro (`@hourly`, `@daily`, …); see lib/cron.ts. */
+  cron: string;
+  /** IANA time zone the cron expression is evaluated in, e.g. "Europe/Berlin" or "UTC". */
+  timezone: string;
+  /** Disabled schedulers keep their config and history but never fire on their own. */
+  enabled: boolean;
+  /** Stop (disable) after this many runs; null = repeat forever. */
+  maxRuns: number | null;
+  /** Runs so far (scheduled and manual), successful or not. */
+  runCount: number;
+  /** When it last fired (scheduled or manual); null if never. */
+  lastRunAt: string | null;
+  /** Next scheduled fire time; null when disabled, exhausted or the cron never matches again. */
+  nextRunAt: string | null;
+  /** Outcome of the last run; null if never run. */
+  lastStatus: SchedulerRunStatus | null;
+  /** Card created by the last successful run. */
+  lastTaskId: string | null;
+  /** Error of the last run when it failed. */
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** `created`: the run created its card. `failed`: creating the card failed (see `error`). */
+export type SchedulerRunStatus = "created" | "failed";
+
+/** One execution of a scheduler (history row). Kept when its card is deleted. */
+export interface SchedulerRun {
+  id: string;
+  schedulerId: string;
+  /** Card it created; null when it failed. The card may since have been deleted. */
+  taskId: string | null;
+  trigger: "scheduled" | "manual";
+  /** Cron slot this run was for (scheduled), or the click time (manual). */
+  scheduledFor: string;
+  status: SchedulerRunStatus;
+  error: string | null;
+  createdAt: string;
+}
+
+/** History row as served by the API: the run plus a live snapshot of its card (null if gone). */
+export interface SchedulerRunView extends SchedulerRun {
+  task: Pick<Task, "id" | "title" | "status" | "agentState" | "agentError" | "lastRunId"> | null;
+  /** Status of the card's latest agent run; null when it has none or the card is gone. */
+  runStatus: RunStatus | null;
+}
+
+/** One line of a scheduler's aggregated log: scheduler events plus its cards' agent run events. */
+export interface SchedulerLogEntry {
+  at: string;
+  /** "scheduler": fired/failed lines written by the scheduler; else the run event's kind. */
+  kind: "scheduler" | RunEventKind;
+  text: string;
+  schedulerRunId: string;
+  taskId: string | null;
+  runId: string | null;
+}
+
 export type ApprovalMode = "yolo" | "write" | "always-ask";
 
 export interface AppSettings {
@@ -231,8 +311,14 @@ export interface AppSettings {
    * resume interrupted and failed In progress cards when the server restarts.
    */
   autoRetry: boolean;
-  /** Automatic retries per card before it stays failed (0-20); a success or a manual run resets the count. */
+  /** Automatic retries per card before it stays failed (0-20); a success or a manual run resets the count. Ignored by persistentRetry. */
   maxAutoRetries: number;
+  /**
+   * Keep retrying failed In progress cards until they are Done or stopped: quota/usage-limit
+   * failures wait 5, 10, 15, 30 min then hourly; other failures back off up to 10 min. A card
+   * interrupted by a server restart still uses its maxAutoRetries budget. Needs autoRetry.
+   */
+  persistentRetry: boolean;
   /** Run the AgentMan-data cleanup automatically; "off" (default) leaves it to "Clean up now". */
   cleanupSchedule: CleanupSchedule;
   /** What scheduled and manual "Clean up now" runs remove (default: every safe target). */
@@ -277,6 +363,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   browser: "headless",
   autoRetry: true,
   maxAutoRetries: 5,
+  persistentRetry: true,
   cleanupSchedule: "off",
   // Worktrees of shipped cards may still be wanted; they are opt-in.
   cleanupTargets: SCHEDULED_CLEANUP_IDS.filter((id) => id !== "shipped-workspaces"),
@@ -308,6 +395,9 @@ export type ServerEvent =
   | { type: "board.deleted"; boardId: string }
   | { type: "task.updated"; task: Task }
   | { type: "task.deleted"; taskId: string; boardId: string }
+  /** A scheduler was created or changed (config, enabled, or it ran). */
+  | { type: "scheduler.updated"; scheduler: Scheduler }
+  | { type: "scheduler.deleted"; schedulerId: string; boardId: string }
   | { type: "comment.added"; comment: Comment; boardId: string }
   | { type: "comment.updated"; comment: Comment; boardId: string }
   | { type: "comment.deleted"; commentId: string; taskId: string; boardId: string }
@@ -672,8 +762,11 @@ export interface BoardPushResult {
 export interface RestartStatus {
   /** Whether the button can restart this server; `reason` says why not. */
   available: boolean;
-  /** "cli": started by `omp-ui up`/`start`; "pm2": supervised by pm2. */
-  mode: "cli" | "pm2" | null;
+  /**
+   * "cli": started by `omp-ui up`/`start`; "pm2": supervised by pm2; "systemd": the omp-ui.service user
+   * unit (restarted via `systemctl --user restart`; its `up --foreground` rebuilds when the sources changed).
+   */
+  mode: "cli" | "pm2" | "systemd" | null;
   reason: string | null;
   /** Agents that a restart would interrupt. */
   running: number;

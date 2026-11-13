@@ -1,5 +1,6 @@
 // PM2 config for AgentMan — works on a fresh clone:
 //   pm2 start ecosystem.config.cjs        (or: omp-ui pm2 start)
+// Start on boot: pm2 save && pm2 startup (or: omp-ui pm2 save, omp-ui pm2 startup)
 //
 // The app is `omp-ui up --foreground`: first run creates .env (prints a generated
 // admin password to data/pm2-out.log unless ADMIN_PASSWORD is set), installs

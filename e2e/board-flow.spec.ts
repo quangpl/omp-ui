@@ -310,7 +310,7 @@ test("a failing agent keeps the card in In progress and explains the error", asy
     timeout: AGENT_TIMEOUT,
   });
   await expect(detail.getByRole("alert").filter({ hasText: "Agent failed" })).toContainText(
-    "Fake model error: rate limited",
+    "Fake model error: upstream failed",
   );
   await expect(detail.getByRole("status", { name: "Status" })).toHaveText(/In progress/);
   await expect(detail.getByRole("button", { name: "Retry", exact: true })).toBeVisible();

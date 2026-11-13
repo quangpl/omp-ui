@@ -8,7 +8,7 @@ import { formatRelative, useNow } from "@/components/board/format";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ControlRoom } from "@/components/visualize/control-room";
-import { AgentMap, MAP_GRID } from "@/components/visualize/sections";
+import { FactoryFloor, FLOOR_GRID } from "@/components/visualize/factory-floor";
 import { useLiveAgents } from "@/components/visualize/use-live-agents";
 import { WorkerAvatar } from "@/components/visualize/worker-avatar";
 import { Worksites } from "@/components/visualize/worksites";
@@ -31,7 +31,7 @@ const CLOCK_TICK_MS = 30_000;
 
 const BLOCK = "rounded-[3px]";
 
-/** Placeholder shaped like the control room, the floor map and the worksites. */
+/** Placeholder shaped like the control room, the factory floor and the worksites. */
 function LoadingSkeleton() {
   return (
     <div className="grid gap-12 md:gap-16" aria-busy="true" aria-label="Loading">
@@ -53,22 +53,13 @@ function LoadingSkeleton() {
         </div>
         <Skeleton className={cn(BLOCK, "h-80 w-full lg:col-span-5")} />
       </div>
-      <div className={cn(MAP_GRID, "gap-px border-y")}>
-        <div className="grid content-start gap-2 p-3">
-          {Array.from({ length: 3 }, (_, i) => (
-            <Skeleton key={i} className={cn(BLOCK, "h-16 w-full")} />
-          ))}
-        </div>
-        <div className="grid content-start gap-3 p-3 sm:grid-cols-2">
-          {Array.from({ length: 2 }, (_, i) => (
-            <Skeleton key={i} className={cn(BLOCK, "h-40 w-full")} />
-          ))}
-        </div>
-        <div className="grid content-start gap-2 p-3 lg:col-span-2 xl:col-span-1">
-          {Array.from({ length: 3 }, (_, i) => (
-            <Skeleton key={i} className={cn(BLOCK, "h-14 w-full")} />
-          ))}
-        </div>
+      <div className={cn(FLOOR_GRID, "rounded-[3px] border p-2")}>
+        <Skeleton className={cn(BLOCK, "col-span-2 h-36 xl:col-span-1 xl:col-start-1 xl:row-start-1")} />
+        <Skeleton className={cn(BLOCK, "col-span-2 h-36 xl:col-span-1 xl:col-start-1 xl:row-start-2")} />
+        {Array.from({ length: 8 }, (_, i) => (
+          <Skeleton key={i} className={cn(BLOCK, "h-36")} />
+        ))}
+        <Skeleton className={cn(BLOCK, "col-span-2 h-36 md:col-span-4 xl:col-span-1 xl:col-start-6 xl:row-span-2 xl:row-start-1 xl:h-auto")} />
       </div>
       <div className="grid gap-3">
         {Array.from({ length: 3 }, (_, i) => (
@@ -136,8 +127,6 @@ export default function VisualizePage() {
     };
   }, [load, onEvent]);
 
-  const attentionTotal = dashboard?.boards.reduce((sum, b) => sum + b.attentionCount, 0) ?? 0;
-
   async function refresh() {
     setRefreshing(true);
     await load();
@@ -200,7 +189,7 @@ export default function VisualizePage() {
                 </p>
               )}
               <ControlRoom dashboard={dashboard} live={live} now={now} />
-              <AgentMap dashboard={dashboard} live={live} now={now} attentionTotal={attentionTotal} />
+              <FactoryFloor dashboard={dashboard} live={live} now={now} />
               <Worksites dashboard={dashboard} now={now} />
             </div>
           )}

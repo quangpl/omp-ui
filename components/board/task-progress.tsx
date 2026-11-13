@@ -2,9 +2,45 @@
 
 import { Circle, CircleCheck, CircleDot, CircleSlash, ListChecks } from "lucide-react";
 import { DetailSection } from "@/components/board/detail-section";
-import { type Task, type TaskStatus, type TodoItemStatus } from "@/lib/types";
-import { progressFraction, todoProgress, type TodoProgress } from "@/lib/todos";
+import { formatEta, useNow } from "@/components/board/format";
+import { type Task, type TaskStatus, type TodoItemStatus, type TodoPhase } from "@/lib/types";
+import { progressFraction, todoEta, todoProgress, type TodoProgress } from "@/lib/todos";
 import { cn } from "@/lib/utils";
+
+/**
+ * "~12m": estimated time until a running agent finishes its todo list, at the pace of the items
+ * it completed. Nothing while the agent isn't running or before its first completed item.
+ * `verbose` also shows "left".
+ */
+export function TodoEta({
+  task,
+  verbose = false,
+  className,
+}: {
+  task: Pick<Task, "agentState" | "todos">;
+  verbose?: boolean;
+  className?: string;
+}) {
+  // Only running cards start a clock.
+  if (task.agentState !== "running") return null;
+  return <RunningTodoEta todos={task.todos} verbose={verbose} className={className} />;
+}
+
+function RunningTodoEta({ todos, verbose, className }: { todos: TodoPhase[]; verbose: boolean; className?: string }) {
+  const now = useNow(30_000);
+  const eta = todoEta(todos, now);
+  if (eta === null) return null;
+  const label = formatEta(eta);
+  return (
+    <span
+      className={cn("tabular-nums", className)}
+      title={`About ${label} left, at the pace of the completed todo items`}
+    >
+      ~{label}
+      <span className={verbose ? undefined : "sr-only"}> left</span>
+    </span>
+  );
+}
 
 const RADIUS = 6.25;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
@@ -95,7 +131,7 @@ const ITEM_ICON: Record<TodoItemStatus, { icon: typeof Circle; className: string
 };
 
 /** Card detail: the agent's todo list, by phase. Renders nothing when the agent never kept one. */
-export function TodoListSection({ task }: { task: Pick<Task, "status" | "todos"> }) {
+export function TodoListSection({ task }: { task: Pick<Task, "status" | "agentState" | "todos"> }) {
   const progress = todoProgress(task.todos);
   if (!progress) return null;
   return (
@@ -106,6 +142,7 @@ export function TodoListSection({ task }: { task: Pick<Task, "status" | "todos">
         <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground tabular-nums">
           <TaskProgressIcon task={task} className="size-3.5" />
           {progress.done} of {progress.total} done
+          <TodoEta task={task} verbose className="before:mr-1.5 before:content-['·']" />
         </span>
       }
     >

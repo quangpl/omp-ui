@@ -1,7 +1,7 @@
-// Data model of the Visualize page: the shared systems agents use, which system each
-// tool call touches, and the agent-to-agent links (delegation, dependencies, board contacts)
-// drawn as wires between cards. Pure: no React.
-import type { QueueSnapshot } from "@/lib/types";
+// Data model of the Visualize page: the shared systems agents use (one factory department each),
+// which system each tool call touches, who stands in which room of the floor, and the
+// agent-to-agent links (delegation, dependencies, board contacts). Pure: no React.
+import type { Dashboard, QueueEntry, QueueSnapshot, SubagentSnapshot } from "@/lib/types";
 import type { Activity } from "./activity";
 import type { LiveAgent } from "./use-live-agents";
 
@@ -110,38 +110,73 @@ export function buildLinks(queue: QueueSnapshot, live: Record<string, LiveAgent>
   return [...links.values()];
 }
 
-/** Which running cards (and how many of their busy subagents) use one system right now. */
-export interface SystemLoad {
-  /** Running card ids whose agent or helpers use the system now. */
-  taskIds: string[];
-  /** Busy subagents using it now. */
-  helpers: number;
+/** Every room of the factory floor: intake, one department per system, rework and shipping. */
+export type DepartmentId = "intake" | SystemId | "rework" | "shipping";
+
+/** Someone standing on the floor; `id` is stable across rooms so the worker can walk between them. */
+export type FloorWorker =
+  | { id: string; kind: "queued"; entry: QueueEntry; position: number }
+  | { id: string; kind: "running"; entry: QueueEntry }
+  | { id: string; kind: "subagent"; entry: QueueEntry; subagent: SubagentSnapshot }
+  | { id: string; kind: "rework"; card: Dashboard["attention"][number] }
+  | { id: string; kind: "shipped"; card: Dashboard["finished"][number] };
+
+export interface FloorPlan {
+  rooms: Record<DepartmentId, FloorWorker[]>;
+  /** System room of every running card and busy subagent, by worker id: feed it back as `previous`. */
+  placed: Map<string, SystemId>;
 }
 
 /**
- * Load of every system: a running card counts for its agent's current activity, and each of its
- * running/pending helpers with a current tool counts for that tool's system.
+ * Who stands where. Queued cards wait in intake, failed/stalled ones in rework, recently finished
+ * ones on the shipping dock. A running card stands in the room of the system its current activity
+ * uses; activities that use none (status lines, errors) keep it in its `previous` room, and a
+ * card that has done nothing yet starts at the model. Busy subagents stand in their tool's room,
+ * else the subagent room. A card shows up once: running > queued > rework > shipped.
  */
-export function systemLoad(queue: QueueSnapshot, live: Record<string, LiveAgent>): Record<SystemId, SystemLoad> {
-  const load = Object.fromEntries(
-    SYSTEMS.map((system): [SystemId, SystemLoad] => [system.id, { taskIds: [], helpers: 0 }]),
-  ) as Record<SystemId, SystemLoad>;
+export function floorPlan(
+  dashboard: Pick<Dashboard, "queue" | "attention" | "finished">,
+  live: Record<string, LiveAgent>,
+  previous: ReadonlyMap<string, SystemId>,
+): FloorPlan {
+  const rooms = Object.fromEntries(
+    (["intake", ...SYSTEMS.map((system) => system.id), "rework", "shipping"] as DepartmentId[]).map((id) => [id, []]),
+  ) as unknown as Record<DepartmentId, FloorWorker[]>;
+  const placed = new Map<string, SystemId>();
+  const seen = new Set<string>();
+  const { queue, attention, finished } = dashboard;
+
   for (const entry of queue.running) {
+    seen.add(entry.taskId);
+    const id = `card:${entry.taskId}`;
     const agent = live[entry.taskId];
-    if (!agent) continue;
-    const used = new Set<SystemId>();
-    const own = activitySystem(agent.activity);
-    if (own) used.add(own);
-    for (const helper of Object.values(agent.helpers)) {
-      if ((helper.status !== "running" && helper.status !== "pending") || !helper.currentTool) continue;
-      const system = toolSystem(helper.currentTool);
-      if (!system) continue;
-      load[system].helpers++;
-      used.add(system);
+    const room = activitySystem(agent?.activity) ?? previous.get(id) ?? "model";
+    placed.set(id, room);
+    rooms[room].push({ id, kind: "running", entry });
+    for (const subagent of Object.values(agent?.helpers ?? {}).sort((a, b) => (a.index ?? 0) - (b.index ?? 0))) {
+      if (subagent.status !== "running" && subagent.status !== "pending") continue;
+      const subId = `sub:${entry.taskId}:${subagent.id}`;
+      const subRoom = (subagent.currentTool ? toolSystem(subagent.currentTool) : null) ?? previous.get(subId) ?? "helpers";
+      placed.set(subId, subRoom);
+      rooms[subRoom].push({ id: subId, kind: "subagent", entry, subagent });
     }
-    for (const system of used) load[system].taskIds.push(entry.taskId);
   }
-  return load;
+  queue.queued.forEach((entry, i) => {
+    if (seen.has(entry.taskId)) return;
+    seen.add(entry.taskId);
+    rooms.intake.push({ id: `card:${entry.taskId}`, kind: "queued", entry, position: i + 1 });
+  });
+  for (const card of attention) {
+    if (seen.has(card.id)) continue;
+    seen.add(card.id);
+    rooms.rework.push({ id: `card:${card.id}`, kind: "rework", card });
+  }
+  for (const card of finished) {
+    if (seen.has(card.id)) continue;
+    seen.add(card.id);
+    rooms.shipping.push({ id: `card:${card.id}`, kind: "shipped", card });
+  }
+  return { rooms, placed };
 }
 
 const CONTACT_TOOLS: Record<string, "message" | "wait" | "inspect"> = {

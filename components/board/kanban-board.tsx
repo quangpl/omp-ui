@@ -22,6 +22,7 @@ import { positionBetween, type TasksByStatus } from "@/hooks/use-board";
 import type { QuickCreate } from "@/components/board/inline-composer";
 import { BOARD_ROOT_ATTR, useBoardHotkeys } from "@/hooks/use-board-hotkeys";
 import { useCardSelection } from "@/hooks/use-card-selection";
+import { cardLayoutKey, useCardFlip } from "@/hooks/use-card-flip";
 import { BoardColumn, COLUMN_DROPPABLE_PREFIX, StatusDot } from "@/components/board/board-column";
 import { useBulkRunner } from "@/components/board/bulk-actions";
 import { BoardContextMenu, type BoardMenuActions } from "@/components/board/card-context-menu";
@@ -181,6 +182,9 @@ function DesktopBoard({
   }, [columns]);
 
   const [activeId, setActiveId] = useState<string | null>(null);
+  // Cards glide to their new place when columns or order change. A drag moves cards itself (the
+  // sortable transforms already show the new order when it drops), so FLIP sits that out.
+  const flip = useCardFlip(cardLayoutKey(columns), { disabled: activeId !== null });
 
   const selection = useCardSelection(taskById);
   const bulk = useBulkRunner(menuActions);
@@ -276,6 +280,7 @@ function DesktopBoard({
                 selected={selection.selected}
                 onToggleSelect={selection.toggle}
                 onCreate={status === "todo" ? onQuickCreate : undefined}
+                flip={flip}
               />
             ))}
           </div>

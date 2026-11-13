@@ -45,6 +45,14 @@ export function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
+/** Rough remaining time, to the minute: "<1m", "12m", "1h 05m". */
+export function formatEta(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 60_000) return "<1m";
+  const minutes = Math.round(ms / 60_000);
+  const hours = Math.floor(minutes / 60);
+  return hours > 0 ? `${hours}h ${String(minutes % 60).padStart(2, "0")}m` : `${minutes}m`;
+}
+
 /** Current timestamp that re-renders the caller every `intervalMs`. */
 export function useNow(intervalMs = 30_000): number {
   const [now, setNow] = useState(() => Date.now());

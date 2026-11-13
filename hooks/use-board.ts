@@ -245,6 +245,12 @@ interface PendingMove {
   position: number;
 }
 
+/** Last live change to a card (see `useBoard`'s `liveChangesRef`). */
+interface LiveChange {
+  seq: number;
+  deleted: boolean;
+}
+
 export interface BoardController {
   board: Board | null;
   setBoard: Dispatch<SetStateAction<Board | null>>;
@@ -333,9 +339,30 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
     return pending ? { ...task, ...pending } : task;
   }, []);
 
+  /**
+   * Live card changes (events, move responses) stamped with a counter. A snapshot request that
+   * started before a change can't see it, so `reload` must not undo it: neither drop a card created
+   * meanwhile nor bring back a card deleted meanwhile. Pruned as snapshots land.
+   */
+  const liveChangesRef = useRef({ seq: 0, byId: new Map<string, LiveChange>() });
+  /** Snapshot in flight, and the follow-up queued behind it (see `reload`). */
+  const syncRef = useRef<{ running: Promise<void> | null; queued: Promise<void> | null }>({
+    running: null,
+    queued: null,
+  });
+  /** Board this hook currently shows: a snapshot for a previous board must not land. */
+  const boardIdRef = useRef(boardId);
+  boardIdRef.current = boardId;
+
+  const noteLiveChange = useCallback((taskId: string, deleted: boolean) => {
+    const live = liveChangesRef.current;
+    live.byId.set(taskId, { seq: ++live.seq, deleted });
+  }, []);
+
   const upsertTask = useCallback(
     (incoming: Task) => {
       if (incoming.boardId !== boardId) return;
+      noteLiveChange(incoming.id, false);
       setTasks((prev) => {
         const index = prev.findIndex((t) => t.id === incoming.id);
         if (index === -1) return [...prev, withPending(incoming)];
@@ -346,38 +373,87 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
         return next;
       });
     },
-    [boardId, withPending],
+    [boardId, withPending, noteLiveChange],
   );
 
-  const removeTask = useCallback((taskId: string) => {
-    pendingMovesRef.current.delete(taskId);
-    setTasks((prev) => prev.filter((t) => t.id !== taskId));
-  }, []);
+  const removeTask = useCallback(
+    (taskId: string) => {
+      pendingMovesRef.current.delete(taskId);
+      noteLiveChange(taskId, true);
+      setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    },
+    [noteLiveChange],
+  );
 
-  const reload = useCallback(async () => {
+  const fetchSnapshot = useCallback(async () => {
+    const live = liveChangesRef.current;
+    const since = live.seq;
     try {
       const [nextBoard, nextTasks] = await Promise.all([
         api.boards.get(boardId),
         api.boards.tasks(boardId),
       ]);
+      if (boardIdRef.current !== boardId) return;
+      // Live changes since the request started: the snapshot may predate them. Older entries are
+      // no longer needed (any request still to land started later), so drop them.
+      const changed = new Map<string, LiveChange>();
+      for (const [id, change] of live.byId) {
+        if (change.seq > since) changed.set(id, change);
+        else live.byId.delete(id);
+      }
       setBoard(nextBoard);
-      // A live update may have landed while this request was in flight: keep the newer copy.
       setTasks((prev) => {
         const held = new Map(prev.map((task) => [task.id, task]));
-        return nextTasks.map((task) => {
+        const merged: Task[] = [];
+        for (const task of nextTasks) {
+          if (changed.get(task.id)?.deleted) continue;
+          // A live update may have landed while this request was in flight: keep the newer copy.
           const current = held.get(task.id);
-          return current && current.updatedAt > task.updatedAt ? current : withPending(task);
-        });
+          merged.push(current && current.updatedAt > task.updatedAt ? current : withPending(task));
+        }
+        // Cards created live while the request was in flight aren't in the snapshot yet. Any
+        // other card missing from it was deleted on the server (its event was missed).
+        const inSnapshot = new Set(nextTasks.map((task) => task.id));
+        for (const [id, change] of changed) {
+          const current = held.get(id);
+          if (!change.deleted && current && !inSnapshot.has(id)) merged.push(current);
+        }
+        return merged;
       });
       setError(null);
     } catch (err) {
+      if (boardIdRef.current !== boardId) return;
       setError(
         err instanceof ApiRequestError && err.status === 404 ? "This project doesn't exist." : message(err),
       );
     } finally {
-      setLoading(false);
+      if (boardIdRef.current === boardId) setLoading(false);
     }
   }, [boardId, withPending]);
+
+  /**
+   * Refetch the board and its cards. Calls while a snapshot is in flight queue exactly one
+   * follow-up: the in-flight request may predate whatever prompted the call (a reconnect, the
+   * stream's first open), and overlapping requests could land out of order.
+   */
+  const reload = useCallback((): Promise<void> => {
+    const sync = syncRef.current;
+    const start = (): Promise<void> => {
+      if (boardIdRef.current !== boardId) return Promise.resolve();
+      const running = fetchSnapshot().finally(() => {
+        if (sync.running === running) sync.running = null;
+      });
+      sync.running = running;
+      return running;
+    };
+    if (sync.queued) return sync.queued;
+    if (!sync.running) return start();
+    sync.queued = sync.running.then(() => {
+      sync.queued = null;
+      return start();
+    });
+    return sync.queued;
+  }, [boardId, fetchSnapshot]);
 
   useEffect(() => {
     setLoading(true);
@@ -387,6 +463,9 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
     setActivity({});
     setConnection("connecting");
     pendingMovesRef.current.clear();
+    liveChangesRef.current.byId.clear();
+    // A snapshot still in flight for the previous board must not delay or absorb this one.
+    syncRef.current = { running: null, queued: null };
     void reload();
     const loadQueue = () => {
       api.queue
@@ -453,6 +532,11 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
       },
       {
         boardId,
+        // The snapshot above may predate the server-side subscription: resync once it is live.
+        onFirstOpen: () => {
+          void reload();
+          loadQueue();
+        },
         onReconnect: () => {
           void reload();
           loadQueue();

@@ -57,12 +57,12 @@ Ship the result with one tap: **Create PR/MR** or **Push to main**.
 - The **Agent log** shows run internals: counts of tool calls, subagents, messages and errors; an **Agents** section with one card per subagent (live status, current tool, tokens, cost; expand for assignment, recent tool calls, output, and final report or error), sorted with working and failed agents first; and a **Steps** timeline: each step is what the agent thought or said, with the actions it took next listed by intent ("Running the tests") and icon. Tap an action for the exact command and, if it failed, its error; long steps fold after a few actions, and the run's closing message is highlighted as its **Summary**. **Raw** shows every event as recorded (with optional line wrapping); the choice is remembered.
 - A comment on a running card goes straight into the live session, like typing into the omp CLI mid-run: omp's magic keywords (`orchestrate`, `ultrathink`, …) take effect, and a large comment (4+ list items, 300+ words, or phrases like "in parallel") gets `orchestrate` added. Messages from another card's agent have these keywords neutralized.
 - On success, the agent's final message is posted as a comment, the feedback it handled is resolved, and the card moves to Done.
-- On failure, the card stays in In progress with the error and retries automatically in the same omp session (after 15 s, 30 s, 1 min, 2 min, 4 min; the card shows **Retrying**). After 5 consecutive retries it stays failed: comment or press **Retry** to try again. Configure in **Settings → Retry failed runs automatically**.
+- On failure, the card stays in In progress with the error and retries automatically in the same omp session until it is Done or you press **Stop**. Quota and usage-limit errors (detected from the error message: quota, usage or rate limit, 429, …) wait 5, 10, 15, 30 min, then hourly, and the card shows **Waiting for quota**; other errors back off 15 s, 30 s, 1 min, 2 min … up to 10 min apart, and the card shows **Retrying**. Turn off **Keep retrying until done** to stop after 5 consecutive retries instead: the card then stays failed until you comment or press **Retry**. Configure in **Settings → Retry failed runs automatically**.
 - **Stop** leaves the card where it is (press **Resume** to continue the same session); **Revert to To do** stops the agent and parks the card in To do.
 - Up to `MAX_AGENTS` agents run concurrently. The default, `auto`, derives the limit from the machine: the minimum of the logical cores, the running agents plus what free memory allows at ~600 MB per agent (keeping 10% of RAM free, at most 2 GB), and 32; re-checked every 30 s. A number (1–16) sets a fixed cap. Switch between Auto and Manual in **Settings**, or run `omp-ui init --max-agents <n|auto>`. Other cards wait in a queue; the header's queue button shows it and lets you move a card up or run it next.
 - **Smart queue.** When you add several cards to a project, a read-only planner agent orders its queued cards (prerequisites and quick unblockers first) and adds **Run after** links between dependent cards, so independent cards run in parallel and the rest wait. New cards are held ~1.5 s so cards added together are planned together; if the planner fails, they run in the order added. Disable in **Settings → Smart queue**.
-- On server restart, queued cards go back in the queue, and cards whose agent was working or had failed resume their omp session automatically (this uses one of the card's retries, so a card that keeps crashing the server stops after 5). With automatic retries off, an interrupted card shows **Interrupted by server restart** and **Resume** continues it.
-- **Self-healing server.** `omp-ui start`/`up`, pm2 and Docker run the server under `bin/supervisor.mjs`, which restarts it on crash (backing off up to 30 s) and force-restarts it after 3 consecutive failed `/api/v1/health` checks (15 s apart; tune with `OMP_UI_HEALTH_*`, see `.env.example`).
+- On server restart, queued cards go back in the queue, and cards whose agent was working or had failed resume their omp session automatically (this uses one of the card's retries, even with **Keep retrying until done** on, so a card that keeps crashing the server stops after 5). With automatic retries off, an interrupted card shows **Interrupted by server restart** and **Resume** continues it.
+- **Self-healing server.** `omp-ui start`/`up`, systemd, pm2 and Docker run the server under `bin/supervisor.mjs`, which restarts it on crash (backing off up to 30 s) and force-restarts it after 3 consecutive failed `/api/v1/health` checks (15 s apart; tune with `OMP_UI_HEALTH_*`). See [Start on boot and self-healing](#start-on-boot-and-self-healing).
 
 </details>
 
@@ -73,7 +73,7 @@ Ship the result with one tap: **Create PR/MR** or **Push to main**.
 - **Files.** Upload files to a card for its agent to read; the agent saves reports, exports and screenshots there. **Shared files** (board menu) are available to every card's agent in the project.
 - **Browser control.** **Settings → Browser control** sets agent browser access: off, headless (default), a visible window on the server, or your own Chrome via `omp browser-relay`. Screenshots land in the card's files.
 - **Agent-to-agent.** Agents can list and read the project's cards, hand off separate work to a new card (which starts its own agent), message another card's agent, and wait for cards to finish. A waiting agent lends its slot to the queue. Agent-created cards show a bot icon and link back; messages from other agents are marked as such in the card's activity.
-- **Visualize.** The **Visualize** tab is a live factory floor for your agents. The control room up top shows stations in use (of the agent limit), cards in line, cards that need a hand and cards shipped, a ticker of what each worker is doing right now, and the crew plate: crew level and rank, XP (100 per shipped card), progress to the next level and every badge, earned or locked. On the **Shop floor** each card has its own robot worker (stable name and colour): queued cards wait **In line** in start order (a lock means blocked on other cards), running cards work **At the stations** with their current activity, time on the run and subagents, open stations show free agent slots, failed or stalled cards go to the **Needs a hand** rework bay and finished ones leave through **Shipped** with their XP. The **Power bus** shows which shared systems (model, files, shell, web, memory, board, advisor, subagents) each worker draws on right now. On wide screens wires connect it all: agent messages, card reads and waits between agents, delegations, dependencies, subagents and system use; every link is also listed on its card. **Worksites** lists every project with its shipped share, a strip of its cards by column and the workers on site. Everything updates live.
+- **Visualize.** The **Visualize** tab is a live factory floor for your agents. The control room up top shows stations in use (of the agent limit), cards in line, cards that need a hand and cards shipped, a ticker of what each worker is doing right now, and the crew plate: crew level and rank, XP (100 per shipped card), progress to the next level and every badge, earned or locked. The **Factory floor** has one room per department, and each card has its own robot worker (stable name and colour) that stands in the room of what its agent is doing right now: **Design office** (thinking, planning, writing), **Code shop** (reading and editing files), **Build & test** (commands and tests), **Research lab** (web), **Archive** (memory), **Dispatch** (board tools, talking to other cards), **Advisor's office** and **Team room** (subagents). When the activity changes the worker walks to the next room; busy subagents step out of their agent as smaller robots and walk to their own room. Queued cards wait in **Receiving** in start order (a lock means blocked on other cards), failed or stalled cards go to the **Rework bay** and finished ones to the **Shipping dock**. Hover a worker for its card, current activity, time on the run, subagents and links to other cards; click it to open the card. **Worksites** lists every project with its shipped share, a strip of its cards by column and the workers on site. Everything updates live.
 
 ### Around the app
 
@@ -85,6 +85,7 @@ Ship the result with one tap: **Create PR/MR** or **Push to main**.
 - **Attachments.** Card and shared files open in a viewer: images (zoom and pan), video, audio, PDF, and text, JSON or logs up to 2 MB; other files download. <kbd>⌘</kbd>/<kbd>Ctrl</kbd>-click opens a file in a new tab. `.mp4`, `.webm`, `.mov`, `.mp3`, `.wav` and `.ogg` are served inline.
 - **Run reports.** Agents end their summary with a `## Report` section: `Outcome:`, `Tests:`, `Changes:` and `Model:` lines, plus images linked as `/api/v1/tasks/<id>/files/<path>`. The card's activity shows it as a report card with the outcome, duration, model, changes, a test summary bar and a screenshot gallery; each screenshot's **Feedback** button quotes `> re: <path>` into the comment box.
 - **Containers.** The **Containers** page runs Docker for your projects. Its sidebar entry shows the running container count; click it for a list with **Logs**, **Restart** and **Stop**. One launcher searches templates, local images and Docker Hub (and Quay, when enabled), and accepts a pasted image reference from any registry (`ghcr.io`, `quay.io`, `registry.k8s.io`, `public.ecr.aws`, …); <kbd>Enter</kbd> runs the image with free host ports mapped automatically. Compose stacks start with one click (including `mysql-adminer`, `elastic-kibana`, `n8n-postgres` and `minio-console`), or from pasted YAML or a URL. Links: `/containers?launch=1` opens the launcher, `/containers?logs=<id>&name=<name>` a container's logs, `/containers?logs=compose:<project>` a stack's logs.
+- **Terminal.** The **Terminal** tab is a shell on the server, as the server user (AgentMan's own secrets are stripped from its environment). Each command runs as its own block with streamed output, exit code and duration; `cd` carries over to the next command, <kbd>↑</kbd>/<kbd>↓</kbd> recall history, <kbd>Ctrl</kbd>+<kbd>C</kbd> stops the newest running command and <kbd>Ctrl</kbd>+<kbd>L</kbd> (or `clear`) clears finished blocks. Like a tmux session it keeps running when you leave: commands run detached with their output in `DATA_DIR/terminal/`, so they survive closing the page and even restarting AgentMan, and reopening the tab re-attaches with every block and its live output. Limits: 8 concurrent commands, 6 hours and 8 MB of output per command.
 - **OMP settings.** **Settings → OMP** edits omp's own `config.yml` (in the agent folder `omp config path` reports) via a form (model roles, thinking level, approval mode, steering and interrupt modes, retry, compaction, advisor, tools) or raw YAML. Each save is validated with the omp CLI on a temporary copy, the previous file is kept as `config.yml.bak`, and the file is replaced atomically; saving raw YAML over a file that changed meanwhile is refused. AgentMan's own approval mode, project or default model, and **Auto-select model per card** override the matching omp settings for its runs.
 
 ## Keyboard shortcuts
@@ -98,7 +99,7 @@ Press <kbd>?</kbd> anywhere for the cheat sheet; type to filter it. <kbd>⌘</kb
 | | <kbd>?</kbd> | Keyboard shortcuts (filterable) |
 | | <kbd>⌘B</kbd> | Collapse or expand the sidebar |
 | Go to | <kbd>G</kbd> then <kbd>P</kbd> or <kbd>H</kbd> | Projects home |
-| | <kbd>G</kbd> then <kbd>V</kbd> / <kbd>D</kbd> / <kbd>M</kbd> / <kbd>T</kbd> / <kbd>S</kbd> | Visualize / Containers / Memory / Stats / Settings |
+| | <kbd>G</kbd> then <kbd>V</kbd> / <kbd>D</kbd> / <kbd>X</kbd> / <kbd>M</kbd> / <kbd>K</kbd> / <kbd>T</kbd> / <kbd>S</kbd> | Visualize / Containers / Terminal / Memory / Credentials / Stats / Settings |
 | Board | <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> or <kbd>K</kbd><kbd>J</kbd><kbd>H</kbd><kbd>L</kbd> | Previous / next card, column left / right |
 | | <kbd>1</kbd> / <kbd>2</kbd> / <kbd>3</kbd> | Jump to To do / In progress / Done |
 | | <kbd>Home</kbd> / <kbd>End</kbd> | First / last card of the column |
@@ -191,6 +192,15 @@ AgentMan never asks for your AI or Git logins; it uses what this machine already
 - AgentMan's own secrets (`ADMIN_PASSWORD`, `AUTH_SECRET`, `DATABASE_URL`, `POSTGRES_PASSWORD`, `OMP_UI_*`, …) are removed from the environment of agents and git commands.
 - `omp-ui doctor` lists what it found (names only, never values).
 
+### Saved credentials (MCP servers and services)
+
+The **Credentials** page (`/credentials`, <kbd>G</kbd> then <kbd>K</kbd>, or **Credentials** in the sidebar) keeps keys and tokens for popular MCP servers and services (GitHub, GitLab, Slack, Notion, Linear, OpenAI, Anthropic, AWS, Cloudflare, Stripe, Postgres, Brave Search, a custom MCP server over HTTP, …).
+
+- Each provider's form checks the fields before saving (required values, key formats, URLs) and shows a ready-to-copy `mcpServers` config snippet; secrets in it stay `${ENV_VAR}` placeholders.
+- Credentials are stored in AgentMan's database; secret values are encrypted (AES-256-GCM) and only ever sent back masked. The key is `CREDENTIALS_KEY` (any non-empty string) or else one generated into `DATA_DIR/credentials.key` on first use. Back up that file (or the variable) with the database: with another key the stored secrets cannot be decrypted, the credentials show as failing, and their secrets must be entered again.
+- Every credential can be tested before saving or at any time. Those with automatic checks on (the default) are re-checked every 10 minutes and show **healthy**, **failing** or **untested**.
+- The bell in the sidebar footer (in the header on phones) counts unread problems: failing checks, expired keys, keys expiring within 7 days and untested credentials. Mark them read or dismiss them there; a new failure raises a new notification, and a browser notification when you have allowed them.
+
 ## CLI
 
 Run `./omp-ui <command>`. Add `--help` to any command for details.
@@ -207,13 +217,14 @@ Run `./omp-ui <command>`. Add `--help` to any command for details.
 | `doctor` | Check that Node, omp, git, gh/glab, the port and the database are OK, and list the credentials found |
 | `init` | Re-run setup (`--force` overwrites `.env`, `--max-agents <n\|auto>` sets the agent limit) |
 | `pm2 start` / `stop` / `restart` / `logs` / `status` / `save` / `startup` / `delete` | Run it under pm2. `omp-ui up --pm2` sets everything up first |
+| `systemd install` / `uninstall` / `start` / `stop` / `restart` / `logs` / `status` / `unit` | Start on boot with a systemd user service (Linux). `omp-ui up --systemd` sets everything up first |
 | `docker up` / `down` / `logs` / `ps` | Run it in Docker (`--postgres` or `--mongo` adds a database) |
 | `deploy --host me@server` | Copy it to a server and start it there with Docker |
 | `dev` / `build` / `version` | For development |
 
 Settings live in `.env`, which `init` creates with permissions 600. Logs and runtime files go in `./data`.
 
-**Restart from the browser.** The **Restart server** button in the header (↻; on phones, in the account menu) does `omp-ui restart --rebuild` for you: it stops the server, builds the current sources and starts it again, then reloads the page on the new build. The app is down while it builds (about a minute), and running agents are interrupted, then resume by themselves (with automatic retries on). If the build fails, the previous build keeps running and the dialog shows the build output (also in `data/restart.log`). It works for a server started with `omp-ui up`/`start` or under pm2; Docker, `omp-ui dev` and `omp-ui start -f` show why they can't restart from the browser.
+**Restart from the browser.** The **Restart server** button in the header (↻; on phones, in the account menu) does `omp-ui restart --rebuild` for you: it stops the server, builds the current sources and starts it again, then reloads the page on the new build. The app is down while it builds (about a minute), and running agents are interrupted, then resume by themselves (with automatic retries on). If the build fails, the previous build keeps running and the dialog shows the build output (also in `data/restart.log`). It works for a server started with `omp-ui up`/`start`, under pm2 or under systemd (there it runs `systemctl --user restart omp-ui.service`, which rebuilds when the sources changed); Docker, `omp-ui dev` and `omp-ui start -f` show why they can't restart from the browser.
 
 ## Databases
 
@@ -235,7 +246,7 @@ In Docker, `omp-ui docker up --postgres` or `--mongo` runs a bundled database fo
 ```sh
 npm i -g pm2                      # optional; without it, `npx -y pm2` is used
 pm2 start ecosystem.config.cjs    # or: omp-ui up --pm2
-pm2 save && pm2 startup           # start again after a reboot
+pm2 save && pm2 startup           # start on boot (or: omp-ui pm2 save, omp-ui pm2 startup)
 ```
 
 This works on a fresh clone. The first run sets everything up and builds the app, which takes a few minutes. If you didn't set `ADMIN_PASSWORD`, the generated password is printed to `data/pm2-out.log` (search for `AgentMan ADMIN PASSWORD`). `omp-ui up --pm2` also shows it in your terminal.
@@ -243,6 +254,80 @@ This works on a fresh clone. The first run sets everything up and builds the app
 - Follow the logs with `omp-ui pm2 logs`.
 - While pm2 runs it, use `omp-ui pm2 stop` / `restart`. Plain `omp-ui stop` refuses so it doesn't fight pm2.
 - `omp-ui pm2 restart` rebuilds when the sources changed; `omp-ui pm2 restart --rebuild` stops the app, always rebuilds, then starts it.
+- `pm2 save && pm2 startup` is what makes it start on boot. See [Start on boot and self-healing](#start-on-boot-and-self-healing).
+
+## Start on boot and self-healing
+
+How each way of running AgentMan comes back after a crash or a reboot. All of them run the server under `bin/supervisor.mjs`, which watches its health.
+
+### systemd (Linux)
+
+```sh
+omp-ui up --systemd          # set everything up, then install the service
+omp-ui systemd install       # or just install the service
+```
+
+- `install` writes a user unit to `~/.config/systemd/user/omp-ui.service` (from the repo's `omp-ui.service`), enables it at boot and starts it. A server you started with `omp-ui up`/`start` is stopped first so systemd takes over.
+- It also turns on lingering (`loginctl enable-linger $USER`) so the service starts at boot without a login. If that fails, run `sudo loginctl enable-linger $USER`.
+- Manage it with `omp-ui systemd start` / `stop` / `restart [--rebuild]` / `status` / `logs [-n N] [-f]` / `uninstall`.
+- `omp-ui systemd unit` prints the unit for a manual install:
+
+  ```sh
+  omp-ui systemd unit > ~/.config/systemd/user/omp-ui.service \
+    && systemctl --user daemon-reload \
+    && systemctl --user enable --now omp-ui.service
+  ```
+
+- The service does not see variables exported in your interactive shell (`GH_TOKEN`, `ANTHROPIC_API_KEY`, `SSH_AUTH_SOCK`, …). Put them in `.env` or in a drop-in from `systemctl --user edit omp-ui.service`:
+
+  ```ini
+  [Service]
+  Environment=GH_TOKEN=…
+  ```
+
+- `PATH` is captured at install time. Re-run `omp-ui systemd install` after changing it (e.g. a new Node or omp location).
+- While systemd runs it, plain `omp-ui stop` / `restart` refuse; use `omp-ui systemd stop` / `restart`. The browser **Restart server** button runs `systemctl --user restart omp-ui.service`.
+- On stop, systemd sends SIGTERM to the CLI only, which passes it to the supervisor, and the server stops its agents. Anything left after 30 s is killed (`KillMode=mixed`, `TimeoutStopSec=30`).
+
+### Plain `omp-ui up` / `start`
+
+- The supervisor restarts a crashed or unhealthy server, but nothing starts it again after a reboot. Use systemd or pm2.
+- Last resort: a `@reboot` cron entry (`crontab -e`): `@reboot cd /path/to/omp-ui && ./omp-ui start`.
+
+### PM2
+
+- `pm2 start ecosystem.config.cjs` (or `omp-ui up --pm2`), then `omp-ui pm2 save` and `omp-ui pm2 startup`.
+- `pm2 startup` needs a global pm2 (`npm i -g pm2`) and prints a `sudo` command: run it. Run `pm2 save` again after changing the process list.
+- pm2 restarts the CLI if it dies; the supervisor inside restarts the server on a crash or failed health checks.
+
+### Docker
+
+- `restart: unless-stopped` in `docker-compose.yml` restarts the containers after a crash or a reboot, as long as the Docker daemon starts at boot (`sudo systemctl enable docker`; Docker Desktop: **Start Docker Desktop when you sign in**).
+- A container you stopped with `docker compose stop` stays stopped after a reboot.
+- The image `HEALTHCHECK` only marks the container **unhealthy**; Docker does not restart it for that. The supervisor inside does the force restart.
+
+### Health monitoring
+
+- Crash: the supervisor restarts the server, backing off from 1 s up to 30 s.
+- `OMP_UI_HEALTH_FAILURES` failed probes in a row: SIGTERM, then SIGKILL after `OMP_UI_STOP_TIMEOUT_MS`, then a restart.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `OMP_UI_HEALTH_URL` | `http://<HOST>:<PORT>/api/v1/health` | URL to probe |
+| `OMP_UI_HEALTH_INTERVAL_MS` | `15000` | Time between probes |
+| `OMP_UI_HEALTH_TIMEOUT_MS` | `10000` | Timeout per probe |
+| `OMP_UI_HEALTH_FAILURES` | `3` | Failed probes in a row before a force restart (`0` = never) |
+| `OMP_UI_HEALTH_GRACE_MS` | `120000` | Startup time before failures count |
+| `OMP_UI_STOP_TIMEOUT_MS` | `8000` | Wait after SIGTERM before SIGKILL |
+
+To see it, look for `[supervisor …] health check failed (n/3)` and `server is unhealthy — force restarting it` in `data/omp-ui.log`, `data/pm2-out.log`, `omp-ui systemd logs` or `docker compose logs omp-ui`.
+
+### No data loss on restarts
+
+- Database writes are committed synchronously (SQLite in WAL mode, Postgres, MongoDB).
+- Data lives in `DATA_DIR` / `DATABASE_URL` (Docker: the `./data` bind mount and the named volumes).
+- On SIGTERM the server stops its omp agents.
+- After any restart, queued cards go back in the queue and interrupted cards resume their omp session automatically.
 
 ## Docker
 
@@ -262,6 +347,7 @@ This works on a fresh clone. The first run sets everything up and builds the app
 - `omp-ui deploy --host me@server` copies the project, including `.env`, to `~/omp-ui` on the server and runs `docker compose up -d --build` there.
 - To pin versions: `docker compose build --build-arg OMP_VERSION=v18.19.0 --build-arg GLAB_VERSION=v1.130.0`.
 - **Memory (opt-in):** set `AGENTMEMORY_VERSION=latest` in `.env` (the `AGENTMEMORY_VERSION` build arg) and run `docker compose build` to include agentmemory in the image; its state lives in the `agentmemory` volume. On start, the container runs `agentmemory connect omp`, which writes into the `~/.omp` config mounted from your computer; set `AGENTMEMORY_CONNECT_OMP=false` to avoid that.
+- **Start on boot:** the containers come back after a crash or reboot when the Docker daemon starts at boot. See [Start on boot and self-healing](#start-on-boot-and-self-healing).
 
 ## Use it from anywhere
 
@@ -290,7 +376,14 @@ This works on a fresh clone. The first run sets everything up and builds the app
 | `AGENTMEMORY_URL` / `AGENTMEMORY_VIEWER_URL` | `http://127.0.0.1:3111` / `http://127.0.0.1:3113` | agentmemory REST API and viewer |
 | `AGENTMEMORY_PROJECT_NAME` | – | One memory project for every card, instead of the board folder's git root name |
 | `OMP_UI_MEMORY_CHECK_MS` | `300000` | How often the supervisor re-checks the memory server (ms; `0` = only at boot) |
+| `OMP_UI_HEALTH_URL` | `http://<HOST>:<PORT>/api/v1/health` | URL the supervisor probes. See [Start on boot and self-healing](#start-on-boot-and-self-healing) |
+| `OMP_UI_HEALTH_INTERVAL_MS` | `15000` | Time between health probes (ms) |
+| `OMP_UI_HEALTH_TIMEOUT_MS` | `10000` | Timeout per health probe (ms) |
+| `OMP_UI_HEALTH_FAILURES` | `3` | Failed probes in a row before a force restart (`0` = never) |
+| `OMP_UI_HEALTH_GRACE_MS` | `120000` | Startup time before failed probes count (ms) |
+| `OMP_UI_STOP_TIMEOUT_MS` | `8000` | Wait after SIGTERM before SIGKILL (ms) |
 | `GH_TOKEN` / `GITLAB_TOKEN` | – | Git hosting tokens (instead of `gh` / `glab` login). Usually exported in your shell; see [Credentials](#credentials) |
+| `CREDENTIALS_KEY` | `DATA_DIR/credentials.key` | Encryption key for secrets on the Credentials page. See [Saved credentials](#saved-credentials-mcp-servers-and-services) |
 | `VINEXT_TRUST_PROXY` | – | `1` behind a reverse proxy |
 
 ## Security

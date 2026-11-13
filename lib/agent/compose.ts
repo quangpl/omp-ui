@@ -30,11 +30,20 @@ export async function createCardFromText(input: {
   board: Board;
   text: string;
   position?: number;
+  /** Scheduler whose run creates this card (lib/scheduler.ts); default null. */
+  schedulerId?: string | null;
 }): Promise<Task> {
   const { repo, manager, board, position } = input;
+  const schedulerId = input.schedulerId ?? null;
   const text = input.text.trim();
   if (isPlainTitle(text)) {
-    const task = await repo.createTask({ boardId: board.id, title: text, status: "in_progress", position });
+    const task = await repo.createTask({
+      boardId: board.id,
+      title: text,
+      status: "in_progress",
+      position,
+      schedulerId,
+    });
     publish({ type: "task.updated", task });
     return manager.start(task.id);
   }
@@ -47,6 +56,7 @@ export async function createCardFromText(input: {
     description: typed.description,
     status: "in_progress",
     position,
+    schedulerId,
   });
   if (attached) {
     try {

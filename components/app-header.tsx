@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { ChevronLeftIcon, MenuIcon, PanelLeftIcon, SearchIcon } from "lucide-react";
 import { isTopLevelPath } from "@/components/bottom-tabs";
 import { openCommandPalette } from "@/components/command-palette";
+import { CredentialNotificationsButton } from "@/components/credentials/credential-notifications";
 import { Button } from "@/components/ui/button";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { useSidebar } from "@/components/ui/sidebar";
@@ -106,6 +107,8 @@ export function AppHeader({
 
         <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
           {actions}
+          {/* Phones only: the sidebar (and its footer bell) is a sheet there. */}
+          <CredentialNotificationsButton className="size-11 md:hidden" />
           {/* Desktop has Search in the sidebar; phones keep it one tap away here. */}
           <Button
             variant="ghost"

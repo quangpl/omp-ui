@@ -1,5 +1,6 @@
 // "Restart server" button: stop this server, rebuild it from the current sources and start it
-// again. The work is done by the omp-ui CLI in a detached process, so it outlives this server.
+// again. The work is done by the omp-ui CLI in a detached process, so it outlives this server
+// (under systemd by the user manager, since anything we spawn dies with the service's cgroup).
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -27,7 +28,7 @@ function readText(file: string): string | null {
   }
 }
 
-/** Who manages this process (from the CLI's pid file, `<pid>\n[pm2|fg]`), or why the button cannot restart it. */
+/** Who manages this process (from the CLI's pid file, `<pid>\n[pm2|systemd|fg]`), or why the button cannot restart it. */
 function detectMode(): { mode: RestartMode | null; reason: string | null } {
   if (process.env.NODE_ENV === "development") {
     return { mode: null, reason: "Dev mode hot-reloads. To restart, rerun `omp-ui dev` in its terminal." };
@@ -48,7 +49,7 @@ function detectMode(): { mode: RestartMode | null; reason: string | null } {
   if (by === "fg") {
     return { mode: null, reason: "Runs attached to a terminal (`omp-ui start -f`). Restart it there." };
   }
-  return { mode: by === "pm2" ? "pm2" : "cli", reason: null };
+  return { mode: by === "pm2" || by === "systemd" ? by : "cli", reason: null };
 }
 
 export function restartStatus(): Omit<RestartStatus, "running"> {
@@ -70,7 +71,8 @@ export function restartStatus(): Omit<RestartStatus, "running"> {
 /**
  * Hand the restart to a detached `omp-ui restart --rebuild` (or `pm2 restart --rebuild`). It stops
  * this server (running agents are interrupted; boot recovery resumes them), builds and starts the new one;
- * its output goes to DATA_DIR/restart.log.
+ * its output goes to DATA_DIR/restart.log. Under systemd it queues `systemctl --user restart` instead:
+ * the service's `omp-ui up --foreground` rebuilds on start when the sources changed (output in the journal).
  */
 export function startRestart(): RestartMode {
   const { mode, reason } = detectMode();
@@ -81,13 +83,18 @@ export function startRestart(): RestartMode {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const fd = fs.openSync(file, "w");
   fs.writeSync(fd, `=== restart requested ${new Date().toISOString()} · ${mode} ===\n`);
-  // The CLI reads .env itself. Without pm_id it does not mistake itself for pm2's own process.
+  // The CLI reads .env itself. Without pm_id / OMP_UI_SERVICE_MANAGER it does not mistake itself for
+  // the manager's own process.
   const env: Record<string, string | undefined> = { ...process.env };
   delete env.NODE_ENV;
   delete env.pm_id;
-  const args = mode === "pm2" ? ["pm2", "restart", "--rebuild"] : ["restart", "--rebuild"];
+  delete env.OMP_UI_SERVICE_MANAGER;
+  const [cmd, args]: [string, string[]] =
+    mode === "systemd"
+      ? ["systemctl", ["--user", "restart", "--no-block", "omp-ui.service"]]
+      : [process.execPath, [cliPath(), ...(mode === "pm2" ? ["pm2", "restart", "--rebuild"] : ["restart", "--rebuild"])]];
   try {
-    const child = spawn(process.execPath, [cliPath(), ...args], {
+    const child = spawn(cmd, args, {
       cwd: process.cwd(),
       // Cast: the project types a required NODE_ENV, which the CLI must not inherit.
       env: env as NodeJS.ProcessEnv,
@@ -97,12 +104,14 @@ export function startRestart(): RestartMode {
     });
     child.once("error", (err) => {
       g.__ompUiRestarting = false;
-      console.error("[restart] could not run the omp-ui CLI:", err);
+      console.error(`[restart] could not run ${cmd}:`, err);
     });
-    // Still alive when the CLI exits: it failed before stopping this server (see restart.log).
     child.once("exit", (code) => {
+      // `--no-block` returns once the job is queued; the user manager then stops this server.
+      if (mode === "systemd" && code === 0) return;
+      // Still alive when the CLI exits: it failed before stopping this server (see restart.log).
       g.__ompUiRestarting = false;
-      console.error(`[restart] the omp-ui CLI exited (code ${code}) without restarting this server`);
+      console.error(`[restart] ${mode === "systemd" ? "systemctl" : "the omp-ui CLI"} exited (code ${code}) without restarting this server`);
     });
     child.unref();
   } finally {

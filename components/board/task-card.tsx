@@ -13,14 +13,16 @@ import {
   MessageSquareDot,
   RotateCw,
   Sparkles,
+  Timer,
   TriangleAlert,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useBoardTasks, useQueueDrafting, useQueuePosition } from "@/hooks/use-board";
+import { isQuotaError } from "@/lib/quota";
 import { questionPreview } from "@/lib/question";
 import { formatDateTime } from "@/components/board/format";
-import { TaskProgressIcon } from "@/components/board/task-progress";
+import { TaskProgressIcon, TodoEta } from "@/components/board/task-progress";
 import { todoProgress } from "@/lib/todos";
 import { cn } from "@/lib/utils";
 import type { AgentState, Task } from "@/lib/types";
@@ -91,6 +93,7 @@ export function AgentStateBadge({
   state,
   queuePosition = -1,
   retryAt = null,
+  agentError = null,
   drafting = false,
   className,
 }: {
@@ -98,6 +101,8 @@ export function AgentStateBadge({
   queuePosition?: number;
   /** Failed card with an automatic retry scheduled (Task.retryAt). */
   retryAt?: string | null;
+  /** Last run's error (Task.agentError); a quota error turns "Retrying" into "Waiting for quota". */
+  agentError?: string | null;
   /** Queued card the card writer is still writing (`useQueueDrafting`). */
   drafting?: boolean;
   className?: string;
@@ -131,6 +136,17 @@ export function AgentStateBadge({
       >
         <LoaderCircle className="animate-spin" />
         Working
+      </Badge>
+    );
+  }
+  if (state === "error" && retryAt && isQuotaError(agentError)) {
+    return (
+      <Badge
+        className={cn("gap-1 bg-blue-500/10 text-blue-700 dark:bg-blue-400/15 dark:text-blue-300", className)}
+        title={`Quota or usage limit reached — retrying automatically at ${new Date(retryAt).toLocaleTimeString()}`}
+      >
+        <Timer />
+        Waiting for quota
       </Badge>
     );
   }
@@ -285,6 +301,7 @@ export const TaskCard = memo(function TaskCard({
               state={task.agentState}
               queuePosition={queuePosition}
               retryAt={task.retryAt}
+              agentError={task.agentError}
               drafting={drafting}
             />
             {waitingFor.length > 0 && (
@@ -341,6 +358,7 @@ export const TaskCard = memo(function TaskCard({
                 <ListChecks className="size-3.5" aria-hidden />
                 {progress.done}/{progress.total}
                 <span className="sr-only">todo items done</span>
+                <TodoEta task={task} className="before:mr-1 before:content-['·']" />
               </span>
             )}
             {task.commentCount > 0 && (
