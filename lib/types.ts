@@ -340,6 +340,109 @@ export interface AppSettings {
   taskCompletionNotifications: boolean;
   /** Optional sections shown in the navigation menu (sidebar, phone tabs, home "Go to"); default: all. */
   visibleDashboardMenus: DashboardMenuId[];
+  /**
+   * Telegram bot token (Settings → Chat integrations), AES-256-GCM sealed with the credentials key
+   * (lib/server/chat/store.ts); "" when none. Never plaintext in the database; GET /settings
+   * answers "" or REDACTED_SECRET, and PATCH /settings ignores it (set via /chat/telegram/connect).
+   */
+  telegramBotToken: string;
+  /** Discord bot token; same storage and API rules as `telegramBotToken`. */
+  discordBotToken: string;
+  /**
+   * Run time limit: a run still working after `runTimeLimitMinutes` is stopped and the card fails
+   * without an automatic retry (a retry would hit the same limit). Checked by the run supervisor
+   * (lib/agent/run-guards.ts) every few seconds, so changes apply to runs already working.
+   */
+  runTimeLimit: boolean;
+  runTimeLimitMinutes: number;
+  /**
+   * Stall watchdog: a run whose omp process sends nothing for `stallTimeoutMinutes` (no output,
+   * tool or progress frames; board-tool waits excepted) is aborted and fails like a crash, so
+   * automatic retries resume it.
+   */
+  stallWatchdog: boolean;
+  stallTimeoutMinutes: number;
+  /**
+   * Per-run budget: stop a run (failed, no automatic retry) once its omp session plus its
+   * subagents report more than `runBudgetUsd` dollars or `runBudgetTokens` tokens; 0 = no cap.
+   */
+  runBudget: boolean;
+  runBudgetUsd: number;
+  runBudgetTokens: number;
+  /**
+   * Loop detection (lib/agent/loop-detector.ts): an agent repeating the same tool call, the same
+   * failing call, or ping-ponging between two calls is warned once via a steer message; if it
+   * keeps looping the run fails without an automatic retry.
+   */
+  loopDetection: boolean;
+  /**
+   * Git checkpoints (lib/server/checkpoints.ts): before each run, snapshot the run's git folders
+   * (tracked and untracked files, without touching the working tree or index) so the card's
+   * changes can be rolled back from the card's Checkpoints panel.
+   */
+  gitCheckpoints: boolean;
+  /**
+   * Export each finished run as OpenTelemetry spans (GenAI semantic conventions) over OTLP/HTTP
+   * JSON to `telemetryEndpoint` (lib/server/telemetry.ts). Extra request headers come from
+   * OTEL_EXPORTER_OTLP_HEADERS.
+   */
+  telemetryExport: boolean;
+  /** OTLP/HTTP traces URL, e.g. http://localhost:4318/v1/traces; "" = not configured. */
+  telemetryEndpoint: string;
+  /**
+   * Load guard: hold queued cards (start no new runs) while the 1-minute load average per CPU
+   * core is above `loadGuardPercent` %; running agents are not touched.
+   */
+  loadGuard: boolean;
+  loadGuardPercent: number;
+}
+
+/**
+ * Bounds of the numeric orchestration settings (Settings → Orchestration), shared by the UI,
+ * PATCH /settings validation and stored-settings sanitizing.
+ */
+export const ORCHESTRATION_LIMITS = {
+  runTimeLimitMinutes: { min: 5, max: 1440 },
+  stallTimeoutMinutes: { min: 2, max: 240 },
+  runBudgetUsd: { min: 0, max: 10_000 },
+  runBudgetTokens: { min: 0, max: 1_000_000_000 },
+  loadGuardPercent: { min: 10, max: 1000 },
+} as const;
+export type OrchestrationNumberKey = keyof typeof ORCHESTRATION_LIMITS;
+
+/** What GET /settings answers for a stored secret (chat bot tokens). */
+export const REDACTED_SECRET = "********";
+
+export const CHAT_PLATFORMS = ["telegram", "discord"] as const;
+/** Chat apps that can control AgentMan (Settings → Chat integrations). */
+export type ChatPlatform = (typeof CHAT_PLATFORMS)[number];
+export type ChatConnectionState = "disconnected" | "connecting" | "connected" | "error";
+
+/** One chat integration's state, from GET /chat/status and the connect/disconnect routes. */
+export interface ChatPlatformStatus {
+  platform: ChatPlatform;
+  /** A bot token is stored. */
+  configured: boolean;
+  state: ChatConnectionState;
+  /** Why the bot is not connected (invalid token, network…); null when fine. */
+  error: string | null;
+  /** The bot account; null until a token was validated. */
+  bot: { id: string; name: string; username: string | null } | null;
+  /** Telegram: https://t.me/<username>; Discord: OAuth2 invite URL that adds the bot to a server. */
+  botUrl: string | null;
+  /** How updates arrive: Telegram long polling or webhook, Discord gateway. */
+  mode: "polling" | "webhook" | "gateway" | null;
+  /** Telegram webhook mode: the public URL Telegram posts to; null in polling mode. */
+  webhookUrl: string | null;
+  /** Last 4 characters of the stored token; null when none. */
+  tokenHint: string | null;
+  /** Chat users who unlocked control with the admin password (`/login <password>`). */
+  authorizedUsers: number;
+}
+
+export interface ChatStatusResponse {
+  telegram: ChatPlatformStatus;
+  discord: ChatPlatformStatus;
 }
 
 /** Navigation menu sections the user may hide (Settings → Menu); each one's page is `/<id>`. */
@@ -396,6 +499,22 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cleanupTargets: SCHEDULED_CLEANUP_IDS.filter((id) => id !== "shipped-workspaces"),
   taskCompletionNotifications: false,
   visibleDashboardMenus: [...DASHBOARD_MENU_IDS],
+  telegramBotToken: "",
+  discordBotToken: "",
+  // Orchestration guards are opt-in: off, nothing changes for existing installs.
+  runTimeLimit: false,
+  runTimeLimitMinutes: 120,
+  stallWatchdog: false,
+  stallTimeoutMinutes: 20,
+  runBudget: false,
+  runBudgetUsd: 5,
+  runBudgetTokens: 0,
+  loopDetection: false,
+  gitCheckpoints: false,
+  telemetryExport: false,
+  telemetryEndpoint: "",
+  loadGuard: false,
+  loadGuardPercent: 150,
 };
 
 /** An installed omp skill (from `omp skill list`): pickable with "/" when composing a card. */
@@ -415,6 +534,19 @@ export interface ProjectFileHit {
   insert: string;
   /** Basename of the extra project folder holding the hit; omitted for the workdir. */
   folder?: string;
+}
+
+/**
+ * A project file's text from GET /boards/:id/project-files/content (Files tab editor).
+ * `path` is the same id as `ProjectFileHit.insert`: relative to the board workdir, or absolute inside an extra folder.
+ */
+export interface ProjectFileContent {
+  path: string;
+  content: string;
+  /** Bytes on disk. */
+  size: number;
+  /** Last modification time; send it back on save so a concurrent change is refused (409). */
+  mtimeMs: number;
 }
 
 /** Server-sent events on GET /api/v1/events. */
@@ -445,8 +577,17 @@ export type ServerEvent =
   /**
    * Live, NOT persisted: how full the run's context window is, after each assistant message and
    * context compaction. The latest value is also served as `DashboardLiveAgent.context`.
+   * `usage`: the omp session's own spend so far (USD and total tokens, from `get_session_stats`;
+   * subagents excluded); absent when omp did not report it.
    */
-  | { type: "run.context"; runId: string; taskId: string; boardId: string; context: ContextUsage }
+  | {
+      type: "run.context";
+      runId: string;
+      taskId: string;
+      boardId: string;
+      context: ContextUsage;
+      usage?: { costUsd: number; tokens: number };
+    }
   /**
    * Live, NOT persisted: streaming assistant output while a message is being generated.
    * `text` is the accumulated content of the current message so far (not just the delta), so a
@@ -540,8 +681,11 @@ export interface ConcurrencyInfo {
   mode: "auto" | "manual";
   /** Agents allowed to run at once right now. */
   limit: number;
-  /** What bounds an automatic limit (logical cores, free memory, or the hard cap); null when manual. */
-  boundBy: "cpu" | "memory" | "max" | null;
+  /**
+   * What bounds an automatic limit (logical cores, free memory, or the hard cap); null when manual.
+   * `load`: the load guard holds new runs (either mode); the limit is then the agents running.
+   */
+  boundBy: "cpu" | "memory" | "max" | "load" | null;
   /** Logical cores available to the server. */
   cpus: number;
   freeMemoryBytes: number;
@@ -1175,4 +1319,24 @@ export interface MemoryStats {
   sessions: number | null;
   observations: number | null;
   lessons: number | null;
+}
+
+/**
+ * A git snapshot of one project folder's files (tracked and untracked, minus ignored ones) taken
+ * before a card's run or before a restore. Stored as a commit under
+ * `refs/agentman/checkpoints/<taskId>/<id>` without touching the branch, index or working tree.
+ */
+export interface TaskCheckpoint {
+  /** Ref name tail; unique per task and repository. */
+  id: string;
+  /** Project folder (or the card's worktree of it) the snapshot was taken in. */
+  folder: string;
+  /** Commit sha of the snapshot. */
+  sha: string;
+  /** Run that started right after this snapshot; null for "Before restore" snapshots. */
+  runId: string | null;
+  label: string;
+  createdAt: string;
+  /** Files that differed from HEAD (uncommitted changes) when the snapshot was taken. */
+  filesChanged?: number;
 }

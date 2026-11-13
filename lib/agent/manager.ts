@@ -12,11 +12,21 @@ import {
   type QuestionTriage,
 } from "@/lib/agent/advisor";
 import { BOARD_TOOLS, BOARD_TOOL_NAMES, runBoardTool, type BoardToolHost } from "@/lib/agent/board-tools";
-import { CONCURRENCY_SAMPLE_MS, resolveConcurrency } from "@/lib/agent/concurrency";
+import { CONCURRENCY_SAMPLE_MS, readLoadHold, resolveConcurrency } from "@/lib/agent/concurrency";
+import { LoopDetector, loopSteerMessage, type LoopDetection } from "@/lib/agent/loop-detector";
 import { chooseModel, readModelRoles } from "@/lib/agent/model-select";
 import { buildPrompt, buildSteerMessage } from "@/lib/agent/prompt";
 import { planQueue, type PlanCard, type QueuePlan } from "@/lib/agent/queue-planner";
 import { OmpRpcProcess, describeExit, type RpcExitInfo, type RpcFrame } from "@/lib/agent/rpc";
+import {
+  evaluateBudget,
+  evaluateRunGuards,
+  guardsEnabled,
+  guardTickMs,
+  sessionUsage,
+  totalUsage,
+  type RunUsage,
+} from "@/lib/agent/run-guards";
 import {
   describeTaskCall,
   isTerminalSubagent,
@@ -37,7 +47,10 @@ import { extractQuestion } from "@/lib/question";
 import { isQuotaError, QUOTA_RETRY_STEPS_MS } from "@/lib/quota";
 import { startSchedulerService } from "@/lib/scheduler";
 import { agentmemoryEnabled, memoryProjectName, tagMemorySession } from "@/lib/server/agentmemory";
+import { createCheckpoints } from "@/lib/server/checkpoints";
+import { startChatIntegrations } from "@/lib/server/chat/service";
 import { startCredentialHealthChecks } from "@/lib/server/credentials";
+import { startTelemetryExporter } from "@/lib/server/telemetry";
 import { getAppSettings } from "@/lib/settings";
 import { parseTodoPhases, stampTodos } from "@/lib/todos";
 import { ensureWorkspace } from "@/lib/workspaces";
@@ -140,6 +153,14 @@ interface ActiveRun {
   stampedTodos: { list: TodoPhase[]; at: string } | null;
   /** Context window fill as of the latest `get_session_stats`; null before the first model reply. */
   context: ContextUsage | null;
+  /** When omp last sent any frame (ms epoch), for the stall watchdog. */
+  lastActivityAt: number;
+  /** Spend of the run's own omp session as of the latest `get_session_stats` (subagents excluded). */
+  sessionUsage: RunUsage;
+  /** Loop detection (settings `loopDetection` at launch); null when off or turned off mid-run. */
+  loop: LoopDetector | null;
+  /** Loops detected so far: the first steers the agent, the second fails the run. */
+  loopStrikes: number;
   /** Serializes startup, frame handling and teardown so persistence stays ordered. */
   chain: Promise<void>;
 }
@@ -185,6 +206,8 @@ class OmpAgentManager implements AgentManager {
   private limit = 0;
   /** Re-samples the machine (an automatic limit) while cards wait in the queue. */
   private sampler: NodeJS.Timeout | undefined;
+  /** Run guards (lib/agent/run-guards.ts): ticks while any run is active. */
+  private supervisor: NodeJS.Timeout | undefined;
 
   constructor(private readonly repo: Repository) {}
 
@@ -230,7 +253,12 @@ class OmpAgentManager implements AgentManager {
     const planning = await Promise.all(
       [...this.plans.keys()].map(async (boardId) => ({ boardId, boardName: await boardName(boardId) })),
     );
-    const concurrency = resolveConcurrency(settings.maxConcurrentAgents, this.active.size);
+    const concurrency = resolveConcurrency(
+      settings.maxConcurrentAgents,
+      this.active.size,
+      undefined,
+      readLoadHold(settings),
+    );
     return { limit: concurrency.limit, concurrency, running, queued, planning };
   }
 
@@ -448,6 +476,7 @@ class OmpAgentManager implements AgentManager {
     run.restartAfter = false;
     run.closing = true;
     this.active.delete(taskId);
+    this.stopSupervisorIfIdle();
     if (run.proc) terminate(run.proc);
     void this.pump();
   }
@@ -753,9 +782,16 @@ class OmpAgentManager implements AgentManager {
         this.pumpAgain = false;
         if (this.queue.length === 0) break;
         // Re-read every time a slot frees so settings changes apply without a restart, and
-        // re-sample the machine so an automatic limit follows its free cores and memory.
+        // re-sample the machine so an automatic limit follows its free cores and memory, and a
+        // tripped load guard holds new runs until the sampler below sees the load drop. (A slot
+        // lent by a run idling in board_wait_for_cards is still free to its child cards.)
         const settings = await getAppSettings(this.repo);
-        this.limit = resolveConcurrency(settings.maxConcurrentAgents, this.active.size).limit;
+        this.limit = resolveConcurrency(
+          settings.maxConcurrentAgents,
+          this.active.size,
+          undefined,
+          readLoadHold(settings),
+        ).limit;
         if (this.active.size - this.lent >= this.limit) continue;
         // Start order, skipping cards that wait for unfinished cards (Task.blockedBy) or for their
         // board's smart-queue plan. The queued cards' blockers are read in parallel.
@@ -796,6 +832,7 @@ class OmpAgentManager implements AgentManager {
   }
 
   private launch(taskId: string, settings: AppSettings): void {
+    const now = Date.now();
     const run: ActiveRun = {
       taskId,
       boardId: "",
@@ -818,12 +855,18 @@ class OmpAgentManager implements AgentManager {
       advisor: null,
       advisorFollowUp: false,
       todos: null,
-      launchedAt: new Date().toISOString(),
+      launchedAt: new Date(now).toISOString(),
       stampedTodos: null,
       context: null,
+      lastActivityAt: now,
+      sessionUsage: { costUsd: 0, tokens: 0 },
+      loop: settings.loopDetection ? new LoopDetector() : null,
+      loopStrikes: 0,
       chain: Promise.resolve(),
     };
     this.active.set(taskId, run);
+    this.supervisor ??= setInterval(() => void this.superviseRuns(), guardTickMs());
+    this.supervisor.unref();
     this.enqueue(run, () => this.startRun(run, settings));
   }
 
@@ -842,6 +885,7 @@ class OmpAgentManager implements AgentManager {
     for (const call of run.hostCalls.values()) call.abort();
     run.hostCalls.clear();
     if (this.active.get(run.taskId) === run) this.active.delete(run.taskId);
+    this.stopSupervisorIfIdle();
     // The agent may have written files or screenshots into the card's folder.
     if (run.boardId) publish({ type: "files.updated", boardId: run.boardId, taskId: run.taskId });
     if (run.proc && !run.closing) {
@@ -878,6 +922,60 @@ class OmpAgentManager implements AgentManager {
     } catch (err) {
       console.error(`[agent] failed to shut down omp for task ${run.taskId}:`, err);
     }
+  }
+
+  // --- Run guards (lib/agent/run-guards.ts) ----------------------------------------------
+
+  /**
+   * Supervisor tick. Settings are read on every tick, so toggling a guard applies to runs already
+   * working; with every guard off nothing else happens. A tripped run fails from its own chain;
+   * release() closes its process (stdin end, then SIGTERM/SIGKILL), which also ends a stalled one.
+   */
+  private async superviseRuns(): Promise<void> {
+    let settings: AppSettings;
+    try {
+      settings = await getAppSettings(this.repo);
+    } catch (err) {
+      console.error("[agent] run guards could not read the settings:", err);
+      return;
+    }
+    if (!guardsEnabled(settings)) return;
+    const now = Date.now();
+    for (const run of this.active.values()) {
+      if (run.finished || !run.promptSent) continue;
+      const waitingOnHost = run.hostCalls.size > 0;
+      // A board-tool wait sends no frames: the stall clock restarts once it ends.
+      if (waitingOnHost) run.lastActivityAt = now;
+      const launchedAt = Date.parse(run.launchedAt);
+      const hit = evaluateRunGuards(
+        { launchedAt, lastActivityAt: run.lastActivityAt, waitingOnHost, ...this.runUsage(run) },
+        settings,
+        now,
+      );
+      if (hit) this.enqueue(run, () => this.fail(run, hit.message, { retry: hit.retry }));
+    }
+  }
+
+  /** The budget guard right after omp reported new spend, without waiting for the tick. */
+  private async checkBudget(run: ActiveRun): Promise<void> {
+    try {
+      const settings = await getAppSettings(this.repo);
+      const hit = run.finished ? null : evaluateBudget(this.runUsage(run), settings);
+      if (hit) this.enqueue(run, () => this.fail(run, hit.message, { retry: hit.retry }));
+    } catch (err) {
+      console.error(`[agent] budget check failed for task ${run.taskId}:`, err);
+    }
+  }
+
+  /** Spend of the run's omp session plus its subagents. */
+  private runUsage(run: ActiveRun): RunUsage {
+    return totalUsage(run.sessionUsage, Array.from(run.subagents.values(), (tracked) => tracked.snapshot));
+  }
+
+  private stopSupervisorIfIdle(): void {
+    if (this.active.size > 0 || !this.supervisor) return;
+    clearInterval(this.supervisor);
+    this.supervisor = undefined;
   }
 
   // --- Run lifecycle ---------------------------------------------------------------------
@@ -1007,6 +1105,19 @@ class OmpAgentManager implements AgentManager {
       await this.event(run, "status", `Skipped missing folder ${folder}`);
     }
     if (run.finished) return;
+    if (settings.gitCheckpoints) {
+      // Snapshot the git folders before the agent touches them, so the card can roll its run back.
+      const { saved, errors } = await createCheckpoints([workdir, ...extraFolders], {
+        taskId: task.id,
+        runId: created.id,
+        label: "Before run",
+      });
+      if (saved.length > 0) {
+        await this.event(run, "status", `Checkpoint saved (${saved.length} folder${saved.length === 1 ? "" : "s"})`);
+      }
+      for (const message of errors) await this.event(run, "error", `Checkpoint failed: ${message}`);
+      if (run.finished) return;
+    }
 
     const proc = new OmpRpcProcess({
       command: settings.ompPath,
@@ -1017,6 +1128,7 @@ class OmpAgentManager implements AgentManager {
     });
     run.proc = proc;
     proc.on("frame", (frame) => {
+      run.lastActivityAt = Date.now();
       // Board tools run outside the chain: a wait can last minutes while frames keep flowing.
       if (frame.type === "host_tool_call" || frame.type === "host_tool_cancel") {
         this.onHostTool(run, proc, frame);
@@ -1100,6 +1212,7 @@ class OmpAgentManager implements AgentManager {
       }
       case "tool_execution_start":
         await this.event(run, "tool", describeToolStart(frame));
+        run.loop?.start(frame.toolCallId, frame.toolName, frame.args);
         break;
       case "tool_execution_update":
         for (const patch of taskToolPatches(frame)) await this.trackSubagent(run, patch);
@@ -1113,6 +1226,7 @@ class OmpAgentManager implements AgentManager {
         } else if (frame.toolName === "todo") {
           await this.trackTodos(run, frame.result);
         }
+        if (run.loop) await this.onLoop(run, run.loop.end(frame.toolCallId, frame.isError, frame.result));
         break;
       case "agent_end": {
         if (frame.isTerminal === false) break;
@@ -1303,6 +1417,35 @@ class OmpAgentManager implements AgentManager {
         ? errorMessage(info.error, run.ompPath)
         : `omp exited unexpectedly (${describeExit(info)})`,
     );
+  }
+
+  /**
+   * A loop the detector found (inside the run's chain): the first one steers the agent to change
+   * approach, the second fails the run without a retry, which would only loop again. Settings are
+   * re-read here, not per frame, so turning loop detection off mid-run stops the enforcement.
+   */
+  private async onLoop(run: ActiveRun, detection: LoopDetection | null): Promise<void> {
+    if (!detection || run.finished) return;
+    if (!(await getAppSettings(this.repo)).loopDetection) {
+      run.loop = null;
+      return;
+    }
+    run.loopStrikes += 1;
+    if (run.loopStrikes > 1) {
+      await this.fail(run, `Stopped: the agent kept looping (${detection.summary})`, { retry: false });
+      return;
+    }
+    await this.event(run, "error", `Loop detected: ${detection.summary}. Asked the agent to change approach.`);
+    try {
+      // Steered like user feedback (see steer()); its own id keeps the response apart from the run's prompt.
+      await run.proc?.send(
+        { id: `loop-${run.runId}-${run.loopStrikes}`, type: "prompt", message: loopSteerMessage(detection), streamingBehavior: "steer" },
+        { timeoutMs: run.proc.commandTimeoutMs },
+      );
+    } catch (err) {
+      // The second strike still stops a run that keeps looping.
+      console.error(`[agent] failed to steer a looping agent for task ${run.taskId}:`, err);
+    }
   }
 
   private async steer(run: ActiveRun, comment: Comment): Promise<void> {
@@ -1546,7 +1689,11 @@ class OmpAgentManager implements AgentManager {
     }
   }
 
-  private async fail(run: ActiveRun, message: string): Promise<void> {
+  /**
+   * Record the run as failed and release it. `retry: false` (run guards: time limit, budget,
+   * loop detection) skips the automatic retry, which would only hit the same guard again.
+   */
+  private async fail(run: ActiveRun, message: string, options: { retry?: boolean } = {}): Promise<void> {
     if (run.finished) return;
     run.finished = true;
     const repo = this.repo;
@@ -1563,7 +1710,7 @@ class OmpAgentManager implements AgentManager {
         await this.event(run, "error", message);
       }
       // Feedback that arrived meanwhile starts a fresh run once this one is released.
-      const failure = await this.recordFailure(run.taskId, message, !run.restartAfter);
+      const failure = await this.recordFailure(run.taskId, message, !run.restartAfter && options.retry !== false);
       retryAt = failure.retryAt;
       if (failure.task) {
         await this.addAgentComment(failure.task, `Agent failed: ${message}${failure.note ? `\n\n${failure.note}` : ""}`);
@@ -1620,9 +1767,10 @@ class OmpAgentManager implements AgentManager {
   }
 
   /**
-   * Ask omp how full the run's context window is and publish a live `run.context` when it changed.
-   * Fire-and-forget: frames are handled serially, so the frame queue never waits on it; failures
-   * (old omp, timeout, exited process) are ignored.
+   * Ask omp how full the run's context window is and publish a live `run.context` when it or the
+   * session's spend changed; the same stats carry the session's spend for the budget guard and the
+   * event's `usage`. Fire-and-forget: frames are handled serially, so the frame queue never waits
+   * on it; failures (old omp, timeout, exited process) are ignored.
    */
   private refreshContext(run: ActiveRun): void {
     const proc = run.proc;
@@ -1631,15 +1779,31 @@ class OmpAgentManager implements AgentManager {
       .send({ type: "get_session_stats" }, { timeoutMs: CONTEXT_STATS_TIMEOUT_MS })
       .then((response) => {
         if (run.finished || !run.runId) return;
+        const spent = sessionUsage(response.data);
+        const spendChanged =
+          spent !== null && (spent.costUsd !== run.sessionUsage.costUsd || spent.tokens !== run.sessionUsage.tokens);
+        if (spent) {
+          run.sessionUsage = spent;
+          void this.checkBudget(run);
+        }
         const usage = isObject(response.data) ? response.data.contextUsage : undefined;
         if (!isObject(usage)) return;
         const tokens = asNumber(usage.tokens);
         if (tokens === undefined || tokens < 0) return;
         const window = asNumber(usage.contextWindow) ?? 0;
         const context: ContextUsage = { tokens, contextWindow: window > 0 ? window : 0 };
-        if (run.context?.tokens === context.tokens && run.context.contextWindow === context.contextWindow) return;
+        const contextChanged =
+          run.context?.tokens !== context.tokens || run.context.contextWindow !== context.contextWindow;
+        if (!contextChanged && !spendChanged) return;
         run.context = context;
-        publish({ type: "run.context", runId: run.runId, taskId: run.taskId, boardId: run.boardId, context });
+        publish({
+          type: "run.context",
+          runId: run.runId,
+          taskId: run.taskId,
+          boardId: run.boardId,
+          context,
+          ...(spent ? { usage: spent } : {}),
+        });
       })
       .catch(() => undefined);
   }
@@ -1664,6 +1828,9 @@ class OmpAgentManager implements AgentManager {
       snapshot.error !== tracked.snapshot.error;
     tracked.snapshot = snapshot;
     if (milestone) {
+      // A status change or final report carries the subagent's latest spend; progress in
+      // between is left to the supervisor tick (no settings read per progress frame).
+      void this.checkBudget(run);
       await this.persistSubagent(run, tracked);
       return;
     }
@@ -1976,10 +2143,13 @@ async function createAgentManager(): Promise<AgentManager> {
   const repo = await getRepo();
   await repo.abortRunningRuns("Server restarted");
   const manager = new OmpAgentManager(repo);
+  // Before recovery, which may start queued runs: their traces must see the runs start.
+  startTelemetryExporter(() => getAppSettings(repo));
   await manager.recover();
   startCleanupScheduler(repo, manager);
   startCredentialHealthChecks(repo);
   startSchedulerService(repo, manager);
+  startChatIntegrations(repo, manager);
   return manager;
 }
 

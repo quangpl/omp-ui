@@ -5,6 +5,9 @@ import type {
   Board,
   BoardWithCounts,
   BoardPushResult,
+  ChatPlatform,
+  ChatPlatformStatus,
+  ChatStatusResponse,
   Comment,
   CleanupStatus,
   AiStats,
@@ -22,6 +25,7 @@ import type {
   MaintenanceAction,
   MaintenanceReport,
   MaintenanceResult,
+  ProjectFileContent,
   ProjectFileHit,
   QueueSnapshot,
   RestartStatus,
@@ -35,6 +39,7 @@ import type {
   SystemStats,
   SharedFiles,
   Task,
+  TaskCheckpoint,
   TaskStatus,
   TaskWorkspace,
 } from "@/lib/types";
@@ -135,6 +140,25 @@ export interface TaskDetail {
   task: Task;
   comments: Comment[];
   runs: Run[];
+}
+
+/** GET /tasks/:id/checkpoints. `enabled`: new runs take checkpoints (Settings → gitCheckpoints). */
+export interface TaskCheckpointList {
+  checkpoints: TaskCheckpoint[];
+  enabled: boolean;
+}
+
+/** POST /tasks/:id/checkpoints/restore. */
+export interface CheckpointRestoreResult {
+  checkpoint: TaskCheckpoint;
+  /** Snapshot taken just before the restore; restoring it undoes the restore. */
+  undo: TaskCheckpoint;
+  /** Number of files written back from the checkpoint. */
+  restored: number;
+  /** Number of files deleted because the checkpoint did not have them. */
+  removed: number;
+  /** The agent comment noting the rollback on the card. */
+  comment: Comment;
 }
 
 export interface SystemInfo {
@@ -241,6 +265,22 @@ export const api = {
     get: () => request<AppSettings>("/settings"),
     update: (patch: Partial<AppSettings>) =>
       request<AppSettings>("/settings", { method: "PATCH", json: patch }),
+    /** Send one test span to an OTLP/HTTP traces endpoint (Settings → Orchestration); `ok` = collector accepted it. */
+    testTelemetry: (endpoint: string) =>
+      request<{ ok: boolean; status: number | null; error: string | null }>("/settings/telemetry/test", {
+        method: "POST",
+        json: { endpoint },
+      }),
+  },
+  /** Telegram / Discord bots that control AgentMan from chat (Settings → Chat integrations). */
+  chat: {
+    status: () => request<ChatStatusResponse>("/chat/status"),
+    /** Validate and store the bot token, then start the bot; 400 with the reason for a bad token. */
+    connect: (platform: ChatPlatform, body: { token: string; webhookUrl?: string | null }) =>
+      request<ChatPlatformStatus>(`/chat/${platform}/connect`, { method: "POST", json: body }),
+    /** Stop the bot and forget its token (authorized chat users are kept). */
+    disconnect: (platform: ChatPlatform) =>
+      request<ChatPlatformStatus>(`/chat/${platform}/disconnect`, { method: "POST" }),
   },
   /** Scheduled cleanup of AgentMan data (Settings → Cleanup); schedule and targets save via `settings.update`. */
   cleanup: {
@@ -346,11 +386,23 @@ export const api = {
     /** Delete these cards of the board (ids elsewhere are skipped); resolves with the deleted ids. */
     deleteTasks: (id: string, ids: string[]) =>
       request<{ deleted: string[] }>(`/boards/${id}/tasks`, { method: "DELETE", json: { ids } }),
-    /** "@" mention candidates from the board's project folders; pass `signal` to drop stale queries. */
-    projectFiles: (boardId: string, query: string, init?: { signal?: AbortSignal }) =>
-      request<{ files: ProjectFileHit[] }>(`/boards/${boardId}/project-files?q=${encodeURIComponent(query)}`, {
+    /**
+     * "@" mention candidates from the board's project folders; pass `signal` to drop stale queries.
+     * A query ending in "/" (or "") lists that directory's children (the Files tab tree); `limit` ≤ 1000.
+     */
+    projectFiles: (boardId: string, query: string, init?: { signal?: AbortSignal; limit?: number }) =>
+      request<{ files: ProjectFileHit[] }>(
+        `/boards/${boardId}/project-files?q=${encodeURIComponent(query)}${init?.limit ? `&limit=${init.limit}` : ""}`,
+        { signal: init?.signal },
+      ),
+    /** Text of one project file (`path` as in `ProjectFileHit.insert`); 413 over 2 MB, 415 for binary files. */
+    readProjectFile: (boardId: string, path: string, init?: { signal?: AbortSignal }) =>
+      request<ProjectFileContent>(`/boards/${boardId}/project-files/content?path=${encodeURIComponent(path)}`, {
         signal: init?.signal,
       }),
+    /** Overwrite an existing project file; 409 when it changed on disk since `baseMtimeMs`. */
+    writeProjectFile: (boardId: string, input: { path: string; content: string; baseMtimeMs: number }) =>
+      request<ProjectFileContent>(`/boards/${boardId}/project-files/content`, { method: "PUT", json: input }),
   },
   /** Recurring cards (Schedulers tab). Cron is evaluated in the scheduler's IANA `timezone`. */
   schedulers: {
@@ -440,6 +492,13 @@ export const api = {
         method: options.regenerate ? "POST" : "GET",
         signal: options.signal,
       }),
+  },
+  /** Git snapshots of a card's folders taken before each run (and before each restore). */
+  checkpoints: {
+    list: (taskId: string) => request<TaskCheckpointList>(`/tasks/${taskId}/checkpoints`),
+    /** Roll `folder`'s files back to checkpoint `id` (refused while the card's agent runs). */
+    restore: (taskId: string, input: { id: string; folder: string }) =>
+      request<CheckpointRestoreResult>(`/tasks/${taskId}/checkpoints/restore`, { method: "POST", json: input }),
   },
   /** Files shared on a card (`scope` "tasks") or on a whole board (`scope` "boards"). */
   files: {

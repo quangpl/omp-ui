@@ -11,7 +11,7 @@
 //                         streamingBehavior starts a prompt).
 //   FAKE_OMP_SCENARIO     Default prompt behaviour: success | question | error | quota | crash | slow |
 //                         confirm | stream | orchestrate | board_tools | todos | todos_done | todos_steer |
-//                         todos_feedback.
+//                         todos_feedback | loop | spend.
 //                         "error" ends the run with an assistant error (a plain model failure); "quota"
 //                         ends it with a quota / usage-limit error (429), as a provider out of quota does.
 //                         "todos" reports two `todo` tool results (the agent's todo list), then succeeds.
@@ -20,11 +20,18 @@
 //                         an item for the feedback appended (in_progress), then with that item completed,
 //                         then succeeds. "todos_feedback" does the same without waiting for a steer (the
 //                         feedback came with the prompt, as in a resumed run).
+//                         "loop" repeats the same `read` call (same args, same result) every ~30 ms,
+//                         40 times, then succeeds; it stops early if the run is aborted meanwhile.
 //                         "question" succeeds with a summary that ends in a question for the user.
 //                         "stream" emits 2 thinking_delta + 15 text_delta frames ~80ms apart, then succeeds.
 //                         "orchestrate" runs a `task` call with two subagents (Scout succeeds, Builder
 //                         fails), reporting progress via task tool updates and, when subscribed via
 //                         set_subagent_subscription, subagent_lifecycle/subagent_progress frames.
+//                         "spend" ends one assistant message (stopReason toolUse), then works silently
+//                         like "slow" (the session's spend is in get_session_stats; see below).
+//                         "slow" acknowledges the prompt, then sends nothing until a steer or abort.
+//   FAKE_OMP_COST_PER_MESSAGE  USD each assistant message adds to `get_session_stats` (default 0);
+//                         `tokens.total` grows by 1000 per assistant message, `contextUsage.tokens` too.
 //   FAKE_OMP_STEP_MS      Delay between orchestrate steps (default 80).
 //                         "board_tools" calls the host tools listed in the prompt as
 //                         `<calls>[{"toolName", "arguments"}]</calls>` one after another (`"$created"`
@@ -174,9 +181,12 @@ let subagentLevel = "off";
 const hostWaiters = new Map();
 const hostResults = new Map();
 let hostCallSeq = 0;
+/** Assistant messages ended so far: what `get_session_stats` reports as spent. */
+let assistantMessages = 0;
 
 function emit(frame) {
   process.stdout.write(`${JSON.stringify(frame)}\n`);
+  if (frame.type === "message_end" && frame.message?.role === "assistant") assistantMessages++;
 }
 
 function respond(command, data) {
@@ -532,6 +542,28 @@ async function feedbackTodos(current, waitForSteer) {
   completeSuccessfully("Fake summary: addressed the feedback.");
 }
 
+const LOOP_REPEATS = 40;
+const LOOP_DELAY_MS = 30;
+
+/** The same `read` call with the same result over and over; stops if the run is aborted meanwhile. */
+async function loopCalls(current) {
+  for (let n = 1; n <= LOOP_REPEATS; n++) {
+    if (run !== current) return;
+    const toolCallId = `loop-${n}`;
+    emit({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "src/a.ts", intent: `Reading again (${n})` } });
+    emit({
+      type: "tool_execution_end",
+      toolCallId,
+      toolName: "read",
+      result: { content: [{ type: "text", text: "export const a = 1;" }] },
+      isError: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, LOOP_DELAY_MS));
+  }
+  if (run !== current) return;
+  completeSuccessfully("Fake summary: read the file many times.");
+}
+
 async function startPrompt(command) {
   const cardWriterPrompt = String(command.message ?? "").startsWith("You are the card writer");
   const scenario = cardWriterPrompt ? "card_writer" : scenarioOf(command.message);
@@ -571,6 +603,11 @@ async function startPrompt(command) {
     case "slow":
       // Completes on steer, or ends aborted on abort.
       break;
+    case "spend":
+      emit({ type: "message_start", message: assistant("", "toolUse") });
+      emit({ type: "message_end", message: assistant("Working on it.", "toolUse") });
+      // Then works silently until aborted, like "slow".
+      break;
     case "stream":
       await streamSuccessfully(run);
       break;
@@ -588,6 +625,9 @@ async function startPrompt(command) {
     case "todos_steer":
     case "todos_feedback":
       await feedbackTodos(run, scenario === "todos_steer");
+      break;
+    case "loop":
+      await loopCalls(run);
       break;
     case "board_tools":
       await boardTools(command.message);
@@ -696,6 +736,16 @@ async function handle(command) {
     case "get_last_assistant_text":
       respond(command, { text: lastAssistantText });
       return;
+    case "get_session_stats": {
+      const costPerMessage = Number(process.env.FAKE_OMP_COST_PER_MESSAGE) || 0;
+      const tokens = assistantMessages * 1000;
+      respond(command, {
+        tokens: { total: tokens },
+        cost: assistantMessages * costPerMessage,
+        contextUsage: { tokens, contextWindow: 200_000 },
+      });
+      return;
+    }
     case "new_session":
       if (run) finishRun(assistant("", "aborted", "Session replaced"));
       lastAssistantText = null;

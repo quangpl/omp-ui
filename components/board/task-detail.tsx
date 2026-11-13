@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   AlignLeft,
@@ -9,6 +9,7 @@ import {
   CircleHelp,
   Ellipsis,
   FileDiff,
+  FolderOpen,
   LoaderCircle,
   MessageSquare,
   Paperclip,
@@ -78,9 +79,11 @@ import { ShipActions, canShip, shipLabels, shipTask, useTaskGitStatus } from "@/
 import { AgentStateBadge } from "@/components/board/task-card";
 import { CreatedByNote, DelegatedCards, DependenciesSection } from "@/components/board/task-relations";
 import { WorkspaceSection } from "@/components/board/task-workspace";
+import { CheckpointsPanel } from "@/components/board/checkpoints-panel";
 import { isQuotaError } from "@/lib/quota";
 import { todoProgress } from "@/lib/todos";
 import { FilesPanel } from "@/components/files-panel";
+import { FilesWorkspace } from "@/components/board/files-workspace";
 
 export interface TaskDetailProps {
   /** Selected card, or null when the panel is closed. */
@@ -109,68 +112,162 @@ export interface TaskDetailProps {
   onGitChanged: () => void;
 }
 
-/** Card details: a right-hand sheet on desktop, a near full-height drawer on phones. */
+/** Card whose Files tab holds unsaved edits, and the edited file's name. */
+interface DirtyFile {
+  taskId: string;
+  name: string;
+}
+
+/** Discard-edits confirmation. Its texts stay put while it animates closed. */
+interface DiscardPrompt {
+  open: boolean;
+  /** Discard closes the panel (X, Esc, overlay, swipe); otherwise it lets an outside switch or close through. */
+  close: boolean;
+  /** Another card is being opened (wording). */
+  nextCard: boolean;
+  name: string;
+}
+
+/**
+ * Card details: a right-hand sheet on desktop, a near full-height drawer on phones.
+ *
+ * Unsaved Files-tab edits are guarded: closing the panel asks first, and so does any switch or close
+ * from outside it (J / K, card links, browser Back): the edited card stays shown meanwhile and Keep
+ * editing restores its URL. Forced closes (card deleted or missing) drop the edits.
+ */
 export function TaskDetail(props: TaskDetailProps) {
-  const { taskId, isMobile, onClose } = props;
-  // The Changes tab widens the desktop sheet so diffs and their file list fit side by side.
-  const [wide, setWide] = useState(false);
+  const { taskId, isMobile, onClose, onOpenTask } = props;
+  // Changes widens the desktop sheet so diffs and their file list fit side by side; Files takes
+  // nearly the whole screen for the tree, the editor and the chat.
+  const [width, setWidth] = useState<DetailWidth>("normal");
   // Keep rendering the last card while the panel animates closed.
   const [shownId, setShownId] = useState(taskId);
   useEffect(() => {
     if (taskId) setShownId(taskId);
   }, [taskId]);
 
-  const open = taskId !== null;
+  const [dirty, setDirty] = useState<DirtyFile | null>(null);
+  const [prompt, setPrompt] = useState<DiscardPrompt>({ open: false, close: false, nextCard: false, name: "" });
+  const [prevTaskId, setPrevTaskId] = useState(taskId);
+  if (taskId !== prevTaskId) {
+    setPrevTaskId(taskId);
+    if (dirty && taskId !== dirty.taskId) {
+      setPrompt({ open: true, close: false, nextCard: taskId !== null, name: dirty.name });
+    }
+  }
+  // Keep editing after an outside switch or close: point the URL back at the edited card.
+  const leftDirty = !prompt.open && dirty !== null && taskId !== dirty.taskId;
+  useEffect(() => {
+    if (leftDirty && dirty) onOpenTask(dirty.taskId);
+  }, [leftDirty, dirty, onOpenTask]);
+
+  // Until the edits are discarded, the edited card stays shown (and the panel open).
+  const open = taskId !== null || dirty !== null;
   const onOpenChange = (next: boolean) => {
-    if (!next) onClose();
+    if (next) return;
+    if (dirty) setPrompt({ open: true, close: true, nextCard: false, name: dirty.name });
+    else onClose();
   };
-  const visibleId = taskId ?? shownId;
+  const forceClose = () => {
+    setDirty(null);
+    onClose();
+  };
+  const discard = () => {
+    setPrompt((current) => ({ ...current, open: false }));
+    setDirty(null);
+    if (prompt.close) onClose();
+  };
+
+  const visibleId = dirty?.taskId ?? taskId ?? shownId;
+  // While a switch waits on the confirmation, the board's selected card is the next one.
+  const boardTask = props.boardTask?.id === visibleId ? props.boardTask : undefined;
   const content = visibleId ? (
-    <TaskDetailBody key={visibleId} {...props} taskId={visibleId} onWideChange={setWide} />
+    <TaskDetailBody
+      key={visibleId}
+      {...props}
+      taskId={visibleId}
+      boardTask={boardTask}
+      onClose={forceClose}
+      onWidthChange={setWidth}
+      onDirtyChange={setDirty}
+    />
   ) : null;
-  const title = props.boardTask?.title ?? "Card";
+  const title = boardTask?.title ?? "Card";
+
+  const discardDialog = (
+    <AlertDialog
+      open={prompt.open}
+      onOpenChange={(next) => !next && setPrompt((current) => ({ ...current, open: false }))}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Discard unsaved changes to {prompt.name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {prompt.nextCard ? "Opening another card" : "Closing the card"} drops your edits. Save first to
+            keep them.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel className="max-md:h-11">Keep editing</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" className="max-md:h-11" onClick={discard}>
+            Discard
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
 
   if (isMobile) {
     return (
-      <Drawer open={open} onOpenChange={onOpenChange}>
-        <DrawerContent
-          className="h-[calc(100dvh-1rem-env(safe-area-inset-top))] outline-none data-[vaul-drawer-direction=bottom]:mt-0 data-[vaul-drawer-direction=bottom]:max-h-[calc(100dvh-1rem-env(safe-area-inset-top))] data-[vaul-drawer-direction=bottom]:rounded-t-2xl"
-          onOpenAutoFocus={focusPanel}
-          onEscapeKeyDown={keepOpenWhileEditing}
-        >
-          <DrawerTitle className="sr-only">{title}</DrawerTitle>
-          <DrawerDescription className="sr-only">Card details, feedback and agent log</DrawerDescription>
-          <DrawerClose asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="absolute top-2.5 right-2 z-20 size-11 rounded-full text-muted-foreground pressable-icon hover:text-foreground"
-            >
-              <X />
-              <span className="sr-only">Close</span>
-            </Button>
-          </DrawerClose>
-          {content}
-        </DrawerContent>
-      </Drawer>
+      <>
+        <Drawer open={open} onOpenChange={onOpenChange}>
+          <DrawerContent
+            className="h-[calc(100dvh-1rem-env(safe-area-inset-top))] outline-none data-[vaul-drawer-direction=bottom]:mt-0 data-[vaul-drawer-direction=bottom]:max-h-[calc(100dvh-1rem-env(safe-area-inset-top))] data-[vaul-drawer-direction=bottom]:rounded-t-2xl"
+            onOpenAutoFocus={focusPanel}
+            onEscapeKeyDown={keepOpenWhileEditing}
+          >
+            <DrawerTitle className="sr-only">{title}</DrawerTitle>
+            <DrawerDescription className="sr-only">Card details, feedback and agent log</DrawerDescription>
+            <DrawerClose asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute top-2.5 right-2 z-20 size-11 rounded-full text-muted-foreground pressable-icon hover:text-foreground"
+              >
+                <X />
+                <span className="sr-only">Close</span>
+              </Button>
+            </DrawerClose>
+            {content}
+          </DrawerContent>
+        </Drawer>
+        {discardDialog}
+      </>
     );
   }
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        className={cn(
-          "w-full gap-0 p-0 outline-none data-[side=right]:sm:max-w-xl",
-          wide ? "data-[side=right]:lg:max-w-5xl" : "data-[side=right]:xl:max-w-2xl",
-        )}
-        onOpenAutoFocus={focusPanel}
-        onEscapeKeyDown={keepOpenWhileEditing}
-      >
-        <SheetTitle className="sr-only">{title}</SheetTitle>
-        <SheetDescription className="sr-only">Card details, feedback and agent log</SheetDescription>
-        {content}
-      </SheetContent>
-    </Sheet>
+    <>
+      <Sheet open={open} onOpenChange={onOpenChange}>
+        <SheetContent
+          className={cn(
+            "w-full gap-0 p-0 outline-none data-[side=right]:sm:max-w-xl",
+            width === "full"
+              ? "data-[side=right]:md:max-w-[min(96vw,90rem)]"
+              : width === "wide"
+                ? "data-[side=right]:lg:max-w-5xl"
+                : "data-[side=right]:xl:max-w-2xl",
+          )}
+          onOpenAutoFocus={focusPanel}
+          onEscapeKeyDown={keepOpenWhileEditing}
+        >
+          <SheetTitle className="sr-only">{title}</SheetTitle>
+          <SheetDescription className="sr-only">Card details, feedback and agent log</SheetDescription>
+          {content}
+        </SheetContent>
+      </Sheet>
+      {discardDialog}
+    </>
   );
 }
 
@@ -186,15 +283,16 @@ function focusPanel(event: Event) {
 /**
  * Esc inside a text field leaves the field (fields revert their own edits) instead of closing the panel.
  * Radix sees Escape before the field does: with autocomplete suggestions or a word completion showing,
- * Escape only hides them (the field's handler) and the field keeps focus.
+ * Escape only hides them (the field's handler) and the field keeps focus. The Files tab's CodeMirror
+ * editor (a contentEditable inside `.cm-editor`) counts as a text field.
  */
 function keepOpenWhileEditing(event: KeyboardEvent) {
   const target = event.target;
-  if (target instanceof HTMLElement && target.matches("textarea, input")) {
-    event.preventDefault();
-    if (target.getAttribute("aria-expanded") === "true" || target.hasAttribute("data-suggesting")) return;
-    requestAnimationFrame(() => target.blur());
-  }
+  if (!(target instanceof HTMLElement)) return;
+  if (!target.matches("textarea, input") && !target.isContentEditable && !target.closest(".cm-editor")) return;
+  event.preventDefault();
+  if (target.getAttribute("aria-expanded") === "true" || target.hasAttribute("data-suggesting")) return;
+  requestAnimationFrame(() => target.blur());
 }
 
 /** A copy received over SSE (`value: null` = deleted) and when it arrived (`performance.now()`). */
@@ -237,8 +335,22 @@ interface DetailState {
 }
 
 /** Panel tabs in order; ] / [ step through them. */
-const DETAIL_TABS = ["activity", "log", "changes"] as const;
+const DETAIL_TABS = ["activity", "log", "changes", "files"] as const;
 type DetailTab = (typeof DETAIL_TABS)[number];
+
+/** Desktop sheet width: normal, wide (Changes) or nearly full screen (Files). */
+type DetailWidth = "normal" | "wide" | "full";
+
+/** Keys that scroll a focused scroll container. */
+const SCROLL_KEYS: Record<string, true> = {
+  PageUp: true,
+  PageDown: true,
+  Home: true,
+  End: true,
+  " ": true,
+  ArrowUp: true,
+  ArrowDown: true,
+};
 
 function TaskDetailBody({
   taskId,
@@ -254,10 +366,23 @@ function TaskDetailBody({
   revertToTodo,
   gitStatuses,
   onGitChanged,
-  onWideChange,
-}: TaskDetailProps & { taskId: string; onWideChange: (wide: boolean) => void }) {
+  onWidthChange,
+  onDirtyChange,
+}: TaskDetailProps & {
+  taskId: string;
+  onWidthChange: (width: DetailWidth) => void;
+  /** The Files tab's unsaved edits (null: none). */
+  onDirtyChange: (dirty: DirtyFile | null) => void;
+}) {
   const [detail, setDetail] = useState<DetailState | null>(null);
   const [tab, setTab] = useState<DetailTab>("activity");
+  // The Files tab mounts on first open (it lists and reads project files), then stays mounted.
+  const [filesOpened, setFilesOpened] = useState(false);
+  if (tab === "files" && !filesOpened) setFilesOpened(true);
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const tabBarRef = useRef<HTMLDivElement>(null);
+  const detailsRef = useRef<HTMLDivElement>(null);
+  const filesRef = useRef<HTMLDivElement>(null);
   const [agentBusy, setAgentBusy] = useState(false);
   const [shipRequested, setShipRequested] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -371,7 +496,66 @@ function TaskDetailBody({
     task?.agentState,
     tab === "changes" && (task?.agentState === "running" || task?.agentState === "queued"),
   );
-  useEffect(() => onWideChange(tab === "changes"), [tab, onWideChange]);
+  useEffect(
+    () => onWidthChange(tab === "files" ? "full" : tab === "changes" ? "wide" : "normal"),
+    [tab, onWidthChange],
+  );
+  // Desktop Files tab: the workspace fills exactly the scroll area below the sticky tab bar, scrolled
+  // so the bar is at the top (toolbar, editor and chat composer all in view). Re-fits on resizes
+  // (window, the sheet widening, the details above reflowing) until the user scrolls the panel away.
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    const tabs = tabsRef.current;
+    const bar = tabBarRef.current;
+    const details = detailsRef.current;
+    const files = filesRef.current;
+    if (tab !== "files" || isMobile || !scroll || !tabs || !bar || !details || !files) return;
+    // Decided from user input, not scrollTop: scroll anchoring, clamping while layout settles and
+    // scrollIntoView/focus inside the workspace all move scrollTop without the user scrolling away.
+    let userScrolled = false;
+    const fit = () => {
+      files.style.height = `${scroll.clientHeight - bar.offsetHeight}px`;
+      if (userScrolled) return;
+      // The Tabs root never sticks, so its top is the bar's static position (the bar's own rect
+      // reads as aligned whenever it is stuck).
+      const scrollerTop = scroll.getBoundingClientRect().top + scroll.clientTop;
+      scroll.scrollTop = tabs.getBoundingClientRect().top - scrollerTop + scroll.scrollTop;
+    };
+    // Wheel/touch inside the workspace scrolls the editor, tree or chat, not the panel.
+    const onPointerScroll = (event: Event) => {
+      if (!(event.target instanceof Node) || !files.contains(event.target)) userScrolled = true;
+    };
+    // Scrollbar drags land on the scroll container itself.
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target === scroll) userScrolled = true;
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target === scroll && SCROLL_KEYS[event.key] === true) userScrolled = true;
+    };
+    scroll.style.overflowAnchor = "none";
+    fit();
+    const observer = new ResizeObserver(fit);
+    for (const el of [scroll, bar, details]) observer.observe(el);
+    window.addEventListener("resize", fit);
+    // The sheet animates to full width when this tab opens; fit once more when it settles.
+    const sheet = scroll.closest("[role='dialog']");
+    sheet?.addEventListener("transitionend", fit);
+    scroll.addEventListener("wheel", onPointerScroll, { passive: true });
+    scroll.addEventListener("touchmove", onPointerScroll, { passive: true });
+    scroll.addEventListener("pointerdown", onPointerDown);
+    scroll.addEventListener("keydown", onKeyDown);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", fit);
+      sheet?.removeEventListener("transitionend", fit);
+      scroll.removeEventListener("wheel", onPointerScroll);
+      scroll.removeEventListener("touchmove", onPointerScroll);
+      scroll.removeEventListener("pointerdown", onPointerDown);
+      scroll.removeEventListener("keydown", onKeyDown);
+      scroll.style.overflowAnchor = "";
+      files.style.height = "";
+    };
+  }, [tab, isMobile]);
   const drafting = useQueueDrafting(taskId) && task?.agentState === "queued";
 
   if (!task) {
@@ -650,7 +834,7 @@ function TaskDetailBody({
       </header>
 
       <div ref={scrollRef} className="scrollbar-subtle min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
-        <div className="flex min-w-0 animate-fade-in-soft flex-col gap-6 px-4 pt-4 pb-6 md:px-5 md:pt-5">
+        <div ref={detailsRef} className="flex min-w-0 animate-fade-in-soft flex-col gap-6 px-4 pt-4 pb-6 md:px-5 md:pt-5">
           {task.agentState === "error" && (
             <Alert variant="destructive">
               <TriangleAlert />
@@ -737,6 +921,7 @@ function TaskDetailBody({
           />
           <DelegatedCards task={task} cards={tasks} onOpenCard={onOpenTask} />
           {board.worktrees && <WorkspaceSection task={task} onRemoved={workspaceGit.refresh} />}
+          <CheckpointsPanel task={task} onRestored={workspaceGit.refresh} />
           <DetailSection icon={Paperclip} title="Files">
             <p className="text-xs text-muted-foreground">
               The agent reads these files and saves its outputs and screenshots here.
@@ -749,8 +934,11 @@ function TaskDetailBody({
           </DetailSection>
         </div>
 
-        <Tabs value={tab} onValueChange={(value) => setTab(value as DetailTab)} className="gap-0">
-          <div className="glass-edge sticky top-0 z-10 border-y bg-popover/95 backdrop-blur supports-backdrop-filter:bg-popover/85">
+        <Tabs ref={tabsRef} value={tab} onValueChange={(value) => setTab(value as DetailTab)} className="gap-0">
+          <div
+            ref={tabBarRef}
+            className="glass-edge sticky top-0 z-10 border-y bg-popover/95 backdrop-blur supports-backdrop-filter:bg-popover/85"
+          >
             <div className="scroll-row">
               <TabsList
                 variant="line"
@@ -779,6 +967,10 @@ function TaskDetailBody({
                   {diffState.diff && diffState.diff.stats.files > 0 && (
                     <TabCount>{diffState.diff.stats.files}</TabCount>
                   )}
+                </TabsTrigger>
+                <TabsTrigger value="files" className={TAB_TRIGGER_CLASS}>
+                  <FolderOpen />
+                  Files
                 </TabsTrigger>
                 <span className="ml-auto hidden items-center gap-1 pr-1 text-[11px] text-muted-foreground lg:flex" aria-hidden>
                   <Kbd>[</Kbd>
@@ -812,6 +1004,40 @@ function TaskDetailBody({
           </TabsContent>
           <TabsContent value="changes" forceMount className="min-w-0 data-[state=inactive]:hidden">
             <CodeChanges taskId={task.id} active={active} visible={tab === "changes"} state={diffState} />
+          </TabsContent>
+          {/* Stays mounted once opened so the open file and its unsaved edits survive tab switches.
+              Desktop: sized by the fit effect; sticky inside a parent of its own height, so it never
+              moves, but CodeMirror stops scrolling ancestors at a sticky element (typing scrolls the
+              editor only). */}
+          <TabsContent value="files" forceMount className="min-w-0 data-[state=inactive]:hidden">
+            {filesOpened && (
+              <div ref={filesRef} className={isMobile ? undefined : "sticky top-0 h-[calc(100dvh-7rem)] min-h-96"}>
+                <FilesWorkspace
+                  board={board}
+                  isMobile={isMobile}
+                  onDirtyChange={(name) => onDirtyChange(name ? { taskId, name } : null)}
+                  chat={(openFile) =>
+                    detail ? (
+                      <CommentThread
+                        task={task}
+                        comments={comments}
+                        cards={tasks}
+                        onOpenCard={onOpenTask}
+                        onSend={send}
+                        onSetResolved={setResolved}
+                        runs={runs}
+                        boardId={task.boardId}
+                        onPickFile={(hit) => {
+                          if (hit.kind === "file") openFile(hit.insert);
+                        }}
+                      />
+                    ) : (
+                      <ThreadSkeleton />
+                    )
+                  }
+                />
+              </div>
+            )}
           </TabsContent>
         </Tabs>
 

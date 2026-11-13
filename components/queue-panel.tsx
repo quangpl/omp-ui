@@ -275,6 +275,11 @@ export function QueuePanel({
       <p className="text-xs text-muted-foreground">
         {snapshot.limit} at a time · change it in Settings
       </p>
+      {snapshot.concurrency?.boundBy === "load" && (
+        <p className="text-xs text-pretty text-amber-700 dark:text-amber-400" role="status">
+          {snapshot.concurrency.reason}
+        </p>
+      )}
       {snapshot.planning.length > 0 && (
         <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground" role="status">
           <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin text-primary motion-reduce:animate-none" aria-hidden />
