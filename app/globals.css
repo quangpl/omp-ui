@@ -344,6 +344,62 @@
   animation: shimmer 1.8s linear infinite;
 }
 
+/* ── Working agent: loading motion on a running card ────────────────
+   Indeterminate bar along the card's top edge, a light sweep across the
+   "Working" badge and staggered ellipsis dots. Transform/opacity only. */
+
+@keyframes working-bar {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@keyframes working-shine {
+  0% {
+    transform: translateX(-100%);
+  }
+  60%,
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes working-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.2;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+/* The moving segment; its parent clips it (overflow-hidden) and sets the track width. */
+@utility animate-working-bar {
+  animation: working-bar 1.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+/* Diagonal highlight swept across a pill; absolutely positioned inside an overflow-hidden parent. */
+@utility animate-working-shine {
+  background-image: linear-gradient(
+    100deg,
+    transparent 20%,
+    color-mix(in oklch, currentColor 22%, transparent) 50%,
+    transparent 80%
+  );
+  animation: working-shine 2.4s var(--ease-out-smooth) infinite;
+}
+
+/* Ellipsis dot; set `--dot: <index>` inline to stagger. */
+@utility animate-working-dot {
+  animation: working-dot 1.2s ease-in-out infinite;
+  animation-delay: calc(var(--dot, 0) * 160ms);
+}
+
 /* Hover elevation for interactive cards; hue-tinted shadow, hover-capable
    pointers only so touch scrolling never triggers it. */
 @utility card-lift {
@@ -778,8 +834,14 @@
     animation-duration: 0.01ms;
     animation-delay: 0ms;
   }
-  .animate-shimmer {
+  .animate-shimmer,
+  .animate-working-bar,
+  .animate-working-dot {
     animation: none;
+  }
+  .animate-working-shine {
+    animation: none;
+    opacity: 0;
   }
   .animate-success-ring,
   .animate-success-spark {

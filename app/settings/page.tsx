@@ -12,9 +12,11 @@ import {
   InfoIcon,
   KeyRoundIcon,
   Loader2Icon,
+  MessageCircleIcon,
   PanelLeftIcon,
   RotateCcwIcon,
   ServerIcon,
+  ShieldCheckIcon,
   SmartphoneIcon,
   SquareTerminalIcon,
   TriangleAlertIcon,
@@ -22,11 +24,13 @@ import {
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
 import { PasswordInput } from "@/components/password-input";
+import { ChatSettingsSection } from "@/components/settings/chat-settings";
 import { CleanupSettingsSection } from "@/components/settings/cleanup-settings";
 import { MemorySettingsSection } from "@/components/settings/memory-settings";
 import { MenuSettingsSection } from "@/components/settings/menu-settings";
 import { NotificationSettingsSection } from "@/components/settings/notification-settings";
 import { OmpSettingsSection } from "@/components/settings/omp-settings";
+import { OrchestrationSettingsSection } from "@/components/settings/orchestration-settings";
 import { SettingsNav, type SettingsNavItem } from "@/components/settings/settings-nav";
 import {
   SettingsField,
@@ -94,10 +98,12 @@ const BROWSER_OPTIONS: { value: BrowserMode; label: string; hint: string }[] = [
 
 const SECTIONS: SettingsNavItem[] = [
   { id: "agent", label: "Agent", icon: <CpuIcon /> },
+  { id: "orchestration", label: "Orchestration", icon: <ShieldCheckIcon /> },
   { id: "omp", label: "OMP", icon: <SquareTerminalIcon /> },
   { id: "memory", label: "Memory", icon: <BrainIcon /> },
   { id: "cleanup", label: "Data cleanup", icon: <BrushCleaningIcon /> },
   { id: "notifications", label: "Notifications", icon: <BellIcon /> },
+  { id: "chat", label: "Chat", icon: <MessageCircleIcon /> },
   { id: "menu", label: "Menu", icon: <PanelLeftIcon /> },
   { id: "system", label: "System", icon: <ServerIcon /> },
   { id: "security", label: "Security", icon: <KeyRoundIcon /> },
@@ -854,14 +860,16 @@ export default function SettingsPage() {
               "min-w-0 max-w-3xl space-y-10 md:space-y-12",
               "[&>section+section]:border-t [&>section+section]:pt-10 md:[&>section+section]:pt-12",
               "[&>section]:animate-card-in motion-reduce:[&>section]:animate-none",
-              "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12] [&>section:nth-child(8)]:[--stagger:14] [&>section:nth-child(9)]:[--stagger:16]",
+              "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12] [&>section:nth-child(8)]:[--stagger:14] [&>section:nth-child(9)]:[--stagger:16] [&>section:nth-child(10)]:[--stagger:18] [&>section:nth-child(11)]:[--stagger:20]",
             )}
           >
             <AgentSettingsSection />
+            <OrchestrationSettingsSection />
             <OmpSettingsSection />
             <MemorySettingsSection />
             <CleanupSettingsSection />
             <NotificationSettingsSection />
+            <ChatSettingsSection />
             <MenuSettingsSection />
             <SystemInfoSection />
             <SecuritySection />

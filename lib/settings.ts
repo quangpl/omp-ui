@@ -4,7 +4,9 @@ import {
   CLEANUP_SCHEDULES,
   DASHBOARD_MENU_IDS,
   DEFAULT_SETTINGS,
+  ORCHESTRATION_LIMITS,
   SCHEDULED_CLEANUP_IDS,
+  type OrchestrationNumberKey,
   type AppSettings,
   type ApprovalMode,
   type DashboardMenuId,
@@ -80,7 +82,42 @@ function sanitize(s: AppSettings): AppSettings {
     visibleDashboardMenus: Array.isArray(s.visibleDashboardMenus)
       ? DASHBOARD_MENU_IDS.filter((id) => (s.visibleDashboardMenus as unknown[]).includes(id))
       : [...DEFAULT_SETTINGS.visibleDashboardMenus],
+    // Sealed chat bot tokens (lib/server/chat/store.ts); "" when none.
+    telegramBotToken: typeof s.telegramBotToken === "string" ? s.telegramBotToken : "",
+    discordBotToken: typeof s.discordBotToken === "string" ? s.discordBotToken : "",
+    runTimeLimit: bool(s, "runTimeLimit"),
+    runTimeLimitMinutes: orchestrationNumber(s.runTimeLimitMinutes, "runTimeLimitMinutes"),
+    stallWatchdog: bool(s, "stallWatchdog"),
+    stallTimeoutMinutes: orchestrationNumber(s.stallTimeoutMinutes, "stallTimeoutMinutes"),
+    runBudget: bool(s, "runBudget"),
+    runBudgetUsd: orchestrationNumber(s.runBudgetUsd, "runBudgetUsd"),
+    runBudgetTokens: orchestrationNumber(s.runBudgetTokens, "runBudgetTokens"),
+    loopDetection: bool(s, "loopDetection"),
+    gitCheckpoints: bool(s, "gitCheckpoints"),
+    telemetryExport: bool(s, "telemetryExport"),
+    telemetryEndpoint: typeof s.telemetryEndpoint === "string" ? s.telemetryEndpoint.trim() : "",
+    loadGuard: bool(s, "loadGuard"),
+    loadGuardPercent: orchestrationNumber(s.loadGuardPercent, "loadGuardPercent"),
   };
+}
+
+type BooleanSettingKey = { [K in keyof AppSettings]: AppSettings[K] extends boolean ? K : never }[keyof AppSettings];
+
+/** A stored boolean setting, or its default when missing or not a boolean (older settings). */
+function bool(s: AppSettings, key: BooleanSettingKey): boolean {
+  return typeof s[key] === "boolean" ? s[key] : DEFAULT_SETTINGS[key];
+}
+
+/**
+ * `value` clamped into the setting's ORCHESTRATION_LIMITS; the default when not a finite number.
+ * Dollar amounts keep cents, everything else is a whole number.
+ */
+export function orchestrationNumber(value: unknown, key: OrchestrationNumberKey): number {
+  const n = Number(value);
+  if (value === null || value === "" || typeof value === "boolean" || !Number.isFinite(n)) return DEFAULT_SETTINGS[key];
+  const { min, max } = ORCHESTRATION_LIMITS[key];
+  const rounded = key === "runBudgetUsd" ? Math.round(n * 100) / 100 : Math.floor(n);
+  return Math.min(max, Math.max(min, rounded));
 }
 
 /** Whether `value` names a navigation menu section the user may hide. */

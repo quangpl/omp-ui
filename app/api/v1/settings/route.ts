@@ -5,17 +5,60 @@ import {
   BROWSER_MODES,
   CLEANUP_SCHEDULES,
   DASHBOARD_MENU_IDS,
+  ORCHESTRATION_LIMITS,
+  REDACTED_SECRET,
   SCHEDULED_CLEANUP_IDS,
   type AppSettings,
   type ApprovalMode,
   type BrowserMode,
   type CleanupSchedule,
+  type OrchestrationNumberKey,
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 const APPROVAL_MODES: readonly ApprovalMode[] = ["yolo", "write", "always-ask"];
+const ORCHESTRATION_TOGGLES = [
+  "runTimeLimit",
+  "stallWatchdog",
+  "runBudget",
+  "loopDetection",
+  "gitCheckpoints",
+  "telemetryExport",
+  "loadGuard",
+] as const satisfies readonly (keyof AppSettings)[];
 
+/** Settings → Orchestration fields: switches, bounded numbers, and the OTLP endpoint URL. */
+function parseOrchestration(body: Record<string, unknown>, patch: Partial<AppSettings>): void {
+  for (const key of ORCHESTRATION_TOGGLES) {
+    if (body[key] === undefined) continue;
+    if (typeof body[key] !== "boolean") throw new HttpError(400, `${key} must be a boolean`);
+    patch[key] = body[key];
+  }
+  for (const key of Object.keys(ORCHESTRATION_LIMITS) as OrchestrationNumberKey[]) {
+    const n = body[key];
+    if (n === undefined) continue;
+    const { min, max } = ORCHESTRATION_LIMITS[key];
+    const whole = key !== "runBudgetUsd";
+    if (typeof n !== "number" || !Number.isFinite(n) || (whole && !Number.isInteger(n)) || n < min || n > max) {
+      throw new HttpError(400, `${key} must be ${whole ? "an integer" : "a number"} between ${min} and ${max}`);
+    }
+    patch[key] = n;
+  }
+  if (body.telemetryEndpoint !== undefined) {
+    const url = body.telemetryEndpoint;
+    if (typeof url !== "string" || url.trim().length > 2048) {
+      throw new HttpError(400, "telemetryEndpoint must be a string of at most 2048 characters");
+    }
+    const trimmed = url.trim();
+    if (trimmed && !/^https?:\/\/\S+$/i.test(trimmed)) {
+      throw new HttpError(400, "telemetryEndpoint must be an http(s) URL");
+    }
+    patch.telemetryEndpoint = trimmed;
+  }
+}
+
+/** Known fields only: chat bot tokens are never patched here (set via /chat/<platform>/connect). */
 function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
   const patch: Partial<AppSettings> = {};
   if (body.maxConcurrentAgents !== undefined) {
@@ -103,10 +146,20 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
     }
     patch.visibleDashboardMenus = ids;
   }
+  parseOrchestration(body, patch);
   return patch;
 }
 
-export const GET = withApi(async ({ repo }) => json(await getAppSettings(repo)));
+/** Stored secrets (sealed chat bot tokens) never leave the server. */
+function redact(settings: AppSettings): AppSettings {
+  return {
+    ...settings,
+    telegramBotToken: settings.telegramBotToken ? REDACTED_SECRET : "",
+    discordBotToken: settings.discordBotToken ? REDACTED_SECRET : "",
+  };
+}
+
+export const GET = withApi(async ({ repo }) => json(redact(await getAppSettings(repo))));
 
 export const PATCH = withApi(async ({ req, repo }) => {
   const patch = parsePatch(await readJson(req));
@@ -114,5 +167,5 @@ export const PATCH = withApi(async ({ req, repo }) => {
   const next = await updateAppSettings(repo, patch);
   // A new schedule counts from now, so enabling it never runs a cleanup right away.
   if (next.cleanupSchedule !== before.cleanupSchedule) await resetCleanupAnchor(repo);
-  return json(next);
+  return json(redact(next));
 });

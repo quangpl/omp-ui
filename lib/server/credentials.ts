@@ -199,6 +199,20 @@ function decrypt(sealed: string, key: Buffer, credentialId: string, field: strin
   }
 }
 
+/**
+ * Seal a secret stored outside the credentials list (e.g. chat bot tokens) with the credentials
+ * key; `scope` (e.g. `chat:telegram`) binds the ciphertext to its use. Throws when no key is usable.
+ */
+export function sealSecret(plain: string, scope: string): string {
+  return encrypt(plain, encryptionKey(), scope, "value");
+}
+
+/** Open a `sealSecret` value; null when the key is unusable, the value malformed or sealed for another scope. */
+export function openSecret(sealed: string, scope: string): string | null {
+  const key = readKey();
+  return key ? decrypt(sealed, key, scope, "value") : null;
+}
+
 /** Decrypted secrets; `broken` when any could not be decrypted (those are left out). */
 function openSecrets(record: StoredCredential): { values: Record<string, string>; broken: boolean } {
   const values: Record<string, string> = {};

@@ -42,6 +42,23 @@ import { DEFAULT_SETTINGS } from "@/lib/types";
 import { APP_VERSION } from "@/lib/version";
 import { getRepo } from "@/lib/db";
 
+/** Settings → Orchestration fields at their defaults (covered by settings-orchestration.test.ts). */
+const ORCHESTRATION_DEFAULTS = {
+  runTimeLimit: DEFAULT_SETTINGS.runTimeLimit,
+  runTimeLimitMinutes: DEFAULT_SETTINGS.runTimeLimitMinutes,
+  stallWatchdog: DEFAULT_SETTINGS.stallWatchdog,
+  stallTimeoutMinutes: DEFAULT_SETTINGS.stallTimeoutMinutes,
+  runBudget: DEFAULT_SETTINGS.runBudget,
+  runBudgetUsd: DEFAULT_SETTINGS.runBudgetUsd,
+  runBudgetTokens: DEFAULT_SETTINGS.runBudgetTokens,
+  loopDetection: DEFAULT_SETTINGS.loopDetection,
+  gitCheckpoints: DEFAULT_SETTINGS.gitCheckpoints,
+  telemetryExport: DEFAULT_SETTINGS.telemetryExport,
+  telemetryEndpoint: DEFAULT_SETTINGS.telemetryEndpoint,
+  loadGuard: DEFAULT_SETTINGS.loadGuard,
+  loadGuardPercent: DEFAULT_SETTINGS.loadGuardPercent,
+};
+
 interface TaskDetail {
   task: Task;
   comments: Comment[];
@@ -983,6 +1000,9 @@ describe("settings, health and system", () => {
       cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
       taskCompletionNotifications: false,
       visibleDashboardMenus: DEFAULT_SETTINGS.visibleDashboardMenus,
+      telegramBotToken: "",
+      discordBotToken: "",
+      ...ORCHESTRATION_DEFAULTS,
     });
   });
 
@@ -1036,6 +1056,9 @@ describe("settings, health and system", () => {
       cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
       taskCompletionNotifications: false,
       visibleDashboardMenus: DEFAULT_SETTINGS.visibleDashboardMenus,
+      telegramBotToken: "",
+      discordBotToken: "",
+      ...ORCHESTRATION_DEFAULTS,
     });
 
     const partial = await api<AppSettings>(settingsRoute, "PATCH", "/settings", {
@@ -1067,6 +1090,9 @@ describe("settings, health and system", () => {
       cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
       taskCompletionNotifications: true,
       visibleDashboardMenus: DEFAULT_SETTINGS.visibleDashboardMenus,
+      telegramBotToken: "",
+      discordBotToken: "",
+      ...ORCHESTRATION_DEFAULTS,
     });
     expect((await api<AppSettings>(settingsRoute, "GET", "/settings")).body).toEqual(partial.body);
     expect((await api<AppSettings>(settingsRoute, "PATCH", "/settings", { body: {} })).body).toEqual(partial.body);

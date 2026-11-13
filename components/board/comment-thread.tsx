@@ -11,7 +11,8 @@ import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Textarea } from "@/components/ui/textarea";
 import { modKeyLabel } from "@/lib/hotkeys";
 import { cn } from "@/lib/utils";
-import type { Comment, Run, Task } from "@/lib/types";
+import type { Comment, ProjectFileHit, Run, Task } from "@/lib/types";
+import { useComposerAutocomplete } from "@/components/board/composer-autocomplete";
 import { formatDateTime, formatRelative, useNow } from "@/components/board/format";
 import { RichText } from "@/components/board/rich-text";
 import { parseRunReport, RunReport } from "@/components/board/run-report";
@@ -223,6 +224,8 @@ export function CommentThread({
   onOpenCard,
   onSend,
   onSetResolved,
+  boardId,
+  onPickFile,
 }: {
   task: Task;
   /** Oldest first. */
@@ -235,6 +238,10 @@ export function CommentThread({
   /** Resolves true when the comment was posted. */
   onSend: (body: string) => Promise<boolean>;
   onSetResolved: (comment: Comment, resolved: boolean) => Promise<void>;
+  /** Enables "/" skills and "@" project-file completion in the composer (the Files tab's chat). */
+  boardId?: string;
+  /** Called when an "@" file or directory is picked in the composer. */
+  onPickFile?: (hit: ProjectFileHit) => void;
 }) {
   const now = useNow();
   const [body, setBody] = useState("");
@@ -245,6 +252,11 @@ export function CommentThread({
   // Platform modifier for the send shortcut hint; read after mount (navigator isn't there on the server).
   const [modKey, setModKey] = useState("Ctrl");
   useEffect(() => setModKey(modKeyLabel()), []);
+  const slash = useComposerAutocomplete(textareaRef, body, setBody, {
+    enabled: Boolean(boardId) && !sending,
+    boardId: boardId ?? null,
+    onPickFile,
+  });
 
   useEffect(() => {
     const area = textareaRef.current;
@@ -308,23 +320,32 @@ export function CommentThread({
           void send();
         }}
       >
+        {/* `relative` anchors the word ghost on the textarea. */}
         <div className="flex items-end gap-2 rounded-2xl border bg-background p-1.5 pl-1 shadow-xs transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
-          <Textarea
-            ref={textareaRef}
-            value={body}
-            rows={1}
-            disabled={sending}
-            placeholder="Leave feedback for the agent…"
-            aria-label="Feedback"
-            className="max-h-40 min-h-11 resize-none border-0 bg-transparent px-2.5 py-2.5 text-base shadow-none focus-visible:ring-0 md:min-h-9 md:py-2 md:text-sm dark:bg-transparent"
-            onChange={(event) => setBody(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault();
-                void send();
-              }
-            }}
-          />
+          <div className="relative min-w-0 flex-1">
+            <Textarea
+              ref={textareaRef}
+              value={body}
+              rows={1}
+              disabled={sending}
+              placeholder={boardId ? "Message the agent — type @ to mention a file…" : "Leave feedback for the agent…"}
+              aria-label="Feedback"
+              aria-autocomplete={boardId ? "list" : undefined}
+              aria-expanded={boardId ? slash.open : undefined}
+              data-suggesting={slash.suggesting || undefined}
+              className="max-h-40 min-h-11 resize-none border-0 bg-transparent px-2.5 py-2.5 text-base shadow-none focus-visible:ring-0 md:min-h-9 md:py-2 md:text-sm dark:bg-transparent"
+              onChange={(event) => setBody(event.target.value)}
+              onSelect={slash.onSelect}
+              onKeyDown={(event) => {
+                if (slash.onKeyDown(event)) return;
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  void send();
+                }
+              }}
+            />
+            {slash.ghost}
+          </div>
           <Button
             type="submit"
             size="icon"
@@ -336,6 +357,12 @@ export function CommentThread({
             <ArrowUp />
           </Button>
         </div>
+        {(slash.suggestion || slash.menu) && (
+          <div className="mt-1.5 flex flex-col gap-1.5">
+            {slash.suggestion}
+            {slash.menu}
+          </div>
+        )}
         <p className="mt-1.5 flex items-center justify-between gap-3 px-1 text-xs text-muted-foreground">
           <span className="min-w-0">{composerHint(task)}</span>
           <span className="flex shrink-0 items-center gap-1 max-md:hidden" aria-hidden>

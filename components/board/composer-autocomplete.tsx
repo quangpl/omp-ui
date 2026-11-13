@@ -164,7 +164,8 @@ export interface ComposerAutocomplete {
  *   and inserts `skill://<name>` or the keyword;
  * - `skill://` lists skills by name;
  * - `@` fuzzy-searches the board's project files (only with a `boardId`); picking a directory
- *   inserts `@dir/` and keeps listing its children, picking a file inserts `@path `;
+ *   inserts `@dir/` and keeps listing its children, picking a file inserts `@path `; either pick
+ *   is also reported to `onPickFile` (e.g. to open the file next to the composer);
  * - elsewhere, typing a prose word shows the rest of the likeliest word (learned from past
  *   prompts and this draft) as ghost text after the caret; Tab or → inserts it, Esc hides it.
  *   Enter is never taken.
@@ -173,7 +174,11 @@ export function useComposerAutocomplete(
   ref: RefObject<HTMLTextAreaElement | null>,
   text: string,
   setText: (text: string) => void,
-  { enabled = true, boardId = null }: { enabled?: boolean; boardId?: string | null } = {},
+  {
+    enabled = true,
+    boardId = null,
+    onPickFile,
+  }: { enabled?: boolean; boardId?: string | null; onPickFile?: (hit: ProjectFileHit) => void } = {},
 ): ComposerAutocomplete {
   const [skills, setSkills] = useState<OmpSkill[] | null>(null);
   const [token, setToken] = useState<AutocompleteToken | null>(null);
@@ -191,6 +196,11 @@ export function useComposerAutocomplete(
   /** True during IME composition, when the ghost would sit inside the uncommitted text. */
   const composingRef = useRef(false);
   const isMobile = useIsMobile();
+  /** Latest `onPickFile`, so callers can pass an inline callback. */
+  const onPickFileRef = useRef(onPickFile);
+  useEffect(() => {
+    onPickFileRef.current = onPickFile;
+  });
 
   useEffect(() => {
     let active = true;
@@ -373,6 +383,7 @@ export function useComposerAutocomplete(
       // The caret is final only now; re-read the token (a directory mention reopens the menu).
       sync();
     });
+    if (entry.type === "file") onPickFileRef.current?.(entry.hit);
   };
 
   const dismiss = () => {

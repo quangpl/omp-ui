@@ -96,7 +96,7 @@ export async function setPassword(password: string): Promise<void> {
   }
   const repo = await getRepo();
   await repo.setSetting(PASSWORD_KEY, await hashPassword(password));
-  const epoch = await currentEpoch();
+  const epoch = await currentTokenEpoch();
   await repo.setSetting(EPOCH_KEY, String(epoch + 1));
 }
 
@@ -129,8 +129,11 @@ function getSecret(): Promise<string> {
   return g.__ompUiAuthSecret;
 }
 
-/** Read from the DB every time so `omp-ui passwd` in another process revokes tokens immediately. */
-async function currentEpoch(): Promise<number> {
+/**
+ * Session token epoch, bumped by every password change (which revokes issued tokens and chat logins).
+ * Read from the DB every time so `omp-ui passwd` in another process revokes tokens immediately.
+ */
+export async function currentTokenEpoch(): Promise<number> {
   const repo = await getRepo();
   const raw = await repo.getSetting(EPOCH_KEY);
   const n = raw === null ? 0 : Number.parseInt(raw, 10);
@@ -142,7 +145,7 @@ function sign(data: string, secret: string): Buffer {
 }
 
 export async function issueToken(): Promise<{ token: string; expiresAt: string }> {
-  const [secret, epoch] = await Promise.all([getSecret(), currentEpoch()]);
+  const [secret, epoch] = await Promise.all([getSecret(), currentTokenEpoch()]);
   const iat = Date.now();
   const exp = iat + TOKEN_TTL_MS;
   const payload: TokenPayload = { exp, epoch, iat };
@@ -167,7 +170,7 @@ export async function verifyToken(token: string): Promise<boolean> {
   }
   if (typeof payload?.exp !== "number" || payload.exp <= Date.now()) return false;
   if (typeof payload.epoch !== "number") return false;
-  return payload.epoch === (await currentEpoch());
+  return payload.epoch === (await currentTokenEpoch());
 }
 
 function readCookie(header: string | null, name: string): string | null {

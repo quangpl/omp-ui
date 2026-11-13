@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, type MouseEvent, type ReactNode, type Ref, useSyncExternalStore } from "react";
+import { type CSSProperties, memo, type MouseEvent, type ReactNode, type Ref, useSyncExternalStore } from "react";
 import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
 import {
   Bot,
@@ -8,6 +8,7 @@ import {
   Clock,
   Hourglass,
   ListChecks,
+  LoaderCircle,
   MessageSquare,
   MessageSquareDot,
   RotateCw,
@@ -92,12 +93,30 @@ function CardAge({ iso }: { iso: string }) {
 const PRESS_FEEDBACK =
   "transition-[border-color,box-shadow,opacity,scale] duration-(--duration-press) ease-(--ease-fluid) has-[>button:active]:scale-[0.98] motion-reduce:transition-none";
 
-/** Live dot for a running agent: a solid dot with a breathing halo (transform/opacity only). */
-function LiveDot() {
+/** Animated "…" after a running state's label; decorative. */
+function WorkingDots() {
   return (
-    <span aria-hidden className="relative flex size-1.5 shrink-0">
-      <span className="absolute inset-0 animate-breathe rounded-full bg-current" />
-      <span className="relative size-1.5 rounded-full bg-current" />
+    <span aria-hidden className="ml-px inline-flex">
+      {[0, 1, 2].map((dot) => (
+        <span key={dot} className="animate-working-dot" style={{ "--dot": dot } as CSSProperties}>
+          .
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * Indeterminate loading bar along a running card's top edge: a segment sliding across a faint
+ * track, clipped to the card's rounded corners.
+ */
+function WorkingBar() {
+  return (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute inset-x-0 top-0 h-0.5 overflow-hidden rounded-t-lg bg-primary/15"
+    >
+      <span className="block h-full w-2/5 animate-working-bar rounded-full bg-primary" />
     </span>
   );
 }
@@ -145,9 +164,17 @@ export function AgentStateBadge({
   }
   if (state === "running") {
     return (
-      <Badge className={cn("gap-1.5 bg-primary/10 text-primary dark:bg-primary/15", className)}>
-        <LiveDot />
-        Working
+      <Badge
+        className={cn("relative gap-1 bg-primary/10 text-primary dark:bg-primary/15", className)}
+        title="The agent is working on this card"
+      >
+        <span aria-hidden className="pointer-events-none absolute inset-0 animate-working-shine" />
+        <LoaderCircle aria-hidden className="animate-spin motion-reduce:animate-none" />
+        {/* Own element so the label still reads exactly "Working" (e2e getByText exact). */}
+        <span className="inline-flex">
+          <span>Working</span>
+          <WorkingDots />
+        </span>
       </Badge>
     );
   }
@@ -267,6 +294,7 @@ export const TaskCard = memo(function TaskCard({
         className,
       )}
     >
+      {task.agentState === "running" && !placeholder && <WorkingBar />}
       <button
         ref={activatorRef}
         type="button"
