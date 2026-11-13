@@ -102,6 +102,8 @@ Folder rules: `workdir` and every `extraFolders` entry must be an absolute path 
 | --- | --- | --- | --- |
 | GET | `/fs/browse?path=<abs>` | – | `FsBrowseResult`: sub-folders of `path` (default `WORKSPACE_DIR`); hidden and unreadable folders skipped, sorted by name, max 500. 400 if `path` is not absolute or not an existing folder |
 | POST | `/git/clone` | `{ url, name?, branch? }` | `{ path, output }` (201). `url`: `https://…`, `ssh://…`, `git@host:owner/repo.git`, or an absolute path ending in `.git`. Clones into `WORKSPACE_DIR/<name>` (default: repo name; characters outside `A-Za-z0-9._-` replaced). 409 if that folder exists; 400 with a plain-language reason if the clone fails (10 min timeout) |
+| GET | `/git/repo?path=<abs>` | – | `{ path, isGitRepo }`: `path` resolved; `isGitRepo` true when the folder is inside a git work tree (a sub-folder of a repository counts). 400 if `path` is missing, not absolute, or not an existing folder |
+| POST | `/git/init` | `{ path }` | `{ path, output }` (201). Runs `git init` in the existing absolute folder `path` (server's git config applies, e.g. `init.defaultBranch`). 409 if the folder is already inside a git repository; 400 if `path` is missing, not absolute or not an existing folder, or with a plain-language reason if `git init` fails (e.g. no write permission) |
 
 Git never prompts: commands run without a terminal (`GIT_TERMINAL_PROMPT=0`, SSH in batch mode), so the server user needs working SSH keys or saved credentials for private remotes.
 
@@ -152,7 +154,7 @@ Cards from free text are written by a read-only `omp --mode rpc` agent (steered 
 
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
-| GET | `/queue` | – | `QueueSnapshot`: `limit` (the effective limit, `concurrency.limit`), `concurrency` (see below), `running` and `queued` (start order) `QueueEntry`s, each with the blocking cards that are not Done yet (`waitingFor`), `planning` (held until the planner has ordered its project's queued cards), `drafting` (held while the card writer writes the card) and `planNote` (the planner's one-line reason, or `null`); `planning` lists the projects being planned right now (`{ boardId, boardName }[]`) |
+| GET | `/queue` | – | `QueueSnapshot`: `limit` (the effective limit, `concurrency.limit`), `concurrency` (see below), `running` and `queued` (start order) `QueueEntry`s, each with the blocking cards that are not Done yet (`waitingFor`), `planning` (held until the planner has ordered its project's queued cards), `drafting` (held while the card writer writes the card), `planNote` (the planner's one-line reason, or `null`) and `createdByTaskId` (the card whose agent created it, or `null`); `planning` lists the projects being planned right now (`{ boardId, boardName }[]`) |
 | POST | `/queue` | `{ taskId, position }` | `QueueSnapshot` after moving a queued card (`position` 0 starts next); 409 if the card is not queued |
 
 Queued cards start in queue order as slots free up, skipping cards whose `blockedBy` cards are not all Done; a card reaching Done re-checks the queue.

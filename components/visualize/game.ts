@@ -152,6 +152,8 @@ export interface Activity {
   label: string;
   /** The command, path or intent, when there is one. */
   detail?: string;
+  /** Tool name ("bash", "board_message_card", …) for tool activities. */
+  tool?: string;
 }
 
 const TOOL_ACTIVITY: Record<string, Pick<Activity, "icon" | "label">> = {
@@ -188,7 +190,7 @@ export function toolActivityKind(name: string): Pick<Activity, "icon" | "label">
 /** The agent log's tool line ("▸ bash: pnpm test") → what the worker is doing. */
 function toolActivity(text: string): Activity {
   const { name, detail, intent } = parseToolCall(text);
-  return { ...toolActivityKind(name), detail: intent ?? detail };
+  return { ...toolActivityKind(name), detail: intent ?? detail, tool: name };
 }
 
 /**

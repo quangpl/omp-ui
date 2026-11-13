@@ -389,6 +389,12 @@ export const api = {
     /** Clone a repository into WORKSPACE_DIR/<name>; returns the absolute folder path. */
     clone: (input: { url: string; name?: string; branch?: string }) =>
       request<{ path: string; output: string }>("/git/clone", { method: "POST", json: input }),
+    /** Whether an absolute server folder is inside a git work tree. */
+    isRepo: (path: string) =>
+      request<{ path: string; isGitRepo: boolean }>(`/git/repo?path=${encodeURIComponent(path)}`),
+    /** Run `git init` in an existing absolute server folder that isn't a repository yet. */
+    init: (path: string) =>
+      request<{ path: string; output: string }>("/git/init", { method: "POST", json: { path } }),
     /** One entry per project folder (workdir first). */
     status: (boardId: string) => request<GitStatus[]>(`/boards/${boardId}/git`),
     /** Local + origin-only branches of one project folder. */

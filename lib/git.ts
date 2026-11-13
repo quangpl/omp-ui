@@ -1,4 +1,4 @@
-// Git operations for project folders: clone, status, branches, push to the default branch, open PR/MR.
+// Git operations for project folders: clone, init, status, branches, push to the default branch, open PR/MR.
 // Every command runs via execFile with an argument array (never a shell) and never prompts.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -67,6 +67,10 @@ function explain(cmd: string, result: CommandResult): string {
     [
       /could not read (username|password)|authentication failed|permission denied \(publickey|terminal prompts disabled|host key verification failed|invalid username or password/i,
       "The server couldn't sign in to the git host. Set up an SSH key or saved credentials for the server user.",
+    ],
+    [
+      /(?<!remote): permission denied|insufficient permission|read-only file system/i,
+      "The server isn't allowed to write to this folder.",
     ],
     [
       /repository not found|does not appear to be a git repository|project you were looking for could not be found/i,
@@ -411,6 +415,45 @@ export async function cloneRepo(input: {
     throw new HttpError(400, `Clone failed: ${explain("git", result)}`);
   }
   return { path: target, output: result.output };
+}
+
+// ---------------------------------------------------------------------------
+// Init
+
+/** Absolute, normalized path of an existing directory; 400 with a plain reason otherwise. */
+function resolveFolder(raw: string): string {
+  const trimmed = raw.trim();
+  if (!path.isAbsolute(trimmed)) {
+    throw new HttpError(400, `Please use a full folder path starting with "/" (got "${trimmed}").`);
+  }
+  const folder = path.resolve(trimmed);
+  let isDirectory = false;
+  try {
+    isDirectory = fs.statSync(folder).isDirectory();
+  } catch {
+    // Missing or unreadable: reported below.
+  }
+  if (!isDirectory) throw new HttpError(400, `This folder doesn't exist (or isn't a folder): ${folder}`);
+  return folder;
+}
+
+/** Whether an existing folder is inside a git work tree (a sub-folder of a repository counts). */
+export async function checkRepo(raw: string): Promise<{ path: string; isGitRepo: boolean }> {
+  const folder = resolveFolder(raw);
+  return { path: folder, isGitRepo: await isGitRepo(folder) };
+}
+
+/** `git init` an existing folder that is not yet inside a git work tree (server's git config applies). */
+export async function initRepo(raw: string): Promise<{ path: string; output: string }> {
+  const folder = resolveFolder(raw);
+  return withFolderLock(folder, async () => {
+    if (await isGitRepo(folder)) {
+      throw new HttpError(409, `This folder is already a git repository: ${folder}`);
+    }
+    const result = await git(folder, ["init"]);
+    if (!result.ok) throw new HttpError(400, `Couldn't initialize git: ${explain("git", result)}`);
+    return { path: folder, output: result.output };
+  });
 }
 
 // ---------------------------------------------------------------------------

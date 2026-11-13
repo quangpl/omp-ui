@@ -389,6 +389,8 @@ export interface QueueEntry {
   drafting: boolean;
   /** Why the smart-queue planner put the card where it is (one line); null when not planned. */
   planNote: string | null;
+  /** Card whose agent created this card (Task.createdByTaskId); null when a person did. */
+  createdByTaskId: string | null;
 }
 
 /** The agent limit in effect and where it comes from (GET /queue). */

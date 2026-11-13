@@ -96,6 +96,11 @@ export function BoardFormDialog({
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Git state of folders picked in this session ("checking" while the lookup runs); edit-mode
+  // folders that came from the board are never checked.
+  const [repoState, setRepoState] = useState<Record<string, boolean | "checking" | "error">>({});
+  // Folders the user ticked to `git init` after saving.
+  const [initGit, setInitGit] = useState<string[]>([]);
 
   // Reset each time the dialog opens.
   useEffect(() => {
@@ -113,21 +118,64 @@ export function BoardFormDialog({
     setBusy(false);
     setSaving(false);
     setError(null);
+    setRepoState({});
+    setInitGit([]);
   }, [open, board]);
 
-  function applyFolder(path: string, target: Target) {
+  /** Drop a folder's git state and init choice (removed or replaced). */
+  function forgetFolder(path: string) {
+    setRepoState((s) => Object.fromEntries(Object.entries(s).filter(([f]) => f !== path)));
+    setInitGit((list) => list.filter((f) => f !== path));
+  }
+
+  /** Look up whether a freshly picked folder is a git repo; `known` skips the request (e.g. clones). */
+  function checkRepo(path: string, known?: boolean) {
+    if (known !== undefined) {
+      setRepoState((s) => ({ ...s, [path]: known }));
+      return;
+    }
+    setRepoState((s) => ({ ...s, [path]: "checking" }));
+    // Only apply the answer while the folder is still waiting on it (not removed or reset meanwhile).
+    const settle = (value: boolean | "error") =>
+      setRepoState((s) => (s[path] === "checking" ? { ...s, [path]: value } : s));
+    api.git.isRepo(path).then(
+      (res) => settle(res.isGitRepo),
+      () => settle("error"),
+    );
+  }
+
+  function applyFolder(path: string, target: Target, isRepo?: boolean) {
     setError(null);
     if (target === "primary") {
+      if (workdir && workdir !== path) forgetFolder(workdir);
       setWorkdir(path);
       setExtraFolders((list) => list.filter((f) => f !== path));
+      checkRepo(path, isRepo);
       if (!nameTouched || !name.trim()) {
         setName(basename(path));
         setNameTouched(false);
       }
     } else if (path !== workdir) {
       setExtraFolders((list) => (list.includes(path) ? list : [...list, path]));
+      checkRepo(path, isRepo);
     }
     setView("details");
+  }
+
+  /** Run `git init` in each ticked folder; failures only toast (the project is already saved). */
+  async function initFolders(folders: string[]) {
+    const results = await Promise.allSettled(folders.map((folder) => api.git.init(folder)));
+    results.forEach((result, i) => {
+      const label = basename(folders[i]);
+      if (result.status === "fulfilled") {
+        toast.success(`Initialized git in ${label}/`);
+      } else {
+        const reason = result.reason;
+        toast.error(`Couldn't initialize git in ${label}/`, {
+          description: reason instanceof Error && reason.message ? reason.message : undefined,
+        });
+      }
+    });
   }
 
   function startClone(target: Target) {
@@ -164,6 +212,8 @@ export function BoardFormDialog({
     try {
       const saved = board ? await api.boards.update(board.id, input) : await api.boards.create(input);
       toast.success(board ? "Project saved" : "Project created");
+      const toInit = initGit.filter((f) => f === saved.workdir || saved.extraFolders.includes(f));
+      if (toInit.length > 0) await initFolders(toInit);
       onOpenChange(false);
       onSaved?.(saved, !board);
     } catch (err) {
@@ -254,9 +304,34 @@ export function BoardFormDialog({
         <ChevronLeftIcon />
         Back
       </Button>
-      <CloneRepoForm onCloned={(path) => applyFolder(path, cloneTarget)} onBusyChange={setBusy} />
+      <CloneRepoForm onCloned={(path) => applyFolder(path, cloneTarget, true)} onBusyChange={setBusy} />
     </div>
   );
+
+  /** Opt-in "git init" toggle shown under a picked folder that isn't a git repository. */
+  const initGitToggle = (folder: string, id: string) =>
+    repoState[folder] === false && (
+      <label htmlFor={id} className="flex min-h-11 cursor-pointer items-start gap-2.5 py-1.5 pl-3 md:min-h-9">
+        <input
+          id={id}
+          type="checkbox"
+          checked={initGit.includes(folder)}
+          onChange={(e) => {
+            const rest = initGit.filter((f) => f !== folder);
+            setInitGit(e.target.checked ? [...rest, folder] : rest);
+          }}
+          disabled={saving}
+          className="mt-0.5 size-4 shrink-0 cursor-pointer accent-primary disabled:cursor-not-allowed"
+        />
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium">Initialize as git repository</span>
+          <span className="block text-xs text-muted-foreground">
+            This folder isn&apos;t a git repository yet. Runs <code className="font-mono">git init</code> after
+            saving.
+          </span>
+        </span>
+      </label>
+    );
 
   const detailsView = (
     <form id={formId} onSubmit={onSubmit} noValidate className="space-y-5">
@@ -296,6 +371,7 @@ export function BoardFormDialog({
             </Button>,
           )}
         </div>
+        {initGitToggle(workdir, `${formId}-init-primary`)}
         <p className="text-xs text-muted-foreground">The agent works in this folder.</p>
       </div>
 
@@ -304,26 +380,29 @@ export function BoardFormDialog({
           <>
             <span className="text-sm font-medium">Other folders</span>
             <ul className="space-y-1.5">
-              {extraFolders.map((folder) => (
-                <li
-                  key={folder}
-                  className="flex min-h-11 items-center gap-2.5 rounded-lg border py-0.5 pr-0.5 pl-3"
-                >
-                  <FolderIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate font-mono text-sm" title={folder}>
-                    {folder}
-                  </span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    disabled={saving}
-                    onClick={() => setExtraFolders((list) => list.filter((f) => f !== folder))}
-                    className="size-10 shrink-0 text-muted-foreground md:size-8"
-                    aria-label={`Remove ${basename(folder)}`}
-                  >
-                    <XIcon />
-                  </Button>
+              {extraFolders.map((folder, i) => (
+                <li key={folder}>
+                  <div className="flex min-h-11 items-center gap-2.5 rounded-lg border py-0.5 pr-0.5 pl-3">
+                    <FolderIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate font-mono text-sm" title={folder}>
+                      {folder}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      disabled={saving}
+                      onClick={() => {
+                        setExtraFolders((list) => list.filter((f) => f !== folder));
+                        forgetFolder(folder);
+                      }}
+                      className="size-10 shrink-0 text-muted-foreground md:size-8"
+                      aria-label={`Remove ${basename(folder)}`}
+                    >
+                      <XIcon />
+                    </Button>
+                  </div>
+                  {initGitToggle(folder, `${formId}-init-extra-${i}`)}
                 </li>
               ))}
             </ul>
