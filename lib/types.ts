@@ -218,6 +218,8 @@ export interface AppSettings {
   cleanupSchedule: CleanupSchedule;
   /** What scheduled and manual "Clean up now" runs remove (default: every safe target). */
   cleanupTargets: ScheduledCleanupId[];
+  /** Show a browser notification when a card on the open board finishes (moves to Done). Permission is per browser; the UI asks for it when turning this on. */
+  taskCompletionNotifications: boolean;
 }
 
 /**
@@ -259,6 +261,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cleanupSchedule: "off",
   // Worktrees of shipped cards may still be wanted; they are opt-in.
   cleanupTargets: SCHEDULED_CLEANUP_IDS.filter((id) => id !== "shipped-workspaces"),
+  taskCompletionNotifications: false,
 };
 
 /** An installed omp skill (from `omp skill list`): pickable with "/" when composing a card. */

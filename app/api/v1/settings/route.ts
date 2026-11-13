@@ -85,6 +85,12 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
     }
     patch.cleanupTargets = ids;
   }
+  if (body.taskCompletionNotifications !== undefined) {
+    if (typeof body.taskCompletionNotifications !== "boolean") {
+      throw new HttpError(400, "taskCompletionNotifications must be a boolean");
+    }
+    patch.taskCompletionNotifications = body.taskCompletionNotifications;
+  }
   return patch;
 }
 

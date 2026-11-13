@@ -10,23 +10,16 @@ import {
   useRef,
   useState,
 } from "react";
-import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { toastCardAdded } from "@/components/board/card-added-toast";
 import { NewTaskDialog } from "@/components/board/new-task-form";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { ProjectField } from "@/components/board/project-field";
 import { createCardFromText } from "@/hooks/use-board";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/lib/api-client";
 import { isTypingTarget } from "@/lib/hotkeys";
+import { LAST_BOARD_KEY, newCardHref } from "@/lib/new-card-route";
 import type { BoardWithCounts } from "@/lib/types";
 
 /** What to prefill in the "New card" form. */
@@ -44,8 +37,6 @@ interface NewCardContextValue {
 
 const NewCardContext = createContext<NewCardContextValue | null>(null);
 
-const LAST_BOARD_KEY = "omp-ui:last-board";
-
 /** True for the "new card" shortcut: `N` or `C`. */
 export function isNewCardShortcut(event: KeyboardEvent): boolean {
   if (event.defaultPrevented || event.repeat || event.isComposing) return false;
@@ -57,7 +48,7 @@ export function isNewCardShortcut(event: KeyboardEvent): boolean {
 /**
  * App-wide "New card": the `N` hotkey and `openNewCard()` from any context menu.
  * The open board page registers itself and handles requests for its board; everywhere else a
- * dialog with a project picker creates the card.
+ * dialog with a project picker creates the card (on phones: the project's "New card" page).
  */
 export function NewCardProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -78,6 +69,8 @@ export function NewCardProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  const closeRequest = useCallback(() => setRequest(null), []);
+
   const signedOut = pathname === "/login";
   useEffect(() => {
     if (signedOut) return;
@@ -95,7 +88,7 @@ export function NewCardProvider({ children }: { children: ReactNode }) {
   return (
     <NewCardContext.Provider value={value}>
       {children}
-      <GlobalNewCardDialog request={request} onClose={() => setRequest(null)} />
+      <GlobalNewCardDialog request={request} onClose={closeRequest} />
     </NewCardContext.Provider>
   );
 }
@@ -116,7 +109,10 @@ export function useNewCardTarget(boardId: string, handler: NewCardHandler): void
   useEffect(() => register(boardId, (request) => handlerRef.current(request)), [register, boardId]);
 }
 
-/** "New card" outside a board: same form plus a project picker. */
+/**
+ * "New card" outside a board: same form plus a project picker. Phones skip the dialog and go to
+ * the target project's "New card" page, which carries its own picker.
+ */
 function GlobalNewCardDialog({
   request,
   onClose,
@@ -126,25 +122,41 @@ function GlobalNewCardDialog({
 }) {
   const router = useRouter();
   const isMobile = useIsMobile();
+  // Read at request time: a resize mid-load must not flip an open dialog into a navigation.
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
   const [boards, setBoards] = useState<BoardWithCounts[] | null>(null);
   const [boardId, setBoardId] = useState("");
   const open = request !== null;
 
   useEffect(() => {
     if (!request) return;
+    const navigate = isMobileRef.current;
     let cancelled = false;
     setBoards(null);
     api.boards
       .list()
       .then((list) => {
         if (cancelled) return;
-        setBoards(list);
         const wanted = request.boardId ?? localStorage.getItem(LAST_BOARD_KEY);
-        setBoardId(list.find((b) => b.id === wanted)?.id ?? list[0]?.id ?? "");
+        const targetId = list.find((b) => b.id === wanted)?.id ?? list[0]?.id ?? "";
+        if (navigate) {
+          onClose();
+          if (targetId) {
+            router.push(newCardHref(targetId));
+          } else {
+            toast.error("Create a project first");
+            router.push("/");
+          }
+          return;
+        }
+        setBoards(list);
+        setBoardId(targetId);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setBoards([]);
+        if (navigate) onClose();
+        else setBoards([]);
         toast.error("Couldn't load projects", {
           description: err instanceof Error ? err.message : undefined,
         });
@@ -152,7 +164,7 @@ function GlobalNewCardDialog({
     return () => {
       cancelled = true;
     };
-  }, [request]);
+  }, [request, onClose, router]);
 
   const board = boards?.find((b) => b.id === boardId);
 
@@ -171,44 +183,14 @@ function GlobalNewCardDialog({
     return true;
   };
 
-  const projectField =
-    boards === null ? (
-      <p className="text-sm text-muted-foreground">Loading projects…</p>
-    ) : boards.length === 0 ? (
-      <p className="text-sm text-muted-foreground">
-        No projects yet.{" "}
-        <Link href="/" className="font-medium text-foreground underline underline-offset-4" onClick={onClose}>
-          Create a project
-        </Link>{" "}
-        first.
-      </p>
-    ) : (
-      <div className="flex flex-col gap-2">
-        <Label htmlFor="new-card-project">Project</Label>
-        <Select value={boardId} onValueChange={setBoardId}>
-          <SelectTrigger
-            id="new-card-project"
-            className="w-full data-[size=default]:h-11 md:data-[size=default]:h-9"
-          >
-            <SelectValue placeholder="Pick a project" />
-          </SelectTrigger>
-          <SelectContent>
-            {boards.map((board) => (
-              <SelectItem key={board.id} value={board.id} className="max-md:min-h-11">
-                {board.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-    );
-
   return (
     <NewTaskDialog
-      open={open}
+      // Never on phones: the request becomes a navigation once projects load.
+      open={open && !isMobile}
       onOpenChange={(next) => !next && onClose()}
-      isMobile={isMobile}
-      projectField={projectField}
+      projectField={
+        <ProjectField boards={boards} value={boardId} onValueChange={setBoardId} onLeave={onClose} />
+      }
       onCreate={create}
     />
   );

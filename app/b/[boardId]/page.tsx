@@ -21,7 +21,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useBoard, useGitStatus } from "@/hooks/use-board";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useTaskCompletionNotifications } from "@/hooks/use-task-completion-notifications";
 import { isTypingTarget } from "@/lib/hotkeys";
+import { loadMobileColumn, saveMobileColumn } from "@/lib/mobile-column";
 import { newCardHref, takeMobileColumnHint } from "@/lib/new-card-route";
 import { TASK_STATUSES, type Board, type Task, type TaskStatus } from "@/lib/types";
 
@@ -56,11 +58,20 @@ function BoardScreen() {
   const { board, columns, tasks, loading, error, subscribe } = controller;
   useDocumentTitle(board?.name);
   const git = useGitStatus(boardId, subscribe);
+  useTaskCompletionNotifications(boardId, tasks, subscribe);
   /** "New card" form open. */
   const [newCard, setNewCard] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deleting, setDeleting] = useState<Task | null>(null);
   const [mobileColumn, setMobileColumn] = useState<TaskStatus>("todo");
+  /** The user picked a column (tap, swipe, arrow keys): show it and reopen the board on it next time. */
+  const pickMobileColumn = useCallback(
+    (status: TaskStatus) => {
+      setMobileColumn(status);
+      saveMobileColumn(boardId, status);
+    },
+    [boardId],
+  );
 
   // Detail open state lives in `?task=<id>`; opening pushes a history entry so Back closes it.
   const pushedRef = useRef(false);
@@ -95,11 +106,11 @@ function BoardScreen() {
     if (!selectedTaskId) pushedRef.current = false;
   }, [selectedTaskId]);
 
-  // Back from the phone "New card" page: show the column the new card landed in. Read after
-  // mount (sessionStorage is client-only); declared before the deep-link sync so `?task=` wins.
+  // Reopen on the last column picked on this board, unless back from the phone "New card" page:
+  // then show the column the new card landed in. Read after mount (storage is client-only);
+  // declared before the deep-link sync so `?task=` wins.
   useEffect(() => {
-    const hint = takeMobileColumnHint(boardId);
-    if (hint) setMobileColumn(hint);
+    setMobileColumn(takeMobileColumnHint(boardId) ?? loadMobileColumn(boardId) ?? "todo");
   }, [boardId]);
 
   // A deep-linked card on a phone: show the column it lives in behind the drawer.
@@ -265,7 +276,7 @@ function BoardScreen() {
           onQuickCreate={create}
           onAdd={openNewCard}
           mobileColumn={mobileColumn}
-          onMobileColumnChange={setMobileColumn}
+          onMobileColumnChange={pickMobileColumn}
         />
       </main>
 

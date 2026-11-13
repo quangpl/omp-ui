@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  BellIcon,
   BrainIcon,
   BrushCleaningIcon,
   CheckIcon,
@@ -22,6 +23,7 @@ import { AppHeader } from "@/components/app-header";
 import { PasswordInput } from "@/components/password-input";
 import { CleanupSettingsSection } from "@/components/settings/cleanup-settings";
 import { MemorySettingsSection } from "@/components/settings/memory-settings";
+import { NotificationSettingsSection } from "@/components/settings/notification-settings";
 import { OmpSettingsSection } from "@/components/settings/omp-settings";
 import { SettingsNav, type SettingsNavItem } from "@/components/settings/settings-nav";
 import {
@@ -91,6 +93,7 @@ const SECTIONS: SettingsNavItem[] = [
   { id: "omp", label: "OMP", icon: <SquareTerminalIcon /> },
   { id: "memory", label: "Memory", icon: <BrainIcon /> },
   { id: "cleanup", label: "Data cleanup", icon: <BrushCleaningIcon /> },
+  { id: "notifications", label: "Notifications", icon: <BellIcon /> },
   { id: "system", label: "System", icon: <ServerIcon /> },
   { id: "security", label: "Security", icon: <KeyRoundIcon /> },
   { id: "api", label: "Mobile & API", icon: <SmartphoneIcon /> },
@@ -838,13 +841,14 @@ export default function SettingsPage() {
               "min-w-0 max-w-3xl space-y-10 md:space-y-12",
               "[&>section+section]:border-t [&>section+section]:pt-10 md:[&>section+section]:pt-12",
               "[&>section]:animate-card-in motion-reduce:[&>section]:animate-none",
-              "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12]",
+              "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12] [&>section:nth-child(8)]:[--stagger:14]",
             )}
           >
             <AgentSettingsSection />
             <OmpSettingsSection />
             <MemorySettingsSection />
             <CleanupSettingsSection />
+            <NotificationSettingsSection />
             <SystemInfoSection />
             <SecuritySection />
             <ApiAccessSection />
