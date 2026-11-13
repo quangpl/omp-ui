@@ -1,4 +1,5 @@
 import type { Repository } from "@/lib/db/types";
+import { isPrimaryColorId } from "@/lib/primary-colors";
 import {
   BROWSER_MODES,
   CLEANUP_SCHEDULES,
@@ -111,6 +112,7 @@ function sanitize(s: AppSettings, knownMenus: readonly unknown[]): AppSettings {
           (id) => (s.visibleDashboardMenus as unknown[]).includes(id) || !knownMenus.includes(id),
         )
       : [...DEFAULT_SETTINGS.visibleDashboardMenus],
+    primaryColor: isPrimaryColorId(s.primaryColor) ? s.primaryColor : DEFAULT_SETTINGS.primaryColor,
     // Sealed chat bot tokens (lib/server/chat/store.ts); "" when none.
     telegramBotToken: typeof s.telegramBotToken === "string" ? s.telegramBotToken : "",
     discordBotToken: typeof s.discordBotToken === "string" ? s.discordBotToken : "",

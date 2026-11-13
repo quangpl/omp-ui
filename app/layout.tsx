@@ -4,6 +4,9 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { cookies } from "next/headers";
 import { AppShell } from "@/components/app-shell";
 import { Providers } from "@/components/providers";
+import { getRepo } from "@/lib/db";
+import { DEFAULT_PRIMARY_COLOR, PRIMARY_COLOR_CSS, type PrimaryColorId } from "@/lib/primary-colors";
+import { getAppSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
@@ -34,11 +37,29 @@ export const viewport: Viewport = {
   ],
 };
 
+/** The saved primary color preset; the default when settings cannot be read (never breaks rendering). */
+async function readPrimaryColor(): Promise<PrimaryColorId> {
+  try {
+    return (await getAppSettings(await getRepo())).primaryColor;
+  } catch {
+    return DEFAULT_PRIMARY_COLOR;
+  }
+}
+
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const [cookieStore, primaryColor] = await Promise.all([cookies(), readPrimaryColor()]);
   // Persisted by the sidebar itself (components/ui/sidebar.tsx); expanded unless collapsed before.
-  const sidebarOpen = (await cookies()).get("sidebar_state")?.value !== "false";
+  const sidebarOpen = cookieStore.get("sidebar_state")?.value !== "false";
   return (
-    <html lang="en" className={cn("font-sans", geist.variable, geistMono.variable)} suppressHydrationWarning>
+    <html
+      lang="en"
+      className={cn("font-sans", geist.variable, geistMono.variable)}
+      data-primary={primaryColor}
+      suppressHydrationWarning
+    >
+      <head>
+        <style dangerouslySetInnerHTML={{ __html: PRIMARY_COLOR_CSS }} />
+      </head>
       <body>
         <Providers>
           <AppShell defaultOpen={sidebarOpen}>{children}</AppShell>

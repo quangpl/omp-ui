@@ -4,7 +4,9 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Palette (design-taste-frontend-v1): neutral zinc base, one desaturated emerald-teal accent.
+/* Palette (design-taste-frontend-v1): neutral zinc base, one desaturated accent hue.
+   The primary hue is user-selectable (lib/primary-colors.ts, Settings → Appearance); the primary/ring/accent
+   values below are the default `jade` preset (keep in sync). Sidebar + chart-1 follow them via var().
    Status green (--success) sits at a separate hue so "done" never reads as "primary action". */
 :root {
   color-scheme: light;
@@ -27,7 +29,7 @@
   --border: oklch(0.92 0.004 286);
   --input: oklch(0.89 0.005 286);
   --ring: oklch(0.62 0.11 168);
-  --chart-1: oklch(0.55 0.13 168);
+  --chart-1: var(--primary);
   --chart-2: oklch(0.6 0.11 235);
   --chart-3: oklch(0.72 0.14 70);
   --chart-4: oklch(0.6 0.15 10);
@@ -35,12 +37,12 @@
   --radius: 0.625rem;
   --sidebar: oklch(0.975 0.002 286);
   --sidebar-foreground: oklch(0.16 0.005 286);
-  --sidebar-primary: oklch(0.55 0.13 168);
-  --sidebar-primary-foreground: oklch(0.985 0.01 168);
-  --sidebar-accent: oklch(0.955 0.01 168);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
   --sidebar-accent-foreground: oklch(0.21 0.006 286);
   --sidebar-border: oklch(0.92 0.004 286);
-  --sidebar-ring: oklch(0.62 0.11 168);
+  --sidebar-ring: var(--ring);
   /* Hue-tinted elevation (never pure-black shadows). */
   --shadow-tint: oklch(0.25 0.02 286);
 }
@@ -66,19 +68,14 @@
   --border: oklch(1 0 0 / 9%);
   --input: oklch(1 0 0 / 14%);
   --ring: oklch(0.62 0.1 168);
-  --chart-1: oklch(0.74 0.12 168);
   --chart-2: oklch(0.72 0.1 235);
   --chart-3: oklch(0.78 0.13 70);
   --chart-4: oklch(0.7 0.14 10);
   --chart-5: oklch(0.65 0.014 286);
   --sidebar: oklch(0.17 0.005 286);
   --sidebar-foreground: oklch(0.965 0.002 286);
-  --sidebar-primary: oklch(0.74 0.12 168);
-  --sidebar-primary-foreground: oklch(0.2 0.04 168);
-  --sidebar-accent: oklch(0.27 0.018 168);
   --sidebar-accent-foreground: oklch(0.965 0.002 286);
   --sidebar-border: oklch(1 0 0 / 9%);
-  --sidebar-ring: oklch(0.62 0.1 168);
   --shadow-tint: oklch(0.05 0.01 286);
 }
 

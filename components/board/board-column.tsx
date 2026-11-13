@@ -1,7 +1,17 @@
 "use client";
 
 import { type CSSProperties, useRef, useState } from "react";
-import { CircleCheckBig, CircleDashed, Inbox, LoaderCircle, type LucideIcon, Play, Square, Trash2 } from "lucide-react";
+import {
+  CircleCheckBig,
+  CircleDashed,
+  Inbox,
+  LoaderCircle,
+  type LucideIcon,
+  Play,
+  SearchX,
+  Square,
+  Trash2,
+} from "lucide-react";
 import { useDndContext, useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -44,6 +54,9 @@ export const EMPTY_COLUMN_ICON: Record<TaskStatus, LucideIcon> = {
   in_progress: CircleDashed,
   done: CircleCheckBig,
 };
+
+/** Empty state of a column (desktop) or page (phone) whose cards the board search hides. */
+export const NO_MATCHES_TEXT = "No matching cards";
 
 export function StatusDot({ status, className }: { status: TaskStatus; className?: string }) {
   return (
@@ -141,6 +154,7 @@ function SortableTaskCard({
   selected,
   onToggleSelect,
   flip,
+  highlight,
 }: {
   task: Task;
   /** Position in the column; staggers the entry animation. */
@@ -150,6 +164,8 @@ function SortableTaskCard({
   selected: boolean;
   onToggleSelect: (taskId: string) => void;
   flip: CardFlip;
+  /** Title characters matched by the board search. */
+  highlight: readonly number[] | undefined;
 }) {
   const {
     active,
@@ -198,6 +214,7 @@ function SortableTaskCard({
             dragListeners={listeners}
             quickActions={<CardQuickActionStrip task={task} canPush={canPush} pending={pending} onRun={run} />}
             pinnedQuickActions={pinnedSlots}
+            highlight={highlight}
             onOpen={(event) => {
               if (isDragging) return;
               // ⌘/Ctrl/⇧+click picks cards for a bulk quick action instead of opening one.
@@ -226,6 +243,9 @@ export function BoardColumn({
   onToggleSelect,
   onCreate,
   flip,
+  searching = false,
+  total,
+  highlights,
 }: {
   status: TaskStatus;
   tasks: Task[];
@@ -240,6 +260,11 @@ export function BoardColumn({
   onCreate?: QuickCreate;
   /** Board-wide card motion (see useCardFlip); each card registers its animated layer. */
   flip: CardFlip;
+  /** The board search is filtering: `tasks` are the matches and `total` the column's full count. */
+  searching?: boolean;
+  total?: number;
+  /** Board search: matched title characters per task id. */
+  highlights?: ReadonlyMap<string, readonly number[]>;
 }) {
   const openNewCard = useNewCard();
   // Cards only reorder within their own column: while a card is dragged, every other column
@@ -288,7 +313,14 @@ export function BoardColumn({
         <StatusDot status={status} />
         <h2 className="truncate text-[0.8125rem] font-semibold tracking-tight">{STATUS_LABELS[status]}</h2>
         <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-background px-1.5 font-mono text-[11px] font-medium text-muted-foreground tabular-nums ring-1 ring-border">
-          {tasks.length}
+          {searching ? (
+            <>
+              <span className="text-foreground">{tasks.length}</span>
+              <span className="text-muted-foreground/70">/{total ?? tasks.length}</span>
+            </>
+          ) : (
+            tasks.length
+          )}
         </span>
         {headerAction.tasks.length > 0 && (
           <Tooltip>
@@ -346,9 +378,11 @@ export function BoardColumn({
                 selected={selected.has(task.id)}
                 onToggleSelect={onToggleSelect}
                 flip={flip}
+                highlight={highlights?.get(task.id)}
               />
             ))}
-            {tasks.length === 0 && <EmptyColumn status={status} onAdd={() => openNewCard()} />}
+            {tasks.length === 0 &&
+              (searching ? <NoMatches /> : <EmptyColumn status={status} onAdd={() => openNewCard()} />)}
           </div>
         </SortableContext>
       </div>
@@ -399,5 +433,17 @@ function EmptyColumn({ status, onAdd }: { status: TaskStatus; onAdd: () => void 
         Add a task <Kbd>N</Kbd>
       </span>
     </button>
+  );
+}
+
+/** Empty state while the board search hides every card of the column. */
+function NoMatches() {
+  return (
+    <div className="flex animate-fade-in-soft flex-col items-center gap-1.5 rounded-lg border border-dashed px-3 py-5 text-center text-xs text-pretty text-muted-foreground">
+      <span className="mb-1 flex size-9 items-center justify-center rounded-xl bg-background ring-1 ring-border/70">
+        <SearchX aria-hidden className="size-4" />
+      </span>
+      <p>{NO_MATCHES_TEXT}</p>
+    </div>
   );
 }

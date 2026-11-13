@@ -1,4 +1,5 @@
 import { parseCleanupIds, resetCleanupAnchor } from "@/lib/cleanup";
+import { PRIMARY_COLOR_IDS, isPrimaryColorId } from "@/lib/primary-colors";
 import { HttpError, json, readJson, withApi } from "@/lib/server/http";
 import { MAX_EXPLICIT_AGENTS, getAppSettings, isDashboardMenuId, updateAppSettings } from "@/lib/settings";
 import {
@@ -145,6 +146,12 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
       throw new HttpError(400, `visibleDashboardMenus must be an array of: ${DASHBOARD_MENU_IDS.join(", ")}`);
     }
     patch.visibleDashboardMenus = ids;
+  }
+  if (body.primaryColor !== undefined) {
+    if (!isPrimaryColorId(body.primaryColor)) {
+      throw new HttpError(400, `primaryColor must be one of: ${PRIMARY_COLOR_IDS.join(", ")}`);
+    }
+    patch.primaryColor = body.primaryColor;
   }
   parseOrchestration(body, patch);
   return patch;

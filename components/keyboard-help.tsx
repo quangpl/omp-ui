@@ -88,6 +88,8 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
   {
     title: "Board",
     shortcuts: [
+      { label: "Search cards", keys: ["F"] },
+      { label: "Clear the search", keys: ["Esc"] },
       { label: "Previous card", keys: ["↑", "K"] },
       { label: "Next card", keys: ["↓", "J"] },
       { label: "Column left", keys: ["←", "H"] },

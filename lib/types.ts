@@ -1,6 +1,8 @@
 // Shared domain types. Used by DB drivers, API routes, agent runner, web UI,
 // and (later) mobile clients. All timestamps are ISO-8601 strings; all ids are strings.
 
+import { DEFAULT_PRIMARY_COLOR, type PrimaryColorId } from "@/lib/primary-colors";
+
 export const TASK_STATUSES = ["todo", "in_progress", "done"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
@@ -346,6 +348,11 @@ export interface AppSettings {
    */
   visibleDashboardMenus: DashboardMenuId[];
   /**
+   * UI primary color preset (Settings → Appearance; lib/primary-colors.ts). Applied server-side as
+   * `<html data-primary>` so pages load in it.
+   */
+  primaryColor: PrimaryColorId;
+  /**
    * Telegram bot token (Settings → Chat integrations), AES-256-GCM sealed with the credentials key
    * (lib/server/chat/store.ts); "" when none. Never plaintext in the database; GET /settings
    * answers "" or REDACTED_SECRET, and PATCH /settings ignores it (set via /chat/telegram/connect).
@@ -565,6 +572,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cleanupTargets: SCHEDULED_CLEANUP_IDS.filter((id) => id !== "shipped-workspaces"),
   taskCompletionNotifications: false,
   visibleDashboardMenus: [...DASHBOARD_MENU_IDS],
+  primaryColor: DEFAULT_PRIMARY_COLOR,
   telegramBotToken: "",
   discordBotToken: "",
   // Orchestration guards are opt-in: off, nothing changes for existing installs.
@@ -613,6 +621,27 @@ export interface ProjectFileContent {
   size: number;
   /** Last modification time; send it back on save so a concurrent change is refused (409). */
   mtimeMs: number;
+}
+
+/**
+ * A Files-tree mutation (POST /boards/:id/project-files/ops, POST /fs/ops). Paths are file ids as in
+ * `ProjectFileHit.insert` (relative to the workdir / folder, or absolute inside an extra folder);
+ * directories may end with "/". Targets must not exist yet (409); missing parents of a new path are created.
+ */
+export type FileOp =
+  | { op: "create-file"; path: string }
+  | { op: "create-dir"; path: string }
+  /** Rename or move a file or directory. */
+  | { op: "rename"; from: string; to: string }
+  /** Copy a file or directory (recursively). */
+  | { op: "copy"; from: string; to: string }
+  /** Delete a file or directory (recursively, permanently). */
+  | { op: "delete"; path: string };
+
+/** The item a `FileOp` produced (`path` normalized; directories end with "/"); for delete, the removed item. */
+export interface FileOpResult {
+  path: string;
+  kind: "file" | "dir";
 }
 
 /** Server-sent events on GET /api/v1/events. */

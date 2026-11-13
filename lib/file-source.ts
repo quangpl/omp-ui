@@ -3,7 +3,7 @@
 // `ProjectFileHit.insert` values: relative to the project workdir / the folder, or absolute inside
 // a project's extra folder.
 import { api } from "@/lib/api-client";
-import type { ProjectFileContent, ProjectFileHit } from "@/lib/types";
+import type { FileOp, FileOpResult, ProjectFileContent, ProjectFileHit } from "@/lib/types";
 
 export type FileSource =
   | { kind: "board"; boardId: string; workdir: string; extraFolders: string[] }
@@ -51,4 +51,16 @@ export function writeSourceFile(
   return source.kind === "board"
     ? api.boards.writeProjectFile(source.boardId, input)
     : api.fs.writeFile({ root: source.root, ...input });
+}
+
+/** Create, rename/move, copy or delete a file or folder (Files tree context menu). */
+export function applySourceFileOp(source: FileSource, op: FileOp): Promise<FileOpResult> {
+  return source.kind === "board" ? api.boards.projectFileOp(source.boardId, op) : api.fs.fileOp(source.root, op);
+}
+
+/** Absolute path of a file id (workdir-relative ids are joined onto the source's top folder). */
+export function absoluteSourcePath(source: FileSource, id: string): string {
+  if (id.startsWith("/")) return id;
+  const base = fileSourceFolders(source).workdir.replace(/\/+$/, "");
+  return `${base}/${id}`;
 }

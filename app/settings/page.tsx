@@ -13,6 +13,7 @@ import {
   KeyRoundIcon,
   Loader2Icon,
   MessageCircleIcon,
+  PaletteIcon,
   PanelLeftIcon,
   RotateCcwIcon,
   ServerIcon,
@@ -24,6 +25,7 @@ import {
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
 import { PasswordInput } from "@/components/password-input";
+import { AppearanceSettingsSection } from "@/components/settings/appearance-settings";
 import { ChatSettingsSection } from "@/components/settings/chat-settings";
 import { CleanupSettingsSection } from "@/components/settings/cleanup-settings";
 import { MemorySettingsSection } from "@/components/settings/memory-settings";
@@ -105,6 +107,7 @@ const SECTIONS: SettingsNavItem[] = [
   { id: "notifications", label: "Notifications", icon: <BellIcon /> },
   { id: "chat", label: "Chat", icon: <MessageCircleIcon /> },
   { id: "menu", label: "Menu", icon: <PanelLeftIcon /> },
+  { id: "appearance", label: "Appearance", icon: <PaletteIcon /> },
   { id: "system", label: "System", icon: <ServerIcon /> },
   { id: "security", label: "Security", icon: <KeyRoundIcon /> },
   { id: "api", label: "Mobile & API", icon: <SmartphoneIcon /> },
@@ -860,7 +863,7 @@ export default function SettingsPage() {
               "min-w-0 max-w-3xl space-y-10 md:space-y-12",
               "[&>section+section]:border-t [&>section+section]:pt-10 md:[&>section+section]:pt-12",
               "[&>section]:animate-card-in motion-reduce:[&>section]:animate-none",
-              "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12] [&>section:nth-child(8)]:[--stagger:14] [&>section:nth-child(9)]:[--stagger:16] [&>section:nth-child(10)]:[--stagger:18] [&>section:nth-child(11)]:[--stagger:20]",
+              "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12] [&>section:nth-child(8)]:[--stagger:14] [&>section:nth-child(9)]:[--stagger:16] [&>section:nth-child(10)]:[--stagger:18] [&>section:nth-child(11)]:[--stagger:20] [&>section:nth-child(12)]:[--stagger:22]",
             )}
           >
             <AgentSettingsSection />
@@ -871,6 +874,7 @@ export default function SettingsPage() {
             <NotificationSettingsSection />
             <ChatSettingsSection />
             <MenuSettingsSection />
+            <AppearanceSettingsSection />
             <SystemInfoSection />
             <SecuritySection />
             <ApiAccessSection />

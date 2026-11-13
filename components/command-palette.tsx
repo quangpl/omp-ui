@@ -39,6 +39,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } fr
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { compareTasks, POSITION_GAP, useBoardTasks } from "@/hooks/use-board";
 import { api } from "@/lib/api-client";
+import { tokenScore } from "@/lib/fuzzy-match";
 import { isTypingTarget, modKeyLabel } from "@/lib/hotkeys";
 import { STATUS_LABELS, TASK_STATUSES, type BoardWithCounts, type Task } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -63,42 +64,6 @@ interface PaletteEntry {
   recentId?: string;
   /** Label in the Recent group when `label` needs its group for context ("Stop" → "Stop · title"). */
   recentLabel?: string;
-}
-
-/** Letters (any script) and digits; anything else separates words. */
-function isWordChar(char: string): boolean {
-  return char.toLowerCase() !== char.toUpperCase() || (char >= "0" && char <= "9");
-}
-
-/**
- * Tiered match of one lowercase query token in lowercase `text`: prefix (4) > word start (~3) >
- * contiguous substring (~2) > subsequence (<1, only when `fuzzy`); 0 = no match. The fraction
- * favours earlier matches, and subsequences with fewer gaps and more word-start hits.
- */
-function tokenScore(text: string, token: string, fuzzy: boolean): number {
-  if (text.startsWith(token)) return 4;
-  const first = text.indexOf(token);
-  if (first >= 0) {
-    const position = first / (text.length + 1) / 2;
-    for (let at = first; at >= 0; at = text.indexOf(token, at + 1)) {
-      if (!isWordChar(text[at - 1])) return 3 - at / (text.length + 1) / 2;
-    }
-    return 2 - position;
-  }
-  if (!fuzzy) return 0;
-  let from = 0;
-  let last = -1;
-  let gaps = 0;
-  let starts = 0;
-  for (const char of token) {
-    const found = text.indexOf(char, from);
-    if (found < 0) return 0;
-    if (last >= 0 && found > last + 1) gaps++;
-    if (found === 0 || !isWordChar(text[found - 1])) starts++;
-    last = found;
-    from = found + 1;
-  }
-  return 0.5 + (starts / token.length) * 0.4 - Math.min(gaps, 10) * 0.01;
 }
 
 /** Sum of per-token scores; every token must match the label (fuzzy) or the hint/group (no fuzzy). */

@@ -212,6 +212,48 @@ export function AgentStateBadge({
   return null;
 }
 
+/**
+ * Splits `text` into alternating plain/matched runs; consecutive `indices` (ascending UTF-16
+ * positions of matched characters) merge into one run.
+ */
+function highlightRuns(text: string, indices: readonly number[]): { text: string; match: boolean }[] {
+  const runs: { text: string; match: boolean }[] = [];
+  let cursor = 0;
+  let i = 0;
+  while (i < indices.length) {
+    const start = indices[i];
+    if (start < cursor || start >= text.length) {
+      i++;
+      continue;
+    }
+    let end = start + 1;
+    while (i + 1 < indices.length && indices[i + 1] === end && end < text.length) {
+      end++;
+      i++;
+    }
+    i++;
+    if (start > cursor) runs.push({ text: text.slice(cursor, start), match: false });
+    runs.push({ text: text.slice(start, end), match: true });
+    cursor = end;
+  }
+  if (cursor < text.length) runs.push({ text: text.slice(cursor), match: false });
+  return runs;
+}
+
+/** Card title with the board search's matched characters marked. */
+function HighlightedTitle({ text, indices }: { text: string; indices: readonly number[] | undefined }) {
+  if (!indices || indices.length === 0) return text;
+  return highlightRuns(text, indices).map((run, i) =>
+    run.match ? (
+      <mark key={i} className="rounded-[3px] bg-primary/15 text-foreground">
+        {run.text}
+      </mark>
+    ) : (
+      run.text
+    ),
+  );
+}
+
 interface TaskCardProps {
   task: Task;
   /** Card click; the event lets callers treat modifier clicks differently (desktop multi-select). */
@@ -242,6 +284,8 @@ interface TaskCardProps {
    * right; the title keeps clear of them.
    */
   pinnedQuickActions?: number;
+  /** Title character positions matched by the board search; marked in the title. */
+  highlight?: readonly number[];
   className?: string;
 }
 
@@ -259,6 +303,7 @@ export const TaskCard = memo(function TaskCard({
   actions,
   quickActions,
   pinnedQuickActions = 0,
+  highlight,
   className,
 }: TaskCardProps) {
   const done = task.status === "done";
@@ -318,7 +363,7 @@ export const TaskCard = memo(function TaskCard({
             )}
             title={task.pushedAt ? "Pushed to main" : undefined}
           >
-            {task.title}
+            <HighlightedTitle text={task.title} indices={highlight} />
             {task.pushedAt && <span className="sr-only"> (pushed to main)</span>}
             {selected && <span className="sr-only"> (selected)</span>}
           </span>
