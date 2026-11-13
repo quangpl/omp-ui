@@ -9,6 +9,7 @@ import { toastCardAdded } from "@/components/board/card-added-toast";
 import { BoardMenu } from "@/components/board/board-menu";
 import type { BoardMenuActions } from "@/components/board/card-context-menu";
 import { ConnectionPill } from "@/components/board/connection-status";
+import { DeleteCardsDialog } from "@/components/board/delete-cards-dialog";
 import { BoardBodySkeleton, KanbanBoard } from "@/components/board/kanban-board";
 import { NewTaskDialog } from "@/components/board/new-task-form";
 import { GitIndicator, canShip, shipLabels, shipTask } from "@/components/board/ship-actions";
@@ -63,6 +64,8 @@ function BoardScreen() {
   const [newCard, setNewCard] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deleting, setDeleting] = useState<Task | null>(null);
+  /** Cards awaiting confirmation of "Delete all" (Done column). */
+  const [deletingAll, setDeletingAll] = useState<Task[] | null>(null);
   const [mobileColumn, setMobileColumn] = useState<TaskStatus>("todo");
   /** The user picked a column (tap, swipe, arrow keys): show it and reopen the board on it next time. */
   const pickMobileColumn = useCallback(
@@ -183,6 +186,7 @@ function BoardScreen() {
         await createTask({ title: `${task.title} (copy)`, description: task.description, start: false });
       },
       requestDelete: setDeleting,
+      requestDeleteAll: setDeletingAll,
       newCard: openNewCard,
       refresh: () => {
         void reload();
@@ -297,6 +301,12 @@ function BoardScreen() {
         onConfirm={async () => {
           if (deleting) await controller.deleteTask(deleting.id);
         }}
+      />
+
+      <DeleteCardsDialog
+        tasks={deletingAll}
+        onOpenChange={(open) => !open && setDeletingAll(null)}
+        onConfirm={controller.deleteTasks}
       />
 
       <TaskDetail

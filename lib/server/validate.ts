@@ -179,6 +179,16 @@ export function parseEnabled(value: unknown): boolean {
   return parseBoolean(value, "enabled");
 }
 
+/** A non-empty list of card ids (a bulk action's targets), deduped. */
+export function parseTaskIds(value: unknown): Set<string> {
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) {
+    throw new HttpError(400, "ids must be a list of card ids");
+  }
+  const ids = new Set((value as string[]).map((v) => v.trim()).filter(Boolean));
+  if (ids.size === 0) throw new HttpError(400, "ids is required");
+  return ids;
+}
+
 const MAX_BLOCKED_BY = 50;
 
 /**

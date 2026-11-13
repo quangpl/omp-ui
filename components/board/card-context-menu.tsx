@@ -38,6 +38,8 @@ export interface BoardMenuActions {
   duplicate: (task: Task) => Promise<void>;
   /** Asks for confirmation before deleting. */
   requestDelete: (task: Task) => void;
+  /** Asks for confirmation before deleting all these cards (the Done column's "Delete all"). */
+  requestDeleteAll: (tasks: Task[]) => void;
   newCard: () => void;
   refresh: () => void;
   openSettings: () => void;
