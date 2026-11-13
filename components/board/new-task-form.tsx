@@ -88,28 +88,34 @@ export function NewTaskForm({
   const wordCount = words > 0 && <span className="shrink-0 tabular-nums">{words.toLocaleString()} words</span>;
   const label = <Label htmlFor={`${id}-text`}>What should the agent do?</Label>;
   const textarea = (
-    <Textarea
-      id={`${id}-text`}
-      ref={composeRef}
-      autoFocus
-      value={text}
-      readOnly={busy}
-      placeholder="Goal, details, pasted errors or logs, links…"
-      className={
-        page
-          ? // Fixed sizing so the flex height wins over the content height and long text scrolls inside.
-            "min-h-24 flex-1 resize-none field-sizing-fixed text-base md:text-sm"
-          : "max-h-[45dvh] min-h-36 resize-none text-base md:text-sm"
-      }
-      aria-autocomplete="list"
-      aria-expanded={slash.open}
-      onChange={(event) => setText(event.target.value)}
-      onSelect={slash.onSelect}
-      onKeyDown={(event) => {
-        if (slash.onKeyDown(event)) return;
-        submitKeys(event);
-      }}
-    />
+    // `relative` anchors the word ghost on the textarea; on the page the wrapper takes over the
+    // textarea's flex sizing (and its minimum) so the textarea still fills the free height.
+    <div className={page ? "relative flex min-h-24 flex-1 flex-col" : "relative"}>
+      <Textarea
+        id={`${id}-text`}
+        ref={composeRef}
+        autoFocus
+        value={text}
+        readOnly={busy}
+        placeholder="Goal, details, pasted errors or logs, links…"
+        className={
+          page
+            ? // Fixed sizing so the flex height wins over the content height and long text scrolls inside.
+              "min-h-24 flex-1 resize-none field-sizing-fixed text-base md:text-sm"
+            : "max-h-[45dvh] min-h-36 resize-none text-base md:text-sm"
+        }
+        aria-autocomplete="list"
+        aria-expanded={slash.open}
+        data-suggesting={slash.suggesting || undefined}
+        onChange={(event) => setText(event.target.value)}
+        onSelect={slash.onSelect}
+        onKeyDown={(event) => {
+          if (slash.onKeyDown(event)) return;
+          submitKeys(event);
+        }}
+      />
+      {slash.ghost}
+    </div>
   );
   const submitContent = (
     <>
@@ -129,13 +135,14 @@ export function NewTaskForm({
           <div className="flex flex-1 flex-col gap-2">
             {label}
             {textarea}
+            {slash.suggestion}
             {slash.menu ?? (
               <p className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
                 <span className="flex items-start gap-1.5">
                   <Sparkles className="mt-px size-3.5 shrink-0" aria-hidden />
                   <span>
                     Lands in In progress; an agent writes the title and brief, then starts. Type <Kbd>/</Kbd> for
-                    skills, <Kbd>@</Kbd> for files.
+                    skills, <Kbd>@</Kbd> for files; <Kbd>Tab</Kbd> completes words.
                   </span>
                 </span>
                 {wordCount}
@@ -170,13 +177,15 @@ export function NewTaskForm({
       <div className="flex flex-col gap-2">
         {label}
         {textarea}
+        {slash.suggestion}
         {slash.menu}
         <p className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
           <span className="flex items-start gap-1.5">
             <Sparkles className="mt-px size-3.5 shrink-0" aria-hidden />
             <span>
               Goes straight to In progress. An agent writes the title and brief from your text and the project,
-              then starts work. Type <Kbd>/</Kbd> for OMP skills and shortcuts, <Kbd>@</Kbd> to mention project files.
+              then starts work. Type <Kbd>/</Kbd> for OMP skills and shortcuts, <Kbd>@</Kbd> to mention project files.{" "}
+              <Kbd>Tab</Kbd> completes words.
             </span>
           </span>
           {wordCount}
@@ -221,10 +230,13 @@ export function NewTaskDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl"
-        // Radix sees Escape before the textarea does: with the suggestions open, Escape only
-        // closes them (the textarea's handler), never the dialog and its draft.
+        // Radix sees Escape before the textarea does: with the suggestions or a word completion
+        // showing, Escape only hides them (the textarea's handler), never the dialog and its draft.
         onEscapeKeyDown={(event) => {
-          if (event.target instanceof HTMLElement && event.target.getAttribute("aria-expanded") === "true") {
+          if (
+            event.target instanceof HTMLElement &&
+            (event.target.getAttribute("aria-expanded") === "true" || event.target.hasAttribute("data-suggesting"))
+          ) {
             event.preventDefault();
           }
         }}

@@ -62,6 +62,7 @@ import type {
   MemorySessionsResponse,
   MemoryStoreStats,
 } from "@/lib/memory-types";
+import type { WordModelData } from "@/lib/word-completion";
 
 /** Thrown for non-2xx responses. `status` 401 means the session expired. */
 export class ApiRequestError extends Error {
@@ -198,6 +199,8 @@ export const api = {
   /** Installed omp skills for the "/" picker; `refresh` bypasses the server's 60s cache. */
   skills: (refresh = false) =>
     request<{ skills: OmpSkill[] }>(`/system/skills${refresh ? "?refresh=1" : ""}`),
+  /** Word-completion model for the composer's inline ghost text (server caches it 5 min). */
+  wordCompletions: () => request<{ model: WordModelData }>("/system/word-completions"),
   /** Home dashboard aggregate: projects, totals, cards needing attention, recent results, queue. */
   dashboard: () => request<Dashboard>("/dashboard"),
   settings: {
