@@ -139,7 +139,7 @@ export const TONE_STROKE: Record<Tone, string> = {
 
 /** Shared surface for every panel on the page. */
 export const PANEL =
-  "min-w-0 rounded-2xl bg-card ring-1 ring-foreground/[0.07] shadow-[0_1px_2px_oklch(0.17_0.01_270/0.04),0_24px_48px_-28px_oklch(0.17_0.01_270/0.18)] dark:shadow-[inset_0_1px_0_oklch(1_0_0/0.05)]";
+  "min-w-0 rounded-2xl bg-card ring-1 ring-foreground/[0.07] shadow-[0_1px_2px_color-mix(in_oklch,var(--shadow-tint)_5%,transparent),0_24px_48px_-28px_color-mix(in_oklch,var(--shadow-tint)_20%,transparent)] dark:shadow-[inset_0_1px_0_oklch(1_0_0/0.05)]";
 
 /** Horizontal usage bar; turns amber at 75% and red at 90%. */
 export function Meter({ fraction, label, className }: { fraction: number; label: string; className?: string }) {
@@ -264,10 +264,10 @@ export function EmptyState({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center gap-4 rounded-2xl border border-dashed border-foreground/10 px-6 py-10 text-center">
+    <div className="flex animate-fade-in-soft flex-col items-center gap-4 rounded-2xl border border-dashed border-foreground/10 px-5 py-10 text-center sm:px-6">
       <span
         aria-hidden
-        className="flex size-11 items-center justify-center rounded-xl bg-card text-muted-foreground ring-1 ring-foreground/[0.08] shadow-[0_1px_2px_oklch(0.17_0.01_270/0.06),0_8px_16px_-10px_oklch(0.17_0.01_270/0.2)] dark:bg-muted dark:shadow-[inset_0_1px_0_oklch(1_0_0/0.06)] [&_svg]:size-5"
+        className="flex size-11 items-center justify-center rounded-xl bg-card text-muted-foreground ring-1 ring-foreground/[0.08] shadow-[0_1px_2px_color-mix(in_oklch,var(--shadow-tint)_7%,transparent),0_8px_16px_-10px_color-mix(in_oklch,var(--shadow-tint)_22%,transparent)] dark:bg-muted dark:shadow-[inset_0_1px_0_oklch(1_0_0/0.06)] [&_svg]:size-5"
       >
         {icon}
       </span>

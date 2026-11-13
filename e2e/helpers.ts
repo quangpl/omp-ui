@@ -154,12 +154,12 @@ export async function expectNoHorizontalScroll(page: Page): Promise<void> {
 
 /**
  * A card's open button. Its accessible name is the title plus badges/preview (and a leading
- * "Done" icon label in Done), so match from the start of the name: a plain substring would also
- * hit the "More actions for <title>" menu button on phones.
+ * progress ring's label, e.g. "To do · not started" or "2 of 5 todo items done"), so the title may follow
+ * a prefix; but a plain substring would also hit the "More actions for <title>" menu button on phones.
  */
 export function cardButton(scope: Page | Locator, title: string): Locator {
   const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return scope.getByRole("button", { name: new RegExp(`^(?:Done\\s*)?${escaped}`) });
+  return scope.getByRole("button", { name: new RegExp(`^(?!More actions)(?:.*?\\s)?${escaped}`) });
 }
 
 /** Minimum comfortable touch target (Apple HIG / WCAG 2.5.5). */

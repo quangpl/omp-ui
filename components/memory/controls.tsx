@@ -45,7 +45,7 @@ export function SearchField({
         aria-label={placeholder}
         className="h-11 pr-16 pl-9 [&::-webkit-search-cancel-button]:hidden md:h-9"
       />
-      <div className="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-1">
+      <div className="absolute top-1/2 right-0 flex -translate-y-1/2 items-center gap-1 md:right-2">
         {busy && <Loader2Icon className="size-4 animate-spin text-muted-foreground motion-reduce:animate-none" />}
         {value ? (
           <button
@@ -54,7 +54,7 @@ export function SearchField({
               onChange("");
               inputRef.current?.focus();
             }}
-            className="flex size-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground md:size-6"
+            className="pressable-icon flex size-11 items-center justify-center rounded-md text-muted-foreground transition-[color,scale] hover:text-foreground md:size-6"
             aria-label="Clear search"
           >
             <XIcon className="size-4" />

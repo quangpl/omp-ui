@@ -233,7 +233,7 @@ export function ComposeDialog({
           )}
         </form>
 
-        <DialogFooter className="border-t px-5 py-3">
+        <DialogFooter className="mx-0 mb-0 border-t px-5 py-3">
           <Button variant="outline" onClick={onClose} disabled={running} className="h-11 md:h-9">
             {draft.readOnly ? "Close" : "Cancel"}
           </Button>

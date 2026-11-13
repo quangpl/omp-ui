@@ -82,6 +82,7 @@ import {
   type TerminalExecuteRequest,
   type TerminalStreamEvent,
 } from "@/lib/terminal-types";
+import type { LogExportFormat, LogPage, LogQuery, LogSource, LogSourcesResponse } from "@/lib/log-types";
 
 /** Thrown for non-2xx responses. `status` 401 means the session expired. */
 export class ApiRequestError extends Error {
@@ -195,6 +196,20 @@ function memoryQuery(params: Record<string, string | number | null | undefined>)
   }
   const qs = query.toString();
   return qs ? `?${qs}` : "";
+}
+
+/** Query string of `/logs/[source]` (and its export): levels become one comma list, "all" files are omitted. */
+function logQuery(query: LogQuery, extra: Record<string, string> = {}): string {
+  return memoryQuery({
+    ...extra,
+    limit: query.limit,
+    offset: query.offset,
+    level: query.levels?.join(","),
+    since: query.since,
+    until: query.until,
+    q: query.q?.trim(),
+    file: query.file === "all" ? undefined : query.file,
+  });
 }
 
 export const api = {
@@ -576,6 +591,36 @@ export const api = {
     cancel: (id: string) => request<{ ok: true }>("/terminal/cancel", { method: "POST", json: { id } }),
     /** Remove finished blocks; running ones stay. */
     clear: () => request<{ ok: true }>("/terminal/session", { method: "DELETE" }),
+  },
+  /** Server, security, access, agent, database, restart and tunnel logs (the /logs page). */
+  logs: {
+    sources: () => request<LogSourcesResponse>("/logs"),
+    /** One page of entries, newest first. */
+    list: (source: LogSource, query: LogQuery = {}) =>
+      request<LogPage>(`/logs/${encodeURIComponent(source)}${logQuery(query)}`),
+    /**
+     * Download URL of every matching entry, newest first (cookie-authenticated, so a plain link
+     * works; the server answers with `content-disposition: attachment`). Pagination is dropped.
+     */
+    exportUrl: (source: LogSource, query: LogQuery, format: LogExportFormat) => {
+      const filters: LogQuery = { ...query, limit: undefined, offset: undefined };
+      return `${BASE}/logs/${encodeURIComponent(source)}/export${logQuery(filters, { format })}`;
+    },
+    /**
+     * Record a client-side page view in the access log. Best effort: never throws, and skips `send`
+     * so an expired session does not trigger a second login redirect from a background beacon.
+     */
+    pageView: async (path: string): Promise<void> => {
+      try {
+        await fetch(`${BASE}/logs/access`, {
+          method: "POST",
+          credentials: "same-origin",
+          keepalive: true,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path }),
+        });
+      } catch {}
+    },
   },
 };
 

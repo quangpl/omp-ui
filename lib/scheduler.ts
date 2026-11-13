@@ -1,6 +1,6 @@
 // Server-only recurring cards (Schedulers tab), behind `/api/v1/schedulers/**`. On every match of
 // a scheduler's cron expression (lib/cron.ts, evaluated in the scheduler's IANA time zone) it
-// creates a regular card on the scheduler's board from its prompt through the "New card" flow
+// creates a regular card on the scheduler's board from its prompt through the "New task" flow
 // (lib/agent/compose.ts), and records the run in its history (scheduler runs). The due check runs
 // every 30 s; each scheduler keeps its next fire time in `nextRunAt`.
 import { createCardFromText } from "@/lib/agent/compose";
@@ -72,7 +72,7 @@ export function computeNextRunAt(
 }
 
 /**
- * Fire `scheduler` once: create its card from the prompt (the "New card" flow, so the card writer
+ * Fire `scheduler` once: create its card from the prompt (the "New task" flow, so the card writer
  * drafts it and its agent starts), record the run, and update the scheduler (run count, last
  * outcome, next fire time; disabled once `maxRuns` is reached). A missing board or a failure to
  * create the card is recorded as a failed run, never thrown. `now` is when it fired.

@@ -958,6 +958,7 @@ describe("settings, health and system", () => {
       cleanupSchedule: "off",
       cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
       taskCompletionNotifications: false,
+      visibleDashboardMenus: DEFAULT_SETTINGS.visibleDashboardMenus,
     });
   });
 
@@ -1010,6 +1011,7 @@ describe("settings, health and system", () => {
       cleanupSchedule: "off",
       cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
       taskCompletionNotifications: false,
+      visibleDashboardMenus: DEFAULT_SETTINGS.visibleDashboardMenus,
     });
 
     const partial = await api<AppSettings>(settingsRoute, "PATCH", "/settings", {
@@ -1040,6 +1042,7 @@ describe("settings, health and system", () => {
       cleanupSchedule: "off",
       cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
       taskCompletionNotifications: true,
+      visibleDashboardMenus: DEFAULT_SETTINGS.visibleDashboardMenus,
     });
     expect((await api<AppSettings>(settingsRoute, "GET", "/settings")).body).toEqual(partial.body);
     expect((await api<AppSettings>(settingsRoute, "PATCH", "/settings", { body: {} })).body).toEqual(partial.body);

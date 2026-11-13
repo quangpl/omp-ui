@@ -37,6 +37,9 @@ function sessionTitle(session: MemorySession): string {
 function StatusMark({ status }: { status: string }) {
   return (
     <span className="relative flex size-2 shrink-0" title={status}>
+      {status === "active" && (
+        <span className="absolute inset-0 animate-breathe rounded-full bg-success motion-reduce:animate-none" />
+      )}
       <span className={cn("relative size-2 rounded-full", STATUS_TONE[status] ?? "bg-foreground/30")} />
     </span>
   );
@@ -58,14 +61,17 @@ function SessionRow({
   onClick: () => void;
 }) {
   return (
-    <li className="animate-card-in" style={{ "--stagger": index % PAGE_SIZE } as React.CSSProperties}>
+    <li
+      className="animate-card-in content-auto [contain-intrinsic-size:auto_4rem]"
+      style={{ "--stagger": index % PAGE_SIZE } as React.CSSProperties}
+    >
       <button
         type="button"
         data-memory-row={index}
         aria-current={open ? "true" : undefined}
         onClick={onClick}
         className={cn(
-          "relative flex w-full items-start gap-3 px-4 py-3 text-left transition-colors outline-none",
+          "pressable relative flex min-h-12 w-full items-start gap-3 px-4 py-3 text-left transition-[background-color,scale] outline-none",
           "hover:bg-muted/50 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-inset",
           selected && "bg-muted/60",
           open && "bg-muted",
@@ -89,7 +95,8 @@ function SessionRow({
           <span className="mt-0.5 flex min-w-0 flex-wrap gap-x-2 text-xs text-muted-foreground tabular-nums">
             {session.project && <span className="truncate">{session.project}</span>}
             <span>
-              {session.observationCount} {session.observationCount === 1 ? "observation" : "observations"}
+              <span className="font-mono">{session.observationCount}</span>{" "}
+              {session.observationCount === 1 ? "observation" : "observations"}
             </span>
             {session.startedAt && (
               <time dateTime={session.startedAt} title={formatDateTime(session.startedAt)}>
@@ -234,7 +241,9 @@ function SessionDetailPanel({
       <div className="space-y-6 px-5 py-5">
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
           <Meta label="Project">{shown.project ?? "None"}</Meta>
-          <Meta label="Observations">{shown.observationCount}</Meta>
+          <Meta label="Observations" mono>
+            {shown.observationCount}
+          </Meta>
           {shown.startedAt && (
             <Meta label="Started">
               <time dateTime={shown.startedAt} title={formatDateTime(shown.startedAt)}>
@@ -319,11 +328,11 @@ function SessionDetailPanel({
           ) : (
             <ol className="space-y-0.5">
               {detail.observations.map((obs) => (
-                <li key={obs.id}>
+                <li key={obs.id} className="content-auto [contain-intrinsic-size:auto_2.75rem]">
                   <button
                     type="button"
                     onClick={() => setObservation(obs)}
-                    className="group flex min-h-11 w-full flex-col gap-0.5 border-l-2 border-border py-1.5 pr-2 pl-3 text-left transition-colors hover:border-primary hover:bg-muted/50 md:min-h-0"
+                    className="group flex min-h-11 w-full flex-col gap-0.5 border-l-2 border-border py-1.5 pr-2 pl-3 text-left transition-[background-color,border-color] hover:border-primary hover:bg-muted/50 active:bg-muted md:min-h-0"
                   >
                     <span className="flex min-w-0 items-baseline gap-2">
                       <span className="w-20 shrink-0 truncate text-[11px] text-muted-foreground">{typeLabel(obs.type)}</span>
@@ -526,7 +535,7 @@ export function SessionsTab({
               ))}
             </ul>
           ) : items.length === 0 ? (
-            <div className="flex flex-col items-start gap-4 px-6 py-12 sm:px-10">
+            <div className="flex animate-fade-in-soft flex-col items-start gap-4 px-5 py-12 sm:px-10">
               <span className="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-5">
                 {filtered ? <SearchXIcon /> : <HistoryIcon />}
               </span>
@@ -538,6 +547,19 @@ export function SessionsTab({
                     : "Every omp session with the agentmemory extension appears here, card runs included. Run a card to record one."}
                 </p>
               </div>
+              {filtered && (
+                <Button
+                  variant="outline"
+                  className="h-11 md:h-8"
+                  onClick={() => {
+                    setQuery("");
+                    setProject("all");
+                    setStatus("all");
+                  }}
+                >
+                  Clear filters
+                </Button>
+              )}
             </div>
           ) : (
             <>
@@ -589,7 +611,11 @@ export function SessionsTab({
       </div>
 
       <Sheet open={!wide && openSession !== null} onOpenChange={(next) => !next && close()}>
-        <SheetContent side="right" showCloseButton={false} className="w-full gap-0 overflow-y-auto p-0 sm:max-w-lg">
+        <SheetContent
+          side="right"
+          showCloseButton={false}
+          className="w-full gap-0 overflow-y-auto overscroll-contain p-0 scrollbar-subtle sm:max-w-lg"
+        >
           <SheetTitle className="sr-only">{openSession ? sessionTitle(openSession) : "Session"}</SheetTitle>
           <SheetDescription className="sr-only">Session timeline</SheetDescription>
           {!wide && detail}

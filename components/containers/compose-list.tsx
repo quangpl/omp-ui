@@ -13,7 +13,7 @@ import {
   SquareIcon,
   Trash2Icon,
 } from "lucide-react";
-import { EmptyState, SectionHeader } from "@/components/containers/shared";
+import { EmptyState, SectionHeader, StatePill } from "@/components/containers/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,7 +26,7 @@ import {
 import type { ComposeAction, ComposeProject } from "@/lib/docker-types";
 import { cn } from "@/lib/utils";
 
-const ICON_BUTTON = "size-11 active:scale-[0.96] md:size-8";
+const ICON_BUTTON = "size-11 pressable-icon md:size-8";
 
 export function ComposeList({
   projects,
@@ -57,7 +57,7 @@ export function ComposeList({
         }
         actions={
           projects.length > 0 && (
-            <Button variant="outline" onClick={onNew} className="h-11 gap-1.5 active:scale-[0.98] md:h-8">
+            <Button variant="outline" onClick={onNew} className="pressable h-11 gap-1.5 md:h-8">
               <PlusIcon />
               New stack
             </Button>
@@ -71,7 +71,7 @@ export function ComposeList({
           icon={<LayersIcon />}
           title="No compose projects"
           action={
-            <Button variant="outline" onClick={onNew} className="h-11 shrink-0 gap-1.5 active:scale-[0.98] md:h-8">
+            <Button variant="outline" onClick={onNew} className="pressable h-11 shrink-0 gap-1.5 md:h-8">
               <PlusIcon />
               New stack
             </Button>
@@ -87,14 +87,14 @@ export function ComposeList({
             return (
               <li
                 key={p.name}
-                className="animate-card-in relative flex flex-col gap-2 px-3 py-3 transition-colors hover:bg-muted/40 sm:px-4 @2xl:flex-row @2xl:items-center @2xl:gap-4 @2xl:py-2.5"
+                className="animate-card-in relative flex flex-col gap-2 px-4 py-3 transition-colors hover:bg-muted/40 has-[[data-row-open]:active]:bg-muted/60 @2xl:flex-row @2xl:items-center @2xl:gap-4 @2xl:py-2.5"
                 style={{ "--stagger": index } as React.CSSProperties}
               >
                 <div className="flex min-w-0 flex-1 items-start gap-3">
                   <span
                     className={cn(
                       "flex size-8 shrink-0 items-center justify-center rounded-lg",
-                      up ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-400" : "bg-muted text-muted-foreground",
+                      up ? "bg-success/12 text-success" : "bg-muted text-muted-foreground",
                     )}
                   >
                     <LayersIcon className="size-4" />
@@ -104,6 +104,7 @@ export function ComposeList({
                       <button
                         type="button"
                         onClick={() => onOpenFile(p)}
+                        data-row-open=""
                         className="min-w-0 truncate text-left font-mono text-sm font-medium outline-none after:absolute after:inset-0 after:content-[''] focus-visible:after:rounded-md focus-visible:after:ring-3 focus-visible:after:ring-ring/50 focus-visible:after:ring-inset"
                         aria-label={`Open the compose file of ${p.name}`}
                       >
@@ -128,18 +129,15 @@ export function ComposeList({
                   </div>
                 </div>
 
+                {/* Phones: status pill + one primary action + overflow; desktop (@2xl): row columns. */}
                 <div className="flex items-center gap-2 pl-11 @2xl:contents">
                   <div className="min-w-0 flex-1 text-xs @2xl:w-44 @2xl:flex-none">
-                    <p className="truncate tabular-nums" title={p.status}>
-                      <span
-                        className={cn(
-                          "font-medium",
-                          up ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground",
-                        )}
-                      >
-                        {p.total === 0 ? "Down" : `${p.running}/${p.total} running`}
-                      </span>
-                      <span className="text-muted-foreground"> · {p.status}</span>
+                    <p className="flex min-w-0 items-center gap-1.5" title={p.status}>
+                      <StatePill
+                        label={p.total === 0 ? "Down" : `${p.running}/${p.total} running`}
+                        className={cn("font-mono tabular-nums", up ? "bg-success/12 text-success" : "text-muted-foreground")}
+                      />
+                      <span className="truncate text-muted-foreground">{p.status}</span>
                     </p>
                   </div>
 
@@ -159,7 +157,7 @@ export function ComposeList({
                         <Button
                           variant="ghost"
                           size="icon"
-                          className={ICON_BUTTON}
+                          className={cn(ICON_BUTTON, "max-md:hidden")}
                           title="Restart"
                           aria-label={`Restart ${p.name}`}
                           onClick={() => onAction(p, "restart")}
@@ -183,7 +181,7 @@ export function ComposeList({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className={ICON_BUTTON}
+                      className={cn(ICON_BUTTON, "max-md:hidden")}
                       title="Logs"
                       aria-label={`Logs of ${p.name}`}
                       disabled={p.total === 0}
@@ -198,6 +196,18 @@ export function ComposeList({
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-52">
+                        {p.total > 0 && (
+                          <DropdownMenuItem className="md:hidden" onSelect={() => onLogs(p)}>
+                            <ScrollTextIcon />
+                            Logs
+                          </DropdownMenuItem>
+                        )}
+                        {up && (
+                          <DropdownMenuItem className="md:hidden" onSelect={() => onAction(p, "restart")}>
+                            <RotateCwIcon />
+                            Restart
+                          </DropdownMenuItem>
+                        )}
                         {hasFile && (
                           <DropdownMenuItem onSelect={() => onOpenFile(p)}>
                             <FileCode2Icon />

@@ -35,7 +35,7 @@ export default function MemoryPage() {
     <div className="flex min-h-dvh flex-col">
       <AppHeader title="Memory" actions={viewer} />
       <main className="px-safe pb-safe flex-1">
-        <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 md:py-8 lg:px-8">
+        <div className="mx-auto w-full max-w-[1400px] animate-page-in px-4 py-6 sm:px-6 md:py-8 lg:px-8 motion-reduce:animate-none">
           <MemoryView onStatus={setStatus} />
         </div>
       </main>

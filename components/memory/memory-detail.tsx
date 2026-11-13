@@ -197,7 +197,7 @@ export function MemoryDetailPanel({
           {detail.content && (
             <section className="space-y-2">
               <Label>Content</Label>
-              <p className="max-h-96 overflow-y-auto rounded-lg bg-muted/50 px-3.5 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap scrollbar-subtle">
+              <p className="max-h-96 overflow-y-auto overscroll-contain rounded-lg bg-muted/50 px-3.5 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap scrollbar-subtle">
                 {detail.content}
               </p>
             </section>
@@ -288,7 +288,7 @@ export function MemoryDetailPanel({
                     <button
                       type="button"
                       onClick={() => onOpen(related)}
-                      className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted md:min-h-0"
+                      className="pressable flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-[background-color,scale] hover:bg-muted active:bg-muted md:min-h-0"
                     >
                       <span className="w-20 shrink-0 truncate text-xs text-muted-foreground">
                         {typeLabel(related.type)}

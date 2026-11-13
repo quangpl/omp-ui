@@ -677,7 +677,7 @@ const STATUS: Record<DiffFileStatus, { label: string; className: string }> = {
   A: { label: "Added", className: "text-success" },
   M: { label: "Modified", className: "text-amber-600 dark:text-amber-400" },
   D: { label: "Deleted", className: "text-destructive" },
-  R: { label: "Renamed", className: "text-sky-600 dark:text-sky-400" },
+  R: { label: "Renamed", className: "text-primary" },
 };
 
 function StatusLetter({ file }: { file: DiffFile }) {

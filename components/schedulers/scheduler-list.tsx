@@ -144,8 +144,23 @@ export function SchedulerList() {
     return (
       <ul className="space-y-3" aria-busy="true" aria-label="Loading schedulers">
         {[0, 1, 2].map((i) => (
-          <li key={i}>
-            <Skeleton className="h-36 w-full rounded-xl md:h-24" />
+          <li key={i} className="rounded-xl border bg-card p-4">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:gap-6">
+              <div className="flex min-w-0 flex-1 items-start justify-between gap-3">
+                <div className="min-w-0 flex-1 space-y-2">
+                  <Skeleton className="h-5 max-w-full" style={{ width: `${10 + ((i * 5) % 7)}rem` }} />
+                  <Skeleton className="h-4 w-28" />
+                  <Skeleton className="h-4 w-56 max-w-full" />
+                </div>
+                <Skeleton className="h-6 w-16 rounded-full lg:hidden" />
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-[minmax(7rem,auto)_minmax(0,1fr)_auto] lg:w-[28rem] lg:shrink-0">
+                <Skeleton className="h-9" />
+                <Skeleton className="h-9 w-14 justify-self-end sm:justify-self-auto" />
+                <Skeleton className="col-span-2 h-9 sm:col-span-1 sm:col-start-2 sm:row-start-1" />
+              </div>
+              <Skeleton className="hidden h-6 w-16 rounded-full lg:block" />
+            </div>
           </li>
         ))}
       </ul>
@@ -154,7 +169,7 @@ export function SchedulerList() {
 
   if (schedulers.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed px-4 py-12 text-center">
+      <div className="flex animate-fade-in-soft flex-col items-center rounded-xl border border-dashed px-4 py-12 text-center">
         <CalendarClock className="mx-auto size-7 text-muted-foreground" aria-hidden />
         <p className="mt-3 text-base font-medium">No schedulers yet</p>
         <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
@@ -173,9 +188,10 @@ export function SchedulerList() {
 
   return (
     <ul className="space-y-3">
-      {schedulers.map((scheduler) => (
+      {schedulers.map((scheduler, index) => (
         <SchedulerRow
           key={scheduler.id}
+          index={index}
           scheduler={scheduler}
           projectName={projects.get(scheduler.boardId) ?? null}
           now={now}
@@ -197,7 +213,13 @@ function StatusBadge({ scheduler }: { scheduler: Scheduler }) {
     );
   }
   return scheduler.enabled ? (
-    <Badge className="bg-success/10 text-success">Enabled</Badge>
+    <Badge className="bg-success/10 text-success">
+      <span className="relative flex size-1.5" aria-hidden>
+        <span className="absolute inset-0 animate-breathe rounded-full bg-success motion-reduce:animate-none" />
+        <span className="relative size-1.5 rounded-full bg-success" />
+      </span>
+      Enabled
+    </Badge>
   ) : (
     <Badge variant="outline" className="text-muted-foreground">
       Disabled
@@ -215,12 +237,14 @@ function scheduleText(cron: string): string {
 }
 
 function SchedulerRow({
+  index,
   scheduler,
   projectName,
   now,
   pending,
   onEnabledChange,
 }: {
+  index: number;
   scheduler: Scheduler;
   /** null when its project isn't known (yet). */
   projectName: string | null;
@@ -233,7 +257,10 @@ function SchedulerRow({
   const failed = scheduler.lastStatus === "failed";
 
   return (
-    <li className="relative rounded-xl border bg-card transition-colors duration-200 hover:bg-muted/40 motion-reduce:transition-none">
+    <li
+      className="relative animate-card-in rounded-xl border bg-card transition-[background-color,scale] duration-200 ease-(--ease-fluid) hover:bg-muted/40 has-[a:active]:scale-[0.985] motion-reduce:transition-none"
+      style={{ "--stagger": index } as React.CSSProperties}
+    >
       <div className="flex flex-col gap-4 p-4 lg:flex-row lg:items-center lg:gap-6">
         <div className="flex min-w-0 flex-1 items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
@@ -268,7 +295,7 @@ function SchedulerRow({
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-[minmax(7rem,auto)_minmax(0,1fr)_auto] lg:w-[28rem] lg:shrink-0">
           <div className="min-w-0">
             <dt className="text-xs text-muted-foreground">Next run</dt>
-            <dd className="mt-0.5 tabular-nums">
+            <dd className="mt-0.5 font-mono text-[0.8125rem] tabular-nums">
               {scheduler.nextRunAt ? (
                 <span title={formatDateTime(scheduler.nextRunAt)}>{formatRelative(scheduler.nextRunAt, now)}</span>
               ) : (
@@ -284,7 +311,7 @@ function SchedulerRow({
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <RunResultBadge status={scheduler.lastStatus} />
                     {scheduler.lastRunAt && (
-                      <span className="text-xs text-muted-foreground tabular-nums" title={formatDateTime(scheduler.lastRunAt)}>
+                      <span className="font-mono text-xs text-muted-foreground tabular-nums" title={formatDateTime(scheduler.lastRunAt)}>
                         {formatRelative(scheduler.lastRunAt, now)}
                       </span>
                     )}
@@ -310,7 +337,7 @@ function SchedulerRow({
           </div>
           <div className="min-w-0 row-start-1 col-start-2 sm:row-start-auto sm:col-start-auto">
             <dt className="text-xs text-muted-foreground">Runs</dt>
-            <dd className="mt-0.5 tabular-nums">
+            <dd className="mt-0.5 font-mono text-[0.8125rem] tabular-nums">
               {scheduler.runCount.toLocaleString()}
               {scheduler.maxRuns !== null && (
                 <span className="text-muted-foreground"> / {scheduler.maxRuns.toLocaleString()}</span>

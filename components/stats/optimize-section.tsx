@@ -336,7 +336,7 @@ function Vital({
       >
         <span
           className={cn(
-            "text-[13px] leading-none font-semibold tracking-tighter tabular-nums",
+            "font-mono text-[13px] leading-none font-semibold tracking-tighter tabular-nums",
             tone === "primary" ? "text-foreground" : TONE_TEXT[tone],
           )}
         >
@@ -359,8 +359,9 @@ function Vital({
   );
 }
 
-/** One panel split into three vitals: stacked when narrow, side by side once the panel is wide. */
-const VITALS_GRID = "grid divide-y @3xl:grid-cols-3 @3xl:divide-x @3xl:divide-y-0";
+/** One panel split into three vitals: stacked when narrow; once wide, CPU leads with a wider column. */
+const VITALS_GRID =
+  "grid divide-y @3xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)] @3xl:divide-x @3xl:divide-y-0";
 
 function Summary({ report }: { report: MaintenanceReport }) {
   const { cpu, memory, storage, processes } = report;
@@ -509,7 +510,7 @@ function ProcessesPanel({
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b px-4 py-3 sm:px-5">
         <h3 className="text-sm font-medium">Processes</h3>
         <Tabs value={view} onValueChange={(v) => onView(v as ProcessView)} className="max-sm:w-full">
-          <TabsList className="max-sm:w-full">
+          <TabsList className="max-sm:w-full group-data-horizontal/tabs:h-11 md:group-data-horizontal/tabs:h-8">
             <TabsTrigger value="cpu" className="min-w-0 px-2.5">
               <span className="sm:hidden">CPU</span>
               <span className="max-sm:hidden">Top CPU</span>
@@ -520,7 +521,7 @@ function ProcessesPanel({
             </TabsTrigger>
             <TabsTrigger value="agents" className="min-w-0 px-2.5">
               Agents
-              <span className="text-xs text-muted-foreground tabular-nums">{agents.length}</span>
+              <span className="font-mono text-xs text-muted-foreground tabular-nums">{agents.length}</span>
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -617,7 +618,7 @@ function ProcessRow({
           {p.command}
         </p>
       </div>
-      <div className={cn(PROC_METRIC, "text-xs text-muted-foreground tabular-nums")}>
+      <div className={cn(PROC_METRIC, "font-mono text-xs text-muted-foreground tabular-nums")}>
         <p className={cn(highlight === "cpu" ? "font-medium text-foreground" : "max-sm:hidden")}>
           {p.cpuPercent.toFixed(1)}%<span className="max-sm:hidden"> CPU</span>
         </p>
@@ -625,7 +626,7 @@ function ProcessRow({
           {formatBytes(p.rssBytes)}
         </p>
       </div>
-      <div className={cn(PROC_UPTIME, "text-xs text-muted-foreground tabular-nums")}>
+      <div className={cn(PROC_UPTIME, "font-mono text-xs text-muted-foreground tabular-nums")}>
         {p.elapsedSec !== null ? formatDuration(p.elapsedSec) : "—"}
       </div>
       <div className={PROC_ACTION}>
@@ -713,9 +714,9 @@ function StoragePanel({
                     />
                   </span>
                 </span>
-                <span className="w-16 shrink-0 text-right text-xs tabular-nums">
+                <span className="w-16 shrink-0 text-right font-mono text-xs tabular-nums">
                   <span className="block font-medium">{item.bytes ? formatBytes(item.bytes) : "—"}</span>
-                  <span className="block text-muted-foreground">
+                  <span className="block font-sans text-muted-foreground">
                     {item.count} item{item.count === 1 ? "" : "s"}
                   </span>
                 </span>
@@ -770,7 +771,7 @@ function StoragePanel({
                   <span className="min-w-0 truncate text-sm font-medium" title={o.path}>
                     {o.label}
                   </span>
-                  <span className="shrink-0 text-xs font-medium tabular-nums">
+                  <span className="shrink-0 font-mono text-xs font-medium tabular-nums">
                     {o.bytes !== null ? formatBytes(o.bytes) : "—"}
                   </span>
                 </div>
@@ -821,7 +822,7 @@ function OptimizeSkeleton() {
           <div key={i} className={cn(PANEL, "divide-y")}>
             <div className="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
               <Skeleton className="h-4 w-24" />
-              <Skeleton className="h-8 w-40" />
+              <Skeleton className="h-11 w-40 md:h-8" />
             </div>
             {[0, 1, 2, 3, 4].map((j) => (
               <div key={j} className="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">

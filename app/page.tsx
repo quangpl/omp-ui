@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { PlusIcon, RefreshCwIcon } from "lucide-react";
+import { PlusIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { useNow } from "@/components/board/format";
 import { BoardFormDialog } from "@/components/boards/board-form-dialog";
@@ -109,26 +109,31 @@ export default function HomePage() {
         actions={
           <Button
             onClick={openCreate}
-            className="size-11 rounded-full p-0 sm:mr-1 sm:h-9 sm:w-auto sm:rounded-lg sm:px-3"
+            className="pressable size-11 rounded-full p-0 md:mr-1 md:h-9 md:w-auto md:rounded-lg md:px-3"
             aria-label="New project"
           >
-            <PlusIcon className="size-5 sm:size-4" />
-            <span className="hidden sm:inline">New project</span>
+            <PlusIcon className="size-5 md:size-4" />
+            <span className="hidden md:inline">New project</span>
           </Button>
         }
       />
 
       <main className="px-safe pb-safe flex-1">
-        <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 md:py-8 lg:px-8">
+        <div className="animate-page-in mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 md:py-8 lg:px-8">
           <div className="@container/home">
             {loadError && dashboard === null ? (
               <div
                 role="alert"
                 className="animate-fade-in-soft mx-auto flex max-w-sm flex-col items-center gap-4 py-16 text-center"
               >
-                <p className="text-sm font-medium">Couldn&apos;t load the dashboard</p>
-                <p className="-mt-3 text-sm text-muted-foreground">{loadError}</p>
-                <Button variant="outline" onClick={() => void load()} className="h-11 md:h-9">
+                <span className="flex size-12 items-center justify-center rounded-2xl bg-destructive/10 text-destructive">
+                  <TriangleAlertIcon className="size-5" aria-hidden="true" />
+                </span>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">Couldn&apos;t load the dashboard</p>
+                  <p className="text-sm text-pretty text-muted-foreground">{loadError}</p>
+                </div>
+                <Button variant="outline" onClick={() => void load()} className="h-11 w-full sm:w-auto md:h-9">
                   <RefreshCwIcon />
                   Try again
                 </Button>
@@ -144,10 +149,10 @@ export default function HomePage() {
                   - narrow: a single column ordered by urgency — needs you, live agents, quick actions,
                     projects, stats, activity (unfinished steps first, finished ones last);
                   - medium: quick actions move up under the greeting, stats and activity pair up;
-                  - wide: a work column and a 21rem side column (live agents, stats, activity).
+                  - wide: an asymmetric 2:1 split, the work column beside a side rail (live agents, stats, activity).
                   The column wrappers are `display: contents` until wide, so `order` reaches every section.
                 */}
-                <div className="grid grid-cols-1 items-start gap-6 @2xl/home:grid-cols-2 @5xl/home:grid-cols-[minmax(0,1fr)_21rem] @5xl/home:gap-x-8">
+                <div className="grid grid-cols-1 items-start gap-6 @2xl/home:grid-cols-2 @2xl/home:gap-x-8 @5xl/home:grid-cols-[minmax(0,2fr)_minmax(19rem,1fr)] @5xl/home:gap-x-10">
                   {loadError && (
                     <div className="col-span-full min-w-0">
                       <RefreshError message={loadError} onRetry={() => void load()} />

@@ -12,6 +12,7 @@ import {
   InfoIcon,
   KeyRoundIcon,
   Loader2Icon,
+  PanelLeftIcon,
   RotateCcwIcon,
   ServerIcon,
   SmartphoneIcon,
@@ -23,6 +24,7 @@ import { AppHeader } from "@/components/app-header";
 import { PasswordInput } from "@/components/password-input";
 import { CleanupSettingsSection } from "@/components/settings/cleanup-settings";
 import { MemorySettingsSection } from "@/components/settings/memory-settings";
+import { MenuSettingsSection } from "@/components/settings/menu-settings";
 import { NotificationSettingsSection } from "@/components/settings/notification-settings";
 import { OmpSettingsSection } from "@/components/settings/omp-settings";
 import { SettingsNav, type SettingsNavItem } from "@/components/settings/settings-nav";
@@ -30,6 +32,8 @@ import {
   SettingsField,
   SettingsGroup,
   SettingsPanel,
+  SettingsRows,
+  SettingsSaveBar,
   SettingsSection,
   SettingsToggle,
 } from "@/components/settings/settings-section";
@@ -94,6 +98,7 @@ const SECTIONS: SettingsNavItem[] = [
   { id: "memory", label: "Memory", icon: <BrainIcon /> },
   { id: "cleanup", label: "Data cleanup", icon: <BrushCleaningIcon /> },
   { id: "notifications", label: "Notifications", icon: <BellIcon /> },
+  { id: "menu", label: "Menu", icon: <PanelLeftIcon /> },
   { id: "system", label: "System", icon: <ServerIcon /> },
   { id: "security", label: "Security", icon: <KeyRoundIcon /> },
   { id: "api", label: "Mobile & API", icon: <SmartphoneIcon /> },
@@ -177,7 +182,7 @@ function LimitModeToggle({
             disabled={disabled}
             onClick={() => onChange(option.value)}
             className={cn(
-              "h-10 rounded-md text-sm font-medium transition-[background-color,color,box-shadow,transform] outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.98] disabled:opacity-50 md:h-7",
+              "h-10 rounded-md text-sm font-medium transition-[background-color,color,box-shadow,scale] duration-150 ease-(--ease-fluid) outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.97] disabled:opacity-50 motion-reduce:transition-none md:h-7",
               checked
                 ? "bg-background text-foreground shadow-sm ring-1 ring-foreground/10"
                 : "text-muted-foreground hover:text-foreground",
@@ -295,7 +300,7 @@ function AgentSettingsSection() {
               <p className="text-destructive">{loadError}</p>
             </div>
           </div>
-          <Button type="button" variant="outline" onClick={load} className={cn(FIELD, "w-full gap-2 sm:w-auto")}>
+          <Button type="button" variant="outline" onClick={load} className={cn(FIELD, "pressable w-full gap-2 sm:w-auto")}>
             <RotateCcwIcon />
             Try again
           </Button>
@@ -454,7 +459,7 @@ function AgentSettingsSection() {
                 </div>
               </SettingsField>
 
-              <div className="space-y-1">
+              <SettingsRows>
                 <SettingsToggle
                   htmlFor="smart-queue"
                   title="Smart queue"
@@ -482,22 +487,21 @@ function AgentSettingsSection() {
                 </SettingsToggle>
 
                 {draft.autoRetry && (
-                  <div className="animate-fade-in-soft">
-                    <SettingsToggle
-                      htmlFor="persistent-retry"
-                      title="Keep retrying until done"
-                      description="Failed cards keep retrying until they're Done or you stop them. Quota and usage-limit errors wait 5, 10, 15, 30 min, then hourly (the card shows Waiting for quota); other errors retry up to 10 min apart."
-                    >
-                      <Switch
-                        id="persistent-retry"
-                        checked={draft.persistentRetry}
-                        onCheckedChange={(checked) => setDraft({ ...draft, persistentRetry: checked })}
-                        disabled={saving}
-                      />
-                    </SettingsToggle>
-                  </div>
+                  <SettingsToggle
+                    htmlFor="persistent-retry"
+                    title="Keep retrying until done"
+                    description="Failed cards keep retrying until they're Done or you stop them. Quota and usage-limit errors wait 5, 10, 15, 30 min, then hourly (the card shows Waiting for quota); other errors retry up to 10 min apart."
+                    className="animate-fade-in-soft"
+                  >
+                    <Switch
+                      id="persistent-retry"
+                      checked={draft.persistentRetry}
+                      onCheckedChange={(checked) => setDraft({ ...draft, persistentRetry: checked })}
+                      disabled={saving}
+                    />
+                  </SettingsToggle>
                 )}
-              </div>
+              </SettingsRows>
 
               {draft.autoRetry && (
                 <SettingsField
@@ -531,44 +535,12 @@ function AgentSettingsSection() {
               )}
             </SettingsGroup>
 
-            {/* Pinned above the bottom tab bar (phones) or the viewport edge while there is something to save. */}
-            <div
-              className={cn(
-                "flex items-center gap-2 rounded-b-xl border-t bg-card px-4 py-3 sm:px-5",
-                dirty &&
-                  "sticky bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-20 bg-card/95 shadow-[0_-10px_20px_-16px_oklch(0.25_0.03_272/0.35)] backdrop-blur-lg md:bottom-0",
-              )}
-            >
-              <p className="hidden min-w-0 flex-1 items-center gap-2 text-xs text-muted-foreground sm:flex" aria-live="polite">
-                {dirty ? (
-                  <>
-                    <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
-                    Unsaved changes
-                  </>
-                ) : (
-                  "All changes saved"
-                )}
-              </p>
-              {dirty && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  disabled={saving}
-                  onClick={() => saved && applySettings(saved)}
-                  className={cn(FIELD, "active:scale-[0.98]")}
-                >
-                  Discard
-                </Button>
-              )}
-              <Button
-                type="submit"
-                disabled={!dirty || saving || !maxValid}
-                className={cn(FIELD, "flex-1 active:scale-[0.98] sm:flex-none")}
-              >
-                {saving && <Loader2Icon className="animate-spin" />}
-                Save changes
-              </Button>
-            </div>
+            <SettingsSaveBar
+              dirty={dirty}
+              saving={saving}
+              disabled={!dirty || !maxValid}
+              onDiscard={() => saved && applySettings(saved)}
+            />
           </SettingsPanel>
         </form>
       )}
@@ -682,20 +654,27 @@ function SystemInfoSection() {
   );
 }
 
+type PasswordField = "current" | "next" | "confirm";
+
 function SecuritySection() {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  /** A validation error sits under its field; a server error (`field: null`) above the button. */
+  const [error, setError] = useState<{ field: PasswordField | null; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
+
+  const fieldError = (field: PasswordField) => (error?.field === field ? error.message : null);
+  const invalidProps = (field: PasswordField, id: string) =>
+    error?.field === field ? { "aria-invalid": true, "aria-describedby": `${id}-error` } : {};
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (saving) return;
-    if (!current) return setError("Enter your current password.");
-    if (next.length < MIN_PASSWORD) return setError(`Use at least ${MIN_PASSWORD} characters.`);
-    if (next !== confirm) return setError("New passwords don't match.");
-    if (next === current) return setError("New password must differ from the current one.");
+    if (!current) return setError({ field: "current", message: "Enter your current password." });
+    if (next.length < MIN_PASSWORD) return setError({ field: "next", message: `Use at least ${MIN_PASSWORD} characters.` });
+    if (next !== confirm) return setError({ field: "confirm", message: "New passwords don't match." });
+    if (next === current) return setError({ field: "next", message: "New password must differ from the current one." });
 
     setError(null);
     setSaving(true);
@@ -706,7 +685,7 @@ function SecuritySection() {
       setConfirm("");
       toast.success("Password changed — other devices were signed out");
     } catch (err) {
-      setError(errorText(err, "Could not change the password."));
+      setError({ field: null, message: errorText(err, "Could not change the password.") });
     } finally {
       setSaving(false);
     }
@@ -723,49 +702,60 @@ function SecuritySection() {
         <SettingsPanel>
           <SettingsGroup>
             <input type="text" name="username" autoComplete="username" value="admin" readOnly hidden />
-            <SettingsField label="Current password" htmlFor="current-password" className="sm:max-w-sm">
+            <SettingsField
+              label="Current password"
+              htmlFor="current-password"
+              error={fieldError("current")}
+              className="sm:max-w-sm"
+            >
               <PasswordInput
                 id="current-password"
                 value={current}
                 onChange={(e) => setCurrent(e.target.value)}
                 autoComplete="current-password"
                 disabled={saving}
+                {...invalidProps("current", "current-password")}
               />
             </SettingsField>
             <div className="grid gap-5 sm:grid-cols-2">
-              <SettingsField label="New password" htmlFor="new-password">
+              <SettingsField
+                label="New password"
+                htmlFor="new-password"
+                hint={`At least ${MIN_PASSWORD} characters.`}
+                error={fieldError("next")}
+              >
                 <PasswordInput
                   id="new-password"
                   value={next}
                   onChange={(e) => setNext(e.target.value)}
                   autoComplete="new-password"
                   disabled={saving}
+                  {...invalidProps("next", "new-password")}
                 />
               </SettingsField>
-              <SettingsField label="Confirm new password" htmlFor="confirm-password">
+              <SettingsField label="Confirm new password" htmlFor="confirm-password" error={fieldError("confirm")}>
                 <PasswordInput
                   id="confirm-password"
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
                   autoComplete="new-password"
                   disabled={saving}
+                  {...invalidProps("confirm", "confirm-password")}
                 />
               </SettingsField>
             </div>
           </SettingsGroup>
-          <div className="flex flex-col gap-3 border-t px-4 py-3 sm:flex-row sm:items-center sm:px-5">
-            {error ? (
-              <p role="alert" className="flex min-w-0 flex-1 items-start gap-2 text-sm text-destructive">
+          <div className="flex flex-col gap-3 border-t px-4 py-3 sm:flex-row sm:items-center sm:justify-end sm:px-5">
+            {error && error.field === null && (
+              <p role="alert" className="animate-fade-in-soft flex min-w-0 flex-1 items-start gap-2 text-sm text-destructive">
                 <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" />
-                {error}
+                {error.message}
               </p>
-            ) : (
-              <p className="min-w-0 flex-1 text-xs text-muted-foreground">At least {MIN_PASSWORD} characters.</p>
             )}
             <Button
               type="submit"
               disabled={saving || !current || !next || !confirm}
-              className={cn(FIELD, "w-full active:scale-[0.98] sm:w-auto")}
+              className={cn(FIELD, "pressable w-full sm:w-auto")}
             >
               {saving && <Loader2Icon className="animate-spin" />}
               Change password
@@ -822,7 +812,7 @@ function ApiAccessSection() {
                 variant="outline"
                 onClick={() => void onCopy()}
                 disabled={!origin}
-                className={`${FIELD} shrink-0 px-3 active:scale-[0.98]`}
+                className={`${FIELD} pressable shrink-0 px-3`}
                 aria-label="Copy server URL"
               >
                 {copied ? <CheckIcon className="text-success" /> : <CopyIcon />}
@@ -864,7 +854,7 @@ export default function SettingsPage() {
               "min-w-0 max-w-3xl space-y-10 md:space-y-12",
               "[&>section+section]:border-t [&>section+section]:pt-10 md:[&>section+section]:pt-12",
               "[&>section]:animate-card-in motion-reduce:[&>section]:animate-none",
-              "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12] [&>section:nth-child(8)]:[--stagger:14]",
+              "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12] [&>section:nth-child(8)]:[--stagger:14] [&>section:nth-child(9)]:[--stagger:16]",
             )}
           >
             <AgentSettingsSection />
@@ -872,6 +862,7 @@ export default function SettingsPage() {
             <MemorySettingsSection />
             <CleanupSettingsSection />
             <NotificationSettingsSection />
+            <MenuSettingsSection />
             <SystemInfoSection />
             <SecuritySection />
             <ApiAccessSection />

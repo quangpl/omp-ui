@@ -6,38 +6,16 @@ import { ChevronLeftIcon, MenuIcon, PanelLeftIcon, SearchIcon } from "lucide-rea
 import { isTopLevelPath } from "@/components/bottom-tabs";
 import { openCommandPalette } from "@/components/command-palette";
 import { CredentialNotificationsButton } from "@/components/credentials/credential-notifications";
+import { HeaderMetrics } from "@/components/header-metrics";
 import { Button } from "@/components/ui/button";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-/** The AgentMan mark: three kanban columns on an accent tile. Matches `public/icon.svg`. */
+/** The AgentMan mark: a gamepad on a round tile. Same artwork as `public/icon.png`. */
 export function LogoMark({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 32 32" aria-hidden="true" className={cn("size-7 shrink-0", className)}>
-      <rect width="32" height="32" rx="8" className="fill-primary" />
-      <rect x="7" y="7" width="5" height="16" rx="2.5" className="fill-primary-foreground" />
-      <rect
-        x="13.5"
-        y="7"
-        width="5"
-        height="10"
-        rx="2.5"
-        className="fill-primary-foreground"
-        opacity="0.75"
-      />
-      <rect
-        x="20"
-        y="7"
-        width="5"
-        height="13"
-        rx="2.5"
-        className="fill-primary-foreground"
-        opacity="0.5"
-      />
-    </svg>
-  );
+  return <img src="/icon-192.png" alt="" aria-hidden="true" className={cn("size-7 shrink-0 rounded-full", className)} />;
 }
 
 /**
@@ -61,14 +39,14 @@ export function AppHeader({
   const topLevel = isTopLevelPath(pathname);
 
   return (
-    <header className="pt-safe px-safe sticky top-0 z-40 border-b bg-background/80 backdrop-blur-lg supports-backdrop-filter:bg-background/65">
+    <header className="glass-edge pt-safe px-safe sticky top-0 z-40 border-b border-border/70 bg-background/80 backdrop-blur-xl backdrop-saturate-150 supports-backdrop-filter:bg-background/65">
       <div className="flex h-14 items-center gap-1 px-1.5 sm:gap-1.5 sm:px-3 md:px-4">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               variant="ghost"
               size="icon"
-              className="size-11 shrink-0 rounded-full text-muted-foreground hover:text-foreground active:scale-95 md:size-8 md:rounded-lg"
+              className="pressable-icon size-11 shrink-0 rounded-full text-muted-foreground hover:text-foreground md:size-8 md:rounded-lg"
               aria-label="Toggle sidebar"
               onClick={toggleSidebar}
             >
@@ -92,7 +70,10 @@ export function AppHeader({
             asChild
             variant="ghost"
             size="icon"
-            className={cn("-ml-1 size-11 shrink-0 rounded-full md:ml-0 md:size-9", topLevel && "md:hidden")}
+            className={cn(
+              "pressable-icon -ml-1 size-11 shrink-0 rounded-full md:ml-0 md:size-9",
+              topLevel && "md:hidden",
+            )}
           >
             <Link href={backHref} aria-label="Back">
               <ChevronLeftIcon className="size-5" />
@@ -101,19 +82,23 @@ export function AppHeader({
         )}
 
         <div className="min-w-0 flex-1 px-1">
-          <h1 className="truncate text-[0.95rem] leading-tight font-semibold tracking-tight sm:text-base">{title}</h1>
+          <h1 className="truncate text-[0.95rem] leading-tight font-semibold tracking-tight text-foreground sm:text-base">
+            {title}
+          </h1>
           {subtitle && <p className="truncate text-xs leading-tight text-muted-foreground">{subtitle}</p>}
         </div>
+
+        <HeaderMetrics variant="inline" className="mr-1 hidden lg:flex" />
 
         <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
           {actions}
           {/* Phones only: the sidebar (and its footer bell) is a sheet there. */}
-          <CredentialNotificationsButton className="size-11 md:hidden" />
+          <CredentialNotificationsButton className="pressable-icon size-11 md:hidden" />
           {/* Desktop has Search in the sidebar; phones keep it one tap away here. */}
           <Button
             variant="ghost"
             size="icon"
-            className="size-11 rounded-full active:scale-95 md:hidden"
+            className="pressable-icon size-11 rounded-full md:hidden"
             aria-label="Search and commands"
             onClick={openCommandPalette}
           >
@@ -121,6 +106,8 @@ export function AppHeader({
           </Button>
         </div>
       </div>
+      {/* Below lg (phones, and tablets beside the desktop sidebar): the live metrics get their own slim row under the title bar. */}
+      <HeaderMetrics variant="strip" className="border-t border-border/60 px-1.5 sm:px-3 md:px-4 lg:hidden" />
     </header>
   );
 }

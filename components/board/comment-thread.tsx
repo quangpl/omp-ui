@@ -16,8 +16,8 @@ import { formatDateTime, formatRelative, useNow } from "@/components/board/forma
 import { RichText } from "@/components/board/rich-text";
 import { parseRunReport, RunReport } from "@/components/board/run-report";
 
-/** Enlarges the touch target of a compact control without changing its layout. */
-const HIT_AREA = "relative after:absolute after:-inset-x-1 after:-inset-y-3";
+/** Enlarges the touch target of a compact control without changing its layout (44px tall on phones). */
+const HIT_AREA = "relative after:absolute after:-inset-x-1 after:-inset-y-3 max-md:after:-inset-y-3.5";
 
 function composerHint(task: Task): string {
   if (task.agentState === "running" || task.agentState === "queued") {
@@ -48,7 +48,7 @@ function ResolveControls({
   return comment.resolved ? (
     <>
       <span
-        className="inline-flex items-center gap-1 font-medium text-emerald-700 dark:text-emerald-400"
+        className="inline-flex items-center gap-1 font-medium text-success"
         title={comment.resolvedAt ? formatDateTime(comment.resolvedAt) : undefined}
       >
         <CircleCheck className="size-3.5" />
@@ -118,7 +118,7 @@ function CommentItem({
   if (comment.author === "agent") {
     const body = report ? report.body : comment.body;
     return (
-      <li className="flex gap-2.5 pr-2 sm:pr-8">
+      <li className="flex animate-fade-in-soft gap-2.5 pr-2 sm:pr-8">
         <Avatar size="sm" className="mt-0.5 shrink-0">
           <AvatarFallback className="bg-foreground text-background">
             <Bot className="size-3.5" />
@@ -148,16 +148,16 @@ function CommentItem({
     // A message from another card's agent: feedback this card's agent must address.
     const sender = cards.find((card) => card.id === comment.fromTaskId);
     return (
-      <li className="flex gap-2.5 pr-6 sm:pr-12">
+      <li className="flex animate-fade-in-soft gap-2.5 pr-6 sm:pr-12">
         <Avatar size="sm" className="mt-0.5 shrink-0">
-          <AvatarFallback className="bg-violet-600 text-white dark:bg-violet-500">
+          <AvatarFallback className="bg-primary text-primary-foreground">
             <Bot className="size-3.5" />
           </AvatarFallback>
         </Avatar>
         <div className="min-w-0 flex-1">
           <div className="flex min-h-6 min-w-0 items-baseline gap-2 text-xs">
             {sender ? (
-              <span className="flex min-w-0 items-baseline gap-1 font-semibold text-violet-700 dark:text-violet-300">
+              <span className="flex min-w-0 items-baseline gap-1 font-semibold text-primary">
                 <span className="shrink-0">Agent ·</span>
                 <button
                   type="button"
@@ -172,13 +172,13 @@ function CommentItem({
                 </button>
               </span>
             ) : (
-              <span className="font-semibold text-violet-700 dark:text-violet-300">Another agent</span>
+              <span className="font-semibold text-primary">Another agent</span>
             )}
             <span className="shrink-0 text-muted-foreground tabular-nums">{time}</span>
           </div>
           <div
             className={cn(
-              "mt-1 rounded-2xl rounded-tl-md border border-violet-500/30 bg-violet-500/5 px-3.5 py-2.5 text-sm leading-relaxed [overflow-wrap:anywhere] dark:bg-violet-500/10",
+              "mt-1 rounded-2xl rounded-tl-md border border-primary/30 bg-primary/5 px-3.5 py-2.5 text-sm leading-relaxed [overflow-wrap:anywhere] dark:bg-primary/10",
               comment.resolved && "text-muted-foreground",
             )}
           >
@@ -193,7 +193,7 @@ function CommentItem({
   }
 
   return (
-    <li className="flex flex-col items-end pl-8 sm:pl-16">
+    <li className="flex animate-fade-in-soft flex-col items-end pl-8 sm:pl-16">
       <div className="flex min-h-6 items-baseline gap-2 text-xs">
         <span className="font-semibold text-foreground">You</span>
         <span className="text-muted-foreground tabular-nums">{time}</span>
@@ -302,7 +302,7 @@ export function CommentThread({
 
       <form
         data-vaul-no-drag
-        className="sticky bottom-0 z-10 border-t bg-popover/95 px-4 pt-3 pb-3 backdrop-blur supports-backdrop-filter:bg-popover/80 md:px-5"
+        className="glass-edge sticky bottom-0 z-10 border-t bg-popover/95 px-4 pt-3 pb-3 backdrop-blur supports-backdrop-filter:bg-popover/80 md:px-5"
         onSubmit={(event) => {
           event.preventDefault();
           void send();
@@ -331,7 +331,7 @@ export function CommentThread({
             disabled={!body.trim() || sending}
             aria-label="Send feedback"
             title={`Send (${modKey}+Enter)`}
-            className="size-11 shrink-0 rounded-xl transition-transform active:scale-95 md:size-9"
+            className="size-11 shrink-0 rounded-xl pressable-icon md:size-9"
           >
             <ArrowUp />
           </Button>

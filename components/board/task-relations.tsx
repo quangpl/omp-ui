@@ -44,11 +44,11 @@ function CardRow({
   action?: ReactNode;
 }) {
   return (
-    <li className="flex items-center rounded-lg border bg-card">
+    <li className="flex items-center">
       <button
         type="button"
         onClick={() => onOpen(card.id)}
-        className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm outline-none hover:bg-accent/50 focus-visible:ring-[3px] focus-visible:ring-ring/50 md:min-h-9"
+        className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm outline-none pressable hover:bg-accent/50 focus-visible:ring-[3px] focus-visible:ring-ring/50 active:bg-accent/60 md:min-h-9"
       >
         <StatusDot status={card.status} />
         <span className={cn("min-w-0 flex-1 truncate", card.status === "done" && "text-muted-foreground")}>
@@ -115,7 +115,7 @@ export function DependenciesSection({
       action={
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className="h-11 md:h-8" disabled={saving}>
+            <Button variant="ghost" size="sm" className="h-11 pressable md:h-8" disabled={saving}>
               <ListPlus />
               {blockers.length > 0 ? "Edit" : "Add"}
             </Button>
@@ -158,7 +158,7 @@ export function DependenciesSection({
         </p>
       ) : (
         <>
-          <ul className="flex flex-col gap-1.5">
+          <ul className="flex flex-col divide-y rounded-lg border">
             {blockers.map((card) => (
               <CardRow
                 key={card.id}
@@ -168,7 +168,7 @@ export function DependenciesSection({
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-11 shrink-0 md:size-8"
+                    className="size-11 shrink-0 pressable-icon md:size-8"
                     aria-label={`Stop waiting for ${card.title}`}
                     disabled={saving}
                     onClick={() => toggle(card.id, false)}
@@ -205,7 +205,7 @@ export function CreatedByNote({
   const creator = cards.find((card) => card.id === task.createdByTaskId);
   return (
     <p className="flex flex-wrap items-center gap-x-1 px-1.5 text-xs text-muted-foreground">
-      <Bot className="size-3.5 shrink-0 text-violet-600 dark:text-violet-400" />
+      <Bot className="size-3.5 shrink-0 text-primary" />
       {creator ? (
         <>
           Created by the agent on
@@ -238,7 +238,7 @@ export function DelegatedCards({
   if (delegated.length === 0) return null;
   return (
     <DetailSection icon={ListTree} title="Delegated cards">
-      <ul className="flex flex-col gap-1.5">
+      <ul className="flex flex-col divide-y rounded-lg border">
         {delegated.map((card) => (
           <CardRow key={card.id} card={card} onOpen={onOpenCard} />
         ))}

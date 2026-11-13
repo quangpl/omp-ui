@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
@@ -14,6 +16,7 @@ export default defineConfig({
     // DB-backed suites share external services; keep files sequential for determinism.
     fileParallelism: false,
     // Card runs must never reach the developer's real agentmemory server (session tagging, auto-start).
-    env: { AGENTMEMORY_ENABLED: "false" },
+    // Suites that never set DATA_DIR must not write event logs (lib/server/log-store.ts) into ./data.
+    env: { AGENTMEMORY_ENABLED: "false", DATA_DIR: path.join(os.tmpdir(), "omp-ui-vitest-data") },
   },
 });

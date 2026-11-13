@@ -181,6 +181,8 @@ export interface Repository {
 
   /** Newest first. */
   listRuns(taskId: string): Promise<Run[]>;
+  /** Runs of every card, newest first (startedAt desc), at most `limit` (default 500, max 5000). */
+  listRecentRuns(limit?: number): Promise<Run[]>;
   getRun(id: string): Promise<Run | null>;
   createRun(input: CreateRunInput): Promise<Run>; // status "running", startedAt now
   updateRun(id: string, patch: UpdateRunInput): Promise<Run | null>;

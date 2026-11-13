@@ -87,7 +87,9 @@ function TileLabel({ icon, label, dot }: { icon: React.ReactNode; label: string;
 const TILE = "flex min-w-0 flex-col gap-3 px-4 py-4 sm:px-5";
 /** Big number + detail line; fixed height so the tile never changes size between polls. */
 const NUMBER_ROW = "flex h-8 min-w-0 items-end gap-3";
-const VITALS_GRID = "grid divide-y @2xl:grid-cols-3 @2xl:divide-x @2xl:divide-y-0";
+/** CPU leads: a slightly wider first column instead of three equal tiles. */
+const VITALS_GRID =
+  "grid divide-y @2xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)] @2xl:divide-x @2xl:divide-y-0";
 
 function VitalTile({
   icon,
@@ -111,7 +113,7 @@ function VitalTile({
           value={fraction}
           format={formatPercent}
           className={cn(
-            "w-[4.5ch] shrink-0 text-3xl leading-none font-semibold tracking-tighter transition-colors duration-500 motion-reduce:transition-none",
+            "w-[4.5ch] shrink-0 font-mono text-3xl leading-none font-semibold tracking-tighter transition-colors duration-500 motion-reduce:transition-none",
             tone === "primary" ? "text-foreground" : TONE_TEXT[tone],
           )}
         />
@@ -140,7 +142,7 @@ function DiskUnavailableTile() {
     <div className={TILE}>
       <TileLabel icon={<HardDriveIcon />} label="Disk" />
       <div className={NUMBER_ROW}>
-        <span className="text-3xl leading-none font-semibold tracking-tighter text-muted-foreground/50">—</span>
+        <span className="font-mono text-3xl leading-none font-semibold tracking-tighter text-muted-foreground/50">—</span>
       </div>
       <ChartFrame>
         <p className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -191,12 +193,14 @@ function VitalsPanel({ stats, history, lastUpdated }: { stats: SystemStats } & O
       </div>
       <div className="flex h-10 items-center justify-between gap-3 border-t px-4 text-xs text-muted-foreground tabular-nums sm:px-5">
         <span className="truncate">
-          Last {WINDOW_MINUTES} min · {samples} {samples === 1 ? "sample" : "samples"}
+          Last {WINDOW_MINUTES} min · <span className="font-mono">{samples}</span> {samples === 1 ? "sample" : "samples"}
         </span>
         {lastUpdated !== null && (
           <span className="shrink-0">
             Updated{" "}
-            {new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            <span className="font-mono">
+              {new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            </span>
           </span>
         )}
       </div>
@@ -259,7 +263,7 @@ function LoadPanel({ cpu }: { cpu: SystemStats["cpu"] }) {
         <div className="grid grid-cols-3 gap-3 text-center">
           {cpu.loadAvg.map((load, i) => (
             <div key={LOAD_WINDOWS[i]} className="flex min-w-0 flex-col items-center">
-              <span className="h-5 text-sm leading-5 font-semibold tracking-tight tabular-nums">{load.toFixed(2)}</span>
+              <span className="h-5 font-mono text-sm leading-5 font-semibold tracking-tight tabular-nums">{load.toFixed(2)}</span>
               <span className={cn("h-4 leading-4", LABEL)}>{LOAD_WINDOWS[i]}</span>
             </div>
           ))}
@@ -290,7 +294,7 @@ function ProcessPanel({ process, history }: { process: SystemStats["process"]; h
           <AnimatedNumber
             value={process.rssBytes}
             format={formatBytes}
-            className="shrink-0 text-2xl leading-none font-semibold tracking-tighter"
+            className="shrink-0 font-mono text-2xl leading-none font-semibold tracking-tighter"
           />
           <span className={cn("truncate pb-0.5 leading-4", LABEL)}>Resident memory</span>
         </div>
@@ -300,11 +304,11 @@ function ProcessPanel({ process, history }: { process: SystemStats["process"]; h
         <dl className="grid grid-cols-2 gap-3 border-t pt-3 text-sm">
           <div className="min-w-0">
             <dt className={LABEL}>Heap used</dt>
-            <dd className="mt-1 truncate font-medium tabular-nums">{formatBytes(process.heapUsedBytes)}</dd>
+            <dd className="mt-1 truncate font-mono font-medium tabular-nums">{formatBytes(process.heapUsedBytes)}</dd>
           </div>
           <div className="min-w-0">
             <dt className={LABEL}>Uptime</dt>
-            <dd className="mt-1 truncate font-medium tabular-nums">{formatDuration(process.uptimeSec)}</dd>
+            <dd className="mt-1 truncate font-mono font-medium tabular-nums">{formatDuration(process.uptimeSec)}</dd>
           </div>
         </dl>
       </div>

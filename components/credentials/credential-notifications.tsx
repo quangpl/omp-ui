@@ -63,7 +63,7 @@ function showBrowserNotification(notification: CredentialNotification) {
     const shown = new Notification(notification.title, {
       body: notification.message,
       tag: `credential-${notification.id}`,
-      icon: "/icon.svg",
+      icon: "/icon-192.png",
     });
     shown.onclick = (event) => {
       event.preventDefault();

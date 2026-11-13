@@ -71,10 +71,10 @@ test("two sessions on one board see each other's card changes live", async ({ pa
 
     // Create in A → appears in B; it starts on its own and the run lands it in Done in both tabs.
     const todo = column(page, "To do");
-    await page.getByRole("button", { name: "Add card", exact: true }).click();
-    const newCard = page.getByRole("dialog", { name: "New card" });
+    await page.getByRole("button", { name: "Add task", exact: true }).click();
+    const newCard = page.getByRole("dialog", { name: "New task" });
     await newCard.getByLabel("What should the agent do?", { exact: true }).fill(title);
-    await newCard.getByRole("button", { name: "Create card" }).click();
+    await newCard.getByRole("button", { name: "Create task" }).click();
     await expect(newCard).toBeHidden({ timeout: AGENT_TIMEOUT });
     await expect(cardButton(column(page, "Done"), title)).toBeVisible({ timeout: AGENT_TIMEOUT });
     await expect(cardButton(column(other, "Done"), title)).toBeVisible({ timeout: AGENT_TIMEOUT });

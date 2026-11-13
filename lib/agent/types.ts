@@ -1,4 +1,4 @@
-import type { Comment, QueueSnapshot, Task, TaskStatus } from "@/lib/types";
+import type { Comment, ContextUsage, QueueSnapshot, Task, TaskStatus } from "@/lib/types";
 
 /**
  * Controls omp agents for tasks. Implemented in lib/agent/manager.ts, obtained via
@@ -45,4 +45,6 @@ export interface AgentManager {
   moveInQueue(taskId: string, position: number): boolean;
   /** Re-check queued cards, e.g. after a card's blockedBy changed. */
   refreshQueue(): void;
+  /** Context window fill of the task's running run; null when unknown or not running. */
+  contextUsage(taskId: string): ContextUsage | null;
 }

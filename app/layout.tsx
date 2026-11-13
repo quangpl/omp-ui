@@ -14,7 +14,13 @@ export const metadata: Metadata = {
   description: "Self-hosted kanban board for running and steering omp coding agents.",
   applicationName: "AgentMan",
   manifest: "/manifest.webmanifest",
-  icons: { icon: "/icon.svg", apple: "/icon.svg" },
+  icons: {
+    icon: [
+      { url: "/favicon-32.png", sizes: "32x32", type: "image/png" },
+      { url: "/icon.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
   appleWebApp: { capable: true, title: "AgentMan", statusBarStyle: "default" },
 };
 
@@ -23,8 +29,8 @@ export const viewport: Viewport = {
   initialScale: 1,
   viewportFit: "cover",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#fafafc" },
-    { media: "(prefers-color-scheme: dark)", color: "#0e0e12" },
+    { media: "(prefers-color-scheme: light)", color: "#fafafa" },
+    { media: "(prefers-color-scheme: dark)", color: "#0c0c0e" },
   ],
 };
 

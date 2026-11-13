@@ -744,7 +744,7 @@ const TARGETS: Target[] = [
   {
     id: "rotated-logs",
     label: "Rotated logs",
-    description: "Old server and tunnel logs (*.log.1). Current logs are kept.",
+    description: "Old server, tunnel and event logs (*.log.1). Current logs are kept.",
     risk: "safe",
     async scan() {
       const dir = dataDir();

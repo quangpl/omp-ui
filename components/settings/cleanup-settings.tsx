@@ -4,7 +4,13 @@ import { useCallback, useEffect, useState } from "react";
 import { BrushCleaningIcon, CheckIcon, Loader2Icon, RotateCcwIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 import { formatDateTime, formatRelative, useNow } from "@/components/board/format";
-import { SettingsField, SettingsGroup, SettingsPanel, SettingsSection } from "@/components/settings/settings-section";
+import {
+  SettingsField,
+  SettingsGroup,
+  SettingsPanel,
+  SettingsSaveBar,
+  SettingsSection,
+} from "@/components/settings/settings-section";
 import { formatBytes } from "@/components/stats/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -81,7 +87,7 @@ function ScheduleToggle({
             disabled={disabled}
             onClick={() => onChange(option.value)}
             className={cn(
-              "h-10 rounded-md text-sm font-medium transition-[background-color,color,box-shadow,transform] outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.98] disabled:opacity-50 md:h-7",
+              "h-10 rounded-md text-sm font-medium transition-[background-color,color,box-shadow,scale] duration-150 ease-(--ease-fluid) outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.97] disabled:opacity-50 motion-reduce:transition-none md:h-7",
               checked
                 ? "bg-background text-foreground shadow-sm ring-1 ring-foreground/10"
                 : "text-muted-foreground hover:text-foreground",
@@ -224,7 +230,7 @@ export function CleanupSettingsSection() {
               <p className="text-destructive">{loadError}</p>
             </div>
           </div>
-          <Button type="button" variant="outline" onClick={load} className={cn(FIELD, "w-full gap-2 sm:w-auto")}>
+          <Button type="button" variant="outline" onClick={load} className={cn(FIELD, "pressable w-full gap-2 sm:w-auto")}>
             <RotateCcwIcon />
             Try again
           </Button>
@@ -234,7 +240,7 @@ export function CleanupSettingsSection() {
           <div aria-busy="true" className="divide-y">
             <div className="space-y-3 p-4 sm:p-5">
               <Skeleton className="h-3 w-20" />
-              <Skeleton className="h-10 w-full sm:w-72 md:h-9" />
+              <Skeleton className="h-12 w-full sm:w-72 md:h-9" />
               <Skeleton className="h-3 w-2/3" />
             </div>
             <div className="space-y-4 p-4 sm:p-5">
@@ -267,13 +273,13 @@ export function CleanupSettingsSection() {
             <SettingsGroup title="What to clean">
               <fieldset className="min-w-0 space-y-2" aria-describedby={invalid ? "cleanup-targets-error" : undefined}>
                 <legend className="sr-only">Cleanup targets</legend>
-                <ul className="-mx-2 space-y-0.5">
+                <ul className="-mx-4 divide-y divide-border/70 sm:-mx-5">
                   {status.available.map((target) => (
                     <li key={target.id}>
-                      <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-muted/50">
+                      <label className="flex min-h-12 cursor-pointer items-start gap-3 px-4 py-3 transition-colors hover:bg-muted/40 active:bg-muted/70 has-disabled:cursor-not-allowed has-disabled:active:bg-transparent sm:px-5">
                         <input
                           type="checkbox"
-                          className="mt-0.5 size-4 shrink-0 accent-primary"
+                          className="mt-0.5 size-5 shrink-0 accent-primary md:size-4"
                           checked={targets.includes(target.id)}
                           disabled={saving}
                           onChange={() => toggleTarget(target.id)}
@@ -364,7 +370,7 @@ export function CleanupSettingsSection() {
                             </span>
                           </span>
                           {step.freedBytes ? (
-                            <span className="shrink-0 tabular-nums text-muted-foreground">
+                            <span className="shrink-0 font-mono tabular-nums text-muted-foreground">
                               {formatBytes(step.freedBytes)}
                             </span>
                           ) : null}
@@ -383,7 +389,7 @@ export function CleanupSettingsSection() {
                   variant="outline"
                   onClick={() => void runNow()}
                   disabled={busy || noTargets}
-                  className={cn(FIELD, "w-full gap-2 active:scale-[0.98] sm:w-auto")}
+                  className={cn(FIELD, "pressable w-full gap-2 sm:w-auto")}
                 >
                   {busy ? <Loader2Icon className="animate-spin" /> : <BrushCleaningIcon />}
                   {busy ? "Cleaning up…" : "Clean up now"}
@@ -394,37 +400,12 @@ export function CleanupSettingsSection() {
               </div>
             </SettingsGroup>
 
-            <div className="flex items-center gap-2 rounded-b-xl border-t bg-card px-4 py-3 sm:px-5">
-              <p className="hidden min-w-0 flex-1 items-center gap-2 text-xs text-muted-foreground sm:flex" aria-live="polite">
-                {dirty ? (
-                  <>
-                    <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
-                    Unsaved changes
-                  </>
-                ) : (
-                  "All changes saved"
-                )}
-              </p>
-              {dirty && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  disabled={saving}
-                  onClick={() => applyStatus(status, true)}
-                  className={cn(FIELD, "active:scale-[0.98]")}
-                >
-                  Discard
-                </Button>
-              )}
-              <Button
-                type="submit"
-                disabled={!dirty || saving || invalid}
-                className={cn(FIELD, "flex-1 active:scale-[0.98] sm:flex-none")}
-              >
-                {saving && <Loader2Icon className="animate-spin" />}
-                Save changes
-              </Button>
-            </div>
+            <SettingsSaveBar
+              dirty={dirty}
+              saving={saving}
+              disabled={!dirty || invalid}
+              onDiscard={() => applyStatus(status, true)}
+            />
           </SettingsPanel>
         </form>
       )}

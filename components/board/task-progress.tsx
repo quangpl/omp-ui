@@ -47,17 +47,21 @@ const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
 const RING_TONE: Record<TaskStatus, string> = {
   todo: "text-muted-foreground",
-  in_progress: "text-sky-600 dark:text-sky-400",
-  done: "text-emerald-600 dark:text-emerald-400",
+  in_progress: "text-primary",
+  done: "text-success",
 };
 
-/** "3 of 7 todo items done · Now: Add tests", or the card's column when there is no todo list. */
+/**
+ * "3 of 7 todo items done · Now: Add tests", or the card's column when there is no todo list.
+ * Open feedback counted as pending items reads "7 of 7 todo items done · 1 open feedback".
+ */
 export function progressLabel(status: TaskStatus, progress: TodoProgress | null): string {
   if (status === "done") {
-    return progress ? `Done · ${progress.done} of ${progress.total} todo items done` : "Done";
+    return progress ? `Done · ${progress.done} of ${progress.total - progress.feedback} todo items done` : "Done";
   }
   if (!progress) return status === "todo" ? "To do · not started" : "In progress";
-  const label = `${progress.done} of ${progress.total} todo items done`;
+  let label = `${progress.done} of ${progress.total - progress.feedback} todo items done`;
+  if (progress.feedback > 0) label += ` · ${progress.feedback} open feedback`;
   return progress.current ? `${label} · Now: ${progress.current}` : label;
 }
 
@@ -69,10 +73,10 @@ export function TaskProgressIcon({
   task,
   className,
 }: {
-  task: Pick<Task, "status" | "todos">;
+  task: Pick<Task, "status" | "todos" | "openCommentCount">;
   className?: string;
 }) {
-  const progress = todoProgress(task.todos);
+  const progress = todoProgress(task.todos, task.openCommentCount);
   const fraction = progressFraction(task.status, progress);
   const label = progressLabel(task.status, progress);
   const notStarted = task.status === "todo" && fraction === 0;
@@ -124,15 +128,19 @@ export function TaskProgressIcon({
 }
 
 const ITEM_ICON: Record<TodoItemStatus, { icon: typeof Circle; className: string; label: string }> = {
-  completed: { icon: CircleCheck, className: "text-emerald-600 dark:text-emerald-400", label: "Done" },
-  in_progress: { icon: CircleDot, className: "text-sky-600 dark:text-sky-400", label: "In progress" },
+  completed: { icon: CircleCheck, className: "text-success", label: "Done" },
+  in_progress: { icon: CircleDot, className: "text-primary", label: "In progress" },
   pending: { icon: Circle, className: "text-muted-foreground/70", label: "Pending" },
   abandoned: { icon: CircleSlash, className: "text-muted-foreground/70", label: "Dropped" },
 };
 
 /** Card detail: the agent's todo list, by phase. Renders nothing when the agent never kept one. */
-export function TodoListSection({ task }: { task: Pick<Task, "status" | "agentState" | "todos"> }) {
-  const progress = todoProgress(task.todos);
+export function TodoListSection({
+  task,
+}: {
+  task: Pick<Task, "status" | "agentState" | "todos" | "openCommentCount">;
+}) {
+  const progress = todoProgress(task.todos, task.openCommentCount);
   if (!progress) return null;
   return (
     <DetailSection
@@ -141,7 +149,10 @@ export function TodoListSection({ task }: { task: Pick<Task, "status" | "agentSt
       action={
         <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground tabular-nums">
           <TaskProgressIcon task={task} className="size-3.5" />
-          {progress.done} of {progress.total} done
+          {progress.done} of {progress.total - progress.feedback} done
+          {progress.feedback > 0 && (
+            <span className="before:mr-1.5 before:content-['·']">{progress.feedback} open feedback</span>
+          )}
           <TodoEta task={task} verbose className="before:mr-1.5 before:content-['·']" />
         </span>
       }

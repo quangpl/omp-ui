@@ -36,7 +36,7 @@ export function formatBytes(bytes: number): string {
 }
 
 export const STATE_STYLES: Record<ContainerState, { dot: string; label: string; text: string }> = {
-  running: { dot: "bg-emerald-500", label: "Running", text: "text-emerald-700 dark:text-emerald-400" },
+  running: { dot: "bg-success", label: "Running", text: "text-success" },
   paused: { dot: "bg-amber-500", label: "Paused", text: "text-amber-700 dark:text-amber-400" },
   restarting: {
     dot: "bg-amber-500 animate-pulse motion-reduce:animate-none",
@@ -53,12 +53,29 @@ export const STATE_STYLES: Record<ContainerState, { dot: string; label: string; 
   dead: { dot: "bg-destructive", label: "Dead", text: "text-destructive" },
 };
 
+/** Status dot; running containers get a breathing halo (transform/opacity only, off for reduced motion). */
 export function StateDot({ state, className }: { state: ContainerState; className?: string }) {
   return (
+    <span aria-label={STATE_STYLES[state].label} className={cn("relative inline-flex size-2.5 shrink-0", className)}>
+      {state === "running" && (
+        <span aria-hidden="true" className="absolute inset-0 animate-breathe rounded-full bg-success" />
+      )}
+      <span className={cn("relative size-2.5 rounded-full", STATE_STYLES[state].dot)} />
+    </span>
+  );
+}
+
+/** Compact state pill: tinted label, used where a row needs status at a glance (phones). */
+export function StatePill({ label, className }: { label: string; className?: string }) {
+  return (
     <span
-      aria-label={STATE_STYLES[state].label}
-      className={cn("inline-block size-2.5 shrink-0 rounded-full", STATE_STYLES[state].dot, className)}
-    />
+      className={cn(
+        "inline-flex h-5 shrink-0 items-center rounded-full bg-muted px-2 text-[0.7rem] leading-none font-medium",
+        className,
+      )}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -106,24 +123,26 @@ export function EmptyState({
 }) {
   if (compact) {
     return (
-      <div className="flex flex-col gap-3 rounded-xl border border-dashed px-4 py-3.5 text-sm sm:flex-row sm:items-center">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground max-sm:hidden [&_svg]:size-4">
-          {icon ?? <BoxIcon />}
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="font-medium">{title}</p>
-          {children && <div className="text-xs text-muted-foreground">{children}</div>}
+      <div className="animate-fade-in-soft flex flex-col gap-3 rounded-xl border border-dashed px-4 py-3.5 text-sm sm:flex-row sm:items-center">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground md:size-8 [&_svg]:size-4">
+            {icon ?? <BoxIcon />}
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">{title}</p>
+            {children && <div className="text-xs text-pretty text-muted-foreground">{children}</div>}
+          </div>
         </div>
         {action}
       </div>
     );
   }
   return (
-    <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed px-6 py-10 text-center">
-      <span className="mb-1 flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground [&_svg]:size-5">
+    <div className="animate-fade-in-soft flex flex-col items-center gap-2 rounded-2xl border border-dashed px-6 py-10 text-center">
+      <span className="mb-1 flex size-11 items-center justify-center rounded-xl bg-muted text-muted-foreground [&_svg]:size-5">
         {icon ?? <BoxIcon />}
       </span>
-      <p className="text-sm font-medium">{title}</p>
+      <p className="text-sm font-medium tracking-tight">{title}</p>
       {children && <div className="max-w-sm text-sm text-balance text-muted-foreground">{children}</div>}
       {action && <div className="mt-2">{action}</div>}
     </div>
@@ -152,7 +171,7 @@ export function SectionHeader({
         <h2 id={id} className="flex items-baseline gap-2 text-base font-semibold tracking-tight">
           {title}
           {count !== undefined && (
-            <span className="text-sm font-normal text-muted-foreground tabular-nums">{count}</span>
+            <span className="font-mono text-xs font-normal text-muted-foreground tabular-nums">{count}</span>
           )}
         </h2>
         {description && <p className="mt-0.5 text-xs text-pretty text-muted-foreground">{description}</p>}
@@ -196,7 +215,7 @@ export function JobLog({ lines, className }: { lines: string[]; className?: stri
       ref={ref}
       aria-live="polite"
       className={cn(
-        "max-h-56 overflow-auto rounded-lg bg-muted/60 p-3 font-mono text-[0.7rem] leading-relaxed whitespace-pre-wrap break-all text-muted-foreground",
+        "max-h-56 overflow-auto overscroll-contain rounded-lg bg-muted/60 p-3 font-mono text-[0.7rem] leading-relaxed whitespace-pre-wrap break-all text-muted-foreground scrollbar-subtle",
         className,
       )}
     >

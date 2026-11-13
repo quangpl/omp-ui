@@ -1,6 +1,5 @@
 "use client";
 
-import { Loader2Icon } from "lucide-react";
 import { formatDateTime, formatRelative } from "@/components/board/format";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { CredentialHealth } from "@/lib/credential-types";
@@ -64,16 +63,20 @@ export function HealthBadge({
         <span
           tabIndex={0}
           className={cn(
-            "inline-flex h-6 shrink-0 cursor-default items-center gap-1.5 rounded-full px-2.5 text-xs font-medium outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
-            tone.pill,
+            "inline-flex h-6 shrink-0 cursor-default items-center gap-1.5 rounded-full px-2.5 text-xs font-medium outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
+            checking ? "bg-primary/10 text-primary" : tone.pill,
             className,
           )}
         >
-          {checking ? (
-            <Loader2Icon className="size-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-          ) : (
-            <span className={cn("size-1.5 rounded-full", tone.dot)} aria-hidden="true" />
-          )}
+          {/* Live states (checking, healthy) breathe; failing/untested stay still. */}
+          <span className="relative flex size-1.5 shrink-0" aria-hidden="true">
+            {(checking || health === "healthy") && (
+              <span
+                className={cn("absolute inset-0 animate-breathe rounded-full", checking ? "bg-primary" : tone.dot)}
+              />
+            )}
+            <span className={cn("relative size-1.5 rounded-full", checking ? "bg-primary" : tone.dot)} />
+          </span>
           {checking ? "Checking…" : tone.label}
         </span>
       </TooltipTrigger>

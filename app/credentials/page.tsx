@@ -86,7 +86,7 @@ export default function CredentialsPage() {
           <Button
             variant="ghost"
             size="icon"
-            className="size-11 rounded-full text-muted-foreground hover:text-foreground active:scale-95 md:size-8 md:rounded-lg"
+            className="pressable-icon size-11 rounded-full text-muted-foreground hover:text-foreground md:size-8 md:rounded-lg"
             aria-label="Check all credentials now"
             disabled={checkingAll || credentials.length === 0}
             onClick={() => void checkAll()}
@@ -96,7 +96,7 @@ export default function CredentialsPage() {
         </TooltipTrigger>
         <TooltipContent>{checkingAll ? "Checking…" : "Check all now"}</TooltipContent>
       </Tooltip>
-      <Button className="h-11 gap-1.5 md:h-8" onClick={() => setDialog({ mode: "create" })}>
+      <Button className="pressable h-11 gap-1.5 md:h-8" onClick={() => setDialog({ mode: "create" })}>
         <PlusIcon />
         <span className="hidden sm:inline">Add credential</span>
         <span className="sm:hidden">Add</span>
@@ -108,7 +108,7 @@ export default function CredentialsPage() {
     <div className="flex min-h-dvh flex-col">
       <AppHeader title="Credentials" subtitle={subtitle} actions={actions} />
       <main className="px-safe pb-safe flex-1">
-        <div className="mx-auto w-full max-w-[1100px] px-4 py-6 sm:px-6 md:py-8 lg:px-8">
+        <div className="animate-page-in mx-auto w-full max-w-[1100px] px-4 py-6 sm:px-6 md:py-8 lg:px-8">
           <CredentialsView
             list={list}
             focusId={focusId}

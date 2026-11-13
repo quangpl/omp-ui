@@ -7,6 +7,7 @@ import {
   ChevronDownIcon,
   HardDriveIcon,
   ImageIcon,
+  MoreHorizontalIcon,
   NetworkIcon,
   PlayIcon,
   Trash2Icon,
@@ -14,15 +15,22 @@ import {
 import { EmptyState, formatBytes, SectionHeader } from "@/components/containers/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import type { DockerContainer, DockerImage, DockerNetwork, DockerVolume, PruneKind } from "@/lib/docker-types";
 import { cn } from "@/lib/utils";
 
 /** Rows shown before "Show all": the resources column stays compact next to the running list. */
 const PREVIEW_ROWS = 6;
-const ICON_BUTTON = "size-11 active:scale-[0.96] md:size-8";
+const ICON_BUTTON = "size-11 pressable-icon md:size-8";
 const LIST = "divide-y overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10";
-const ROW = "flex items-center gap-3 px-3 py-2 transition-colors hover:bg-muted/40 sm:px-4";
+const ROW = "flex items-center gap-3 py-2 pr-2 pl-4 transition-colors hover:bg-muted/40 md:px-4";
 
 /** `docker images` sizes are SI strings ("1.23GB", "85.2MB", "0B"); unknown formats count as 0. */
 function parseDockerSize(size: string): number {
@@ -45,7 +53,12 @@ function usePreview<T>(items: T[]) {
         aria-expanded={expanded}
       >
         {expanded ? "Show fewer" : `Show all ${items.length}`}
-        <ChevronDownIcon className={cn("size-3.5 transition-transform", expanded && "rotate-180")} />
+        <ChevronDownIcon
+          className={cn(
+            "size-3.5 transition-transform duration-300 ease-(--ease-fluid) motion-reduce:transition-none",
+            expanded && "rotate-180",
+          )}
+        />
       </Button>
     ) : null;
   return { shown: expanded ? items : items.slice(0, PREVIEW_ROWS), toggle };
@@ -92,18 +105,18 @@ export function DiskUsage({
         <div className="space-y-3 p-4">
           <div className="flex items-baseline justify-between gap-3">
             <p
-              className="text-2xl font-semibold tracking-tight tabular-nums"
+              className="font-mono text-2xl font-semibold tracking-tight tabular-nums"
               title="Sum of image sizes; layers shared between images count once per image"
             >
               {formatBytes(total)}
             </p>
-            <p className="text-xs text-muted-foreground tabular-nums">
+            <p className="font-mono text-xs text-muted-foreground tabular-nums">
               {images.length} {images.length === 1 ? "image" : "images"}
             </p>
           </div>
           <div className="flex h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
             <div
-              className="h-full w-full origin-left bg-foreground/70 transition-transform duration-500 motion-reduce:transition-none"
+              className="h-full w-full origin-left bg-foreground/70 transition-transform duration-500 ease-(--ease-fluid) motion-reduce:transition-none"
               style={{ transform: `scaleX(${total ? used / total : 0})` }}
             />
           </div>
@@ -111,12 +124,12 @@ export function DiskUsage({
             <div className="flex items-center gap-1.5">
               <span className="size-2 rounded-full bg-foreground/70" />
               <dt>In use</dt>
-              <dd className="text-foreground">{formatBytes(used)}</dd>
+              <dd className="font-mono text-foreground">{formatBytes(used)}</dd>
             </div>
             <div className="flex items-center gap-1.5">
               <span className="size-2 rounded-full bg-muted-foreground/30" />
               <dt>Unused</dt>
-              <dd className="text-foreground">{formatBytes(unused)}</dd>
+              <dd className="font-mono text-foreground">{formatBytes(unused)}</dd>
             </div>
           </dl>
         </div>
@@ -124,11 +137,11 @@ export function DiskUsage({
           {cleanups.map(([kind, label, count, verb]) => (
             <li key={kind} className="flex items-center gap-3 py-1 pr-1.5 pl-4">
               <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
-              {count && <span className="text-xs text-muted-foreground tabular-nums">{count}</span>}
+              {count && <span className="font-mono text-xs text-muted-foreground tabular-nums">{count}</span>}
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-11 gap-1.5 text-muted-foreground hover:text-destructive active:scale-[0.98] md:h-8"
+                className="pressable h-11 gap-1.5 text-muted-foreground hover:text-destructive md:h-8"
                 onClick={() => onPrune(kind)}
                 aria-label={`${verb} ${label.toLowerCase()}`}
               >
@@ -173,11 +186,11 @@ export function ImagesList({
           value={pull}
           onChange={(e) => setPull(e.target.value)}
           placeholder="Pull: redis:7, ghcr.io/org/app:tag"
-          className="h-11 min-w-0 font-mono text-sm md:h-9"
+          className="h-11 min-w-0 font-mono text-base md:h-9 md:text-sm"
           aria-label="Image to pull"
           spellCheck={false}
         />
-        <Button type="submit" className="h-11 shrink-0 gap-2 active:scale-[0.98] md:h-9" disabled={!pull.trim()}>
+        <Button type="submit" className="pressable h-11 shrink-0 gap-2 md:h-9" disabled={!pull.trim()}>
           <ArrowDownToLineIcon />
           Pull
         </Button>
@@ -205,17 +218,18 @@ export function ImagesList({
                         </Badge>
                       )}
                     </div>
-                    <p className="truncate text-xs text-muted-foreground tabular-nums">
-                      {image.size} · {image.createdSince} · <span className="font-mono">{image.id}</span>
+                    <p className="truncate font-mono text-xs text-muted-foreground tabular-nums">
+                      {image.size} · {image.createdSince} · {image.id}
                     </p>
                   </div>
+                  {/* Phones: Run + overflow; desktop: every action inline. */}
                   <div className="flex shrink-0 items-center">
                     {image.repository !== "<none>" && (
                       <>
                         <Button
                           variant="ghost"
                           size="icon"
-                          className={ICON_BUTTON}
+                          className={cn(ICON_BUTTON, "max-md:hidden")}
                           title="Pull latest"
                           aria-label={`Pull ${ref}`}
                           onClick={() => onPull(ref)}
@@ -237,13 +251,42 @@ export function ImagesList({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className={cn(ICON_BUTTON, "text-muted-foreground hover:text-destructive")}
+                      className={cn(
+                        ICON_BUTTON,
+                        "text-muted-foreground hover:text-destructive",
+                        image.repository !== "<none>" && "max-md:hidden",
+                      )}
                       title="Remove"
                       aria-label={`Remove ${ref}`}
                       onClick={() => onRemove(image)}
                     >
                       <Trash2Icon />
                     </Button>
+                    {image.repository !== "<none>" && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className={cn(ICON_BUTTON, "md:hidden")}
+                            aria-label={`More actions for ${ref}`}
+                          >
+                            <MoreHorizontalIcon />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-48">
+                          <DropdownMenuItem onSelect={() => onPull(ref)}>
+                            <ArrowDownToLineIcon />
+                            Pull latest
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem variant="destructive" onSelect={() => onRemove(image)}>
+                            <Trash2Icon />
+                            Remove
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
                   </div>
                 </li>
               );

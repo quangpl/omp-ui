@@ -15,6 +15,7 @@ import {
   PencilIcon,
   PlusIcon,
   SearchIcon,
+  SearchXIcon,
   SparklesIcon,
   Trash2Icon,
   TriangleAlertIcon,
@@ -146,13 +147,13 @@ export function ProjectCard({
               <Button
                 variant="outline"
                 size="sm"
-                className="h-11 gap-1 px-2.5 md:h-7"
+                className="h-11 min-w-11 gap-1 px-2.5 md:h-7 md:min-w-0"
                 onClick={() => openNewCard({ boardId: board.id })}
-                aria-label={`New card in ${board.name}`}
-                title="New card here (N)"
+                aria-label={`New task in ${board.name}`}
+                title="New task here (N)"
               >
                 <PlusIcon />
-                <span className="hidden sm:inline">Card</span>
+                <span className="hidden sm:inline">Task</span>
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -196,7 +197,7 @@ export function ProjectCard({
                   <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full", DOT_CLASS[status])} />
                   {STATUS_LABELS[status]}
                 </dt>
-                <dd className="text-lg leading-none font-semibold tracking-tight tabular-nums">
+                <dd className="font-mono text-lg leading-none font-semibold tabular-nums">
                   {board.counts[status]}
                   {/* Keeps the text unambiguous: "Done 1. 100% success", not "Done1100% success". */}
                   <span className="sr-only">. </span>
@@ -228,10 +229,10 @@ export function ProjectCard({
             {board.runningCount > 0 && (
               <span className="inline-flex items-center gap-1.5 font-medium text-primary">
                 <span aria-hidden="true" className="relative flex size-2">
-                  <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary opacity-60 motion-reduce:animate-none" />
+                  <span className="animate-breathe absolute inset-0 rounded-full bg-primary" />
                   <span className="relative inline-flex size-2 rounded-full bg-primary" />
                 </span>
-                {board.runningCount} running
+                <span className="font-mono tabular-nums">{board.runningCount}</span> running
               </span>
             )}
             {board.needsYouCount > 0 && (
@@ -245,7 +246,7 @@ export function ProjectCard({
                 "No runs in 30 days"
               ) : (
                 <>
-                  <span className="font-medium text-foreground tabular-nums">{successRate}%</span> success ·{" "}
+                  <span className="font-mono font-medium text-foreground tabular-nums">{successRate}%</span> success ·{" "}
                   {plural(finishedRuns, "run")}
                 </>
               )}
@@ -294,7 +295,7 @@ export function ProjectCard({
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => openNewCard({ boardId: board.id })}>
           <PlusIcon />
-          New card…
+          New task…
           <ContextMenuShortcut>N</ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuSeparator />
@@ -337,7 +338,7 @@ export function ProjectsSection({
         <div className="min-w-0 flex-1">
           <h2 id="home-projects" className="text-sm font-semibold tracking-tight">
             Projects
-            <span className="ml-2 rounded-md bg-muted px-1.5 text-xs font-medium text-muted-foreground tabular-nums">
+            <span className="ml-2 rounded-md bg-muted px-1.5 font-mono text-xs font-medium text-muted-foreground tabular-nums">
               {boards.length}
             </span>
           </h2>
@@ -361,13 +362,23 @@ export function ProjectsSection({
         )}
       </div>
       {shown.length === 0 ? (
-        <p className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
-          No project matches “{filter.trim()}”.
-        </p>
+        <div className="animate-fade-in-soft flex flex-col items-center gap-3 rounded-xl border border-dashed px-4 py-10 text-center">
+          <span className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+            <SearchXIcon className="size-5" aria-hidden="true" />
+          </span>
+          <p className="text-sm text-muted-foreground">No project matches “{filter.trim()}”.</p>
+          <Button variant="outline" size="sm" className="h-11 md:h-8" onClick={() => setFilter("")}>
+            Clear filter
+          </Button>
+        </div>
       ) : (
         <div className="grid auto-rows-fr grid-cols-[repeat(auto-fill,minmax(min(18rem,100%),1fr))] gap-3">
           {shown.map((board, index) => (
-            <ProjectCard key={board.id} board={board} now={now} index={index} onEdit={onEdit} onDelete={onDelete} />
+            // Press feedback sits on a wrapper so its scale transition composes with card-lift's hover
+            // lift; only the card's surface (its stretched link) presses it, not the buttons on top.
+            <div key={board.id} className="pressable h-full min-w-0 has-[button:active]:scale-100!">
+              <ProjectCard board={board} now={now} index={index} onEdit={onEdit} onDelete={onDelete} />
+            </div>
           ))}
         </div>
       )}
@@ -377,7 +388,7 @@ export function ProjectsSection({
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
           className={cn(
-            "mt-2.5 inline-flex min-h-11 items-center gap-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground md:min-h-8",
+            "pressable mt-2.5 inline-flex min-h-11 items-center gap-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground md:min-h-8",
             FOCUS_RING,
           )}
         >

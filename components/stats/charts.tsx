@@ -231,7 +231,7 @@ export const Sparkline = memo(function Sparkline({
               style={{ transform: `translateY(${geometry.lastY}%)` }}
             >
               <span className="absolute top-0 right-0 size-2 translate-x-1/2 -translate-y-1/2">
-                <span className="absolute inset-0 animate-ping rounded-full bg-current opacity-50 motion-reduce:animate-none" />
+                <span className="absolute inset-0 animate-breathe rounded-full bg-current opacity-50 motion-reduce:animate-none" />
                 <span className="relative block size-2 rounded-full bg-current ring-2 ring-card" />
               </span>
             </div>
@@ -410,7 +410,7 @@ export const LiveIndicator = memo(function LiveIndicator({
     >
       <span aria-hidden className="relative flex size-1.5">
         {state === "live" && (
-          <span className={cn("absolute inset-0 animate-ping rounded-full opacity-70 motion-reduce:animate-none", dot)} />
+          <span className={cn("absolute inset-0 animate-breathe rounded-full opacity-70 motion-reduce:animate-none", dot)} />
         )}
         <span
           className={cn(

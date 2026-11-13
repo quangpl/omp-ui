@@ -22,9 +22,6 @@ export function useEntrance(): (index: number) => { className?: string; style?: 
   return (index) => (entering ? { className: "animate-card-in", style: { "--stagger": index } as CSSProperties } : {});
 }
 
-/** Rows and tiles that respond to a press; transform-only, so reduced motion skips nothing visible. */
-export const PRESSABLE = "transition-[scale,background-color] duration-150 active:scale-[0.98] motion-reduce:active:scale-100";
-
 export const FOCUS_RING = "outline-none focus-visible:ring-3 focus-visible:ring-ring/50";
 
 export function SectionTitle({
@@ -47,7 +44,7 @@ export function SectionTitle({
         {title}
       </h2>
       {count !== undefined && (
-        <span className="rounded-md bg-muted px-1.5 text-xs font-medium text-muted-foreground tabular-nums">
+        <span className="rounded-md bg-muted px-1.5 font-mono text-xs font-medium text-muted-foreground tabular-nums">
           {count}
         </span>
       )}
@@ -57,7 +54,7 @@ export function SectionTitle({
   );
 }
 
-/** The bordered surface every home section sits on. */
+/** The bordered surface for sections whose elevation carries meaning (actionable or live lists). */
 export function Panel({ className, children }: { className?: string; children: ReactNode }) {
   return <div className={cn("rounded-xl border bg-card text-card-foreground", className)}>{children}</div>;
 }

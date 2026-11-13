@@ -70,7 +70,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
       type="button"
       variant="ghost"
       size="icon"
-      className="size-11 shrink-0 md:size-7"
+      className="pressable-icon size-11 shrink-0 md:size-7"
       aria-label={label}
       title={label}
       onClick={() =>
@@ -180,7 +180,7 @@ export function MemorySettingsSection() {
       disabled={loading}
       aria-label="Refresh memory status"
       title="Refresh"
-      className="size-11 md:size-8"
+      className="pressable-icon size-11 md:size-8"
     >
       <RefreshCwIcon className={cn(loading && "animate-spin")} />
     </Button>
@@ -195,9 +195,9 @@ export function MemorySettingsSection() {
         </SettingsPanel>
       ) : !status ? (
         <SettingsPanel>
-          <div aria-busy="true" className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4 sm:p-5">
+          <div aria-busy="true" className="grid grid-cols-1 gap-3 p-4 min-[420px]:grid-cols-2 sm:p-5 lg:grid-cols-4">
             {[0, 1, 2, 3].map((i) => (
-              <Skeleton key={i} className="h-12" />
+              <Skeleton key={i} className="h-14" />
             ))}
           </div>
         </SettingsPanel>
@@ -248,7 +248,7 @@ function MemoryStatusView({
               {STAT_LABELS.map(({ key, label }) => (
                 <div key={key} className="rounded-lg px-3 py-2 ring-1 ring-foreground/10">
                   <dt className="text-xs text-muted-foreground">{label}</dt>
-                  <dd className="text-lg font-semibold tabular-nums">{status.stats?.[key]?.toLocaleString() ?? "—"}</dd>
+                  <dd className="font-mono text-lg font-semibold tabular-nums">{status.stats?.[key]?.toLocaleString() ?? "—"}</dd>
                 </div>
               ))}
             </dl>
@@ -259,7 +259,7 @@ function MemoryStatusView({
               type="button"
               onClick={() => onAction("start")}
               disabled={!canStart || busy}
-              className="h-11 w-full sm:w-auto md:h-9"
+              className="pressable h-11 w-full sm:w-auto md:h-9"
             >
               {action === "start" || status.starting ? <Loader2Icon className="animate-spin" /> : <PlayIcon />}
               {status.starting ? "Starting…" : "Start server"}
@@ -269,12 +269,12 @@ function MemoryStatusView({
               variant="outline"
               onClick={() => onAction("connect")}
               disabled={!status.installed || busy}
-              className="h-11 w-full sm:w-auto md:h-9"
+              className="pressable h-11 w-full sm:w-auto md:h-9"
             >
               {action === "connect" ? <Loader2Icon className="animate-spin" /> : <PlugIcon />}
               {status.omp.connected ? "Reconnect OMP" : "Connect OMP"}
             </Button>
-            <Button asChild variant="outline" className="h-11 w-full sm:w-auto md:h-9">
+            <Button asChild variant="outline" className="pressable h-11 w-full sm:w-auto md:h-9">
               <a href={status.viewerUrl} target="_blank" rel="noreferrer">
                 <ExternalLinkIcon />
                 Open viewer

@@ -1,7 +1,7 @@
 "use client";
 
 import { type MouseEvent as ReactMouseEvent, type ReactNode, useMemo, useState } from "react";
-import { ImageOffIcon } from "lucide-react";
+import { ImageOffIcon, SquareCheckIcon, SquareIcon } from "lucide-react";
 import { openAttachment } from "@/components/attachment-viewer";
 import {
   appFileOf,
@@ -12,107 +12,21 @@ import {
   nameFromUrl,
   type Attachment,
 } from "@/components/viewer/common";
+import { inlineSources, type MdAlign, type MdBlock, type MdListItem, parseBlocks } from "@/lib/markdown/blocks";
+import { isSafeUrl, type MdInline, parseInline } from "@/lib/markdown/inline";
 import { cn } from "@/lib/utils";
 
 /**
- * Small, safe Markdown subset for agent/user text (React elements only, no HTML injection):
- * paragraphs (newlines kept), # headings (bold lines), - / * / 1. lists, ``` fences,
- * `code`, **bold**, *italic*, [links](https://…), ![images](…) and bare https URLs.
- * Images and links to shared files (`/api/v1/…/files/…`) open in the attachment viewer;
- * a modified click (⌘/Ctrl/Shift/middle) still opens them in a new tab.
+ * Safe GitHub-flavoured Markdown subset for agent/user text, parsed by `lib/markdown` and
+ * rendered as React elements only (no HTML injection, no `dangerouslySetInnerHTML`):
+ * ATX headings, paragraphs (newlines kept), bullet/ordered lists (nested, loose/tight,
+ * `- [ ]` task items), `>` quotes, `---` rules, pipe tables with alignment, ``` / ~~~ fences
+ * (language label, no highlighting), `code`, **bold**, *italic*, ~~strike~~, [links](…),
+ * ![images](…), <autolinks>, bare https URLs and bare `/api/v1/…/files/…` paths.
+ * Link and image targets are limited by `isSafeUrl` (http(s), mailto for links, `/api/v1/`);
+ * anything else stays literal text. Images and links to shared files (`/api/v1/…/files/…`)
+ * open in the attachment viewer; a modified click (⌘/Ctrl/Shift/middle) still opens them in a new tab.
  */
-
-type Block =
-  | { kind: "code"; text: string }
-  | { kind: "heading"; text: string }
-  | { kind: "paragraph"; text: string }
-  | { kind: "list"; ordered: boolean; start: number; items: string[] };
-
-const FENCE = /```[^\n`]*\n?([\s\S]*?)(?:```|$)/g;
-const HEADING = /^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$/;
-const BULLET = /^\s*[-*+]\s+(.*)$/;
-const NUMBERED = /^\s*(\d{1,9})[.)]\s+(.*)$/;
-
-function parseProse(source: string, blocks: Block[]) {
-  let paragraph: string[] = [];
-  // Cast (not annotation) so TS doesn't narrow to `null`; the flush helpers reassign it.
-  let list = null as Extract<Block, { kind: "list" }> | null;
-
-  const flushParagraph = () => {
-    if (paragraph.length) blocks.push({ kind: "paragraph", text: paragraph.join("\n") });
-    paragraph = [];
-  };
-  const flushList = () => {
-    if (list) blocks.push(list);
-    list = null;
-  };
-
-  for (const line of source.split("\n")) {
-    if (!line.trim()) {
-      flushParagraph();
-      flushList();
-      continue;
-    }
-    const heading = HEADING.exec(line);
-    if (heading) {
-      flushParagraph();
-      flushList();
-      blocks.push({ kind: "heading", text: heading[1] });
-      continue;
-    }
-    const bullet = BULLET.exec(line);
-    const numbered = bullet ? null : NUMBERED.exec(line);
-    if (bullet || numbered) {
-      flushParagraph();
-      const ordered = numbered !== null;
-      if (!list || list.ordered !== ordered) {
-        flushList();
-        list = { kind: "list", ordered, start: numbered ? Number(numbered[1]) : 1, items: [] };
-      }
-      list.items.push(bullet ? bullet[1] : (numbered?.[2] ?? ""));
-      continue;
-    }
-    if (list && /^\s+/.test(line)) {
-      // Indented continuation of the previous list item.
-      list.items[list.items.length - 1] += `\n${line.trim()}`;
-      continue;
-    }
-    flushList();
-    paragraph.push(line);
-  }
-  flushParagraph();
-  flushList();
-}
-
-function parseBlocks(source: string): Block[] {
-  const blocks: Block[] = [];
-  let last = 0;
-  for (const match of source.matchAll(FENCE)) {
-    const start = match.index ?? 0;
-    parseProse(source.slice(last, start), blocks);
-    blocks.push({ kind: "code", text: match[1].replace(/\n$/, "") });
-    last = start + match[0].length;
-  }
-  parseProse(source.slice(last), blocks);
-  return blocks;
-}
-
-// One alternative per inline construct; earlier alternatives win at the same position.
-// Groups: 1 code, 2 bold, 3 image alt, 4 image url, 5 link text, 6 link url, 7 bare url, 8 italic.
-const TARGET = String.raw`(?:https?:\/\/|\/api\/v1\/)[^\s)]+`;
-const TITLE = String.raw`(?:\s+"[^"\n]*")?`;
-const BARE_APP_FILE = String.raw`(?<![\w/.])\/api\/v1\/(?:tasks|boards)\/[A-Za-z0-9_-]+\/files\/[^\s<>]*[^\s<>.,;:!?'")\]]`;
-const INLINE = new RegExp(
-  [
-    "`([^`\\n]+)`",
-    String.raw`\*\*(?=\S)([^\n]*?\S)\*\*`,
-    String.raw`!\[([^\]\n]*)\]\((${TARGET})${TITLE}\)`,
-    String.raw`\[([^\]\n]+)\]\((${TARGET})${TITLE}\)`,
-    String.raw`(https?:\/\/[^\s<>]*[^\s<>.,;:!?'")\]]|${BARE_APP_FILE})`,
-    String.raw`\*(?=[^\s*])([^*\n]*?[^\s*])\*`,
-  ].join("|"),
-  "g",
-);
 
 const LINK_CLASS = "font-medium underline underline-offset-2 break-all hover:opacity-80";
 const CHIP_CLASS =
@@ -126,20 +40,38 @@ interface InlineContext {
   onFeedback?: (attachment: Attachment) => void;
 }
 
+/** Where a block list sits: list nesting depth and whether paragraphs belong to a tight list item. */
+interface BlockScope {
+  listDepth: number;
+  tight: boolean;
+}
+
+const ROOT_SCOPE: BlockScope = { listDepth: 0, tight: false };
+
 function toAttachment(url: string): Attachment {
   return { url, name: nameFromUrl(url) };
 }
 
-function collectAttachments(text: string, into: Map<string, Attachment>) {
-  for (const match of text.matchAll(INLINE)) {
-    const [, , bold, , imageUrl, , linkUrl, url, italic] = match;
-    if (bold !== undefined) collectAttachments(bold, into);
-    else if (italic !== undefined) collectAttachments(italic, into);
-    else {
-      const target = imageUrl ?? linkUrl ?? url;
-      if (target && (imageUrl !== undefined || isViewableUrl(target)) && !into.has(target)) {
-        into.set(target, toAttachment(target));
-      }
+function collectAttachments(nodes: MdInline[], into: Map<string, Attachment>) {
+  for (const node of nodes) {
+    switch (node.kind) {
+      case "strong":
+      case "em":
+      case "strike":
+        collectAttachments(node.children, into);
+        break;
+      case "link":
+        if (isViewableUrl(node.url) && !into.has(node.url)) into.set(node.url, toAttachment(node.url));
+        collectAttachments(node.children, into);
+        break;
+      case "image":
+        if (!into.has(node.url)) into.set(node.url, toAttachment(node.url));
+        break;
+      case "url":
+        if (isViewableUrl(node.url) && !into.has(node.url)) into.set(node.url, toAttachment(node.url));
+        break;
+      default:
+        break;
     }
   }
 }
@@ -147,10 +79,7 @@ function collectAttachments(text: string, into: Map<string, Attachment>) {
 /** Images and viewable files referenced by the text (outside code), in order, without repeats. */
 export function extractAttachments(text: string): Attachment[] {
   const found = new Map<string, Attachment>();
-  for (const block of parseBlocks(text)) {
-    if (block.kind === "code") continue;
-    for (const part of block.kind === "list" ? block.items : [block.text]) collectAttachments(part, found);
-  }
+  for (const source of inlineSources(parseBlocks(text))) collectAttachments(parseInline(source), found);
   return [...found.values()];
 }
 
@@ -216,67 +145,231 @@ function InlineImage({ attachment, alt, ctx }: { attachment: Attachment; alt: st
   );
 }
 
-function renderInline(text: string, ctx: InlineContext, keyPrefix = ""): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  let last = 0;
-  for (const match of text.matchAll(INLINE)) {
-    const start = match.index ?? 0;
-    if (start > last) nodes.push(text.slice(last, start));
-    const key = `${keyPrefix}${start}`;
-    const [, code, bold, imageAlt, imageUrl, linkText, linkUrl, url, italic] = match;
-    if (code !== undefined) {
-      nodes.push(
+function renderNodes(nodes: MdInline[], ctx: InlineContext, keyPrefix: string): ReactNode[] {
+  return nodes.map((node, index) => renderNode(node, ctx, `${keyPrefix}${index}`));
+}
+
+function renderNode(node: MdInline, ctx: InlineContext, key: string): ReactNode {
+  switch (node.kind) {
+    case "text":
+      return node.text;
+    case "code":
+      return (
         <code key={key} className="rounded bg-foreground/[0.06] px-1 py-0.5 font-mono text-[0.85em]">
-          {code}
-        </code>,
+          {node.text}
+        </code>
       );
-    } else if (bold !== undefined) {
-      nodes.push(
+    case "strong":
+      return (
         <strong key={key} className="font-semibold">
-          {renderInline(bold, ctx, `${key}-`)}
-        </strong>,
+          {renderNodes(node.children, ctx, `${key}-`)}
+        </strong>
       );
-    } else if (imageUrl !== undefined) {
-      const attachment = toAttachment(imageUrl);
-      nodes.push(
-        attachmentKind(attachment) === "image" ? (
-          <InlineImage key={key} attachment={attachment} alt={imageAlt} ctx={ctx} />
-        ) : (
-          <AttachmentChip key={key} attachment={attachment} label={imageAlt || attachment.name} ctx={ctx} />
-        ),
+    case "em":
+      return <em key={key}>{renderNodes(node.children, ctx, `${key}-`)}</em>;
+    case "strike":
+      return (
+        <del key={key} className="opacity-70">
+          {renderNodes(node.children, ctx, `${key}-`)}
+        </del>
       );
-    } else if (linkUrl !== undefined) {
-      nodes.push(
-        isViewableUrl(linkUrl) ? (
-          <AttachmentChip
-            key={key}
-            attachment={toAttachment(linkUrl)}
-            label={renderInline(linkText, ctx, `${key}-`)}
-            ctx={ctx}
-          />
-        ) : (
-          <a key={key} href={linkUrl} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}>
-            {renderInline(linkText, ctx, `${key}-`)}
-          </a>
-        ),
+    case "image": {
+      // The parser only emits safe targets; re-checked so a parser bug can't leak a dangerous URL.
+      if (!isSafeUrl(node.url, "image")) return node.alt;
+      const attachment = toAttachment(node.url);
+      return attachmentKind(attachment) === "image" ? (
+        <InlineImage key={key} attachment={attachment} alt={node.alt} ctx={ctx} />
+      ) : (
+        <AttachmentChip key={key} attachment={attachment} label={node.alt || attachment.name} ctx={ctx} />
       );
-    } else if (url !== undefined) {
-      nodes.push(
-        isViewableUrl(url) ? (
-          <AttachmentChip key={key} attachment={toAttachment(url)} label={nameFromUrl(url)} ctx={ctx} />
-        ) : (
-          <a key={key} href={url} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}>
-            {url}
-          </a>
-        ),
-      );
-    } else if (italic !== undefined) {
-      nodes.push(<em key={key}>{renderInline(italic, ctx, `${key}-`)}</em>);
     }
-    last = start + match[0].length;
+    case "link": {
+      const label = renderNodes(node.children, ctx, `${key}-`);
+      if (!isSafeUrl(node.url, "link")) return <span key={key}>{label}</span>;
+      if (isViewableUrl(node.url)) {
+        return <AttachmentChip key={key} attachment={toAttachment(node.url)} label={label} ctx={ctx} />;
+      }
+      return node.url.startsWith("mailto:") ? (
+        <a key={key} href={node.url} className={LINK_CLASS}>
+          {label}
+        </a>
+      ) : (
+        <a key={key} href={node.url} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}>
+          {label}
+        </a>
+      );
+    }
+    case "url":
+      if (!isSafeUrl(node.url, "link")) return node.url;
+      return isViewableUrl(node.url) ? (
+        <AttachmentChip key={key} attachment={toAttachment(node.url)} label={nameFromUrl(node.url)} ctx={ctx} />
+      ) : (
+        <a key={key} href={node.url} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}>
+          {node.url}
+        </a>
+      );
   }
-  if (last < text.length) nodes.push(text.slice(last));
-  return nodes;
+}
+
+function renderInline(text: string, ctx: InlineContext, keyPrefix: string): ReactNode[] {
+  return renderNodes(parseInline(text), ctx, keyPrefix);
+}
+
+const HEADING_CLASS: Record<1 | 2 | 3 | 4 | 5 | 6, string> = {
+  1: "text-[1.25em] font-semibold",
+  2: "text-[1.125em] font-semibold",
+  3: "text-[1em] font-semibold",
+  4: "text-[0.95em] font-semibold text-muted-foreground",
+  5: "text-[0.95em] font-semibold text-muted-foreground",
+  6: "text-[0.95em] font-semibold text-muted-foreground",
+};
+
+const BULLET_STYLE = ["list-disc", "list-[circle]", "list-[square]"];
+
+const ALIGN_CLASS: Record<Exclude<MdAlign, null>, string> = {
+  left: "text-left",
+  center: "text-center",
+  right: "text-right",
+};
+
+function renderListItem(
+  item: MdListItem,
+  ctx: InlineContext,
+  key: string,
+  scope: BlockScope,
+  tight: boolean,
+): ReactNode {
+  const inner = renderBlocks(item.blocks, ctx, `${key}-`, { listDepth: scope.listDepth + 1, tight });
+  const spacing = tight ? "[&>*+*]:mt-1" : "[&>*+*]:mt-2";
+  if (item.checked === null) {
+    return (
+      <li key={key} className={cn("pl-0.5", spacing)}>
+        {inner}
+      </li>
+    );
+  }
+  const Check = item.checked ? SquareCheckIcon : SquareIcon;
+  return (
+    <li key={key} className="flex list-none items-start gap-1.5">
+      <span className="flex h-[1lh] shrink-0 items-center">
+        <Check
+          role="img"
+          aria-label={item.checked ? "Done" : "Not done"}
+          className={cn("size-[1em]", item.checked ? "text-foreground" : "text-muted-foreground")}
+        />
+      </span>
+      <div className={cn("min-w-0 flex-1", spacing, item.checked && "text-muted-foreground")}>{inner}</div>
+    </li>
+  );
+}
+
+function renderBlock(block: MdBlock, ctx: InlineContext, key: string, scope: BlockScope): ReactNode {
+  switch (block.kind) {
+    case "code":
+      return (
+        <div key={key} className="max-w-full min-w-0 overflow-hidden rounded-md bg-foreground/[0.06]">
+          {block.lang && (
+            <div className="border-b border-foreground/[0.06] px-2.5 py-1 font-mono text-[0.7rem] leading-none text-muted-foreground select-none">
+              {block.lang}
+            </div>
+          )}
+          <pre className="max-w-full overflow-x-auto px-2.5 py-2 font-mono text-xs leading-relaxed whitespace-pre">
+            <code>{block.text}</code>
+          </pre>
+        </div>
+      );
+    case "heading": {
+      const Tag = `h${block.level}` as const;
+      return (
+        <Tag key={key} className={cn(HEADING_CLASS[block.level], "leading-snug [&:not(:first-child)]:mt-1")}>
+          {renderInline(block.text, ctx, `${key}-`)}
+        </Tag>
+      );
+    }
+    case "paragraph":
+      return scope.tight ? (
+        <div key={key} className="whitespace-pre-wrap">
+          {renderInline(block.text, ctx, `${key}-`)}
+        </div>
+      ) : (
+        <p key={key} className="whitespace-pre-wrap">
+          {renderInline(block.text, ctx, `${key}-`)}
+        </p>
+      );
+    case "list": {
+      const items = block.items.map((item, i) => renderListItem(item, ctx, `${key}-${i}`, scope, block.tight));
+      const allTasks = block.items.length > 0 && block.items.every((item) => item.checked !== null);
+      const gap = block.tight ? "gap-1" : "gap-2";
+      if (block.ordered) {
+        return (
+          <ol key={key} start={block.start} className={cn("flex list-decimal flex-col", gap, allTasks ? "pl-0.5" : "pl-5")}>
+            {items}
+          </ol>
+        );
+      }
+      const bullet = BULLET_STYLE[Math.min(scope.listDepth, BULLET_STYLE.length - 1)];
+      return (
+        <ul key={key} className={cn("flex flex-col", gap, allTasks ? "list-none pl-0.5" : cn(bullet, "pl-5"))}>
+          {items}
+        </ul>
+      );
+    }
+    case "quote":
+      return (
+        <blockquote key={key} className="flex min-w-0 flex-col gap-2 border-l-2 pl-3 text-muted-foreground">
+          {renderBlocks(block.blocks, ctx, `${key}-`, { listDepth: scope.listDepth, tight: false })}
+        </blockquote>
+      );
+    case "rule":
+      return <hr key={key} className="border-border" />;
+    case "table": {
+      const hasRows = block.rows.length > 0;
+      return (
+        <div key={key} className="max-w-full overflow-x-auto rounded-md border">
+          <table className="w-full border-collapse text-[0.9em]">
+            <thead className="bg-muted/50">
+              <tr>
+                {block.header.map((cell, c) => (
+                  <th
+                    key={c}
+                    scope="col"
+                    className={cn(
+                      "px-2.5 py-1.5 align-top font-semibold",
+                      hasRows && "border-b",
+                      ALIGN_CLASS[block.align[c] ?? "left"],
+                    )}
+                  >
+                    {renderInline(cell, ctx, `${key}-h${c}-`)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            {hasRows && (
+              <tbody className="[&>tr:last-child>td]:border-b-0">
+                {block.rows.map((row, r) => (
+                  <tr key={r}>
+                    {row.map((cell, c) => (
+                      <td
+                        key={c}
+                        className={cn("border-b px-2.5 py-1.5 align-top", ALIGN_CLASS[block.align[c] ?? "left"])}
+                      >
+                        {renderInline(cell, ctx, `${key}-${r}-${c}-`)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            )}
+          </table>
+        </div>
+      );
+    }
+  }
+}
+
+/** Renders a block sequence; shared by the root, list items and quotes. */
+function renderBlocks(blocks: MdBlock[], ctx: InlineContext, keyPrefix: string, scope: BlockScope = ROOT_SCOPE): ReactNode[] {
+  return blocks.map((block, index) => renderBlock(block, ctx, `${keyPrefix}${index}`, scope));
 }
 
 export function RichText({
@@ -296,48 +389,6 @@ export function RichText({
   const attachments = useMemo(() => extractAttachments(text), [text]);
   const ctx: InlineContext = { attachments, images, onFeedback: onAttachmentFeedback };
   return (
-    <div className={cn("flex min-w-0 flex-col gap-2 break-words", className)}>
-      {blocks.map((block, index) => {
-        switch (block.kind) {
-          case "code":
-            return (
-              <pre
-                key={index}
-                className="max-w-full overflow-x-auto rounded-md bg-foreground/[0.06] px-2.5 py-2 font-mono text-xs leading-relaxed whitespace-pre"
-              >
-                <code>{block.text}</code>
-              </pre>
-            );
-          case "heading":
-            return (
-              <p key={index} className="font-semibold">
-                {renderInline(block.text, ctx)}
-              </p>
-            );
-          case "list": {
-            const items = block.items.map((item, i) => (
-              <li key={i} className="pl-0.5 whitespace-pre-wrap">
-                {renderInline(item, ctx)}
-              </li>
-            ));
-            return block.ordered ? (
-              <ol key={index} start={block.start} className="flex list-decimal flex-col gap-1 pl-5">
-                {items}
-              </ol>
-            ) : (
-              <ul key={index} className="flex list-disc flex-col gap-1 pl-5">
-                {items}
-              </ul>
-            );
-          }
-          default:
-            return (
-              <p key={index} className="whitespace-pre-wrap">
-                {renderInline(block.text, ctx)}
-              </p>
-            );
-        }
-      })}
-    </div>
+    <div className={cn("flex min-w-0 flex-col gap-2 break-words", className)}>{renderBlocks(blocks, ctx, "b")}</div>
   );
 }

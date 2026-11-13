@@ -144,7 +144,7 @@ export function NotificationSettingsSection() {
               <p className="text-destructive">{loadError}</p>
             </div>
           </div>
-          <Button type="button" variant="outline" onClick={load} className={cn(FIELD, "w-full gap-2 sm:w-auto")}>
+          <Button type="button" variant="outline" onClick={load} className={cn(FIELD, "pressable w-full gap-2 sm:w-auto")}>
             <RotateCcwIcon />
             Try again
           </Button>
@@ -192,7 +192,7 @@ export function NotificationSettingsSection() {
                   variant="outline"
                   onClick={() => void allow()}
                   disabled={requesting}
-                  className={cn(FIELD, "w-full gap-2 active:scale-[0.98] sm:w-auto")}
+                  className={cn(FIELD, "pressable w-full gap-2 sm:w-auto")}
                 >
                   {requesting ? <Loader2Icon className="animate-spin" /> : <BellRingIcon />}
                   Allow notifications

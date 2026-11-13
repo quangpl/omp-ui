@@ -33,7 +33,8 @@ function PollStatus({ system }: { system: SystemState }) {
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <RefreshRing intervalMs={SYSTEM_REFRESH_MS} lastUpdated={system.lastUpdated} />
         <span className="inline-block min-w-[7.5rem] tabular-nums">
-          Updated {system.lastUpdated ? formatClock(system.lastUpdated) : "--:--:--"}
+          Updated{" "}
+          <span className="font-mono">{system.lastUpdated ? formatClock(system.lastUpdated) : "--:--:--"}</span>
         </span>
       </span>
     </div>
@@ -48,7 +49,7 @@ export default function StatsPage() {
     <div className="flex min-h-dvh flex-col">
       <AppHeader title="Stats" />
       <main className="px-safe pb-safe flex-1">
-        <div className="@container mx-auto w-full max-w-[1400px] space-y-8 px-4 py-6 sm:px-6 md:space-y-10 md:py-8 lg:px-8 [&_[id]]:scroll-mt-20">
+        <div className="@container mx-auto w-full max-w-[1400px] animate-page-in space-y-8 px-4 py-6 sm:px-6 md:space-y-10 md:py-8 lg:px-8 motion-reduce:animate-none [&_[id]]:scroll-mt-20">
           {/* Side by side only when the content column (not the viewport) has room for the title, nav and status. */}
           <div className="flex flex-col gap-4 @4xl:flex-row @4xl:items-end @4xl:justify-between @4xl:gap-6">
             <div className="min-w-0">
@@ -60,14 +61,14 @@ export default function StatsPage() {
             <div className="flex min-w-0 flex-col gap-2 @4xl:shrink-0 @4xl:flex-row @4xl:items-center @4xl:gap-4">
               <nav
                 aria-label="Jump to section"
-                className="-mx-4 overflow-x-auto px-1 py-1 [scrollbar-width:none] sm:-mx-6 sm:px-3 md:mx-0 md:px-0 @4xl:shrink-0 [&::-webkit-scrollbar]:hidden"
+                className="scroll-row -mx-4 px-1 py-1 sm:-mx-6 sm:px-3 md:mx-0 md:px-0 @4xl:shrink-0"
               >
                 <div className="flex w-max items-center">
                   {JUMP_LINKS.map((link) => (
                     <a
                       key={link.href}
                       href={link.href}
-                      className="inline-flex h-11 shrink-0 items-center rounded-full px-3 text-xs font-medium whitespace-nowrap text-muted-foreground transition-[color,background-color,transform] duration-200 ease-(--ease-out-smooth) hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none active:scale-[0.98] motion-reduce:transition-none md:h-9"
+                      className="pressable inline-flex h-11 shrink-0 items-center rounded-full px-3 text-xs font-medium whitespace-nowrap text-muted-foreground transition-[color,background-color,scale] duration-200 ease-(--ease-out-smooth) hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none active:bg-muted motion-reduce:transition-none md:h-9"
                     >
                       {link.label}
                     </a>

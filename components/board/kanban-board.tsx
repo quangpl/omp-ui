@@ -120,7 +120,7 @@ export interface KanbanBoardProps {
   reorderTask: (taskId: string, position: number) => Promise<void>;
   /** Inline composer submit (desktop To do column). Resolves true when the card was created. */
   onQuickCreate: QuickCreate;
-  /** Opens the full "New card" form (mobile FAB). */
+  /** Opens the full "New task" form (mobile FAB). */
   onAdd: () => void;
   mobileColumn: TaskStatus;
   onMobileColumnChange: (status: TaskStatus) => void;

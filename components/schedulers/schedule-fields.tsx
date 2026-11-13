@@ -144,6 +144,19 @@ const FIELD = "w-full data-[size=default]:h-11 md:data-[size=default]:h-9";
 const INPUT = "h-11 md:h-9";
 
 /**
+ * `className` for a scheduler's `NewTaskForm` (dialog layout). On phones its action row (the
+ * form's last child: Cancel and/or the submit button) becomes a frosted bar pinned to the bottom
+ * edge above the home indicator, so the submit stays in reach below the long schedule section.
+ */
+export const STICKY_FORM_ACTIONS = cn(
+  "max-sm:[&>div:last-child]:sticky max-sm:[&>div:last-child]:bottom-0 max-sm:[&>div:last-child]:z-10",
+  "max-sm:[&>div:last-child]:-mx-4 max-sm:[&>div:last-child]:flex-row max-sm:[&>div:last-child>button:last-child]:flex-1",
+  "max-sm:[&>div:last-child]:border-t max-sm:[&>div:last-child]:bg-background/85 max-sm:[&>div:last-child]:backdrop-blur-lg",
+  "max-sm:[&>div:last-child]:glass-edge max-sm:[&>div:last-child]:px-4 max-sm:[&>div:last-child]:pt-3",
+  "max-sm:[&>div:last-child]:pb-[calc(0.75rem+env(safe-area-inset-bottom))]",
+);
+
+/**
  * Number input that tolerates transient invalid text (empty while retyping): only valid values
  * reach `onCommit`, and leaving the field restores the last committed one.
  */
@@ -423,6 +436,7 @@ export function ScheduleFields({
           id={`${id}-enabled`}
           checked={value.enabled}
           disabled={disabled}
+          className="after:-inset-y-3.5 md:after:-inset-y-2"
           onCheckedChange={(enabled) => set({ enabled })}
         />
       </div>
@@ -484,7 +498,7 @@ function SchedulePreview({ value }: { value: ScheduleValue }) {
         {preview.runs.map((run, index) => (
           <li key={run.iso} className="flex flex-wrap gap-x-2 tabular-nums">
             <span className="w-12 shrink-0 text-xs leading-5">{index === 0 ? "Next" : "Then"}</span>
-            <span className="text-foreground">{run.label}</span>
+            <span className="font-mono text-[0.8125rem] text-foreground">{run.label}</span>
             <span className="text-xs leading-5">{formatRelative(run.iso, now)}</span>
           </li>
         ))}

@@ -141,7 +141,11 @@ export function TaskDetail(props: TaskDetailProps) {
           <DrawerTitle className="sr-only">{title}</DrawerTitle>
           <DrawerDescription className="sr-only">Card details, feedback and agent log</DrawerDescription>
           <DrawerClose asChild>
-            <Button variant="ghost" size="icon" className="absolute top-2.5 right-2 z-20 size-11 rounded-full">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="absolute top-2.5 right-2 z-20 size-11 rounded-full text-muted-foreground pressable-icon hover:text-foreground"
+            >
               <X />
               <span className="sr-only">Close</span>
             </Button>
@@ -387,7 +391,7 @@ function TaskDetailBody({
           )}
         </div>
         <div className="flex flex-col gap-5 px-4 py-5 md:px-5">
-          <Skeleton className="h-20 w-full rounded-xl" />
+          <Skeleton className="h-20 w-full" />
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-16 w-2/3 self-end" />
@@ -529,7 +533,7 @@ function TaskDetailBody({
     (latest, run) => (!latest || run.startedAt > latest.startedAt ? run : latest),
     null,
   );
-  const todos = todoProgress(task.todos);
+  const todos = todoProgress(task.todos, task.openCommentCount);
 
   const moreMenu = (
     <DropdownMenu>
@@ -537,7 +541,7 @@ function TaskDetailBody({
         <Button
           variant={isMobile ? "outline" : "ghost"}
           size="icon"
-          className={cn("shrink-0", isMobile ? "size-12" : "size-9")}
+          className={cn("shrink-0", isMobile ? "size-12 pressable-icon" : "size-9 pressable-icon")}
           aria-label="More card actions"
         >
           <Ellipsis />
@@ -578,7 +582,10 @@ function TaskDetailBody({
               <TaskProgressIcon task={task} className="size-3.5" />
               {STATUS_LABELS[task.status]}
               {todos && (
-                <span className="font-normal text-muted-foreground tabular-nums">
+                <span
+                  className="font-normal text-muted-foreground tabular-nums"
+                  title={todos.feedback > 0 ? `Includes ${todos.feedback} open feedback` : undefined}
+                >
                   · {todos.done}/{todos.total}
                 </span>
               )}
@@ -592,7 +599,7 @@ function TaskDetailBody({
             {task.pushedAt && (
               <span
                 title={`Pushed to main ${formatDateTime(task.pushedAt)}`}
-                className="inline-flex h-6 items-center gap-1 rounded-full bg-emerald-500/10 px-2 text-xs font-medium text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-300"
+                className="inline-flex h-6 items-center gap-1 rounded-full bg-success/10 px-2 text-xs font-medium text-success"
               >
                 <Upload className="size-3" />
                 Pushed
@@ -624,7 +631,7 @@ function TaskDetailBody({
                 <TooltipTrigger asChild>
                   <Button
                     variant={index === 0 && action.id !== "stop" ? "default" : "outline"}
-                    className="h-9 px-3.5 transition-transform active:scale-[0.97]"
+                    className="h-9 px-3.5 pressable"
                     disabled={agentBusy}
                     onClick={() => void runQuickAction(action.id)}
                   >
@@ -642,8 +649,8 @@ function TaskDetailBody({
         )}
       </header>
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
-        <div className="flex min-w-0 flex-col gap-6 px-4 pt-4 pb-6 md:px-5 md:pt-5">
+      <div ref={scrollRef} className="scrollbar-subtle min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
+        <div className="flex min-w-0 animate-fade-in-soft flex-col gap-6 px-4 pt-4 pb-6 md:px-5 md:pt-5">
           {task.agentState === "error" && (
             <Alert variant="destructive">
               <TriangleAlert />
@@ -683,7 +690,7 @@ function TaskDetailBody({
             />
           )}
 
-          <dl className="grid grid-cols-1 gap-x-6 gap-y-2 rounded-xl border bg-muted/30 px-3.5 py-3 text-sm md:grid-cols-2 md:gap-y-3 md:p-4">
+          <dl className="grid grid-cols-1 divide-y divide-border/70 border-y border-border/70 text-sm md:grid-cols-2 md:gap-x-6 md:gap-y-3 md:divide-y-0 md:py-3.5">
             <MetaItem label="Created">
               <time dateTime={task.createdAt} title={formatDateTime(task.createdAt)}>
                 {formatRelative(task.createdAt)}
@@ -696,7 +703,7 @@ function TaskDetailBody({
             </MetaItem>
             <MetaItem label="Agent runs">
               {latestRun ? (
-                <span className="tabular-nums">
+                <span className="font-mono tabular-nums">
                   {runs.length}
                   <span className="text-muted-foreground" title={formatDateTime(latestRun.startedAt)}>
                     {" "}
@@ -743,8 +750,8 @@ function TaskDetailBody({
         </div>
 
         <Tabs value={tab} onValueChange={(value) => setTab(value as DetailTab)} className="gap-0">
-          <div className="sticky top-0 z-10 border-y bg-popover/95 backdrop-blur supports-backdrop-filter:bg-popover/85">
-            <div className="overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="glass-edge sticky top-0 z-10 border-y bg-popover/95 backdrop-blur supports-backdrop-filter:bg-popover/85">
+            <div className="scroll-row">
               <TabsList
                 variant="line"
                 className="w-max min-w-full justify-start gap-1 px-2 group-data-horizontal/tabs:h-12 md:px-3 md:group-data-horizontal/tabs:h-11"
@@ -758,10 +765,10 @@ function TaskDetailBody({
                   <Terminal />
                   Agent log
                   {active ? (
-                    <span
-                      aria-label="Agent active"
-                      className="size-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse"
-                    />
+                    <span aria-label="Agent active" className="relative flex size-1.5">
+                      <span aria-hidden className="absolute inset-0 rounded-full bg-primary animate-breathe" />
+                      <span className="relative size-1.5 rounded-full bg-primary" />
+                    </span>
                   ) : (
                     runs.length > 0 && <TabCount>{runs.length}</TabCount>
                   )}
@@ -808,11 +815,11 @@ function TaskDetailBody({
           </TabsContent>
         </Tabs>
 
-        <footer className="flex flex-wrap items-center justify-between gap-3 border-t bg-muted/20 px-4 py-4 md:px-5">
+        <footer className="flex flex-wrap items-center justify-between gap-3 border-t px-4 pt-5 pb-6 md:px-5 md:py-4">
           <p className="min-w-0 flex-1 text-xs text-muted-foreground">
             Deletes the card, its feedback and agent logs.
           </p>
-          <Button variant="destructive" className="h-11 max-md:w-full md:h-8" onClick={() => setDeleteOpen(true)}>
+          <Button variant="destructive" className="h-11 pressable max-md:w-full md:h-8" onClick={() => setDeleteOpen(true)}>
             <Trash2 />
             Delete card
           </Button>
@@ -826,13 +833,13 @@ function TaskDetailBody({
       </div>
 
       {isMobile && (
-        <div className="flex shrink-0 items-center gap-2 border-t bg-popover/95 px-3 pt-2.5 pb-[calc(0.625rem+env(safe-area-inset-bottom))] backdrop-blur supports-backdrop-filter:bg-popover/85">
+        <div className="glass-edge flex shrink-0 items-center gap-2 border-t bg-popover/95 px-3 pt-2.5 pb-[calc(0.625rem+env(safe-area-inset-bottom))] backdrop-blur supports-backdrop-filter:bg-popover/85">
           {quickActions.map((action, index) =>
             index === 0 ? (
               <Button
                 key={action.id}
                 variant={action.id === "stop" ? "outline" : "default"}
-                className="h-12 min-w-0 flex-1 text-[15px] transition-transform active:scale-[0.98]"
+                className="h-12 min-w-0 flex-1 text-[15px] pressable"
                 disabled={agentBusy}
                 onClick={() => void runQuickAction(action.id)}
               >
@@ -846,7 +853,7 @@ function TaskDetailBody({
                 size="icon"
                 aria-label={action.label}
                 title={action.hint}
-                className="size-12 shrink-0 transition-transform active:scale-95"
+                className="size-12 shrink-0 pressable-icon"
                 disabled={agentBusy}
                 onClick={() => void runQuickAction(action.id)}
               >
@@ -867,7 +874,7 @@ const TAB_TRIGGER_CLASS =
 /** Count pill in a tab label. */
 function TabCount({ children }: { children: number }) {
   return (
-    <span className="min-w-5 rounded-full bg-muted px-1.5 py-px text-center text-[11px] font-medium text-muted-foreground tabular-nums">
+    <span className="min-w-5 rounded-full bg-muted px-1.5 py-px text-center font-mono text-[11px] font-medium text-muted-foreground tabular-nums">
       {children}
     </span>
   );
@@ -876,16 +883,16 @@ function TabCount({ children }: { children: number }) {
 /** One label/value row of the card's details grid. */
 function MetaItem({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex min-w-0 items-baseline justify-between gap-3 md:flex-col md:items-start md:justify-start md:gap-0.5">
+    <div className="flex min-w-0 items-baseline justify-between gap-3 py-2.5 md:flex-col md:items-start md:justify-start md:gap-0.5 md:py-0">
       <dt className="shrink-0 text-xs text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 truncate text-right font-medium md:text-left">{children}</dd>
+      <dd className="min-w-0 truncate text-right font-medium tabular-nums md:text-left">{children}</dd>
     </div>
   );
 }
 
 function ThreadSkeleton() {
   return (
-    <div className="flex flex-col gap-4 p-4">
+    <div aria-busy className="flex flex-col gap-4 p-4">
       <Skeleton className="h-14 w-2/3 self-end" />
       <Skeleton className="h-20 w-5/6" />
     </div>
@@ -962,7 +969,7 @@ function QuestionPanel({
         <Button
           type="submit"
           disabled={!body.trim() || busy}
-          className="h-11 shrink-0 md:h-9"
+          className="h-11 shrink-0 pressable md:h-9"
           title="Send answer; the agent continues (Ctrl/⌘+Enter)"
         >
           <ArrowUp />
@@ -1114,7 +1121,7 @@ function DescriptionEditor({
                   event.preventDefault();
                   openAttachment({ ...file, list: linked, index });
                 }}
-                className="inline-flex max-w-full items-center gap-1 rounded-md border bg-background px-1.5 py-0.5 text-xs font-medium hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+                className="inline-flex max-w-full items-center gap-1 rounded-md border bg-background px-1.5 py-0.5 text-xs font-medium pressable hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none max-md:min-h-11 max-md:px-2.5 max-md:text-sm"
               >
                 <KindIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
                 <span className="truncate">{file.name}</span>
@@ -1125,10 +1132,10 @@ function DescriptionEditor({
       )}
       {dirty && (
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" className="h-11 max-md:flex-1 md:h-8" disabled={saving} onClick={() => setDraft(base)}>
+          <Button variant="ghost" className="h-11 pressable max-md:flex-1 md:h-8" disabled={saving} onClick={() => setDraft(base)}>
             Cancel
           </Button>
-          <Button className="h-11 max-md:flex-1 md:h-8" disabled={saving} onClick={() => void save()}>
+          <Button className="h-11 pressable max-md:flex-1 md:h-8" disabled={saving} onClick={() => void save()}>
             {saving ? "Saving…" : "Save"}
           </Button>
         </div>

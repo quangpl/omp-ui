@@ -8,7 +8,6 @@ import {
   Clock,
   Hourglass,
   ListChecks,
-  LoaderCircle,
   MessageSquare,
   MessageSquareDot,
   RotateCw,
@@ -86,6 +85,24 @@ function CardAge({ iso }: { iso: string }) {
 }
 
 /**
+ * Phone cards (the ones with a quick-actions footer): the card dips under the thumb while its body
+ * or question strip is pressed, not its footer buttons. Desktop cards lift on hover instead
+ * (`card-lift`). Lives on the card itself, never on the FLIP layer around it.
+ */
+const PRESS_FEEDBACK =
+  "transition-[border-color,box-shadow,opacity,scale] duration-(--duration-press) ease-(--ease-fluid) has-[>button:active]:scale-[0.98] motion-reduce:transition-none";
+
+/** Live dot for a running agent: a solid dot with a breathing halo (transform/opacity only). */
+function LiveDot() {
+  return (
+    <span aria-hidden className="relative flex size-1.5 shrink-0">
+      <span className="absolute inset-0 animate-breathe rounded-full bg-current" />
+      <span className="relative size-1.5 rounded-full bg-current" />
+    </span>
+  );
+}
+
+/**
  * Small pill describing the agent attached to a card; renders nothing when idle.
  * `queuePosition` (0-based) turns "Queued" into "#N in queue".
  */
@@ -110,10 +127,10 @@ export function AgentStateBadge({
   if (state === "queued" && drafting) {
     return (
       <Badge
-        className={cn("gap-1 bg-violet-500/10 text-violet-700 dark:bg-violet-400/15 dark:text-violet-300", className)}
+        className={cn("gap-1 bg-primary/10 text-primary dark:bg-primary/15", className)}
         title="Writing the title and brief; the agent starts next"
       >
-        <Sparkles className="animate-pulse" />
+        <Sparkles className="animate-pulse motion-reduce:animate-none" />
         Writing card
       </Badge>
     );
@@ -128,13 +145,8 @@ export function AgentStateBadge({
   }
   if (state === "running") {
     return (
-      <Badge
-        className={cn(
-          "gap-1 bg-sky-500/10 text-sky-700 dark:bg-sky-400/15 dark:text-sky-300",
-          className,
-        )}
-      >
-        <LoaderCircle className="animate-spin" />
+      <Badge className={cn("gap-1.5 bg-primary/10 text-primary dark:bg-primary/15", className)}>
+        <LiveDot />
         Working
       </Badge>
     );
@@ -142,7 +154,8 @@ export function AgentStateBadge({
   if (state === "error" && retryAt && isQuotaError(agentError)) {
     return (
       <Badge
-        className={cn("gap-1 bg-blue-500/10 text-blue-700 dark:bg-blue-400/15 dark:text-blue-300", className)}
+        variant="secondary"
+        className={cn("gap-1", className)}
         title={`Quota or usage limit reached — retrying automatically at ${new Date(retryAt).toLocaleTimeString()}`}
       >
         <Timer />
@@ -235,7 +248,7 @@ export const TaskCard = memo(function TaskCard({
     : task.blockedBy
         .map((id) => boardTasks.get(id))
         .filter((blocker): blocker is Task => blocker !== undefined && blocker.status !== "done");
-  const progress = todoProgress(task.todos);
+  const progress = todoProgress(task.todos, task.openCommentCount);
   const showQuickActions = Boolean(quickActions) && !overlay && !placeholder;
   const pinnedSlots = showQuickActions ? pinnedQuickActions : 0;
 
@@ -245,8 +258,8 @@ export const TaskCard = memo(function TaskCard({
       className={cn(
         "group/card relative rounded-lg border bg-card text-card-foreground shadow-xs transition-[border-color,box-shadow,opacity]",
         done && !selected && "bg-card/70",
-        !overlay && !placeholder && "card-lift",
-        overlay && "cursor-grabbing shadow-xl ring-1 ring-foreground/10 rotate-[1.5deg] scale-[1.02]",
+        !overlay && !placeholder && (actions ? PRESS_FEEDBACK : "card-lift"),
+        overlay && "cursor-grabbing shadow-diffuse ring-1 ring-foreground/10 rotate-[1.5deg] scale-[1.02]",
         placeholder && "opacity-40",
         // Outline, not ring: the hover lift (card-lift) replaces box-shadow.
         selected &&
@@ -307,7 +320,7 @@ export const TaskCard = memo(function TaskCard({
             {waitingFor.length > 0 && (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="inline-flex h-5 items-center gap-1 rounded-full bg-violet-500/10 px-1.5 text-[11px] font-medium text-violet-700 dark:bg-violet-400/15 dark:text-violet-300">
+                  <span className="inline-flex h-5 items-center gap-1 rounded-full bg-secondary px-1.5 text-[11px] font-medium text-secondary-foreground">
                     <Hourglass className="size-3" aria-hidden />
                     Waiting for {waitingFor.length}
                     <span className="sr-only">
@@ -350,10 +363,10 @@ export const TaskCard = memo(function TaskCard({
             {progress && (
               <span
                 className={cn(
-                  "inline-flex items-center gap-1 tabular-nums",
-                  progress.done === progress.total && "text-emerald-700 dark:text-emerald-400",
+                  "inline-flex items-center gap-1 font-mono tabular-nums",
+                  progress.done === progress.total && "text-success",
                 )}
-                title={`${progress.done} of ${progress.total} todo items done${progress.current ? ` · Now: ${progress.current}` : ""}`}
+                title={`${progress.done} of ${progress.total - progress.feedback} todo items done${progress.feedback > 0 ? ` · ${progress.feedback} open feedback` : ""}${progress.current ? ` · Now: ${progress.current}` : ""}`}
               >
                 <ListChecks className="size-3.5" aria-hidden />
                 {progress.done}/{progress.total}
@@ -363,7 +376,7 @@ export const TaskCard = memo(function TaskCard({
             )}
             {task.commentCount > 0 && (
               <span
-                className="inline-flex items-center gap-1 tabular-nums"
+                className="inline-flex items-center gap-1 font-mono tabular-nums"
                 title={`${task.commentCount} comments`}
               >
                 <MessageSquare className="size-3.5" aria-hidden />

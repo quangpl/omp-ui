@@ -39,10 +39,13 @@ import type {
 } from "@/lib/db/types";
 import {
   POSITION_STEP,
+  type SchemaSnapshot,
   emptyStatusCounts,
+  logSchemaMigrations,
   newId,
   normalizeAfter,
   normalizeLimit,
+  normalizeRecentRunLimit,
   nowIso,
   parseFolderList,
 } from "@/lib/db/util";
@@ -118,6 +121,7 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_task_started ON runs (task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (status);
+CREATE INDEX IF NOT EXISTS idx_runs_started ON runs (started_at);
 
 CREATE TABLE IF NOT EXISTS run_events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -352,6 +356,7 @@ export class SqliteRepository implements Repository {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
     this.db.exec("PRAGMA busy_timeout = 5000");
+    const before = this.schemaSnapshot();
     this.db.exec(SCHEMA);
     // Migrations for databases created before these columns existed.
     this.addMissingColumns("boards", [
@@ -370,6 +375,28 @@ export class SqliteRepository implements Repository {
     // After the migration: older databases only now have tasks.scheduler_id.
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_scheduler ON tasks (scheduler_id)");
     this.addMissingColumns("comments", [["from_task_id", "TEXT"]]);
+    logSchemaMigrations("sqlite", before, this.schemaSnapshot());
+  }
+
+  /** Current tables (with their columns) and indexes, diffed by `init()` to log migrations. */
+  private schemaSnapshot(): SchemaSnapshot {
+    const columns = new Map<string, Set<string>>();
+    const columnRows = this.db
+      .prepare(
+        `SELECT m.name AS tbl, c.name AS col FROM sqlite_master m, pragma_table_info(m.name) c
+         WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'`,
+      )
+      .all();
+    for (const row of columnRows) {
+      const table = str(row.tbl);
+      let set = columns.get(table);
+      if (!set) columns.set(table, (set = new Set()));
+      set.add(str(row.col));
+    }
+    const indexRows = this.db
+      .prepare("SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'")
+      .all();
+    return { columns, indexes: new Map(indexRows.map((r) => [str(r.name), str(r.tbl_name)])) };
   }
 
   private addMissingColumns(table: string, columns: [name: string, definition: string][]): void {
@@ -685,6 +712,12 @@ export class SqliteRepository implements Repository {
   async listRuns(taskId: string): Promise<Run[]> {
     return this.stmt("SELECT * FROM runs WHERE task_id = ? ORDER BY started_at DESC, rowid DESC")
       .all(taskId)
+      .map(toRun);
+  }
+
+  async listRecentRuns(limit?: number): Promise<Run[]> {
+    return this.stmt("SELECT * FROM runs ORDER BY started_at DESC, rowid DESC LIMIT ?")
+      .all(normalizeRecentRunLimit(limit))
       .map(toRun);
   }
 

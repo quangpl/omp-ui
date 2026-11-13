@@ -1,7 +1,7 @@
 "use client";
 
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { CircleCheckBig, CircleDashed, EllipsisVertical, Inbox, type LucideIcon, PanelRightOpen, Plus } from "lucide-react";
+import { type CSSProperties, type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { EllipsisVertical, LoaderCircle, PanelRightOpen, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -14,20 +14,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { STATUS_LABELS, TASK_STATUSES, type Task, type TaskStatus } from "@/lib/types";
 import type { TasksByStatus } from "@/hooks/use-board";
-import { cardLayoutKey, useCardFlip } from "@/hooks/use-card-flip";
-import { EMPTY_COLUMN_TEXT } from "@/components/board/board-column";
+import { type CardFlip, cardLayoutKey, useCardFlip } from "@/hooks/use-card-flip";
+import { EMPTY_COLUMN_ICON, EMPTY_COLUMN_TEXT } from "@/components/board/board-column";
 import type { BoardMenuActions } from "@/components/board/card-context-menu";
 import { quickActionsFor, runQuickAction, type QuickActionId } from "@/components/board/quick-actions";
 import { TaskCard } from "@/components/board/task-card";
 
 /** Quiet period after the last scroll event before a swipe counts as landed on a column. */
 const SCROLL_SETTLE_MS = 90;
-
-const EMPTY_ICON: Record<TaskStatus, LucideIcon> = {
-  todo: Inbox,
-  in_progress: CircleDashed,
-  done: CircleCheckBig,
-};
 
 const tabId = (status: TaskStatus) => `mobile-column-tab-${status}`;
 const panelId = (status: TaskStatus) => `mobile-column-${status}`;
@@ -59,15 +53,20 @@ function QuickActions({
       <Button
         variant="ghost"
         className={cn(
-          "h-11 flex-1 justify-start gap-2 rounded-none rounded-bl-lg px-3.5 text-[13px] font-medium active:bg-muted",
+          "pressable h-11 flex-1 justify-start gap-2 rounded-none rounded-bl-lg px-3.5 text-[13px] font-medium active:bg-muted",
           primary.id === "stop" && "text-destructive hover:bg-destructive/10 hover:text-destructive",
         )}
         aria-label={primary.label}
+        aria-busy={busy || undefined}
         title={primary.hint}
         disabled={busy}
         onClick={() => void run(primary.id)}
       >
-        <primary.icon className={cn(primary.filled && "fill-current")} />
+        {busy ? (
+          <LoaderCircle aria-hidden className="animate-spin motion-reduce:animate-none" />
+        ) : (
+          <primary.icon className={cn(primary.filled && "fill-current")} />
+        )}
         {primary.label}
       </Button>
       <DropdownMenu>
@@ -75,7 +74,7 @@ function QuickActions({
           <Button
             variant="ghost"
             size="icon"
-            className="h-11 w-12 rounded-none rounded-br-lg border-l text-muted-foreground active:bg-muted"
+            className="pressable h-11 w-12 rounded-none rounded-br-lg border-l text-muted-foreground active:bg-muted"
             aria-label={`More actions for ${task.title}`}
           >
             <EllipsisVertical />
@@ -104,6 +103,48 @@ function QuickActions({
   );
 }
 
+/** One phone card on its FLIP layer; cards new to the board cascade in, moved ones are carried by the FLIP. */
+function MobileCard({
+  task,
+  index,
+  activity,
+  flip,
+  onOpen,
+  actions,
+}: {
+  task: Task;
+  /** Position in the column; staggers the entry animation. */
+  index: number;
+  activity: string | undefined;
+  flip: CardFlip;
+  onOpen: (taskId: string) => void;
+  actions: BoardMenuActions;
+}) {
+  // Same rule as the desktop columns: a card that changed column remounts on its new page and the
+  // FLIP carries it there, so only cards new to the board play the entry cascade.
+  const [animateIn] = useState(() => !flip.wasOnBoard(task.id));
+  return (
+    // FLIP layer (and the entry animation, which also holds `transform`); the card's own markup
+    // stays untouched (and memoized), its press feedback lives on the card itself.
+    <div
+      ref={flip.register(task.id)}
+      className={cn("rounded-lg", animateIn && "animate-card-in")}
+      style={animateIn ? ({ "--stagger": index } as CSSProperties) : undefined}
+    >
+      <TaskCard
+        task={task}
+        activity={activity}
+        onOpen={() => onOpen(task.id)}
+        onAnswer={() => {
+          void actions.revertToTodo(task.id);
+          onOpen(task.id);
+        }}
+        actions={<QuickActions task={task} onOpen={() => onOpen(task.id)} actions={actions} />}
+      />
+    </div>
+  );
+}
+
 /**
  * Phone layout: a sticky segmented column switcher over a horizontally snapping track with one
  * full-width column per page (swipe or tap a segment), and a floating button for new cards.
@@ -128,6 +169,8 @@ export function MobileBoard({
   const trackRef = useRef<HTMLDivElement>(null);
   const tablistRef = useRef<HTMLDivElement>(null);
   const settleTimer = useRef<number | undefined>(undefined);
+  /** Pending rAF that writes the segment highlight's position. */
+  const progressFrame = useRef<number | undefined>(undefined);
   const placedRef = useRef(false);
   const activeIndex = TASK_STATUSES.indexOf(active);
   const activeRef = useRef(active);
@@ -156,17 +199,29 @@ export function MobileBoard({
     track.scrollTo({ left, behavior });
   }, [activeIndex]);
 
-  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
+  useEffect(
+    () => () => {
+      window.clearTimeout(settleTimer.current);
+      if (progressFrame.current !== undefined) cancelAnimationFrame(progressFrame.current);
+      progressFrame.current = undefined;
+    },
+    [],
+  );
 
   const onTrackScroll = () => {
     const track = trackRef.current;
     if (!track) return;
-    const width = Math.max(track.clientWidth, 1);
-    // The segment highlight follows the finger; no React render per frame.
-    tablistRef.current?.style.setProperty("--column-progress", String(track.scrollLeft / width));
+    // The segment highlight follows the finger: one style write per frame, no React render.
+    if (progressFrame.current === undefined) {
+      progressFrame.current = requestAnimationFrame(() => {
+        progressFrame.current = undefined;
+        const width = Math.max(track.clientWidth, 1);
+        tablistRef.current?.style.setProperty("--column-progress", String(track.scrollLeft / width));
+      });
+    }
     window.clearTimeout(settleTimer.current);
     settleTimer.current = window.setTimeout(() => {
-      const landed = TASK_STATUSES[Math.round(track.scrollLeft / width)];
+      const landed = TASK_STATUSES[Math.round(track.scrollLeft / Math.max(track.clientWidth, 1))];
       if (landed && landed !== activeRef.current) onActiveChangeRef.current(landed);
     }, SCROLL_SETTLE_MS);
   };
@@ -192,17 +247,17 @@ export function MobileBoard({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 border-b bg-background/85 px-3 py-2 backdrop-blur-lg supports-backdrop-filter:bg-background/70">
+      <div className="glass-edge shrink-0 border-b bg-background/85 px-4 py-2 backdrop-blur-lg supports-backdrop-filter:bg-background/70">
         <div
           ref={tablistRef}
           role="tablist"
           aria-label="Columns"
           className="relative grid grid-cols-3 rounded-xl bg-muted p-1"
         >
-          {/* Sliding segment; its position is the track's scroll progress (0–2). */}
+          {/* Sliding segment; its position is the track's scroll progress (0–2), written per frame. */}
           <span
             aria-hidden
-            className="absolute inset-y-1 left-1 w-[calc((100%-0.5rem)/3)] translate-x-[calc(var(--column-progress,0)*100%)] rounded-lg bg-background shadow-sm ring-1 ring-border/60 will-change-transform"
+            className="absolute inset-y-1 left-1 w-[calc((100%-0.5rem)/3)] translate-x-[calc(var(--column-progress,0)*100%)] rounded-lg bg-background shadow-xs ring-1 ring-border/60 will-change-transform dark:bg-background/80"
           />
           {TASK_STATUSES.map((status) => {
             const selected = status === active;
@@ -219,7 +274,7 @@ export function MobileBoard({
                 onClick={() => onActiveChange(status)}
                 onKeyDown={onTabKeyDown}
                 className={cn(
-                  "relative z-10 flex h-11 min-w-0 items-center justify-center gap-1.5 rounded-lg px-1.5 text-[13px] font-medium whitespace-nowrap outline-none transition-[color,transform] duration-150 focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.97] motion-reduce:active:scale-100",
+                  "relative z-10 flex h-11 min-w-0 items-center justify-center gap-1.5 rounded-lg px-1.5 text-[13px] font-medium whitespace-nowrap outline-none transition-[color,scale] duration-(--duration-press) ease-(--ease-fluid) focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.97] motion-reduce:transition-none",
                   selected ? "text-foreground" : "text-muted-foreground",
                 )}
               >
@@ -227,8 +282,8 @@ export function MobileBoard({
                 <span className="sr-only">·</span>
                 <span
                   className={cn(
-                    "inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] tabular-nums transition-colors",
-                    selected ? "bg-foreground text-background" : "bg-foreground/8 text-muted-foreground",
+                    "inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1.5 font-mono text-[11px] tabular-nums transition-colors",
+                    selected ? "bg-primary text-primary-foreground" : "bg-foreground/8 text-muted-foreground",
                   )}
                 >
                   {count}
@@ -242,12 +297,12 @@ export function MobileBoard({
       <div
         ref={trackRef}
         onScroll={onTrackScroll}
-        className="flex min-h-0 flex-1 snap-x snap-mandatory overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="scroll-row flex min-h-0 flex-1 snap-x snap-mandatory overflow-y-hidden"
       >
         {TASK_STATUSES.map((status) => {
           const selected = status === active;
           const tasks = columns[status];
-          const EmptyIcon = EMPTY_ICON[status];
+          const EmptyIcon = EMPTY_COLUMN_ICON[status];
           return (
             <div
               key={status}
@@ -259,32 +314,28 @@ export function MobileBoard({
               inert={!selected}
               className="h-full w-full shrink-0 snap-start snap-always overflow-x-hidden overflow-y-auto overscroll-y-contain"
             >
-              <div className="flex flex-col gap-3 px-3 pt-3 pb-[calc(6.5rem+env(safe-area-inset-bottom))]">
-                {tasks.map((task) => (
-                  // FLIP layer; the card's own markup stays untouched (and memoized).
-                  <div key={task.id} ref={flip.register(task.id)} className="rounded-lg">
-                    <TaskCard
-                      task={task}
-                      activity={activity[task.id]}
-                      onOpen={() => onOpen(task.id)}
-                      onAnswer={() => {
-                        void actions.revertToTodo(task.id);
-                        onOpen(task.id);
-                      }}
-                      actions={<QuickActions task={task} onOpen={() => onOpen(task.id)} actions={actions} />}
-                    />
-                  </div>
+              <div className="flex flex-col gap-3 px-4 pt-3 pb-[calc(6.5rem+env(safe-area-inset-bottom))]">
+                {tasks.map((task, index) => (
+                  <MobileCard
+                    key={task.id}
+                    task={task}
+                    index={index}
+                    activity={activity[task.id]}
+                    flip={flip}
+                    onOpen={onOpen}
+                    actions={actions}
+                  />
                 ))}
                 {tasks.length === 0 && (
-                  <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed px-6 py-12 text-center">
-                    <span className="flex size-11 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+                  <div className="flex animate-fade-in-soft flex-col items-center gap-3 rounded-2xl border border-dashed px-6 py-12 text-center">
+                    <span className="flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground ring-1 ring-border/60">
                       <EmptyIcon aria-hidden className="size-5" />
                     </span>
                     <p className="max-w-60 text-sm text-pretty text-muted-foreground">{EMPTY_COLUMN_TEXT[status]}</p>
                     {status === "todo" && (
-                      <Button variant="outline" className="h-11 px-4" onClick={onAdd}>
+                      <Button variant="outline" className="pressable h-11 px-4" onClick={onAdd}>
                         <Plus />
-                        Add a card
+                        Add a task
                       </Button>
                     )}
                   </div>
@@ -300,8 +351,8 @@ export function MobileBoard({
       <Button
         size="icon"
         onClick={onAdd}
-        aria-label="New card"
-        className="fixed right-[calc(1rem+env(safe-area-inset-right))] bottom-[calc(1.25rem+env(safe-area-inset-bottom))] z-30 size-14 rounded-2xl shadow-lg shadow-primary/25 transition-transform duration-150 active:scale-95 motion-reduce:active:scale-100 [&_svg:not([class*='size-'])]:size-6"
+        aria-label="New task"
+        className="pressable fixed right-[calc(1rem+env(safe-area-inset-right))] bottom-[calc(1.25rem+env(safe-area-inset-bottom))] z-30 size-14 rounded-full shadow-diffuse [&_svg:not([class*='size-'])]:size-6"
       >
         <Plus />
       </Button>
@@ -313,28 +364,47 @@ export function MobileBoard({
 export function MobileBoardSkeleton() {
   return (
     <div className="flex min-h-0 flex-1 flex-col md:hidden">
-      <div className="shrink-0 border-b px-3 py-2">
-        <div className="grid grid-cols-3 gap-1 rounded-xl bg-muted p-1">
+      <div className="shrink-0 border-b px-4 py-2">
+        <div className="relative grid grid-cols-3 rounded-xl bg-muted p-1">
+          <span
+            aria-hidden
+            className="absolute inset-y-1 left-1 w-[calc((100%-0.5rem)/3)] rounded-lg bg-background shadow-xs ring-1 ring-border/60 dark:bg-background/80"
+          />
           {TASK_STATUSES.map((status) => (
-            <div key={status} className="flex h-11 items-center justify-center gap-1.5 text-[13px] font-medium text-muted-foreground">
+            <div
+              key={status}
+              className="relative flex h-11 items-center justify-center gap-1.5 text-[13px] font-medium text-muted-foreground"
+            >
               {STATUS_LABELS[status]}
+              <span className="h-5 w-5 rounded-full bg-foreground/8" />
             </div>
           ))}
         </div>
       </div>
-      <div className="flex flex-col gap-3 px-3 pt-3">
+      <div className="flex flex-col gap-3 px-4 pt-3">
         {[2, 1, 2].map((lines, index) => (
           <div key={index} className="rounded-lg border bg-card shadow-xs">
-            <div className="flex flex-col gap-2 p-3.5">
-              <Skeleton className="h-4 w-11/12" />
-              {lines > 1 && <Skeleton className="h-4 w-1/2" />}
+            <div className="flex flex-col gap-2 px-3.5 pt-3 pb-2.5">
+              <div className="flex items-start gap-2">
+                <Skeleton className="size-4 shrink-0 rounded-full" />
+                <div className="flex flex-1 flex-col gap-2">
+                  <Skeleton className="h-4 w-11/12" />
+                  {lines > 1 && <Skeleton className="h-4 w-1/2" />}
+                </div>
+              </div>
               <div className="mt-1 flex items-center gap-2">
                 <Skeleton className="h-5 w-16 rounded-full" />
                 <Skeleton className="ml-auto h-3 w-6" />
               </div>
             </div>
-            <div className="flex h-11 items-center border-t px-3.5">
-              <Skeleton className="h-3.5 w-14" />
+            <div className="flex h-11 items-center border-t">
+              <div className="flex flex-1 items-center gap-2 px-3.5">
+                <Skeleton className="size-4 rounded-sm" />
+                <Skeleton className="h-3.5 w-14" />
+              </div>
+              <div className="flex h-full w-12 items-center justify-center border-l">
+                <Skeleton className="h-4 w-1" />
+              </div>
             </div>
           </div>
         ))}

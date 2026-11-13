@@ -1,7 +1,7 @@
 "use client";
 
 import { type CSSProperties, useRef, useState } from "react";
-import { LoaderCircle, Play, Square } from "lucide-react";
+import { CircleCheckBig, CircleDashed, Inbox, LoaderCircle, type LucideIcon, Play, Square } from "lucide-react";
 import { useDndContext, useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -28,14 +28,21 @@ export const COLUMN_DROPPABLE_PREFIX = "column:";
 
 const STATUS_DOT: Record<TaskStatus, string> = {
   todo: "bg-muted-foreground/50",
-  in_progress: "bg-sky-500",
-  done: "bg-emerald-500",
+  in_progress: "bg-primary",
+  done: "bg-success",
 };
 
 export const EMPTY_COLUMN_TEXT: Record<TaskStatus, string> = {
   todo: "No cards yet. Add one below — an agent picks it up.",
   in_progress: "Nothing in progress. Start a card to run its agent.",
   done: "Finished cards land here.",
+};
+
+/** Icon of a column's empty state (desktop columns and phone pages). */
+export const EMPTY_COLUMN_ICON: Record<TaskStatus, LucideIcon> = {
+  todo: Inbox,
+  in_progress: CircleDashed,
+  done: CircleCheckBig,
 };
 
 export function StatusDot({ status, className }: { status: TaskStatus; className?: string }) {
@@ -229,7 +236,7 @@ export function BoardColumn({
   selected: ReadonlySet<string>;
   /** ⌘/Ctrl/⇧+click on a card. */
   onToggleSelect: (taskId: string) => void;
-  /** When set, shows the inline "Add a card" composer at the bottom. */
+  /** When set, shows the inline "Add a task" composer at the bottom. */
   onCreate?: QuickCreate;
   /** Board-wide card motion (see useCardFlip); each card registers its animated layer. */
   flip: CardFlip;
@@ -268,7 +275,7 @@ export function BoardColumn({
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border/50 pr-1.5 pl-3.5">
         <StatusDot status={status} />
         <h2 className="truncate text-[0.8125rem] font-semibold tracking-tight">{STATUS_LABELS[status]}</h2>
-        <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-background px-1.5 text-[11px] font-medium text-muted-foreground tabular-nums ring-1 ring-border">
+        <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-background px-1.5 font-mono text-[11px] font-medium text-muted-foreground tabular-nums ring-1 ring-border">
           {tasks.length}
         </span>
         {headerAction && headerAction.targets.length > 0 && (
@@ -324,23 +331,7 @@ export function BoardColumn({
                 flip={flip}
               />
             ))}
-            {tasks.length === 0 &&
-              (status === "todo" ? (
-                <button
-                  type="button"
-                  onClick={() => openNewCard()}
-                  className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent/40 hover:text-foreground"
-                >
-                  <span>{EMPTY_COLUMN_TEXT.todo}</span>
-                  <span className="inline-flex items-center gap-1.5 font-medium">
-                    Add a card <Kbd>N</Kbd>
-                  </span>
-                </button>
-              ) : (
-                <p className="rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
-                  {EMPTY_COLUMN_TEXT[status]}
-                </p>
-              ))}
+            {tasks.length === 0 && <EmptyColumn status={status} onAdd={() => openNewCard()} />}
           </div>
         </SortableContext>
       </div>
@@ -360,5 +351,36 @@ export function BoardColumn({
         </div>
       )}
     </section>
+  );
+}
+
+/** Composed empty state: the column's icon, one line, and (To do) the way to add a card. */
+function EmptyColumn({ status, onAdd }: { status: TaskStatus; onAdd: () => void }) {
+  const Icon = EMPTY_COLUMN_ICON[status];
+  const icon = (
+    <span className="mb-1 flex size-9 items-center justify-center rounded-xl bg-background text-muted-foreground ring-1 ring-border/70 transition-colors group-hover/empty:text-primary">
+      <Icon aria-hidden className="size-4" />
+    </span>
+  );
+  if (status !== "todo") {
+    return (
+      <div className="flex animate-fade-in-soft flex-col items-center gap-1.5 rounded-lg border border-dashed px-3 py-7 text-center text-xs text-pretty text-muted-foreground">
+        {icon}
+        <p>{EMPTY_COLUMN_TEXT[status]}</p>
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onAdd}
+      className="group/empty pressable flex animate-fade-in-soft flex-col items-center gap-1.5 rounded-lg border border-dashed px-3 py-7 text-center text-xs text-pretty text-muted-foreground outline-none hover:border-primary/40 hover:bg-primary/5 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+    >
+      {icon}
+      <span>{EMPTY_COLUMN_TEXT.todo}</span>
+      <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+        Add a task <Kbd>N</Kbd>
+      </span>
+    </button>
   );
 }

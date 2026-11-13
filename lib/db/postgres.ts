@@ -31,10 +31,13 @@ import type {
 } from "@/lib/db/types";
 import {
   POSITION_STEP,
+  type SchemaSnapshot,
   emptyStatusCounts,
+  logSchemaMigrations,
   newId,
   normalizeAfter,
   normalizeLimit,
+  normalizeRecentRunLimit,
   nowIso,
   parseFolderList,
 } from "@/lib/db/util";
@@ -126,6 +129,7 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_task_started ON runs (task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (status);
+CREATE INDEX IF NOT EXISTS idx_runs_started ON runs (started_at);
 
 CREATE TABLE IF NOT EXISTS run_events (
   seq BIGSERIAL PRIMARY KEY,
@@ -445,10 +449,30 @@ export class PostgresRepository implements Repository {
   }
 
   async init(): Promise<void> {
-    await this.transaction(async (client) => {
+    const [before, after] = await this.transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock($1)", [SCHEMA_LOCK_KEY]);
+      const snapshot = await this.schemaSnapshot(client);
       await client.query(SCHEMA);
+      return [snapshot, await this.schemaSnapshot(client)];
     });
+    logSchemaMigrations("postgres", before, after);
+  }
+
+  /** Current schema's tables (with their columns) and indexes, diffed by `init()` to log migrations. */
+  private async schemaSnapshot(client: pg.PoolClient): Promise<SchemaSnapshot> {
+    const columns = new Map<string, Set<string>>();
+    const columnRows = await client.query<{ table_name: string; column_name: string }>(
+      "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = current_schema()",
+    );
+    for (const row of columnRows.rows) {
+      let set = columns.get(row.table_name);
+      if (!set) columns.set(row.table_name, (set = new Set()));
+      set.add(row.column_name);
+    }
+    const indexRows = await client.query<{ indexname: string; tablename: string }>(
+      "SELECT indexname, tablename FROM pg_indexes WHERE schemaname = current_schema()",
+    );
+    return { columns, indexes: new Map(indexRows.rows.map((r) => [r.indexname, r.tablename])) };
   }
 
   async close(): Promise<void> {
@@ -714,6 +738,13 @@ export class PostgresRepository implements Repository {
       "SELECT * FROM runs WHERE task_id = $1 ORDER BY started_at DESC, id DESC",
       [taskId],
     );
+    return res.rows.map(toRun);
+  }
+
+  async listRecentRuns(limit?: number): Promise<Run[]> {
+    const res = await this.query<RunRow>("SELECT * FROM runs ORDER BY started_at DESC, id DESC LIMIT $1", [
+      normalizeRecentRunLimit(limit),
+    ]);
     return res.rows.map(toRun);
   }
 

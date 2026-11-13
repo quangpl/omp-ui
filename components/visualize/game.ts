@@ -99,7 +99,7 @@ export function achievements(dashboard: Dashboard): Achievement[] {
   const { boards, totals, queue, setup } = dashboard;
   const attention = boards.reduce((sum, b) => sum + b.attentionCount, 0);
   return [
-    { id: "first-card", title: "First job", description: "Add a card", unlocked: setup.hasCard },
+    { id: "first-card", title: "First job", description: "Add a task", unlocked: setup.hasCard },
     { id: "first-run", title: "Clocked in", description: "Run an agent on a card", unlocked: setup.hasRun },
     { id: "first-ship", title: "First ship", description: "Get a card to Done", unlocked: totals.done >= 1 },
     { id: "ten-shipped", title: "Ten shipped", description: "10 cards Done", unlocked: totals.done >= 10 },

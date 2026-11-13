@@ -19,12 +19,22 @@ import { cn } from "@/lib/utils";
 /** Resolves true when the card was created (the form then resets). */
 export type CreateFromText = (text: string) => Promise<boolean>;
 
+/** Default footer hint: what happens on create, then the composer keys. */
+const DEFAULT_HINT = (
+  <>
+    An agent writes the title and brief, then starts it in In progress.{" "}
+    <span className="whitespace-nowrap">
+      <Kbd>/</Kbd> skills · <Kbd>@</Kbd> files · <Kbd>Tab</Kbd> completes
+    </span>
+  </>
+);
+
 /**
- * New card from free text: the user writes as much as they like and creates it right away. The
+ * New task from free text: the user writes as much as they like and creates it right away. The
  * card lands in In progress; an omp agent (the card writer) reads the text and the project in
  * the background, writes the title and brief, then the card's agent starts. Nobody waits for it.
  *
- * `layout="page"` fills its flex-column parent (the phone "New card" page): the textarea takes
+ * `layout="page"` fills its flex-column parent (the phone "New task" page): the textarea takes
  * all the free height and scrolls inside, and Create is a full-width bar pinned to the bottom.
  * The page owns Cancel there, so `onCancel` is only rendered in the dialog layout.
  *
@@ -40,7 +50,7 @@ export function NewTaskForm({
   onTextChange,
   className,
   boardId,
-  submitLabel = "Create card",
+  submitLabel = "Create task",
   busyLabel = "Creating…",
   label = "What should the agent do?",
   hint,
@@ -80,9 +90,12 @@ export function NewTaskForm({
   const id = useId();
   const [text, setTextState] = useState(initialText);
   const [busy, setBusy] = useState(false);
+  /** The last submit failed (the caller toasted why); cleared as soon as the text changes. */
+  const [failed, setFailed] = useState(false);
   const composeRef = useRef<HTMLTextAreaElement>(null);
   const setText = (next: string) => {
     setTextState(next);
+    setFailed(false);
     onTextChange?.(next);
   };
   // "/" skills and shortcuts, "@" project files, "skill://" skill names.
@@ -92,9 +105,11 @@ export function NewTaskForm({
     const value = text.trim();
     if (!value || busy || !canSubmit) return;
     setBusy(true);
+    setFailed(false);
     const ok = await onSubmit(value);
     setBusy(false);
-    if (ok && resetOnSubmit) setText("");
+    if (!ok) setFailed(true);
+    else if (resetOnSubmit) setText("");
   };
 
   const submitKeys = (event: KeyboardEvent) => {
@@ -113,6 +128,13 @@ export function NewTaskForm({
   const words = text.trim() ? text.trim().split(/\s+/).length : 0;
   const wordCount = words > 0 && <span className="shrink-0 tabular-nums">{words.toLocaleString()} words</span>;
   const labelNode = <Label htmlFor={`${id}-text`}>{label}</Label>;
+  const errorId = `${id}-error`;
+  // Inline, under the field: the text is kept so the user can retry without retyping.
+  const errorNode = failed && (
+    <p id={errorId} role="alert" className="animate-fade-in-soft text-sm text-destructive md:text-xs">
+      Didn&apos;t go through. Your text is kept, so you can try again.
+    </p>
+  );
   const textarea = (
     // `relative` anchors the word ghost on the textarea; on the page the wrapper takes over the
     // textarea's flex sizing (and its minimum) so the textarea still fills the free height.
@@ -131,6 +153,8 @@ export function NewTaskForm({
             : "max-h-[45dvh] min-h-36 resize-none text-base md:text-sm"
         }
         aria-autocomplete="list"
+        aria-invalid={failed || undefined}
+        aria-describedby={failed ? errorId : undefined}
         aria-expanded={slash.open}
         data-suggesting={slash.suggesting || undefined}
         onChange={(event) => setText(event.target.value)}
@@ -161,19 +185,13 @@ export function NewTaskForm({
           <div className="flex flex-1 flex-col gap-2">
             {labelNode}
             {textarea}
+            {errorNode}
             {slash.suggestion}
             {slash.menu ?? (
               <p className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
                 <span className="flex items-start gap-1.5">
                   <Sparkles className="mt-px size-3.5 shrink-0" aria-hidden />
-                  <span>
-                    {hint ?? (
-                      <>
-                        Lands in In progress; an agent writes the title and brief, then starts. Type <Kbd>/</Kbd> for
-                        skills, <Kbd>@</Kbd> for files; <Kbd>Tab</Kbd> completes words.
-                      </>
-                    )}
-                  </span>
+                  <span>{hint ?? DEFAULT_HINT}</span>
                 </span>
                 {wordCount}
               </p>
@@ -182,7 +200,7 @@ export function NewTaskForm({
           {children}
         </div>
         {/* `--new-card-bottom-inset` lets the page drop the home-indicator gap while the keyboard covers it. */}
-        <div className="px-safe shrink-0 border-t bg-background/85 backdrop-blur-lg supports-backdrop-filter:bg-background/70">
+        <div className="px-safe glass-edge shrink-0 border-t bg-background/85 backdrop-blur-lg supports-backdrop-filter:bg-background/70">
           <div className="mx-auto flex w-full max-w-2xl items-center gap-3 px-4 pt-3 pb-[calc(0.75rem+var(--new-card-bottom-inset,env(safe-area-inset-bottom)))] sm:px-6">
             <p className="hidden text-xs text-muted-foreground md:block">
               <Kbd>Ctrl</Kbd>
@@ -191,7 +209,7 @@ export function NewTaskForm({
             </p>
             <Button
               type="submit"
-              className="h-12 w-full text-[0.95rem] active:scale-[0.98] motion-reduce:transition-none md:ml-auto md:h-10 md:w-auto md:px-5 md:text-sm"
+              className="h-12 w-full text-[0.95rem] pressable md:ml-auto md:h-10 md:w-auto md:px-5 md:text-sm"
               disabled={disabled}
             >
               {submitContent}
@@ -208,20 +226,13 @@ export function NewTaskForm({
       <div className="flex flex-col gap-2">
         {labelNode}
         {textarea}
+        {errorNode}
         {slash.suggestion}
         {slash.menu}
         <p className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
           <span className="flex items-start gap-1.5">
             <Sparkles className="mt-px size-3.5 shrink-0" aria-hidden />
-            <span>
-              {hint ?? (
-                <>
-                  Goes straight to In progress. An agent writes the title and brief from your text and the project,
-                  then starts work. Type <Kbd>/</Kbd> for OMP skills and shortcuts, <Kbd>@</Kbd> to mention project
-                  files. <Kbd>Tab</Kbd> completes words.
-                </>
-              )}
-            </span>
+            <span>{hint ?? DEFAULT_HINT}</span>
           </span>
           {wordCount}
         </p>
@@ -229,11 +240,11 @@ export function NewTaskForm({
       {children}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
         {onCancel && (
-          <Button type="button" variant="ghost" className="h-11 md:h-9 sm:mr-auto" onClick={onCancel}>
+          <Button type="button" variant="ghost" className="h-11 pressable md:h-9 sm:mr-auto" onClick={onCancel}>
             Cancel
           </Button>
         )}
-        <Button type="submit" className="h-11 md:h-9" disabled={disabled}>
+        <Button type="submit" className="h-11 pressable md:h-9" disabled={disabled}>
           {submitContent}
         </Button>
       </div>
@@ -241,7 +252,7 @@ export function NewTaskForm({
   );
 }
 
-/** "New card" form in a centered dialog. Phones use the `/b/[boardId]/new` page instead. */
+/** "New task" form in a centered dialog. Phones use the `/b/[boardId]/new` page instead. */
 export function NewTaskDialog({
   open,
   onOpenChange,
@@ -278,7 +289,7 @@ export function NewTaskDialog({
         }}
       >
         <DialogHeader>
-          <DialogTitle>New card</DialogTitle>
+          <DialogTitle>New task</DialogTitle>
           <DialogDescription>Describe the task. An agent turns it into a card in the background.</DialogDescription>
         </DialogHeader>
         <NewTaskForm
@@ -290,7 +301,7 @@ export function NewTaskDialog({
         <p className="-mt-1 text-xs text-muted-foreground max-md:hidden">
           <Kbd>Ctrl</Kbd>
           <Kbd>↵</Kbd> or <Kbd>⌘</Kbd>
-          <Kbd>↵</Kbd> creates. Press <Kbd>N</Kbd> anywhere for a new card.
+          <Kbd>↵</Kbd> creates. Press <Kbd>N</Kbd> anywhere for a new task.
         </p>
       </DialogContent>
     </Dialog>

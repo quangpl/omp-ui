@@ -22,6 +22,7 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { publishQueue } from "@/hooks/use-board";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -105,23 +106,23 @@ function QueueRow({
   /** Held until the planner has ordered this card's project. */
   const planning = queued && entry.planning;
   const waiting = entry.waitingFor.length;
-  const iconButton = "size-11 shrink-0 text-muted-foreground md:size-8";
+  const iconButton = "pressable-icon size-11 shrink-0 text-muted-foreground md:size-8";
 
   return (
-    <li className="flex items-center gap-2 py-1.5">
+    <li className="flex min-h-14 items-center gap-2 py-1.5 md:min-h-0">
       <span
         className={cn(
-          "flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-medium tabular-nums",
-          queued ? "bg-muted text-muted-foreground" : "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+          "flex size-6 shrink-0 items-center justify-center rounded-full font-mono text-[11px] font-medium tabular-nums",
+          queued ? "bg-muted text-muted-foreground" : "bg-primary/10 text-primary",
         )}
         aria-hidden
       >
-        {queued ? index + 1 : <LoaderCircleIcon className="size-3.5 animate-spin" />}
+        {queued ? index + 1 : <LoaderCircleIcon className="size-3.5 animate-spin motion-reduce:animate-none" />}
       </span>
       <Link
         href={`/b/${encodeURIComponent(entry.boardId)}?task=${encodeURIComponent(entry.taskId)}`}
         onClick={onNavigate}
-        className="min-w-0 flex-1 rounded-md outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        className="pressable min-w-0 flex-1 rounded-md py-1 outline-none [-webkit-tap-highlight-color:transparent] focus-visible:ring-3 focus-visible:ring-ring/50 md:py-0"
       >
         <span className="block truncate text-sm font-medium" title={entry.title}>
           {entry.title}
@@ -136,7 +137,7 @@ function QueueRow({
           {queued && entry.drafting && <span className="shrink-0 italic">Writing the card…</span>}
           {planning && <span className="shrink-0 italic">Planning…</span>}
           {waiting > 0 && (
-            <span className="inline-flex shrink-0 items-center gap-1 text-violet-700 dark:text-violet-300">
+            <span className="inline-flex shrink-0 items-center gap-1 text-primary">
               <HourglassIcon className="size-3" aria-hidden />
               Waiting for {waiting} card{waiting === 1 ? "" : "s"}
             </span>
@@ -243,7 +244,22 @@ export function QueuePanel({
   };
 
   if (!snapshot) {
-    return <p className="py-6 text-center text-sm text-muted-foreground">Loading queue…</p>;
+    return (
+      <div className="flex flex-col gap-3" role="status" aria-label="Loading queue">
+        <Skeleton className="h-3 w-32" />
+        <ul className="divide-y">
+          {Array.from({ length: 3 }, (_, i) => (
+            <li key={i} className="flex min-h-14 items-center gap-2 py-1.5 md:min-h-0">
+              <Skeleton className="size-6 shrink-0 rounded-full" />
+              <div className="flex min-w-0 flex-1 flex-col gap-1.5 py-1">
+                <Skeleton className="h-3.5 w-3/4" />
+                <Skeleton className="h-3 w-1/3" />
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
   }
 
   const sections: { title: string; entries: QueueEntry[] }[] = [
@@ -261,21 +277,26 @@ export function QueuePanel({
       </p>
       {snapshot.planning.length > 0 && (
         <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground" role="status">
-          <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin" aria-hidden />
+          <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin text-primary motion-reduce:animate-none" aria-hidden />
           <span className="truncate" title={planningProjects}>
             Planning run order for {planningProjects}…
           </span>
         </p>
       )}
       {snapshot.running.length === 0 && snapshot.queued.length === 0 ? (
-        <p className="py-6 text-center text-sm text-muted-foreground">No agents running or queued.</p>
+        <div className="flex flex-col items-center gap-2 py-8 text-center">
+          <span className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
+            <ListOrderedIcon className="size-5" aria-hidden />
+          </span>
+          <p className="text-sm text-muted-foreground">No agents running or queued.</p>
+        </div>
       ) : (
         sections.map(
           ({ title, entries }) =>
             entries.length > 0 && (
               <section key={title} className="min-w-0">
                 <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                  {title} · {entries.length}
+                  {title} · <span className="font-mono tabular-nums">{entries.length}</span>
                 </h3>
                 <ul className="divide-y">
                   {entries.map((entry, i) => (
@@ -310,13 +331,13 @@ export function QueueButton() {
     <Button
       variant="ghost"
       size="icon"
-      className="relative size-11 rounded-full md:size-9"
+      className="pressable-icon relative size-11 rounded-full md:size-9"
       aria-label={count > 0 ? `Agent queue, ${count} active` : "Agent queue"}
       onClick={isMobile ? () => setOpen(true) : undefined}
     >
       <ListOrderedIcon className="size-5 md:size-4" />
       {count > 0 && (
-        <span className="absolute top-1 right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] leading-none font-semibold text-primary-foreground tabular-nums md:top-0 md:right-0">
+        <span className="absolute top-1 right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 font-mono text-[10px] leading-none font-semibold text-primary-foreground tabular-nums md:top-0 md:right-0">
           {count}
         </span>
       )}
@@ -339,7 +360,7 @@ export function QueueButton() {
         <Drawer open={open} onOpenChange={setOpen}>
           <DrawerContent className="data-[vaul-drawer-direction=bottom]:max-h-[85dvh]">
             <DrawerHeader className="text-left">
-              <DrawerTitle className="text-lg">Agent queue</DrawerTitle>
+              <DrawerTitle className="text-lg font-semibold tracking-tight">Agent queue</DrawerTitle>
               <DrawerDescription>Running and queued agents across all projects.</DrawerDescription>
             </DrawerHeader>
             <div className="overflow-y-auto overscroll-contain px-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
@@ -354,8 +375,8 @@ export function QueueButton() {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent align="end" className="max-h-[70dvh] w-96 overflow-y-auto">
-        <div className="text-sm font-medium">Agent queue</div>
+      <PopoverContent align="end" className="scrollbar-subtle max-h-[70dvh] w-96 overflow-y-auto">
+        <div className="text-sm font-semibold tracking-tight">Agent queue</div>
         {panel}
       </PopoverContent>
     </Popover>

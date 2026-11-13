@@ -22,7 +22,7 @@ import { isTypingTarget } from "@/lib/hotkeys";
 import { LAST_BOARD_KEY, newCardHref } from "@/lib/new-card-route";
 import type { BoardWithCounts } from "@/lib/types";
 
-/** What to prefill in the "New card" form. */
+/** What to prefill in the "New task" form. */
 export interface NewCardRequest {
   /** Project to create the card in; defaults to the open board, else the last one used. */
   boardId?: string;
@@ -46,9 +46,9 @@ export function isNewCardShortcut(event: KeyboardEvent): boolean {
 }
 
 /**
- * App-wide "New card": the `N` hotkey and `openNewCard()` from any context menu.
+ * App-wide "New task": the `N` hotkey and `openNewCard()` from any context menu.
  * The open board page registers itself and handles requests for its board; everywhere else a
- * dialog with a project picker creates the card (on phones: the project's "New card" page).
+ * dialog with a project picker creates the card (on phones: the project's "New task" page).
  */
 export function NewCardProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -99,7 +99,7 @@ export function useNewCard(): (request?: NewCardRequest) => void {
   return context.openNewCard;
 }
 
-/** Route "New card" requests for `boardId` (hotkey, menus) to the open board page. */
+/** Route "New task" requests for `boardId` (hotkey, menus) to the open board page. */
 export function useNewCardTarget(boardId: string, handler: NewCardHandler): void {
   const context = useContext(NewCardContext);
   if (!context) throw new Error("useNewCardTarget must be used inside <NewCardProvider>");
@@ -110,8 +110,8 @@ export function useNewCardTarget(boardId: string, handler: NewCardHandler): void
 }
 
 /**
- * "New card" outside a board: same form plus a project picker. Phones skip the dialog and go to
- * the target project's "New card" page, which carries its own picker.
+ * "New task" outside a board: same form plus a project picker. Phones skip the dialog and go to
+ * the target project's "New task" page, which carries its own picker.
  */
 function GlobalNewCardDialog({
   request,

@@ -44,7 +44,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
     title: "Everywhere",
     shortcuts: [
       { label: "Command palette", keys: ["Mod+K", "/"] },
-      { label: "New card", keys: ["N", "C"] },
+      { label: "New task", keys: ["N", "C"] },
       { label: "Keyboard shortcuts (this sheet)", keys: ["?"] },
       { label: "Toggle sidebar", keys: ["Mod+B"] },
     ],
@@ -58,6 +58,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
       { label: "Containers (Docker)", keys: ["G D"] },
       { label: "Terminal", keys: ["G X"] },
       { label: "Stats", keys: ["G T"] },
+      { label: "Logs", keys: ["G L"] },
       { label: "Memory", keys: ["G M"] },
       { label: "Credentials", keys: ["G K"] },
       { label: "Settings", keys: ["G S"] },

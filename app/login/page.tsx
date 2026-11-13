@@ -161,8 +161,8 @@ export default function LoginPage() {
           <ThemeToggle />
         </div>
 
-        <div className="flex flex-1 flex-col justify-center px-4 pt-6 pb-16 sm:px-6 md:items-center md:px-10">
-          <div className="animate-card-in mx-auto w-full max-w-sm">
+        <div className="flex flex-1 flex-col justify-center px-4 pt-6 pb-16 sm:px-6 md:px-12 lg:px-16 xl:px-24">
+          <div className="animate-page-in mx-auto w-full max-w-sm md:mx-0">
             <div className="mb-8 space-y-2">
               <h1 className="text-2xl font-semibold tracking-tight">
                 {isSetup ? "Welcome to AgentMan" : "Sign in to AgentMan"}
@@ -182,7 +182,7 @@ export default function LoginPage() {
                   <Skeleton className="h-4 w-20" />
                   <Skeleton className="h-11 w-full md:h-9" />
                 </div>
-                <Skeleton className="h-11 w-full md:h-10" />
+                <Skeleton className="h-12 w-full md:h-10" />
               </div>
             ) : (
               <form onSubmit={onSubmit} noValidate aria-busy={submitting || undefined} className="space-y-5">
@@ -195,7 +195,7 @@ export default function LoginPage() {
                   readOnly
                   hidden
                 />
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Label htmlFor="password">{isSetup ? "New admin password" : "Password"}</Label>
                   <PasswordInput
                     id="password"
@@ -216,7 +216,7 @@ export default function LoginPage() {
                 </div>
 
                 {isSetup && (
-                  <div className="space-y-2">
+                  <div className="flex flex-col gap-2">
                     <Label htmlFor="confirm">Confirm password</Label>
                     <PasswordInput
                       id="confirm"
@@ -241,7 +241,7 @@ export default function LoginPage() {
 
                 <Button
                   type="submit"
-                  className="h-11 w-full text-base active:scale-[0.98] md:h-10 md:text-sm"
+                  className="pressable h-12 w-full text-base md:h-10 md:text-sm"
                   disabled={submitting}
                 >
                   {submitting && <Loader2Icon className="animate-spin" />}

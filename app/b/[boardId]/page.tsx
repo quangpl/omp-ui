@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { Plus } from "lucide-react";
+import { Plus, TriangleAlert } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { toastCardAdded } from "@/components/board/card-added-toast";
 import { BoardMenu } from "@/components/board/board-menu";
@@ -59,7 +59,7 @@ function BoardScreen() {
   useDocumentTitle(board?.name);
   const git = useGitStatus(boardId, subscribe);
   useTaskCompletionNotifications(boardId, tasks, subscribe);
-  /** "New card" form open. */
+  /** "New task" form open. */
   const [newCard, setNewCard] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deleting, setDeleting] = useState<Task | null>(null);
@@ -106,7 +106,7 @@ function BoardScreen() {
     if (!selectedTaskId) pushedRef.current = false;
   }, [selectedTaskId]);
 
-  // Reopen on the last column picked on this board, unless back from the phone "New card" page:
+  // Reopen on the last column picked on this board, unless back from the phone "New task" page:
   // then show the column the new card landed in. Read after mount (storage is client-only);
   // declared before the deep-link sync so `?task=` wins.
   useEffect(() => {
@@ -150,14 +150,14 @@ function BoardScreen() {
 
   const create = async (text: string) => (await controller.createFromText(text)) !== null;
 
-  // Phones get the full "New card" page (the board stays right behind it in history); desktop
+  // Phones get the full "New task" page (the board stays right behind it in history); desktop
   // the dialog. Whether it's a phone is decided at click time.
   const openNewCard = useCallback(() => {
     if (isMobile) router.push(newCardHref(boardId, { fromBoard: true }));
     else setNewCard(true);
   }, [isMobile, router, boardId]);
 
-  // `N` and every "New card…" menu item land here while this board is open.
+  // `N` and every "New task…" menu item land here while this board is open.
   useNewCardTarget(boardId, openNewCard);
 
   const { createTask, revertToTodo, runAgent, stopAgent, reload } = controller;
@@ -211,13 +211,18 @@ function BoardScreen() {
     return (
       <div className="flex h-dvh flex-col">
         <AppHeader title="Project" backHref="/" />
-        <main className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
-          <p className="text-sm text-muted-foreground">{error ?? "This project couldn't be loaded."}</p>
+        <main className="flex flex-1 animate-page-in flex-col items-center justify-center gap-4 px-6 text-center">
+          <span className="flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground ring-1 ring-border/60">
+            <TriangleAlert aria-hidden className="size-5" />
+          </span>
+          <p className="max-w-80 text-sm text-pretty text-muted-foreground">
+            {error ?? "This project couldn't be loaded."}
+          </p>
           <div className="flex gap-2">
-            <Button variant="outline" className="h-11 md:h-9" onClick={() => void controller.reload()}>
+            <Button variant="outline" className="pressable h-11 md:h-9" onClick={() => void controller.reload()}>
               Try again
             </Button>
-            <Button asChild className="h-11 md:h-9">
+            <Button asChild className="pressable h-11 md:h-9">
               <Link href="/">All projects</Link>
             </Button>
           </div>
@@ -245,15 +250,15 @@ function BoardScreen() {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  className="h-9 gap-1.5 transition-transform active:scale-[0.97] max-md:hidden max-lg:w-9 max-lg:px-0 motion-reduce:active:scale-100"
+                  className="pressable h-9 gap-1.5 max-md:hidden max-lg:w-9 max-lg:px-0"
                   onClick={openNewCard}
                 >
                   <Plus />
-                  <span className="max-lg:sr-only">Add card</span>
+                  <span className="max-lg:sr-only">Add task</span>
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                New card <Kbd>N</Kbd>
+                New task <Kbd>N</Kbd>
               </TooltipContent>
             </Tooltip>
             <BoardMenu
@@ -266,7 +271,10 @@ function BoardScreen() {
           </>
         }
       />
-      <main className="flex min-h-0 flex-1 flex-col">
+      {/* Fades in once the board has loaded. Opacity only: a transform entry (animate-page-in)
+          would make <main> the containing block of its fixed descendants (phone FAB, dnd-kit's
+          DragOverlay) while it runs or fills. */}
+      <main className="flex min-h-0 flex-1 animate-fade-in-soft flex-col">
         <KanbanBoard
           columns={columns}
           activity={controller.activity}
@@ -314,15 +322,23 @@ function BoardSkeleton() {
   return (
     <div aria-busy="true" className="flex h-dvh animate-fade-in-soft flex-col overflow-hidden">
       <span className="sr-only">Loading project…</span>
-      <div className="pt-safe border-b">
-        <div className="flex h-14 items-center gap-3 px-3 sm:px-4">
-          <Skeleton className="size-9 rounded-full" />
-          <div className="flex flex-1 flex-col gap-1.5">
-            <Skeleton className="h-4 w-40" />
-            <Skeleton className="h-3 w-56 max-w-full" />
+      {/* Mirrors AppHeader: title bar, then the metrics strip below lg. */}
+      <div className="pt-safe border-b border-border/70">
+        <div className="flex h-14 items-center gap-1 px-1.5 sm:gap-1.5 sm:px-3 md:px-4">
+          <Skeleton className="size-11 shrink-0 rounded-full md:size-8 md:rounded-lg" />
+          <Skeleton className="size-11 shrink-0 rounded-full md:size-9" />
+          <div className="flex min-w-0 flex-1 flex-col gap-1.5 px-1">
+            <Skeleton className="h-4 w-36 max-w-full" />
+            <Skeleton className="h-3 w-52 max-w-full" />
           </div>
           <Skeleton className="hidden h-7 w-16 rounded-full md:block" />
           <Skeleton className="hidden h-9 w-28 lg:block" />
+          <Skeleton className="size-11 shrink-0 rounded-full md:hidden" />
+        </div>
+        <div className="flex h-9 items-center gap-4 border-t border-border/60 px-3 sm:gap-6 md:px-4 lg:hidden">
+          <Skeleton className="h-3 w-16" />
+          <Skeleton className="h-3 w-14" />
+          <Skeleton className="h-3 w-20" />
         </div>
       </div>
       <BoardBodySkeleton />

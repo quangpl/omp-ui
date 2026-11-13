@@ -254,7 +254,7 @@ function CredentialRow({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-11 md:size-8"
+                className="pressable-icon size-11 md:size-8"
                 aria-label={`Test ${credential.name} now`}
                 disabled={checking}
                 onClick={onTest}
@@ -269,7 +269,7 @@ function CredentialRow({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-11 md:size-8"
+                className="pressable-icon size-11 md:size-8"
                 aria-label={`Edit ${credential.name}`}
                 onClick={onEdit}
               >
@@ -283,7 +283,7 @@ function CredentialRow({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-11 md:size-8"
+                className="pressable-icon size-11 md:size-8"
                 aria-label={`More actions for ${credential.name}`}
               >
                 <EllipsisIcon />
@@ -307,18 +307,30 @@ function CredentialRow({
   );
 }
 
+/** Mirrors `CredentialRow`: stacked on phones (identity, then badges + actions), one line from `sm`. */
 function ListSkeleton() {
   return (
     <ul className="space-y-2" aria-busy="true" aria-label="Loading credentials">
       {[0, 1, 2].map((i) => (
-        <li key={i} className="flex items-center gap-3 rounded-2xl bg-card p-3 ring-1 ring-foreground/10 sm:gap-4 sm:p-4">
-          <Skeleton className="size-10 rounded-xl" />
-          <div className="flex-1 space-y-2">
-            <Skeleton className="h-4 w-40" />
-            <Skeleton className="h-3 w-56 max-w-full" />
+        <li
+          key={i}
+          className="flex flex-col gap-3 rounded-2xl bg-card p-3 ring-1 ring-foreground/10 sm:flex-row sm:items-center sm:gap-4 sm:p-4"
+        >
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <Skeleton className="size-10 shrink-0 rounded-xl" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <Skeleton className="h-4 w-40 max-w-full" />
+              <Skeleton className="h-3 w-56 max-w-full" />
+            </div>
           </div>
-          <Skeleton className="h-6 w-20 rounded-full max-sm:hidden" />
-          <Skeleton className="size-8 max-sm:hidden" />
+          <div className="flex items-center gap-2 max-sm:justify-between">
+            <Skeleton className="h-6 w-20 rounded-full" />
+            <div className="flex gap-0.5">
+              {[0, 1, 2].map((j) => (
+                <Skeleton key={j} className="size-11 rounded-lg md:size-8" />
+              ))}
+            </div>
+          </div>
         </li>
       ))}
     </ul>
@@ -346,7 +358,7 @@ function ErrorPanel({ detail, onRetry }: { detail: string; onRetry: () => Promis
       <div className="flex items-center justify-end border-t bg-muted/30 px-5 py-3 sm:px-8">
         <Button
           variant="outline"
-          className="h-11 gap-1.5 active:scale-[0.98] md:h-8"
+          className="pressable h-11 gap-1.5 md:h-8"
           disabled={retrying}
           onClick={async () => {
             setRetrying(true);
@@ -367,34 +379,50 @@ function EmptyState({ onCreate }: { onCreate: (providerId?: CredentialProviderId
     (p): p is CredentialProvider => Boolean(p),
   );
   return (
-    <section className="animate-card-in mx-auto w-full max-w-3xl rounded-2xl bg-card p-5 text-center ring-1 ring-foreground/10 sm:p-8 md:mt-6">
-      <span className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-primary/10 text-primary [&_svg]:size-6">
-        <KeyRoundIcon />
-      </span>
-      <h2 className="mt-4 text-lg font-semibold tracking-tight">No credentials yet</h2>
-      <p className="mx-auto mt-1 max-w-md text-sm text-pretty text-muted-foreground">
-        Save API keys and tokens for the MCP servers and services your agents use. They are encrypted on the server
-        and checked in the background.
-      </p>
-      <ul className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {popular.map((provider, i) => (
-          <li key={provider.id} className="animate-card-in" style={{ "--stagger": i } as React.CSSProperties}>
-            <button
-              type="button"
-              onClick={() => onCreate(provider.id)}
-              className="flex min-h-11 w-full items-center gap-2.5 rounded-xl p-2.5 text-left text-sm font-medium ring-1 ring-foreground/10 transition-colors outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.98]"
-              aria-label={`Add ${provider.name} credential`}
-            >
-              <ProviderTile provider={provider} size="sm" />
-              <span className="truncate">{provider.name}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
-      <Button variant="outline" className="mt-4 h-11 gap-1.5 md:h-8" onClick={() => onCreate()}>
-        <PlusIcon />
-        Browse all providers
-      </Button>
+    <section
+      aria-labelledby="credentials-empty-title"
+      className="animate-card-in grid gap-6 rounded-2xl bg-card p-5 ring-1 ring-foreground/10 sm:p-8 md:mt-6 md:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] md:gap-10"
+    >
+      <div className="flex flex-col items-start gap-4">
+        <span className="flex size-12 items-center justify-center rounded-2xl bg-primary/10 text-primary [&_svg]:size-6">
+          <KeyRoundIcon />
+        </span>
+        <div className="space-y-1.5">
+          <h2 id="credentials-empty-title" className="text-lg font-semibold tracking-tight">
+            No credentials yet
+          </h2>
+          <p className="max-w-[48ch] text-sm text-pretty text-muted-foreground">
+            Save API keys and tokens for the MCP servers and services your agents use. They are encrypted on the
+            server and checked in the background.
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          className="pressable h-11 w-full gap-1.5 sm:w-auto md:mt-auto md:h-8"
+          onClick={() => onCreate()}
+        >
+          <PlusIcon />
+          Browse all providers
+        </Button>
+      </div>
+      <div className="min-w-0 space-y-2">
+        <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Popular</h3>
+        <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {popular.map((provider, i) => (
+            <li key={provider.id} className="animate-card-in" style={{ "--stagger": i } as React.CSSProperties}>
+              <button
+                type="button"
+                onClick={() => onCreate(provider.id)}
+                className="flex min-h-12 w-full items-center gap-3 rounded-xl p-2.5 text-left text-sm font-medium ring-1 ring-foreground/10 transition-[background-color,box-shadow,scale] duration-150 ease-(--ease-fluid) outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.97] motion-reduce:transition-none"
+                aria-label={`Add ${provider.name} credential`}
+              >
+                <ProviderTile provider={provider} size="sm" />
+                <span className="truncate">{provider.name}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
     </section>
   );
 }

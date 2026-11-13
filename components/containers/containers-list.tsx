@@ -17,7 +17,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { EmptyState, SectionHeader, STATE_STYLES, StateDot } from "@/components/containers/shared";
+import { EmptyState, SectionHeader, STATE_STYLES, StateDot, StatePill } from "@/components/containers/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -34,7 +34,7 @@ import { cn } from "@/lib/utils";
 type Filter = "all" | "running" | "stopped";
 
 /** Icon buttons: 44px touch targets on phones, dense on desktop. */
-const ICON_BUTTON = "size-11 active:scale-[0.96] md:size-8";
+const ICON_BUTTON = "size-11 pressable-icon md:size-8";
 
 /** IPv4 and IPv6 bindings of the same port show once. */
 function publishedPorts(ports: DockerPort[]): DockerPort[] {
@@ -60,7 +60,7 @@ function PortLinks({ ports, className }: { ports: DockerPort[]; className?: stri
           href={`http://${host}:${p.hostPort}`}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex h-9 items-center gap-1 rounded-md bg-muted px-2 font-mono text-xs text-muted-foreground tabular-nums transition-colors outline-none hover:bg-primary/10 hover:text-primary focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.98] md:h-6 md:px-1.5 md:text-[0.7rem]"
+          className="pressable relative inline-flex h-8 items-center gap-1 rounded-md bg-muted px-2 font-mono text-xs text-muted-foreground tabular-nums transition-colors outline-none after:absolute after:inset-x-0 after:-inset-y-1.5 after:content-[''] hover:bg-primary/10 hover:text-primary focus-visible:ring-3 focus-visible:ring-ring/50 md:h-6 md:px-1.5 md:text-[0.7rem] md:after:hidden"
           title={`Open http://${host}:${p.hostPort}`}
         >
           {p.hostPort}
@@ -94,7 +94,7 @@ function ContainerRow({
   const paused = c.state === "paused";
   return (
     <li
-      className="animate-card-in relative flex flex-col gap-2 px-3 py-3 transition-colors hover:bg-muted/40 sm:px-4 @2xl:flex-row @2xl:items-center @2xl:gap-4 @2xl:py-2.5"
+      className="animate-card-in relative flex flex-col gap-2 px-4 py-3 transition-colors hover:bg-muted/40 has-[[data-row-open]:active]:bg-muted/60 @2xl:flex-row @2xl:items-center @2xl:gap-4 @2xl:py-2.5"
       style={{ "--stagger": index } as React.CSSProperties}
     >
       {/* Identity: the whole row opens the logs (stretched button), ports and actions sit above it. */}
@@ -105,6 +105,7 @@ function ContainerRow({
             <button
               type="button"
               onClick={onLogs}
+              data-row-open=""
               className="min-w-0 truncate text-left font-mono text-sm font-medium outline-none after:absolute after:inset-0 after:content-[''] focus-visible:after:rounded-md focus-visible:after:ring-3 focus-visible:after:ring-ring/50 focus-visible:after:ring-inset"
               aria-label={`Show logs of ${c.name}`}
             >
@@ -119,7 +120,7 @@ function ContainerRow({
             {c.health && (
               <Badge
                 variant={c.health === "unhealthy" ? "destructive" : "outline"}
-                className={cn("font-normal", c.health === "healthy" && "text-emerald-700 dark:text-emerald-400")}
+                className={cn("font-normal", c.health === "healthy" && "text-success")}
               >
                 {c.health}
               </Badge>
@@ -132,15 +133,15 @@ function ContainerRow({
         </div>
       </div>
 
-      {/* Phones: status + actions share a footer line; desktop (@2xl): they become row columns. */}
+      {/* Phones: status pill + one primary action + overflow share a footer line; desktop (@2xl): row columns. */}
       <div className="flex items-center gap-2 pl-[1.375rem] @2xl:contents">
-        <div className="min-w-0 flex-1 text-xs @2xl:w-44 @2xl:flex-none">
-          <p className="truncate" title={c.status}>
-            <span className={cn("font-medium", STATE_STYLES[c.state].text)}>{STATE_STYLES[c.state].label}</span>
-            <span className="text-muted-foreground"> · {c.status}</span>
+        <div className="min-w-0 flex-1 space-y-0.5 text-xs @2xl:w-44 @2xl:flex-none">
+          <p className="flex min-w-0 items-center gap-1.5" title={c.status}>
+            <StatePill label={STATE_STYLES[c.state].label} className={STATE_STYLES[c.state].text} />
+            <span className="truncate text-muted-foreground">{c.status}</span>
           </p>
           {stats && running && (
-            <p className="truncate text-muted-foreground tabular-nums">
+            <p className="truncate font-mono text-[0.7rem] text-muted-foreground tabular-nums">
               CPU {stats.cpuPercent.toFixed(1)}% · {stats.memUsage.split(" / ")[0]}
             </p>
           )}
@@ -166,7 +167,7 @@ function ContainerRow({
               <Button
                 variant="ghost"
                 size="icon"
-                className={ICON_BUTTON}
+                className={cn(ICON_BUTTON, "max-md:hidden")}
                 onClick={() => onAction("restart")}
                 aria-label={`Restart ${c.name}`}
                 title="Restart"
@@ -200,7 +201,7 @@ function ContainerRow({
           <Button
             variant="ghost"
             size="icon"
-            className={ICON_BUTTON}
+            className={cn(ICON_BUTTON, "max-md:hidden")}
             onClick={onLogs}
             aria-label={`Logs of ${c.name}`}
             title="Logs"
@@ -219,7 +220,17 @@ function ContainerRow({
                 <MoreHorizontalIcon />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuItem className="md:hidden" onSelect={onLogs}>
+                <ScrollTextIcon />
+                Logs
+              </DropdownMenuItem>
+              {running && (
+                <DropdownMenuItem className="md:hidden" onSelect={() => onAction("restart")}>
+                  <RotateCwIcon />
+                  Restart
+                </DropdownMenuItem>
+              )}
               {running && (
                 <DropdownMenuItem onSelect={() => onAction("pause")}>
                   <PauseIcon />
@@ -266,6 +277,7 @@ export function ContainersList({
   onAction,
   onLogs,
   onRemove,
+  onLaunch,
 }: {
   containers: DockerContainer[];
   stats: Map<string, DockerContainerStats>;
@@ -273,6 +285,8 @@ export function ContainersList({
   onAction: (container: DockerContainer, action: ContainerAction) => void;
   onLogs: (container: DockerContainer) => void;
   onRemove: (container: DockerContainer) => void;
+  /** Empty state's action: jump to the launcher. */
+  onLaunch?: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -325,22 +339,25 @@ export function ContainersList({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Filter by name, image, project or port"
-              className="h-11 pl-9 md:h-9"
+              className="h-11 pl-9 text-base md:h-9 md:text-sm"
               aria-label="Filter containers"
             />
           </div>
-          <div className="flex gap-1 rounded-lg bg-muted p-1" role="group" aria-label="Container state">
+          <div className="scroll-row flex gap-1 rounded-lg bg-muted p-1" role="group" aria-label="Container state">
             {filters.map(([value, label, count]) => (
               <Button
                 key={value}
                 size="sm"
                 variant={filter === value ? "outline" : "ghost"}
-                className={cn("h-9 flex-1 gap-1.5 md:h-7", filter !== value && "text-muted-foreground")}
+                className={cn(
+                  "pressable h-10 flex-1 shrink-0 gap-1.5 md:h-7",
+                  filter !== value && "text-muted-foreground",
+                )}
                 onClick={() => setFilter(value)}
                 aria-pressed={filter === value}
               >
                 {label}
-                <span className="text-xs opacity-70 tabular-nums">{count}</span>
+                <span className="font-mono text-xs opacity-70 tabular-nums">{count}</span>
               </Button>
             ))}
           </div>
@@ -348,11 +365,37 @@ export function ContainersList({
       )}
 
       {containers.length === 0 ? (
-        <EmptyState title="No containers yet" icon={<BoxIcon />}>
+        <EmptyState
+          title="No containers yet"
+          icon={<BoxIcon />}
+          action={
+            onLaunch && (
+              <Button className="pressable h-11 gap-1.5 md:h-8" onClick={onLaunch}>
+                <SearchIcon />
+                Open the launcher
+              </Button>
+            )
+          }
+        >
           Search the launcher above or pick a popular app to start one with defaults.
         </EmptyState>
       ) : visible.length === 0 ? (
-        <EmptyState title="Nothing matches this filter" icon={<SearchIcon />} />
+        <EmptyState
+          title="Nothing matches this filter"
+          icon={<SearchIcon />}
+          action={
+            <Button
+              variant="outline"
+              className="pressable h-11 md:h-8"
+              onClick={() => {
+                setQuery("");
+                setFilter("all");
+              }}
+            >
+              Clear filter
+            </Button>
+          }
+        />
       ) : (
         <div className="overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
           <div

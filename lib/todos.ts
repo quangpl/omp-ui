@@ -157,14 +157,20 @@ export function todoEta(phases: readonly TodoPhase[], now: number): number | nul
 export interface TodoProgress {
   /** Completed items. */
   done: number;
-  /** Items still counted: abandoned ones are dropped from the list. */
+  /** Items still counted (abandoned ones are dropped from the list), plus `feedback`. */
   total: number;
   /** The item the agent is on (`in_progress`), if any. */
   current: string | null;
+  /** Open feedback comments counted as pending items in `total`: only while the list has nothing left, else 0. */
+  feedback: number;
 }
 
-/** Completed / counted items of a todo list; null when the agent never kept one. */
-export function todoProgress(phases: readonly TodoPhase[]): TodoProgress | null {
+/**
+ * Completed / counted items of a todo list; null when the agent never kept one. While the list
+ * has nothing left, each open feedback comment counts as a pending item: the agent is back at
+ * work on it, and the items it adds for it take over (no double counting).
+ */
+export function todoProgress(phases: readonly TodoPhase[], openFeedback = 0): TodoProgress | null {
   let done = 0;
   let total = 0;
   let current: string | null = null;
@@ -176,7 +182,9 @@ export function todoProgress(phases: readonly TodoPhase[]): TodoProgress | null 
       else if (item.status === "in_progress" && current === null) current = item.content;
     }
   }
-  return total > 0 ? { done, total, current } : null;
+  if (total === 0) return null;
+  const feedback = done === total ? Math.max(0, openFeedback) : 0;
+  return { done, total: total + feedback, current, feedback };
 }
 
 /** Ring fill a card shows without a todo list: To do empty, In progress half, Done full. */

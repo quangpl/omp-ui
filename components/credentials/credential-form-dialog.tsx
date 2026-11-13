@@ -113,8 +113,10 @@ export function CredentialFormDialog({
       <DialogContent
         className={cn(
           "flex max-h-[min(92dvh,52rem)] flex-col gap-0 p-0 sm:max-w-xl",
-          // Phones: a full-width sheet docked to the bottom.
+          // Phones: a full-width sheet docked to the bottom that slides up, with a 44px close button.
           "max-sm:top-auto max-sm:bottom-0 max-sm:left-0 max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-b-none",
+          "max-sm:duration-300 max-sm:ease-(--ease-fluid) max-sm:data-open:zoom-in-100 max-sm:data-open:slide-in-from-bottom-10 max-sm:data-closed:zoom-out-100 max-sm:data-closed:slide-out-to-bottom-10",
+          "max-sm:[&>[data-slot=dialog-close]]:size-11",
         )}
       >
         {shown && (
@@ -287,14 +289,14 @@ function CredentialFormBody({
   if (!provider && editing) {
     return (
       <>
-        <DialogHeader className="px-5 pt-5 pr-12 pb-4">
+        <DialogHeader className="px-5 pt-5 pr-12 pb-4 max-sm:pr-14">
           <DialogTitle>Edit {editing.name}</DialogTitle>
           <DialogDescription>
             Its provider ({editing.providerId}) is not known to this version of AgentMan, so it cannot be edited here.
           </DialogDescription>
         </DialogHeader>
-        <DialogFooter className="m-0 border-t px-5 py-3 max-sm:rounded-b-none">
-          <Button variant="outline" className="h-11 md:h-9" onClick={onClose}>
+        <DialogFooter className="m-0 border-t px-5 py-3 max-sm:rounded-b-none max-sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+          <Button variant="outline" className="pressable h-11 md:h-9" onClick={onClose}>
             Close
           </Button>
         </DialogFooter>
@@ -305,13 +307,13 @@ function CredentialFormBody({
   if (!provider) {
     return (
       <>
-        <DialogHeader className="border-b px-5 pt-5 pr-12 pb-4">
+        <DialogHeader className="border-b px-5 pt-5 pr-12 pb-4 max-sm:pr-14">
           <DialogTitle>Add credential</DialogTitle>
           <DialogDescription>Pick the service or MCP server the key is for.</DialogDescription>
         </DialogHeader>
         <ProviderPicker onPick={pickProvider} />
-        <DialogFooter className="m-0 border-t px-5 py-3 max-sm:rounded-b-none">
-          <Button variant="outline" className="h-11 md:h-9" onClick={onClose}>
+        <DialogFooter className="m-0 border-t px-5 py-3 max-sm:rounded-b-none max-sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+          <Button variant="outline" className="pressable h-11 md:h-9" onClick={onClose}>
             Cancel
           </Button>
         </DialogFooter>
@@ -334,13 +336,13 @@ function CredentialFormBody({
 
   return (
     <>
-      <DialogHeader className="border-b px-5 pt-5 pr-12 pb-4">
+      <DialogHeader className="border-b px-5 pt-5 pr-12 pb-4 max-sm:pr-14">
         <div className="flex items-center gap-3">
           {!editing && (
             <Button
               variant="ghost"
               size="icon"
-              className="-ml-2 size-11 shrink-0 md:size-8"
+              className="pressable-icon -ml-2 size-11 shrink-0 md:size-8"
               aria-label="Back to all providers"
               disabled={disabled}
               onClick={() => setProvider(undefined)}
@@ -445,21 +447,21 @@ function CredentialFormBody({
               aria-describedby={describedBy(inputId("expiresAt"), true, Boolean(visibleError("expiresAt")))}
             />
           </FieldShell>
-          <div className="flex min-h-11 items-start gap-3 sm:pt-6">
-            <Switch
-              id={`${formId}-autoCheck`}
-              checked={autoCheck}
-              onCheckedChange={setAutoCheck}
-              disabled={disabled}
-              className="mt-0.5"
-              aria-describedby={`${formId}-autoCheck-help`}
-            />
-            <div className="space-y-1">
+          <div className="flex min-h-12 items-center gap-4 sm:items-start sm:pt-6">
+            <div className="min-w-0 flex-1 space-y-1">
               <Label htmlFor={`${formId}-autoCheck`}>Check in the background</Label>
               <p id={`${formId}-autoCheck-help`} className="text-xs text-muted-foreground">
                 Every 10 min; failures raise a notification.
               </p>
             </div>
+            <Switch
+              id={`${formId}-autoCheck`}
+              checked={autoCheck}
+              onCheckedChange={setAutoCheck}
+              disabled={disabled}
+              className="sm:mt-0.5"
+              aria-describedby={`${formId}-autoCheck-help`}
+            />
           </div>
         </div>
 
@@ -467,7 +469,7 @@ function CredentialFormBody({
           <div className="rounded-xl ring-1 ring-foreground/10">
             <button
               type="button"
-              className="flex min-h-11 w-full items-center gap-2 rounded-xl px-3 text-left text-sm font-medium outline-none hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-9"
+              className="flex min-h-12 w-full items-center gap-2 rounded-xl px-3 text-left text-sm font-medium outline-none transition-colors hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50 active:bg-muted/70 md:min-h-9"
               aria-expanded={showConfig}
               aria-controls={`${formId}-mcp`}
               onClick={() => setShowConfig((v) => !v)}
@@ -488,7 +490,7 @@ function CredentialFormBody({
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="absolute top-1.5 right-1.5 size-11 md:size-8"
+                  className="pressable-icon absolute top-1.5 right-1.5 size-11 md:size-8"
                   aria-label="Copy MCP config"
                   onClick={() =>
                     void copyText(snippet).then(
@@ -539,20 +541,20 @@ function CredentialFormBody({
         )}
       </form>
 
-      <DialogFooter className="m-0 border-t px-5 py-3 max-sm:rounded-b-none">
-        <Button variant="outline" className="h-11 md:h-9" onClick={onClose} disabled={disabled}>
+      <DialogFooter className="m-0 border-t px-5 py-3 max-sm:rounded-b-none max-sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+        <Button variant="outline" className="pressable h-11 md:h-9" onClick={onClose} disabled={disabled}>
           Cancel
         </Button>
         <Button
           variant="outline"
-          className="h-11 gap-1.5 md:h-9"
+          className="pressable h-11 gap-1.5 md:h-9"
           onClick={() => void testConnection()}
           disabled={Boolean(busy)}
         >
           {busy === "test" ? <Loader2Icon className="animate-spin motion-reduce:animate-none" /> : <PlugZapIcon />}
           {busy === "test" ? "Testing…" : "Test connection"}
         </Button>
-        <Button type="submit" form={formId} className="h-11 gap-1.5 md:h-9" disabled={Boolean(busy)}>
+        <Button type="submit" form={formId} className="pressable h-11 gap-1.5 md:h-9" disabled={Boolean(busy)}>
           {busy === "save" && <Loader2Icon className="animate-spin motion-reduce:animate-none" />}
           {busy === "save" ? "Saving…" : editing ? "Save" : "Add credential"}
         </Button>
@@ -585,7 +587,7 @@ function FieldShell({
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-1.5">
+    <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <Label htmlFor={id}>
           {label}
@@ -661,7 +663,7 @@ function CredentialFieldInput({
           <Button
             type="button"
             variant="ghost"
-            className="h-11 shrink-0 md:h-9"
+            className="pressable h-11 shrink-0 md:h-9"
             disabled={disabled}
             aria-pressed={removed}
             onClick={onToggleRemove}
@@ -679,7 +681,7 @@ function CredentialFieldInput({
         </SelectTrigger>
         <SelectContent>
           {(field.options ?? []).map((option) => (
-            <SelectItem key={option.value} value={option.value}>
+            <SelectItem key={option.value} value={option.value} className="min-h-11 md:min-h-8">
               {option.label}
             </SelectItem>
           ))}
@@ -699,7 +701,7 @@ function CredentialFieldInput({
         autoComplete="off"
         autoCapitalize="off"
         spellCheck={false}
-        className={cn("h-11 md:h-9", field.kind === "url" && "font-mono text-sm")}
+        className={cn("h-11 md:h-9", field.kind === "url" && "font-mono")}
         disabled={disabled}
         {...aria}
       />
@@ -780,7 +782,7 @@ function ProviderPicker({ onPick }: { onPick: (provider: CredentialProvider) => 
                   <button
                     type="button"
                     onClick={() => onPick(provider)}
-                    className="flex min-h-14 w-full items-center gap-3 rounded-xl p-2.5 text-left ring-1 ring-foreground/10 transition-colors outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.99]"
+                    className="flex min-h-14 w-full items-center gap-3 rounded-xl p-2.5 text-left ring-1 ring-foreground/10 transition-[background-color,box-shadow,scale] duration-150 ease-(--ease-fluid) outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.98] motion-reduce:transition-none"
                   >
                     <ProviderTile provider={provider} size="sm" />
                     <span className="min-w-0 flex-1">

@@ -378,7 +378,7 @@ export async function buildDashboard(repo: Repository, manager: AgentManager): P
       const task = taskById.get(entry.taskId);
       const board = boardById.get(entry.boardId);
       const fallbackModel = board?.model?.trim() || settings.defaultModel || null;
-      const base = { taskId: entry.taskId, startedAt: null, model: fallbackModel, activity: null, activityAt: null };
+      const base = { taskId: entry.taskId, startedAt: null, model: fallbackModel, activity: null, activityAt: null, context: null };
       if (entry.state !== "running" || !task?.lastRunId) return base;
       const run = runsByTask.get(task.id)?.find((r) => r.id === task.lastRunId) ?? (await repo.getRun(task.lastRunId));
       if (!run || run.status !== "running") return base;
@@ -389,6 +389,7 @@ export async function buildDashboard(repo: Repository, manager: AgentManager): P
         model: digest.model === undefined ? fallbackModel : digest.model,
         activity: digest.activity,
         activityAt: digest.activityAt,
+        context: manager.contextUsage(entry.taskId),
       };
     }),
   );

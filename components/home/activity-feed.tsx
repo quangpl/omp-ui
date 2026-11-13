@@ -2,11 +2,11 @@
 
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { CircleCheckIcon, CircleStopIcon, CircleXIcon, PlusIcon, UploadIcon } from "lucide-react";
+import { CircleCheckIcon, CircleStopIcon, CircleXIcon, HistoryIcon, PlusIcon, UploadIcon } from "lucide-react";
 import { formatDateTime, formatDuration, formatRelative } from "@/components/board/format";
 import type { DashboardActivity, DashboardActivityKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { FOCUS_RING, Panel, SectionTitle, cardHref, useEntrance } from "./shared";
+import { FOCUS_RING, SectionTitle, cardHref, useEntrance } from "./shared";
 
 const KIND: Record<DashboardActivityKind, { verb: string; icon: ReactNode; tone: string }> = {
   created: { verb: "Card created", icon: <PlusIcon />, tone: "text-muted-foreground" },
@@ -21,11 +21,17 @@ export function ActivityFeed({ items, now }: { items: DashboardActivity[]; now: 
   return (
     <section aria-labelledby="home-activity">
       <SectionTitle id="home-activity" title="Recent activity" />
-      <Panel className="px-3 py-2">
+      {/* A timeline reads on negative space alone: no card, just a rule above it. */}
+      <div className="border-t pt-2">
         {items.length === 0 ? (
-          <p className="py-1.5 text-xs text-pretty text-muted-foreground">
-            Cards, agent runs and pushes from the last 30 days show up here.
-          </p>
+          <div className="flex items-center gap-3 py-2">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+              <HistoryIcon className="size-4.5" aria-hidden="true" />
+            </span>
+            <p className="text-xs text-pretty text-muted-foreground">
+              Cards, agent runs and pushes from the last 30 days show up here.
+            </p>
+          </div>
         ) : (
           <ol className="relative flex flex-col">
             {/* Timeline rail behind the icons. */}
@@ -46,14 +52,14 @@ export function ActivityFeed({ items, now }: { items: DashboardActivity[]; now: 
                   <Link
                     href={cardHref({ boardId: item.boardId, id: item.taskId })}
                     className={cn(
-                      "-mx-1 flex min-h-11 items-start gap-2.5 rounded-lg px-1 py-1.5 hover:bg-muted/50 md:min-h-0",
+                      "pressable -mx-1 flex min-h-11 items-start gap-2.5 rounded-lg px-1 py-1.5 hover:bg-muted/50 active:bg-muted/60 md:min-h-0",
                       FOCUS_RING,
                     )}
                   >
                     <span
                       aria-hidden="true"
                       className={cn(
-                        "relative mt-0.5 flex size-[22px] shrink-0 items-center justify-center rounded-full border bg-card [&_svg]:size-3",
+                        "relative mt-0.5 flex size-[22px] shrink-0 items-center justify-center rounded-full border bg-background [&_svg]:size-3",
                         kind.tone,
                       )}
                     >
@@ -92,7 +98,7 @@ export function ActivityFeed({ items, now }: { items: DashboardActivity[]; now: 
             })}
           </ol>
         )}
-      </Panel>
+      </div>
     </section>
   );
 }
