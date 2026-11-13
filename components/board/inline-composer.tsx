@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { useSkillSlash } from "@/components/board/skill-slash-menu";
+import { useComposerAutocomplete } from "@/components/board/composer-autocomplete";
 
 /** Create a card from the composer's text; resolves true when it was created. */
 export type QuickCreate = (text: string) => Promise<boolean>;
@@ -17,16 +17,19 @@ export type QuickCreate = (text: string) => Promise<boolean>;
 export function InlineComposer({
   onSubmit,
   onAdded,
+  boardId,
 }: {
   onSubmit: QuickCreate;
   onAdded?: () => void;
+  /** Project whose files the "@" picker searches. */
+  boardId?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  /** "/" picker for OMP skills and shortcuts. */
-  const slash = useSkillSlash(inputRef, text, setText, open && !busy);
+  /** "/" skills and shortcuts, "@" project files, "skill://" skill names. */
+  const slash = useComposerAutocomplete(inputRef, text, setText, { enabled: open && !busy, boardId });
 
   const close = () => {
     setOpen(false);

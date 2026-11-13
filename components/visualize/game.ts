@@ -1,5 +1,6 @@
 // Pure game layer of the Visualize page: worker identities, crew level and achievements derived
 // from the dashboard, and live agent output turned into "what is this worker doing" lines.
+import { parseToolCall } from "@/lib/run-log";
 import type { Dashboard, RunEventKind } from "@/lib/types";
 
 /** Done cards are worth this much XP each. */
@@ -170,19 +171,24 @@ const TOOL_ACTIVITY: Record<string, Pick<Activity, "icon" | "label">> = {
   browser: { icon: "web", label: "Using the browser" },
   ask_advisor: { icon: "advisor", label: "Asking the advisor" },
   todo: { icon: "plan", label: "Planning steps" },
+  wait: { icon: "delegate", label: "Waiting on helpers" },
+  memory_search: { icon: "search", label: "Recalling memory" },
+  memory_save: { icon: "write", label: "Saving a memory" },
   lsp: { icon: "inspect", label: "Inspecting code" },
 };
 
+/** What a tool call looks like as an activity: icon and verb phrase. */
+export function toolActivityKind(name: string): Pick<Activity, "icon" | "label"> {
+  const known = TOOL_ACTIVITY[name];
+  if (known) return known;
+  if (name.startsWith("board_")) return { icon: "team", label: "Coordinating with the board" };
+  return { icon: "tool", label: `Using ${name}` };
+}
+
 /** The agent log's tool line ("▸ bash: pnpm test") → what the worker is doing. */
 function toolActivity(text: string): Activity {
-  const line = text.replace(/^▸\s*/, "");
-  const colon = line.indexOf(":");
-  const name = (colon === -1 ? line : line.slice(0, colon)).trim() || "tool";
-  const detail = colon === -1 ? undefined : line.slice(colon + 1).trim() || undefined;
-  const known = TOOL_ACTIVITY[name];
-  if (known) return { ...known, detail };
-  if (name.startsWith("board_")) return { icon: "team", label: "Coordinating with the board", detail };
-  return { icon: "tool", label: `Using ${name}`, detail };
+  const { name, detail, intent } = parseToolCall(text);
+  return { ...toolActivityKind(name), detail: intent ?? detail };
 }
 
 /**

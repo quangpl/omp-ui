@@ -4,39 +4,26 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArmchairIcon,
-  BookOpenIcon,
-  BrainIcon,
   Building2Icon,
   ChevronDownIcon,
-  CodeIcon,
   CrownIcon,
   FactoryIcon,
   FlameIcon,
-  GlobeIcon,
   HardHatIcon,
-  InfoIcon,
   LifeBuoyIcon,
-  LightbulbIcon,
   ListChecksIcon,
   LockIcon,
   MedalIcon,
-  MessagesSquareIcon,
-  PencilIcon,
-  PenLineIcon,
   PlayIcon,
   RefreshCwIcon,
   RocketIcon,
-  SearchIcon,
   ShieldCheckIcon,
   SparklesIcon,
   StickyNoteIcon,
-  TerminalIcon,
   TicketIcon,
   TimerIcon,
   TriangleAlertIcon,
   TrophyIcon,
-  UsersIcon,
-  WrenchIcon,
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { Badge } from "@/components/ui/badge";
@@ -47,12 +34,12 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import {
   type AchievementId,
   type Activity,
-  type ActivityIcon,
   achievements,
   crewLevel,
   workerIdentity,
   XP_PER_CARD,
 } from "@/components/visualize/game";
+import { ACTIVITY_ICON } from "@/components/visualize/activity-icons";
 import { type LiveWorker, useLiveFloor } from "@/components/visualize/use-live-floor";
 import { WorkerAvatar, type WorkerMood } from "@/components/visualize/worker-avatar";
 import { useDocumentTitle } from "@/hooks/use-document-title";
@@ -107,24 +94,6 @@ const HELP_REASON: Record<
 > = {
   failed: { label: "Broke down", mood: "error", variant: "destructive" },
   stalled: { label: "On a break", mood: "sleeping", variant: "secondary" },
-};
-
-const ACTIVITY_ICON: Record<ActivityIcon, React.ComponentType<{ className?: string }>> = {
-  terminal: TerminalIcon,
-  read: BookOpenIcon,
-  edit: PencilIcon,
-  search: SearchIcon,
-  delegate: UsersIcon,
-  team: MessagesSquareIcon,
-  web: GlobeIcon,
-  advisor: LightbulbIcon,
-  plan: ListChecksIcon,
-  inspect: CodeIcon,
-  think: BrainIcon,
-  write: PenLineIcon,
-  status: InfoIcon,
-  error: TriangleAlertIcon,
-  tool: WrenchIcon,
 };
 
 const ACHIEVEMENT_ICON: Record<AchievementId, React.ComponentType<{ className?: string }>> = {

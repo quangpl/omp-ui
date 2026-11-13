@@ -222,7 +222,7 @@ function completeSuccessfully(text) {
       assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta },
     });
   }
-  emit({ type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: { command: "npm test" } });
+  emit({ type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: { command: "npm test", intent: "Running the tests" } });
   emit({
     type: "tool_execution_end",
     toolCallId: "call-1",

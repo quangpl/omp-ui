@@ -208,6 +208,7 @@ export function NewCardScreen({ boardId }: { boardId: string }) {
             textRef.current = text;
           }}
           onSubmit={create}
+          boardId={boardId}
         />
       )}
     </div>

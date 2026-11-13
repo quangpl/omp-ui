@@ -125,7 +125,8 @@ export interface Run {
 
 /**
  * `agent` events carry a JSON-encoded `SubagentSnapshot` (full state of one subagent at that
- * point); the latest event per subagent id wins.
+ * point); the latest event per subagent id wins. `tool` events read `▸ name: detail`, plus the
+ * call's intent on a second line when omp reported one apart from the detail.
  */
 export type RunEventKind = "status" | "text" | "thinking" | "tool" | "error" | "agent";
 
@@ -270,6 +271,17 @@ export interface OmpSkill {
   description: string;
   /** Where omp found it, e.g. "native:user" or a plugin name. */
   source: string;
+}
+
+/** One "@" mention candidate from GET /boards/:id/project-files. */
+export interface ProjectFileHit {
+  /** Shown in the picker, relative to its project folder; directories end with "/". */
+  path: string;
+  kind: "file" | "dir";
+  /** Text to put after "@": relative to the board workdir, or absolute for extra folders; directories end with "/". */
+  insert: string;
+  /** Basename of the extra project folder holding the hit; omitted for the workdir. */
+  folder?: string;
 }
 
 /** Server-sent events on GET /api/v1/events. */

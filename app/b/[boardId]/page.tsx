@@ -280,7 +280,7 @@ function BoardScreen() {
         />
       </main>
 
-      <NewTaskDialog open={newCard} onOpenChange={setNewCard} onCreate={create} />
+      <NewTaskDialog open={newCard} onOpenChange={setNewCard} onCreate={create} boardId={boardId} />
 
       <DeleteCardDialog
         title={deleting?.title ?? ""}

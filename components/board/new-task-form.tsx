@@ -13,7 +13,7 @@ import {
 import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { useSkillSlash } from "@/components/board/skill-slash-menu";
+import { useComposerAutocomplete } from "@/components/board/composer-autocomplete";
 import { cn } from "@/lib/utils";
 
 /** Resolves true when the card was created (the form then resets). */
@@ -36,6 +36,7 @@ export function NewTaskForm({
   initialText = "",
   onTextChange,
   className,
+  boardId,
 }: {
   onSubmit: CreateFromText;
   onCancel?: () => void;
@@ -47,6 +48,8 @@ export function NewTaskForm({
   /** Every text change, for callers that keep the draft around. */
   onTextChange?: (text: string) => void;
   className?: string;
+  /** Project whose files the "@" picker searches; without one "@" is plain text. */
+  boardId?: string | null;
 }) {
   const id = useId();
   const [text, setTextState] = useState(initialText);
@@ -56,8 +59,8 @@ export function NewTaskForm({
     setTextState(next);
     onTextChange?.(next);
   };
-  // "/" picker for OMP skills and shortcuts.
-  const slash = useSkillSlash(composeRef, text, setText, !busy);
+  // "/" skills and shortcuts, "@" project files, "skill://" skill names.
+  const slash = useComposerAutocomplete(composeRef, text, setText, { enabled: !busy, boardId });
 
   const create = async () => {
     const value = text.trim();
@@ -98,6 +101,8 @@ export function NewTaskForm({
             "min-h-24 flex-1 resize-none field-sizing-fixed text-base md:text-sm"
           : "max-h-[45dvh] min-h-36 resize-none text-base md:text-sm"
       }
+      aria-autocomplete="list"
+      aria-expanded={slash.open}
       onChange={(event) => setText(event.target.value)}
       onSelect={slash.onSelect}
       onKeyDown={(event) => {
@@ -130,7 +135,7 @@ export function NewTaskForm({
                   <Sparkles className="mt-px size-3.5 shrink-0" aria-hidden />
                   <span>
                     Lands in In progress; an agent writes the title and brief, then starts. Type <Kbd>/</Kbd> for
-                    skills.
+                    skills, <Kbd>@</Kbd> for files.
                   </span>
                 </span>
                 {wordCount}
@@ -171,7 +176,7 @@ export function NewTaskForm({
             <Sparkles className="mt-px size-3.5 shrink-0" aria-hidden />
             <span>
               Goes straight to In progress. An agent writes the title and brief from your text and the project,
-              then starts work. Type <Kbd>/</Kbd> for OMP skills and shortcuts.
+              then starts work. Type <Kbd>/</Kbd> for OMP skills and shortcuts, <Kbd>@</Kbd> to mention project files.
             </span>
           </span>
           {wordCount}
@@ -197,11 +202,14 @@ export function NewTaskDialog({
   onOpenChange,
   projectField,
   onCreate,
+  boardId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   projectField?: ReactNode;
   onCreate: CreateFromText;
+  /** Project whose files the "@" picker searches. */
+  boardId?: string | null;
 }) {
   const submit = async (text: string) => {
     const ok = await onCreate(text);
@@ -211,12 +219,26 @@ export function NewTaskDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">
+      <DialogContent
+        className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl"
+        // Radix sees Escape before the textarea does: with the suggestions open, Escape only
+        // closes them (the textarea's handler), never the dialog and its draft.
+        onEscapeKeyDown={(event) => {
+          if (event.target instanceof HTMLElement && event.target.getAttribute("aria-expanded") === "true") {
+            event.preventDefault();
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle>New card</DialogTitle>
           <DialogDescription>Describe the task. An agent turns it into a card in the background.</DialogDescription>
         </DialogHeader>
-        <NewTaskForm onSubmit={submit} onCancel={() => onOpenChange(false)} projectField={projectField} />
+        <NewTaskForm
+          onSubmit={submit}
+          onCancel={() => onOpenChange(false)}
+          projectField={projectField}
+          boardId={boardId}
+        />
         <p className="-mt-1 text-xs text-muted-foreground max-md:hidden">
           <Kbd>Ctrl</Kbd>
           <Kbd>↵</Kbd> or <Kbd>⌘</Kbd>
