@@ -340,6 +340,7 @@ export function BoardColumn({
         <div className="border-t border-border/60 p-2" onContextMenu={(event) => event.stopPropagation()}>
           <InlineComposer
             onSubmit={onCreate}
+            boardId={menuActions.boardId}
             onAdded={() =>
               requestAnimationFrame(() => {
                 const list = listRef.current;

@@ -154,7 +154,11 @@ test("card lifecycle: edit, feedback, agent run to Done, log, reopen by comment"
   const log = detail.getByRole("tabpanel");
   await expect(log.getByText("Succeeded", { exact: true })).toBeVisible();
   await expect(log.getByText(/^Starting agent in /)).toBeVisible();
-  await expect(log.getByText("bash: npm test")).toBeVisible();
+  // Steps view: a tool call reads as its intent; tapping it reveals the exact command.
+  const toolCall = log.getByTestId("log-action").filter({ hasText: "Running the tests" });
+  await expect(toolCall).toBeVisible();
+  await toolCall.getByText("Running the tests").click();
+  await expect(toolCall.getByText("npm test", { exact: true })).toBeVisible();
   await expect(log.getByText(FAKE_SUCCESS_SUMMARY)).toBeVisible();
   await expect(log.getByText("Agent finished")).toBeVisible();
 

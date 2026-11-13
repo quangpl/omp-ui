@@ -676,7 +676,7 @@ describe("agent flow with the fake omp", () => {
       expect(log.every((e) => e.runId === run.id && e.taskId === task.id)).toBe(true);
       const texts = log.map((e) => `${e.kind}:${e.text}`);
       expect(texts).toContain("status:Prompt sent to agent");
-      expect(texts).toContain("tool:▸ bash: npm test");
+      expect(texts).toContain("tool:▸ bash: npm test\nRunning the tests");
       expect(texts).toContain(`text:${SUCCESS_SUMMARY}`);
       expect(texts.at(-1)).toBe("status:Agent finished");
 

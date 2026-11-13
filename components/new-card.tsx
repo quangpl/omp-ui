@@ -192,6 +192,7 @@ function GlobalNewCardDialog({
         <ProjectField boards={boards} value={boardId} onValueChange={setBoardId} onLeave={onClose} />
       }
       onCreate={create}
+      boardId={boardId || null}
     />
   );
 }

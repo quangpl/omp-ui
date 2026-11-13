@@ -55,6 +55,7 @@ const PUMP_RETRY_MS = 5_000;
 const MAX_EVENT_TEXT = 50_000;
 const MAX_THINKING_TEXT = 2_000;
 const MAX_TOOL_TEXT = 300;
+const MAX_TOOL_INTENT_TEXT = 160;
 const MAX_TOOL_ERROR_TEXT = 1_000;
 /** Live `run.delta` events: at most one per run+kind per window (leading + trailing). */
 const DELTA_THROTTLE_MS = 120;
@@ -1691,7 +1692,11 @@ function describeToolStart(frame: RpcFrame): string {
     asString(args?.path) ??
     (args && Object.keys(args).length > 0 ? JSON.stringify(args) : "");
   const line = oneLineTrim(detail);
-  return truncate(`▸ ${name}${line ? `: ${line}` : ""}`, MAX_TOOL_TEXT);
+  const head = truncate(`▸ ${name}${line ? `: ${line}` : ""}`, MAX_TOOL_TEXT);
+  // The intent rides on a second line (readers that want one line take the first): the log shows
+  // "why" first and keeps the raw command as detail. `task` already folds the intent into its line.
+  const why = intent && name !== "task" ? oneLineTrim(intent) : "";
+  return why && why !== line ? `${head}\n${truncate(why, MAX_TOOL_INTENT_TEXT)}` : head;
 }
 
 function resultText(result: unknown): string {

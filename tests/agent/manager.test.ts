@@ -283,7 +283,8 @@ describe("AgentManager run lifecycle", () => {
     expect(texts("status")).toContain("Prompt sent to agent");
     expect(texts("status").at(-1)).toBe("Agent finished");
     expect(texts("text")).toEqual([SUCCESS_SUMMARY]);
-    expect(texts("tool")).toEqual(["▸ bash: npm test"]);
+    // The call's intent rides on a second line.
+    expect(texts("tool")).toEqual(["▸ bash: npm test\nRunning the tests"]);
     expect(texts("error")).toEqual([]);
 
     const [spawned, ...others] = argvEntries();
