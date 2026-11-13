@@ -65,6 +65,24 @@ export function WorkerAvatar({
   );
 }
 
+/** Painted outline of a worker where nobody stands yet (an open station). Static, `currentColor`. */
+export function WorkerOutline({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 64 64"
+      aria-hidden
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeDasharray="3 3"
+      className={cn("shrink-0", className)}
+    >
+      <rect x="13" y="12" width="38" height="30" rx="10" />
+      <rect x="19" y="44" width="26" height="16" rx="6" />
+    </svg>
+  );
+}
+
 function Face({ mood, glow, blink }: { mood: WorkerMood; glow: string; blink: boolean }) {
   if (mood === "error") {
     return (

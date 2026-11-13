@@ -12,6 +12,7 @@ import type {
   RunStatus,
   Task,
   TaskStatus,
+  TodoPhase,
 } from "@/lib/types";
 import type {
   AppendRunEventInput,
@@ -34,6 +35,7 @@ import {
   nowIso,
   parseFolderList,
 } from "@/lib/db/util";
+import { parseTodoPhases } from "@/lib/todos";
 
 interface SettingDoc {
   _id: string;
@@ -75,6 +77,8 @@ interface TaskDoc {
   /** Missing on documents created before automatic retries. */
   autoRetries?: number;
   retryAt?: string | null;
+  /** Missing on documents created before agent todo lists. */
+  todos?: TodoPhase[];
   createdAt: string;
   updatedAt: string;
 }
@@ -157,6 +161,7 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     pushedAt: d.pushedAt ?? null,
     autoRetries: d.autoRetries ?? 0,
     retryAt: d.retryAt ?? null,
+    todos: parseTodoPhases(d.todos),
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
     commentCount: stats?.total ?? 0,
@@ -226,6 +231,7 @@ const TASK_PATCH_KEYS = [
   "pushedAt",
   "autoRetries",
   "retryAt",
+  "todos",
 ] as const satisfies readonly (keyof UpdateTaskInput)[];
 const RUN_PATCH_KEYS = ["status", "summary", "error", "endedAt"] as const satisfies readonly (keyof UpdateRunInput)[];
 
@@ -453,6 +459,7 @@ export class MongoRepository implements Repository {
       pushedAt: null,
       autoRetries: 0,
       retryAt: null,
+      todos: [],
       createdAt: now,
       updatedAt: now,
     };

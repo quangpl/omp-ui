@@ -265,6 +265,7 @@ export function runRepositoryContract(
           lastRunId: null,
           blockedBy: [],
           createdByTaskId: null,
+          todos: [],
           commentCount: 0,
           openCommentCount: 0,
         });
@@ -294,6 +295,21 @@ export function runRepositoryContract(
         const cleared = await repo.updateTask(child.id, { blockedBy: [] });
         expect(cleared!.blockedBy).toEqual([]);
         expect(await repo.getTask(child.id)).toEqual(cleared);
+      });
+
+      it("round-trips the agent's todo list", async () => {
+        const board = await newBoard();
+        const task = await repo.createTask({ boardId: board.id, title: "Plan" });
+        const todos = [
+          { name: "Build", tasks: [{ content: "Write code", status: "completed" as const }] },
+          { name: "", tasks: [{ content: "Ship", status: "in_progress" as const }] },
+        ];
+
+        const updated = await repo.updateTask(task.id, { todos });
+        expect(updated!.todos).toEqual(todos);
+        expect(await repo.getTask(task.id)).toEqual(updated);
+        expect((await repo.listTasks(board.id))[0]).toEqual(updated);
+        expect((await repo.updateTask(task.id, { todos: [] }))!.todos).toEqual([]);
       });
 
       it("appends to the end of each column by default (step 1024, per board and status)", async () => {

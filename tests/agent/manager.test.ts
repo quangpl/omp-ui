@@ -335,6 +335,30 @@ describe("AgentManager run lifecycle", () => {
     await waitIdleManager(manager);
   });
 
+  it("keeps the agent's latest todo list on the card after the run", async () => {
+    const task = await createTask("Plan the work", "[fake:todos]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    const done = await waitDone(task.id);
+    await waitIdleManager(manager);
+    expect(done.todos).toEqual([
+      {
+        name: "Build",
+        tasks: [
+          { content: "Write the code", status: "completed" },
+          { content: "Add tests", status: "in_progress" },
+        ],
+      },
+      {
+        name: "Ship",
+        tasks: [
+          { content: "Update docs", status: "pending" },
+          { content: "Old idea", status: "abandoned" },
+        ],
+      },
+    ]);
+  });
+
   it("answers the agent's ask_advisor call with the advisor's decision", async () => {
     const calls = [
       { toolName: "ask_advisor", arguments: { question: "Offset or cursor pagination?", options: ["offset", "cursor"] } },

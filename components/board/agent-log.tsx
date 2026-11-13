@@ -42,7 +42,7 @@ import {
 import { RichText } from "@/components/board/rich-text";
 import { RunAgents, SubagentStatusIcon, subagentAnchor } from "@/components/board/run-agents";
 import { ACTIVITY_ICON } from "@/components/visualize/activity-icons";
-import { toolActivityKind } from "@/components/visualize/game";
+import { toolActivityKind } from "@/components/visualize/activity";
 
 const PAGE_SIZE = 500;
 const COLLAPSED_RUN_COUNT = 3;

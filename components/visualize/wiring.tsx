@@ -1,10 +1,10 @@
 "use client";
 
-import { type RefObject, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type RefObject, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import type { LinkKind } from "./factory";
+import type { LinkKind } from "./agent-map";
 
-/** Every wire kind on the schematic: agent-to-agent links plus subagent and system-bus hookups. */
+/** Every wire kind on the map: agent-to-agent links plus subagent and system hookups. */
 export type WireKind = LinkKind | "subagent" | "uses";
 
 /** One wire between two `data-node` endpoints inside the overlay's container. */
@@ -13,23 +13,22 @@ export interface Wire {
   from: string;
   to: string;
   kind: WireKind;
-  /** OKLCH hue for the wire (worker colour); falls back to the kind's colour. */
-  hue?: number;
-  /** Animated flow (active right now). */
+  /** In use right now: drawn at full opacity, older links fade. */
   active?: boolean;
-  /** Accessible / tooltip text, e.g. "Bolt messaged Cog". */
+  /** Accessible / tooltip text, e.g. "Fix login messaged Add tests". */
   label?: string;
 }
 
-/** Colour + dash + legend label per kind; used by the legend and the overlay. Colours are theme
- * tokens so wires read in light and dark mode. */
+/** Colour + dash + legend label per kind; used by the legend and the overlay. One signal accent
+ * (amber) for live agent talk, neutrals for structure, destructive for blockers; dashes tell the
+ * rest apart. Theme tokens, so wires read in light and dark mode. */
 export const WIRE_STYLE: Record<WireKind, { label: string; color: string; dash?: string }> = {
-  message: { label: "Message", color: "var(--color-primary)" },
-  wait: { label: "Waiting on", color: "var(--color-chart-3)" },
-  inspect: { label: "Reading card", color: "var(--color-chart-2)", dash: "0.5 4" },
-  delegate: { label: "Delegated", color: "var(--color-chart-4)" },
+  message: { label: "Message", color: "var(--color-signal)" },
+  wait: { label: "Waiting on", color: "var(--color-signal)", dash: "5 3" },
+  inspect: { label: "Reading card", color: "var(--color-foreground)", dash: "0.5 4" },
+  delegate: { label: "Delegated", color: "var(--color-foreground)" },
   depends: { label: "Blocked by", color: "var(--color-destructive)", dash: "6 4" },
-  subagent: { label: "Subagent", color: "var(--color-chart-1)" },
+  subagent: { label: "Subagent", color: "var(--color-muted-foreground)", dash: "2 2" },
   uses: { label: "Uses system", color: "var(--color-muted-foreground)" },
 };
 
@@ -41,14 +40,6 @@ const strokeWidth = (kind: WireKind) => (kind === "uses" ? 1 : 1.5);
 const lineCap = (kind: WireKind) => (kind === "inspect" ? "round" : "butt");
 
 const wireKey = (wire: Wire) => `${wire.kind}\u0000${wire.from}\u0000${wire.to}`;
-
-const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
-
-function subscribeReducedMotion(onChange: () => void) {
-  const media = window.matchMedia(REDUCED_MOTION);
-  media.addEventListener("change", onChange);
-  return () => media.removeEventListener("change", onChange);
-}
 
 interface Box {
   left: number;
@@ -140,11 +131,6 @@ export function Wiring({
   wires: Wire[];
   className?: string;
 }) {
-  const reducedMotion = useSyncExternalStore(
-    subscribeReducedMotion,
-    () => window.matchMedia(REDUCED_MOTION).matches,
-    () => true,
-  );
   const [geometry, setGeometry] = useState<ReadonlyMap<string, Geometry>>(() => new Map());
   const stampRef = useRef("");
   const wiresRef = useRef(wires);
@@ -248,6 +234,8 @@ export function Wiring({
       window.addEventListener("resize", schedule);
       container.addEventListener("scroll", schedule, { capture: true, passive: true });
       container.addEventListener("transitionend", schedule);
+      // Entry animations (floor-in) move endpoints with transforms, which ResizeObserver misses.
+      container.addEventListener("animationend", schedule);
       measure();
 
       teardown = () => {
@@ -256,6 +244,7 @@ export function Wiring({
         window.removeEventListener("resize", schedule);
         container.removeEventListener("scroll", schedule, { capture: true });
         container.removeEventListener("transitionend", schedule);
+        container.removeEventListener("animationend", schedule);
       };
     };
 
@@ -292,8 +281,8 @@ export function Wiring({
             data-wire-from={wire.from}
             data-wire-to={wire.to}
             data-wire-active={wire.active ? "" : undefined}
-            style={{ color: wire.hue != null ? `oklch(0.68 0.14 ${wire.hue})` : style.color }}
-            opacity={wire.active ? 1 : 0.7}
+            style={{ color: style.color }}
+            opacity={wire.active ? 1 : 0.55}
           >
             <path
               d={g.d}
@@ -302,26 +291,16 @@ export function Wiring({
               strokeWidth={width}
               strokeDasharray={style.dash}
               strokeLinecap={lineCap(wire.kind)}
+              opacity={wire.active ? 0.4 : 1}
             >
               <title>{wire.label ?? `${style.label}: ${wire.from} → ${wire.to}`}</title>
             </path>
+            {/* Live wires carry flowing dashes over the faint base line; idle ones stay still. */}
             {wire.active && (
-              <path
-                d={g.d}
-                fill="none"
-                stroke="var(--color-background)"
-                strokeOpacity={0.7}
-                strokeWidth={width}
-                className="animate-wire-flow"
-              />
+              <path d={g.d} fill="none" stroke="currentColor" strokeWidth={width} className="animate-wire-flow" />
             )}
             <rect x={g.sx - 2.5} y={g.sy - 2.5} width={5} height={5} fill="currentColor" />
             <polygon points={g.arrow} fill="currentColor" />
-            {wire.active && !reducedMotion && (
-              <circle r={2.5} fill="currentColor">
-                <animateMotion dur="1.6s" repeatCount="indefinite" path={g.d} />
-              </circle>
-            )}
           </g>
         );
       })}
@@ -329,38 +308,38 @@ export function Wiring({
   );
 }
 
-/** Legend row: a 24px line sample per wire kind (its colour and dash) with a micro-label. */
+/** Legend: a compact mono key, one short line sample per wire kind (its colour and dash). */
 export function WireLegend({ kinds = ALL_KINDS, className }: { kinds?: WireKind[]; className?: string }) {
   return (
-    <ul className={cn("flex flex-wrap items-center gap-x-4 gap-y-1.5", className)}>
+    <ul
+      aria-label="Wire key"
+      className={cn("flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-muted-foreground", className)}
+    >
       {kinds.map((kind) => {
         const style = WIRE_STYLE[kind];
         return (
-          <li key={kind} className="flex items-center gap-1.5">
+          <li key={kind} className="flex items-center gap-1">
             <svg
               aria-hidden
-              width={24}
-              height={8}
-              viewBox="0 0 24 8"
+              width={18}
+              height={6}
+              viewBox="0 0 18 6"
               className="shrink-0 overflow-visible"
               style={{ color: style.color }}
             >
-              <rect x={0} y={2.5} width={3} height={3} fill="currentColor" />
               <line
-                x1={3}
-                y1={4}
-                x2={19}
-                y2={4}
+                x1={0}
+                y1={3}
+                x2={14}
+                y2={3}
                 stroke="currentColor"
-                strokeWidth={strokeWidth(kind)}
+                strokeWidth={strokeWidth(kind) + 0.5}
                 strokeDasharray={style.dash}
                 strokeLinecap={lineCap(kind)}
               />
-              <polygon points="24,4 19,1.5 19,6.5" fill="currentColor" />
+              <polygon points="18,3 13.5,0.5 13.5,5.5" fill="currentColor" />
             </svg>
-            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-              {style.label}
-            </span>
+            {style.label}
           </li>
         );
       })}

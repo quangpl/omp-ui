@@ -36,6 +36,7 @@ import { dataDir, ensureFilesFolder } from "@/lib/files";
 import { extractQuestion } from "@/lib/question";
 import { agentmemoryEnabled, memoryProjectName, tagMemorySession } from "@/lib/server/agentmemory";
 import { getAppSettings } from "@/lib/settings";
+import { parseTodoPhases } from "@/lib/todos";
 import { ensureWorkspace } from "@/lib/workspaces";
 import type {
   AppSettings,
@@ -121,6 +122,8 @@ interface ActiveRun {
   advisor: Omit<AdvisorScope, "signal" | "onActivity"> | null;
   /** This run addresses advisor feedback: its own questions go to the user, not back to the agent. */
   advisorFollowUp: boolean;
+  /** JSON of the todo list this run last stored on the card; repeated `todo` views write nothing. */
+  todos: string | null;
   /** Serializes startup, frame handling and teardown so persistence stays ordered. */
   chain: Promise<void>;
 }
@@ -791,6 +794,7 @@ class OmpAgentManager implements AgentManager {
       hostCalls: new Map(),
       advisor: null,
       advisorFollowUp: false,
+      todos: null,
       chain: Promise.resolve(),
     };
     this.active.set(taskId, run);
@@ -1079,6 +1083,8 @@ class OmpAgentManager implements AgentManager {
           const name = asString(frame.toolName) ?? "tool";
           const detail = truncate(oneLineTrim(resultText(frame.result)), MAX_TOOL_ERROR_TEXT);
           await this.event(run, "error", `✗ ${name} failed${detail ? `: ${detail}` : ""}`);
+        } else if (frame.toolName === "todo") {
+          await this.trackTodos(run, frame.result);
         }
         break;
       case "agent_end": {
@@ -1558,6 +1564,21 @@ class OmpAgentManager implements AgentManager {
       publish({ type: "run.event", event, boardId: run.boardId });
     } catch (err) {
       console.error(`[agent] failed to store a run event for task ${run.taskId}:`, err);
+    }
+  }
+
+  /** Stores the agent's todo list (`todo` tool result `details.phases`) on the card. */
+  private async trackTodos(run: ActiveRun, result: unknown): Promise<void> {
+    if (!isObject(result) || !isObject(result.details) || !Array.isArray(result.details.phases)) return;
+    const todos = parseTodoPhases(result.details.phases);
+    const json = JSON.stringify(todos);
+    if (json === run.todos) return;
+    run.todos = json;
+    try {
+      const task = await this.repo.updateTask(run.taskId, { todos });
+      if (task) publish({ type: "task.updated", task });
+    } catch (err) {
+      console.error(`[agent] failed to store the todo list of task ${run.taskId}:`, err);
     }
   }
 

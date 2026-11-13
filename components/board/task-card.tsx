@@ -4,10 +4,10 @@ import { memo, type MouseEvent, type ReactNode, type Ref, useSyncExternalStore }
 import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
 import {
   Bot,
-  CircleCheck,
   CircleHelp,
   Clock,
   Hourglass,
+  ListChecks,
   LoaderCircle,
   MessageSquare,
   MessageSquareDot,
@@ -20,6 +20,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useBoardTasks, useQueueDrafting, useQueuePosition } from "@/hooks/use-board";
 import { questionPreview } from "@/lib/question";
 import { formatDateTime } from "@/components/board/format";
+import { TaskProgressIcon } from "@/components/board/task-progress";
+import { todoProgress } from "@/lib/todos";
 import { cn } from "@/lib/utils";
 import type { AgentState, Task } from "@/lib/types";
 
@@ -217,6 +219,7 @@ export const TaskCard = memo(function TaskCard({
     : task.blockedBy
         .map((id) => boardTasks.get(id))
         .filter((blocker): blocker is Task => blocker !== undefined && blocker.status !== "done");
+  const progress = todoProgress(task.todos);
   const showQuickActions = Boolean(quickActions) && !overlay && !placeholder;
   const pinnedSlots = showQuickActions ? pinnedQuickActions : 0;
 
@@ -249,12 +252,7 @@ export const TaskCard = memo(function TaskCard({
         )}
       >
         <span className={cn("flex items-start gap-2", pinnedSlots === 1 && "pr-7", pinnedSlots > 1 && "pr-14")}>
-          {done && (
-            <CircleCheck
-              aria-label="Done"
-              className="mt-px size-4 shrink-0 text-emerald-600 dark:text-emerald-400"
-            />
-          )}
+          <TaskProgressIcon task={task} className="mt-px max-md:mt-0.5" />
           <span
             className={cn(
               "line-clamp-2 min-w-0 text-sm leading-snug font-medium tracking-[-0.005em] text-pretty break-words max-md:text-[0.9375rem]",
@@ -332,6 +330,19 @@ export const TaskCard = memo(function TaskCard({
             )}
           </span>
           <span className="flex shrink-0 items-center gap-2.5 text-[11px] text-muted-foreground">
+            {progress && (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 tabular-nums",
+                  progress.done === progress.total && "text-emerald-700 dark:text-emerald-400",
+                )}
+                title={`${progress.done} of ${progress.total} todo items done${progress.current ? ` · Now: ${progress.current}` : ""}`}
+              >
+                <ListChecks className="size-3.5" aria-hidden />
+                {progress.done}/{progress.total}
+                <span className="sr-only">todo items done</span>
+              </span>
+            )}
             {task.commentCount > 0 && (
               <span
                 className="inline-flex items-center gap-1 tabular-nums"

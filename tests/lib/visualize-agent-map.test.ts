@@ -7,8 +7,8 @@ import {
   buildLinks,
   systemLoad,
   toolSystem,
-} from "@/components/visualize/factory";
-import type { LiveWorker } from "@/components/visualize/use-live-floor";
+} from "@/components/visualize/agent-map";
+import type { LiveAgent } from "@/components/visualize/use-live-agents";
 import type { QueueEntry, QueueSnapshot, SubagentSnapshot } from "@/lib/types";
 
 const A = "11111111-1111-4111-8111-111111111111";
@@ -35,7 +35,7 @@ function queue(running: QueueEntry[], queued: QueueEntry[] = []): QueueSnapshot 
   return { limit: 4, concurrency: {} as QueueSnapshot["concurrency"], running, queued, planning: [] };
 }
 
-function worker(extra: Partial<LiveWorker> = {}): LiveWorker {
+function liveAgent(extra: Partial<LiveAgent> = {}): LiveAgent {
   return { helpers: {}, contacts: [], ...extra };
 }
 
@@ -69,8 +69,8 @@ describe("toolSystem", () => {
 describe("activitySystem", () => {
   it("uses the tool, else the model while thinking or writing", () => {
     expect(activitySystem({ icon: "terminal", label: "Running a command", tool: "bash" })).toBe("shell");
-    expect(activitySystem({ icon: "think", label: "Thinking it through" })).toBe("model");
-    expect(activitySystem({ icon: "write", label: "Writing it up" })).toBe("model");
+    expect(activitySystem({ icon: "think", label: "Thinking" })).toBe("model");
+    expect(activitySystem({ icon: "write", label: "Writing a reply" })).toBe("model");
     expect(activitySystem({ icon: "status", label: "Starting" })).toBeNull();
     expect(activitySystem(undefined)).toBeNull();
   });
@@ -121,13 +121,13 @@ describe("buildLinks", () => {
       entry(C, "queued", { waitingFor: [A, B], createdByTaskId: A }),
     ]);
     const live = {
-      [A]: worker({
+      [A]: liveAgent({
         contacts: [
           { kind: "message", cardIds: [B], at: recent },
           { kind: "wait", cardIds: [C], at: expired },
         ],
       }),
-      [B]: worker({ contacts: [{ kind: "inspect", cardIds: [A], at: recent }] }),
+      [B]: liveAgent({ contacts: [{ kind: "inspect", cardIds: [A], at: recent }] }),
     };
     expect(buildLinks(q, live, now)).toEqual(
       expect.arrayContaining([
@@ -145,7 +145,7 @@ describe("buildLinks", () => {
   it("drops expired contacts and self-links and dedupes repeats", () => {
     const q = queue([entry(A, "running", { createdByTaskId: A })]);
     const live = {
-      [A]: worker({
+      [A]: liveAgent({
         contacts: [
           { kind: "message", cardIds: [B], at: expired },
           { kind: "wait", cardIds: [A], at: recent },
@@ -162,7 +162,7 @@ describe("systemLoad", () => {
   it("counts running agents and their busy helpers per system", () => {
     const q = queue([entry(A, "running"), entry(B, "running")], [entry(C, "queued")]);
     const live = {
-      [A]: worker({
+      [A]: liveAgent({
         activity: { icon: "terminal", label: "Running a command", tool: "bash" },
         helpers: {
           h1: helper("h1", "running", "read"),
@@ -171,11 +171,11 @@ describe("systemLoad", () => {
           h4: helper("h4", "running"),
         },
       }),
-      [B]: worker({
-        activity: { icon: "think", label: "Thinking it through" },
+      [B]: liveAgent({
+        activity: { icon: "think", label: "Thinking" },
         helpers: { h5: helper("h5", "running", "bash") },
       }),
-      [C]: worker({ activity: { icon: "terminal", label: "Running a command", tool: "bash" } }),
+      [C]: liveAgent({ activity: { icon: "terminal", label: "Running a command", tool: "bash" } }),
     };
     const load = systemLoad(q, live);
     expect(Object.keys(load)).toEqual(SYSTEMS.map((s) => s.id));
