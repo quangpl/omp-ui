@@ -1,6 +1,6 @@
 "use client";
 
-import { type KeyboardEvent, type ReactNode, useId, useRef, useState } from "react";
+import { type FormEvent, type KeyboardEvent, type ReactNode, useId, useRef, useState } from "react";
 import { Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,13 +10,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Drawer,
-  DrawerContent,
-  DrawerDescription,
-  DrawerHeader,
-  DrawerTitle,
-} from "@/components/ui/drawer";
 import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -30,23 +23,39 @@ export type CreateFromText = (text: string) => Promise<boolean>;
  * New card from free text: the user writes as much as they like and creates it right away. The
  * card lands in In progress; an omp agent (the card writer) reads the text and the project in
  * the background, writes the title and brief, then the card's agent starts. Nobody waits for it.
+ *
+ * `layout="page"` fills its flex-column parent (the phone "New card" page): the textarea takes
+ * all the free height and scrolls inside, and Create is a full-width bar pinned to the bottom.
+ * The page owns Cancel there, so `onCancel` is only rendered in the dialog layout.
  */
 export function NewTaskForm({
   onSubmit,
   onCancel,
   projectField,
+  layout = "dialog",
+  initialText = "",
+  onTextChange,
   className,
 }: {
   onSubmit: CreateFromText;
   onCancel?: () => void;
   /** Rendered first, e.g. a project picker when not on a board. */
   projectField?: ReactNode;
+  layout?: "dialog" | "page";
+  /** Starting text, e.g. a draft carried over from another project. */
+  initialText?: string;
+  /** Every text change, for callers that keep the draft around. */
+  onTextChange?: (text: string) => void;
   className?: string;
 }) {
   const id = useId();
-  const [text, setText] = useState("");
+  const [text, setTextState] = useState(initialText);
   const [busy, setBusy] = useState(false);
   const composeRef = useRef<HTMLTextAreaElement>(null);
+  const setText = (next: string) => {
+    setTextState(next);
+    onTextChange?.(next);
+  };
   // "/" picker for OMP skills and shortcuts.
   const slash = useSkillSlash(composeRef, text, setText, !busy);
 
@@ -66,33 +75,96 @@ export function NewTaskForm({
     }
   };
 
+  const onFormSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    void create();
+  };
+
+  const page = layout === "page";
   const words = text.trim() ? text.trim().split(/\s+/).length : 0;
-  return (
-    <form
-      className={cn("flex flex-col gap-4", className)}
-      onSubmit={(event) => {
-        event.preventDefault();
-        void create();
+  const wordCount = words > 0 && <span className="shrink-0 tabular-nums">{words.toLocaleString()} words</span>;
+  const label = <Label htmlFor={`${id}-text`}>What should the agent do?</Label>;
+  const textarea = (
+    <Textarea
+      id={`${id}-text`}
+      ref={composeRef}
+      autoFocus
+      value={text}
+      readOnly={busy}
+      placeholder="Goal, details, pasted errors or logs, links…"
+      className={
+        page
+          ? // Fixed sizing so the flex height wins over the content height and long text scrolls inside.
+            "min-h-24 flex-1 resize-none field-sizing-fixed text-base md:text-sm"
+          : "max-h-[45dvh] min-h-36 resize-none text-base md:text-sm"
+      }
+      onChange={(event) => setText(event.target.value)}
+      onSelect={slash.onSelect}
+      onKeyDown={(event) => {
+        if (slash.onKeyDown(event)) return;
+        submitKeys(event);
       }}
-    >
+    />
+  );
+  const submitContent = (
+    <>
+      {busy ? <Loader2 className="animate-spin" aria-hidden /> : <Sparkles aria-hidden />}
+      {busy ? "Creating…" : "Create card"}
+    </>
+  );
+  const disabled = !text.trim() || busy;
+
+  if (page) {
+    return (
+      <form className={cn("flex min-h-0 flex-1 flex-col", className)} onSubmit={onFormSubmit}>
+        {/* Normally nothing here overflows (the textarea absorbs the height); the scroll is a
+            fallback for very short viewports, e.g. the keyboard plus the open slash menu. */}
+        <div className="scrollbar-subtle mx-auto flex min-h-0 w-full max-w-2xl flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 pt-4 pb-3 sm:px-6">
+          {projectField}
+          <div className="flex flex-1 flex-col gap-2">
+            {label}
+            {textarea}
+            {slash.menu ?? (
+              <p className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
+                <span className="flex items-start gap-1.5">
+                  <Sparkles className="mt-px size-3.5 shrink-0" aria-hidden />
+                  <span>
+                    Lands in In progress; an agent writes the title and brief, then starts. Type <Kbd>/</Kbd> for
+                    skills.
+                  </span>
+                </span>
+                {wordCount}
+              </p>
+            )}
+          </div>
+        </div>
+        {/* `--new-card-bottom-inset` lets the page drop the home-indicator gap while the keyboard covers it. */}
+        <div className="px-safe shrink-0 border-t bg-background/85 backdrop-blur-lg supports-backdrop-filter:bg-background/70">
+          <div className="mx-auto flex w-full max-w-2xl items-center gap-3 px-4 pt-3 pb-[calc(0.75rem+var(--new-card-bottom-inset,env(safe-area-inset-bottom)))] sm:px-6">
+            <p className="hidden text-xs text-muted-foreground md:block">
+              <Kbd>Ctrl</Kbd>
+              <Kbd>↵</Kbd> or <Kbd>⌘</Kbd>
+              <Kbd>↵</Kbd> creates
+            </p>
+            <Button
+              type="submit"
+              className="h-12 w-full text-[0.95rem] active:scale-[0.98] motion-reduce:transition-none md:ml-auto md:h-10 md:w-auto md:px-5 md:text-sm"
+              disabled={disabled}
+            >
+              {submitContent}
+            </Button>
+          </div>
+        </div>
+      </form>
+    );
+  }
+
+  return (
+    <form className={cn("flex flex-col gap-4", className)} onSubmit={onFormSubmit}>
       {projectField}
       <div className="flex flex-col gap-2">
-        <Label htmlFor={`${id}-text`}>What should the agent do?</Label>
-        <Textarea
-          id={`${id}-text`}
-          ref={composeRef}
-          autoFocus
-          value={text}
-          readOnly={busy}
-          placeholder="Goal, details, pasted errors or logs, links…"
-          className="max-h-[45dvh] min-h-36 resize-none text-base md:text-sm"
-          onChange={(event) => setText(event.target.value)}
-          onSelect={slash.onSelect}
-          onKeyDown={(event) => {
-            if (slash.onKeyDown(event)) return;
-            submitKeys(event);
-          }}
-        />
+        {label}
+        {textarea}
         {slash.menu}
         <p className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
           <span className="flex items-start gap-1.5">
@@ -102,7 +174,7 @@ export function NewTaskForm({
               then starts work. Type <Kbd>/</Kbd> for OMP skills and shortcuts.
             </span>
           </span>
-          {words > 0 && <span className="shrink-0 tabular-nums">{words.toLocaleString()} words</span>}
+          {wordCount}
         </p>
       </div>
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
@@ -111,26 +183,23 @@ export function NewTaskForm({
             Cancel
           </Button>
         )}
-        <Button type="submit" className="h-11 md:h-9" disabled={!text.trim() || busy}>
-          {busy ? <Loader2 className="animate-spin" aria-hidden /> : <Sparkles aria-hidden />}
-          {busy ? "Creating…" : "Create card"}
+        <Button type="submit" className="h-11 md:h-9" disabled={disabled}>
+          {submitContent}
         </Button>
       </div>
     </form>
   );
 }
 
-/** "New card" form as a bottom drawer on phones and a centered dialog elsewhere. */
+/** "New card" form in a centered dialog. Phones use the `/b/[boardId]/new` page instead. */
 export function NewTaskDialog({
   open,
   onOpenChange,
-  isMobile,
   projectField,
   onCreate,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  isMobile: boolean;
   projectField?: ReactNode;
   onCreate: CreateFromText;
 }) {
@@ -140,31 +209,14 @@ export function NewTaskDialog({
     return ok;
   };
 
-  const form = <NewTaskForm onSubmit={submit} onCancel={() => onOpenChange(false)} projectField={projectField} />;
-  const description = "Describe the task. An agent turns it into a card in the background.";
-
-  if (isMobile) {
-    return (
-      <Drawer open={open} onOpenChange={onOpenChange}>
-        <DrawerContent className="data-[vaul-drawer-direction=bottom]:max-h-[92dvh]">
-          <DrawerHeader className="text-left">
-            <DrawerTitle>New card</DrawerTitle>
-            <DrawerDescription>{description}</DrawerDescription>
-          </DrawerHeader>
-          <div className="overflow-y-auto px-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">{form}</div>
-        </DrawerContent>
-      </Drawer>
-    );
-  }
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>New card</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
+          <DialogDescription>Describe the task. An agent turns it into a card in the background.</DialogDescription>
         </DialogHeader>
-        {form}
+        <NewTaskForm onSubmit={submit} onCancel={() => onOpenChange(false)} projectField={projectField} />
         <p className="-mt-1 text-xs text-muted-foreground max-md:hidden">
           <Kbd>Ctrl</Kbd>
           <Kbd>↵</Kbd> or <Kbd>⌘</Kbd>

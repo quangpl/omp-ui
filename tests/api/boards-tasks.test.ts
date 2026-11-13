@@ -956,6 +956,7 @@ describe("settings, health and system", () => {
       maxAutoRetries: 5,
       cleanupSchedule: "off",
       cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
+      taskCompletionNotifications: false,
     });
   });
 
@@ -974,6 +975,7 @@ describe("settings, health and system", () => {
       [{ autoModel: "yes" }, "autoModel must be a boolean"],
       [{ smartQueue: 1 }, "smartQueue must be a boolean"],
       [{ autoRetry: "on" }, "autoRetry must be a boolean"],
+      [{ taskCompletionNotifications: "on" }, "taskCompletionNotifications must be a boolean"],
       [{ maxAutoRetries: 21 }, "maxAutoRetries must be an integer between 0 and 20"],
       [{ maxAutoRetries: -1 }, "maxAutoRetries must be an integer between 0 and 20"],
       [{ maxAutoRetries: 1.5 }, "maxAutoRetries must be an integer between 0 and 20"],
@@ -1004,6 +1006,7 @@ describe("settings, health and system", () => {
       maxAutoRetries: 5,
       cleanupSchedule: "off",
       cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
+      taskCompletionNotifications: false,
     });
 
     const partial = await api<AppSettings>(settingsRoute, "PATCH", "/settings", {
@@ -1016,6 +1019,7 @@ describe("settings, health and system", () => {
         browser: "off",
         autoRetry: false,
         maxAutoRetries: 0,
+        taskCompletionNotifications: true,
       },
     });
     expect(partial.body).toEqual({
@@ -1030,6 +1034,7 @@ describe("settings, health and system", () => {
       maxAutoRetries: 0,
       cleanupSchedule: "off",
       cleanupTargets: DEFAULT_SETTINGS.cleanupTargets,
+      taskCompletionNotifications: true,
     });
     expect((await api<AppSettings>(settingsRoute, "GET", "/settings")).body).toEqual(partial.body);
     expect((await api<AppSettings>(settingsRoute, "PATCH", "/settings", { body: {} })).body).toEqual(partial.body);
@@ -1045,6 +1050,7 @@ describe("settings, health and system", () => {
         browser: "headless",
         autoRetry: true,
         maxAutoRetries: 5,
+        taskCompletionNotifications: false,
       },
     });
   });

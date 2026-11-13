@@ -69,6 +69,10 @@ function sanitize(s: AppSettings): AppSettings {
     cleanupTargets: Array.isArray(s.cleanupTargets)
       ? SCHEDULED_CLEANUP_IDS.filter((id) => (s.cleanupTargets as unknown[]).includes(id))
       : [...DEFAULT_SETTINGS.cleanupTargets],
+    taskCompletionNotifications:
+      typeof s.taskCompletionNotifications === "boolean"
+        ? s.taskCompletionNotifications
+        : DEFAULT_SETTINGS.taskCompletionNotifications,
   };
 }
 

@@ -139,6 +139,11 @@ test("board: FAB adds a card that starts on its own, the detail drawer steers th
 
   // Back on the board, which opens on In progress: a new card skips To do and its agent starts by itself.
   await expect(page).toHaveURL(/\/b\/[^/?]+$/, { timeout: AGENT_TIMEOUT });
+  // The "Card added" confirmation follows onto the board; dismiss it, it sits over the column tabs.
+  const added = page.getByRole("status").filter({ hasText: "Card added" });
+  await expect(added).toContainText(title);
+  await added.getByRole("button", { name: "Dismiss" }).click();
+  await expect(added).toBeHidden();
   await expect(page.getByRole("tab", { name: columnTabName("To do", 0) })).toBeVisible();
   const panel = page.getByRole("tabpanel");
   const inProgressTab = page.getByRole("tab", { name: columnTabName("In progress", 1) });
