@@ -1,9 +1,20 @@
 // Telegram bot end to end: Settings connect/disconnect routes, the long-polling adapter, the chat
-// commands and the run relay, against a fake Telegram Bot API (stubbed fetch; Telegram is never
-// contacted) and the fake omp.
+// commands (/login, /logout, /stop), the natural-language chat assistant (driven through the fake
+// omp's `<calls>` markers) and the run relay, against a fake Telegram Bot API (stubbed fetch;
+// Telegram is never contacted) and the fake omp.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { ADMIN_PASSWORD, api, freshEnv, setupAdmin, teardown, tempDir, useToken, waitFor } from "./helpers";
+import {
+  ADMIN_PASSWORD,
+  api,
+  freshEnv,
+  readOmpLog,
+  setupAdmin,
+  teardown,
+  tempDir,
+  useToken,
+  waitFor,
+} from "./helpers";
 
 import * as loginRoute from "@/app/api/v1/auth/login/route";
 import * as boardsRoute from "@/app/api/v1/boards/route";
@@ -36,6 +47,11 @@ const STREAMED_TEXT =
 const STREAM_THINKING = "Planning the change.";
 const REPLY_TIMEOUT = 10_000;
 const RUN_TIMEOUT = 15_000;
+/** Start of every chat assistant prompt (lib/server/chat/assistant.ts buildPrompt). */
+const CHAT_PROMPT = "You are AgentMan's chat assistant";
+/** The assistant's placeholder, edited with its progress and then replaced by its answer. */
+const PLACEHOLDER = "🤔 Working on it…";
+const CANCELLED = "⏹ Cancelled.";
 
 // ---------------------------------------------------------------------------------------------
 // Fake Telegram Bot API
@@ -218,6 +234,80 @@ function isActive(task: Task): boolean {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Chat assistant helpers
+
+/** A message asking the fake omp's chat assistant to call these AgentMan tools. */
+function calls(...list: { toolName: string; arguments: Record<string, unknown> }[]): string {
+  return `<calls>${JSON.stringify(list)}</calls>`;
+}
+
+interface ToolResult {
+  toolName: string;
+  isError: boolean;
+  text: string;
+}
+
+/** The tool results of a fake assistant answer (`Chat reply: <JSON list>`). */
+function toolResults(answer: string): ToolResult[] {
+  const match = /^Chat reply: (\[[\s\S]*\])$/.exec(answer);
+  if (!match) throw new Error(`not a tool-results answer: ${answer}`);
+  return JSON.parse(match[1]) as ToolResult[];
+}
+
+/** Id of the card an agentman_create_card result describes. */
+function createdId(result: ToolResult): string {
+  expect(result, JSON.stringify(result)).toMatchObject({ toolName: "agentman_create_card", isError: false });
+  return (JSON.parse(result.text) as { card: { id: string } }).card.id;
+}
+
+/** Prompts of the fake omp's helper workers (card writer, advisor, chat assistant…), in order. */
+function helperPrompts(): string[] {
+  return readOmpLog().flatMap((e) => (e.kind === "helper" && e.prompt ? [e.prompt] : []));
+}
+
+/** The helper prompt whose new chat message is `text`. */
+function promptFor(text: string): string | undefined {
+  return helperPrompts().find((p) => p.includes(`<new-message>\n${text}\n</new-message>`));
+}
+
+/** What the message shows now, edits applied. */
+function shown(messageId: number): string | undefined {
+  return displayed().find((m) => m.message_id === messageId)?.text;
+}
+
+/** Send `text` as the logged-in user; returns the assistant's placeholder message id once it is sent. */
+async function ask(text: string): Promise<number> {
+  const from = tg.sent.length;
+  push(text);
+  const placeholder = await waitFor(
+    () => tg.sent.slice(from).find((m) => m.chat_id === "42" && m.text === PLACEHOLDER),
+    REPLY_TIMEOUT,
+  );
+  return placeholder.message_id;
+}
+
+/** The placeholder's final text: the assistant's answer (or cancellation/error) instead of `🤔 …`. */
+async function answerOf(placeholder: number): Promise<string> {
+  return waitFor(() => {
+    const text = shown(placeholder);
+    return text && !text.startsWith("🤔") ? text : undefined;
+  }, REPLY_TIMEOUT);
+}
+
+/** Send `text` to the assistant and return its answer. */
+async function chat(text: string): Promise<string> {
+  return answerOf(await ask(text));
+}
+
+// Test-only peek at assistant.ts's process-wide state; the suite runs the app in this process.
+const assistantGlobal = globalThis as unknown as { __ompUiChatAssistant?: { queues: Map<string, unknown> } };
+
+/** No request of chat 42 is in flight or waiting (its per-chat queue in assistant.ts is gone). */
+function assistantIdle(): boolean {
+  return !assistantGlobal.__ompUiChatAssistant?.queues.has("telegram:42");
+}
+
+// ---------------------------------------------------------------------------------------------
 
 describe("Telegram bot", () => {
   let boards: BoardWithCounts[];
@@ -229,7 +319,7 @@ describe("Telegram bot", () => {
     await setupAdmin();
     await createBoard("alpha-board");
     await createBoard("beta-board");
-    // The order /boards lists them in, and the first one /create defaults to.
+    // The order agentman_list_boards numbers them in; the first is a chat's default board.
     boards = await (await getRepo()).listBoards();
     expect(boards.map((b) => b.name).sort()).toEqual(["alpha-board", "beta-board"]);
   });
@@ -274,7 +364,7 @@ describe("Telegram bot", () => {
     expect(tg.calls.some((c) => c.method === "deleteWebhook")).toBe(true);
     await waitFor(() => tg.calls.find((c) => c.method === "setMyCommands"));
     const menu = tg.calls.find((c) => c.method === "setMyCommands")!.body.commands as { command: string }[];
-    expect(menu.map((c) => c.command)).toEqual(expect.arrayContaining(["login", "boards", "create", "run", "stop"]));
+    expect(menu.map((c) => c.command)).toEqual(["login", "logout", "stop"]);
 
     const settings = await api<AppSettings>(settingsRoute, "GET", "/settings");
     expect(settings.body.telegramBotToken).toBe(REDACTED_SECRET);
@@ -288,77 +378,81 @@ describe("Telegram bot", () => {
     expect(await getChatToken(repo, "telegram")).toBe(VALID_TOKEN);
   });
 
-  it("only lets users who logged in with the admin password run commands", async () => {
-    const locked = await say("/boards");
+  it("only answers users who logged in with the admin password", async () => {
+    const from = tg.sent.length;
+    const locked = await say("show my boards");
     expect(locked).toContain("/login");
     for (const board of boards) expect(locked).not.toContain(board.name);
+    // Locked out means no assistant either: no placeholder, no prompt.
+    expect(sentSince(from)).toEqual([locked]);
+    expect(promptFor("show my boards")).toBeUndefined();
 
     const wrongId = tg.nextIncomingMessageId;
     expect(await say("/login wrong")).toContain("Wrong password");
     // The password never stays in the chat, right or wrong.
     expect(tg.deletes).toContainEqual({ chat_id: "42", message_id: wrongId });
-    expect(await say("/boards")).toContain("/login");
+    expect(await say("show my boards")).toContain("/login");
 
     const loginId = tg.nextIncomingMessageId;
-    expect(await say(`/login ${ADMIN_PASSWORD}`)).toContain("AgentMan connected");
+    const welcome = await say(`/login ${ADMIN_PASSWORD}`);
+    expect(welcome).toContain("AgentMan connected");
+    expect(welcome).toContain("just tell me");
     expect(tg.deletes).toContainEqual({ chat_id: "42", message_id: loginId });
 
-    const list = await say("/boards");
-    for (const board of boards) expect(list).toContain(board.name);
-
     // Another user, even in a group the admin may share, is still locked out.
-    const stranger = await say(`/boards@${BOT_USERNAME}`, { userId: 77, chatId: -1001, type: "group" });
+    const strangerFrom = tg.sent.length;
+    const stranger = await say("show my boards", { userId: 77, chatId: -1001, type: "group" });
     expect(stranger).toContain("/login");
     for (const board of boards) expect(stranger).not.toContain(board.name);
+    expect(sentSince(strangerFrom, -1001)).toEqual([stranger]);
     expect((await chatStatus()).telegram.authorizedUsers).toBe(1);
   });
 
-  it("/create adds a To-do card to the default board, then to the board picked with /board", async () => {
-    const repo = await getRepo();
-    const [first, second] = boards;
-
-    const created = await say("/create Test card");
-    const onFirst = await repo.listTasks(first.id);
-    expect(onFirst).toHaveLength(1);
-    firstCard = onFirst[0];
-    expect(firstCard).toMatchObject({ title: "Test card", status: "todo" });
-    expect(created).toContain(firstCard.id);
-
-    expect(await say(`/board ${second.name}`)).toContain(second.name);
-    const other = await say("/create Other");
-    const onSecond = await repo.listTasks(second.id);
-    expect(onSecond.map((t) => [t.title, t.status])).toEqual([["Other", "todo"]]);
-    expect(other).toContain(onSecond[0].id);
-    expect(await repo.listTasks(first.id)).toHaveLength(1);
-  });
-
-  it("/status lists the cards of the selected board, or of the board given", async () => {
-    const selected = await say("/status");
-    expect(selected).toContain("Other");
-    expect(selected).not.toContain("Test card");
-
-    const first = await say("/status 1");
-    expect(first).toContain("Test card");
-    expect(first).toContain(firstCard.id.slice(0, 8));
-    expect(first).not.toContain("Other");
-  });
-
-  it("/run streams the agent's answer into the chat and reports the end of the run", async () => {
+  it("answers plain language in place of its placeholder, telling the assistant the boards", async () => {
     const from = tg.sent.length;
+    const placeholder = await ask("hello there");
+    expect(await answerOf(placeholder)).toBe("Chat reply: hello there");
+    // The answer replaces the placeholder: nothing else is sent.
+    expect(sentSince(from)).toEqual([PLACEHOLDER]);
+
+    const prompt = promptFor("hello there");
+    expect(prompt?.startsWith(CHAT_PROMPT), prompt).toBe(true);
+    for (const board of boards) expect(prompt).toContain(board.name);
+    // The locked-out messages above never reached the assistant (it runs a chat's messages in order).
+    expect(promptFor("show my boards")).toBeUndefined();
+    expect(helperPrompts().filter((p) => p.startsWith(CHAT_PROMPT))).toEqual([prompt]);
+  });
+
+  it("lists the boards through its tools, showing its progress meanwhile", async () => {
+    const placeholder = await ask(`show my boards ${calls({ toolName: "agentman_list_boards", arguments: {} })}`);
+    const answer = await answerOf(placeholder);
+    expect(toolResults(answer)).toMatchObject([{ toolName: "agentman_list_boards", isError: false }]);
+    for (const board of boards) expect(answer).toContain(board.name);
+    expect(tg.edits).toContainEqual({ chat_id: "42", message_id: placeholder, text: "🤔 Using AgentMan's tools" });
+  });
+
+  it("creates and starts a card on the default board, streaming its run into the chat", async () => {
+    const repo = await getRepo();
     const editsFrom = tg.edits.length;
-    push(`/run ${firstCard.id.slice(0, 8)}`);
-    const reply = await waitFor(() => sentSince(from).find((t) => t.includes(firstCard.id)), REPLY_TIMEOUT);
-    // A free agent slot starts the card right away: the user must not be told it waits in a queue.
-    expect(reply).toContain("Started");
+    const placeholder = await ask(
+      `add a test card and start it ${calls({ toolName: "agentman_create_card", arguments: { title: "Test card", start: true } })}`,
+    );
+    const answer = await answerOf(placeholder);
+    const id = createdId(toolResults(answer)[0]);
+    const onFirst = await repo.listTasks(boards[0].id);
+    expect(onFirst.map((t) => [t.id, t.title])).toEqual([[id, "Test card"]]);
+    firstCard = onFirst[0];
+    expect(answer).toContain(id);
+    expect(await repo.listTasks(boards[1].id)).toEqual([]);
 
     const finished = await waitFor(
-      () => displayed().find((m) => m.message_id >= tg.sent[from].message_id && /Run finished/.test(m.text)),
+      () => displayed().find((m) => m.message_id > placeholder && /Run finished/.test(m.text)),
       RUN_TIMEOUT,
     );
     expect(finished.text).toContain("Test card");
 
-    // The answer is one live message: sent on the first words, ending with the whole text.
-    const runMessages = displayed().filter((m) => m.message_id >= tg.sent[from].message_id);
+    // The run's answer is one live message: sent on the first words, ending with the whole text.
+    const runMessages = displayed().filter((m) => m.message_id > placeholder);
     const answers = runMessages.filter((m) => m.text.includes("Streamed"));
     expect(answers.map((m) => m.text)).toEqual([STREAMED_TEXT]);
     const live = tg.sent.find((m) => m.message_id === answers[0].message_id)!;
@@ -370,27 +464,113 @@ describe("Telegram bot", () => {
     expect(finished.message_id).toBeGreaterThan(live.message_id);
     for (const m of [...tg.sent, ...tg.edits]) expect(m.text).not.toContain(STREAM_THINKING);
 
-    await waitFor(async () => !isActive(await getTask(firstCard.id)), RUN_TIMEOUT);
+    await waitFor(async () => !isActive(await getTask(id)), RUN_TIMEOUT);
+    expect(await repo.listRuns(id)).toHaveLength(1);
   });
 
-  it("/stop stops a running card", async () => {
-    const created = await say("/create Stop me [fake:slow]");
-    const id = /Created card (\S+)/.exec(created)?.[1];
-    expect(id, created).toBeTruthy();
+  it("creates cards on the board the chat selected", async () => {
+    const repo = await getRepo();
+    const [first, second] = boards;
+    const selected = toolResults(
+      await chat(`switch to ${second.name} ${calls({ toolName: "agentman_select_board", arguments: { board: second.name } })}`),
+    );
+    expect(selected).toMatchObject([{ toolName: "agentman_select_board", isError: false }]);
+    expect(selected[0].text).toContain(second.name);
 
+    const note = `note this down ${calls({ toolName: "agentman_create_card", arguments: { title: "Other" } })}`;
+    const id = createdId(toolResults(await chat(note))[0]);
+    const onSecond = await repo.listTasks(second.id);
+    expect(onSecond.map((t) => [t.id, t.title, t.status])).toEqual([[id, "Other", "todo"]]);
+    expect(await repo.listTasks(first.id)).toHaveLength(1);
+    // The assistant is told which board the chat uses.
+    expect(promptFor(note)).toContain(`Default board of this chat: ${second.name}`);
+  });
+
+  it("lists the cards of the selected board, or of the board asked for", async () => {
+    const selected = await chat(`what is on my board? ${calls({ toolName: "agentman_list_cards", arguments: {} })}`);
+    expect(selected).toContain("Other");
+    expect(selected).not.toContain("Test card");
+
+    const named = await chat(
+      `and on the first one? ${calls({ toolName: "agentman_list_cards", arguments: { board: boards[0].name } })}`,
+    );
+    expect(named).toContain("Test card");
+    expect(named).toContain(firstCard.id);
+    expect(named).not.toContain("Other");
+  });
+
+  it("/stop <cardId> stops a running card", async () => {
+    const answer = await chat(
+      `start a slow one ${calls({ toolName: "agentman_create_card", arguments: { title: "Stop me [fake:slow]", start: true } })}`,
+    );
+    const id = createdId(toolResults(answer)[0]);
+    await waitFor(async () => (await getTask(id)).agentState === "running", RUN_TIMEOUT);
+
+    expect(await say(`/stop ${id.slice(0, 8)}`)).toContain("Stopped");
+    await waitFor(async () => !isActive(await getTask(id)), RUN_TIMEOUT);
+  });
+
+  it("/stop alone cancels the request in flight and drops the waiting ones", async () => {
+    const slow = "think hard [fake-chat:slow]";
+    const placeholder = await ask(slow);
+    await waitFor(() => promptFor(slow), REPLY_TIMEOUT);
+    push("this waits in line");
+    expect(await say("/stop")).toBe("⏹ Cancelled the current request.");
+    expect(await answerOf(placeholder)).toBe(CANCELLED);
+    await waitFor(assistantIdle, REPLY_TIMEOUT);
+    expect(await say("/stop")).toBe("Nothing to stop.");
+
+    // The assistant still answers, and the dropped message never ran before it (one queue per chat).
+    const next = "are you still there?";
+    expect(await chat(next)).toBe(`Chat reply: ${next}`);
+    expect(promptFor("this waits in line")).toBeUndefined();
+    // A cancelled request is not remembered as part of the conversation.
+    expect(promptFor(next)).not.toContain("think hard");
+  });
+
+  it("answers a chat's messages one at a time, in order, remembering the conversation", async () => {
     const from = tg.sent.length;
-    push(`/run ${id}`);
-    const reply = await waitFor(() => sentSince(from).find((t) => t.includes(id!)), REPLY_TIMEOUT);
-    expect(reply).toContain("Started");
-    await waitFor(async () => (await getTask(id!)).agentState === "running", RUN_TIMEOUT);
+    const callsFrom = tg.calls.length;
+    push("first question");
+    push("second question");
+    const placeholders = await waitFor(() => {
+      const sent = tg.sent.slice(from).filter((m) => m.chat_id === "42" && m.text === PLACEHOLDER);
+      return sent.length === 2 ? sent : undefined;
+    }, REPLY_TIMEOUT);
+    expect(await answerOf(placeholders[0].message_id)).toBe("Chat reply: first question");
+    expect(await answerOf(placeholders[1].message_id)).toBe("Chat reply: second question");
 
-    expect(await say(`/stop ${id}`)).toContain("Stopped");
-    await waitFor(async () => !isActive(await getTask(id!)), RUN_TIMEOUT);
+    // The second request starts only once the first is answered.
+    const log = tg.calls.slice(callsFrom);
+    const answered = log.findIndex((c) => c.method === "editMessageText" && c.body.text === "Chat reply: first question");
+    const started = log.findLastIndex((c) => c.method === "sendMessage" && c.body.text === PLACEHOLDER);
+    expect(answered).toBeGreaterThan(-1);
+    expect(started).toBeGreaterThan(answered);
+    expect(promptFor("second question")).toContain("User: first question\nYou: Chat reply: first question");
+  });
+
+  it("/logout works while a request runs, cancels it and locks the chat", async () => {
+    const slow = "long job [fake-chat:slow]";
+    const placeholder = await ask(slow);
+    await waitFor(() => promptFor(slow), REPLY_TIMEOUT);
+    expect(await say("/logout")).toContain("Logged out");
+    expect(await answerOf(placeholder)).toBe(CANCELLED);
+    expect((await chatStatus()).telegram.authorizedUsers).toBe(0);
+    expect(await say("show my boards")).toContain("/login");
+
+    // Logging in again starts a fresh conversation.
+    expect(await say(`/login ${ADMIN_PASSWORD}`)).toContain("AgentMan connected");
+    const fresh = "hello again";
+    expect(await chat(fresh)).toBe(`Chat reply: ${fresh}`);
+    expect(promptFor(fresh)).not.toContain("Recent conversation");
+    // What was written while logged out never reached the assistant.
+    expect(promptFor("show my boards")).toBeUndefined();
   });
 
   it("changing the admin password logs chat users out", async () => {
+    expect((await chatStatus()).telegram.authorizedUsers).toBe(1);
     await setPassword(NEW_PASSWORD);
-    expect(await say("/boards")).toContain("/login");
+    expect(await say("show my boards")).toContain("/login");
     expect(await say(`/login ${ADMIN_PASSWORD}`)).toContain("Wrong password");
     expect((await chatStatus().catch(() => null))?.telegram.authorizedUsers ?? 0).toBe(0);
 
@@ -421,7 +601,7 @@ describe("Telegram bot", () => {
     expect(on.status, JSON.stringify(on.body)).toBe(200);
     expect(on.body.state).toBe("connected");
     const greeting = await waitFor(() => sentSince(from).find((t) => t.includes("AgentMan connected")), REPLY_TIMEOUT);
-    expect(greeting).toContain("/help");
+    expect(greeting).toContain("just tell me");
     // Nobody wrote to the bot meanwhile.
     expect(tg.nextUpdateId).toBe(updatesBefore);
     expect((await chatStatus()).telegram.authorizedUsers).toBe(1);

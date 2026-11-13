@@ -13,6 +13,8 @@ import {
   MoreHorizontalIcon,
   PanelsTopLeftIcon,
   PencilIcon,
+  PinIcon,
+  PinOffIcon,
   PlusIcon,
   SearchIcon,
   SearchXIcon,
@@ -55,8 +57,6 @@ const TAG_CLASS =
 
 /** Show the project filter once scanning the grid gets slow. */
 const FILTER_THRESHOLD = 5;
-/** Projects shown before "View all". */
-const COLLAPSED_PROJECTS = 8;
 
 /** Branch, uncommitted files and unpushed commits across the project's git folders. */
 function GitSummary({ git }: { git: DashboardBoard["git"] }) {
@@ -97,12 +97,14 @@ export function ProjectCard({
   index,
   onEdit,
   onDelete,
+  onTogglePin,
 }: {
   board: DashboardBoard;
   now: number;
   index: number;
   onEdit: (board: BoardWithCounts) => void;
   onDelete: (board: BoardWithCounts) => void;
+  onTogglePin: (board: BoardWithCounts) => void;
 }) {
   const router = useRouter();
   const openNewCard = useNewCard();
@@ -170,6 +172,10 @@ export function ProjectCard({
                   <DropdownMenuItem onSelect={() => router.push(href)} className="min-h-11 gap-2.5 px-2.5 md:min-h-8">
                     <PanelsTopLeftIcon />
                     Open board
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => onTogglePin(board)} className="min-h-11 gap-2.5 px-2.5 md:min-h-8">
+                    {board.pinned ? <PinOffIcon /> : <PinIcon />}
+                    {board.pinned ? "Unpin from dashboard" : "Pin to dashboard"}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onSelect={() => onEdit(board)} className="min-h-11 gap-2.5 px-2.5 md:min-h-8">
@@ -292,6 +298,10 @@ export function ProjectCard({
           <ExternalLinkIcon />
           Open in new tab
         </ContextMenuItem>
+        <ContextMenuItem onSelect={() => onTogglePin(board)}>
+          {board.pinned ? <PinOffIcon /> : <PinIcon />}
+          {board.pinned ? "Unpin from dashboard" : "Pin to dashboard"}
+        </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => openNewCard({ boardId: board.id })}>
           <PlusIcon />
@@ -312,34 +322,50 @@ export function ProjectCard({
   );
 }
 
-export function ProjectsSection({
-  boards,
-  now,
-  onEdit,
-  onDelete,
-}: {
-  boards: DashboardBoard[];
+type CardActions = {
   now: number;
   onEdit: (board: BoardWithCounts) => void;
   onDelete: (board: BoardWithCounts) => void;
-}) {
+  onTogglePin: (board: BoardWithCounts) => void;
+};
+
+function ProjectGrid({ boards, offset, ...actions }: CardActions & { boards: DashboardBoard[]; offset: number }) {
+  return (
+    <div className="grid auto-rows-fr grid-cols-[repeat(auto-fill,minmax(min(18rem,100%),1fr))] gap-3">
+      {boards.map((board, index) => (
+        // Press feedback sits on a wrapper so its scale transition composes with card-lift's hover
+        // lift; only the card's surface (its stretched link) presses it, not the buttons on top.
+        <div key={board.id} className="pressable h-full min-w-0 has-[button:active]:scale-100!">
+          <ProjectCard board={board} index={offset + index} {...actions} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The dashboard's projects: only pinned ones; the rest wait behind a collapsed "Other projects"
+ * toggle (a filter searches both, so unpinned matches show without opening it).
+ */
+export function ProjectsSection({ boards, ...actions }: CardActions & { boards: DashboardBoard[] }) {
   const [filter, setFilter] = useState("");
-  const [expanded, setExpanded] = useState(false);
+  const [showOthers, setShowOthers] = useState(false);
   const query = filter.trim().toLowerCase();
   const matching = query
     ? boards.filter((b) => [b.name, b.workdir, ...b.extraFolders].some((text) => text.toLowerCase().includes(query)))
     : boards;
-  // A filter shows every match; otherwise the most recently active few until "View all".
-  const shown = query || expanded ? matching : matching.slice(0, COLLAPSED_PROJECTS);
+  const pinned = matching.filter((b) => b.pinned);
+  const others = matching.filter((b) => !b.pinned);
+  const pinnedTotal = boards.filter((b) => b.pinned).length;
 
   return (
     <section aria-labelledby="home-projects">
       <div className="mb-2.5 flex flex-wrap items-end gap-x-3 gap-y-2">
         <div className="min-w-0 flex-1">
           <h2 id="home-projects" className="text-sm font-semibold tracking-tight">
-            Projects
+            Pinned projects
             <span className="ml-2 rounded-md bg-muted px-1.5 font-mono text-xs font-medium text-muted-foreground tabular-nums">
-              {boards.length}
+              {pinnedTotal}
             </span>
           </h2>
           <p className="text-xs text-muted-foreground">Most recently active first · tap one to open its board</p>
@@ -361,7 +387,7 @@ export function ProjectsSection({
           </div>
         )}
       </div>
-      {shown.length === 0 ? (
+      {query && matching.length === 0 ? (
         <div className="animate-fade-in-soft flex flex-col items-center gap-3 rounded-xl border border-dashed px-4 py-10 text-center">
           <span className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
             <SearchXIcon className="size-5" aria-hidden="true" />
@@ -372,29 +398,54 @@ export function ProjectsSection({
           </Button>
         </div>
       ) : (
-        <div className="grid auto-rows-fr grid-cols-[repeat(auto-fill,minmax(min(18rem,100%),1fr))] gap-3">
-          {shown.map((board, index) => (
-            // Press feedback sits on a wrapper so its scale transition composes with card-lift's hover
-            // lift; only the card's surface (its stretched link) presses it, not the buttons on top.
-            <div key={board.id} className="pressable h-full min-w-0 has-[button:active]:scale-100!">
-              <ProjectCard board={board} now={now} index={index} onEdit={onEdit} onDelete={onDelete} />
-            </div>
-          ))}
-        </div>
-      )}
-      {!query && matching.length > COLLAPSED_PROJECTS && (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          aria-expanded={expanded}
-          className={cn(
-            "pressable mt-2.5 inline-flex min-h-11 items-center gap-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground md:min-h-8",
-            FOCUS_RING,
+        <>
+          {pinned.length > 0 ? (
+            <ProjectGrid boards={pinned} offset={0} {...actions} />
+          ) : (
+            !query && (
+              <div className="animate-fade-in-soft flex flex-col items-center gap-2 rounded-xl border border-dashed px-4 py-8 text-center">
+                <span className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+                  <PinIcon className="size-5" aria-hidden="true" />
+                </span>
+                <p className="text-sm font-medium">Pin projects to keep them here</p>
+                <p className="max-w-xs text-xs text-pretty text-muted-foreground">
+                  Only pinned projects show on the dashboard. Pin one from its ⋯ menu under Other projects.
+                </p>
+              </div>
+            )
           )}
-        >
-          {expanded ? "Show fewer" : `View all ${matching.length} projects`}
-          <ChevronDownIcon className={cn("size-3.5 transition-transform", expanded && "rotate-180")} aria-hidden="true" />
-        </button>
+          {others.length > 0 &&
+            (query ? (
+              <>
+                <h3 className="mt-4 mb-2.5 text-xs font-medium text-muted-foreground">Other projects</h3>
+                <ProjectGrid boards={others} offset={pinned.length} {...actions} />
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowOthers((v) => !v)}
+                  aria-expanded={showOthers}
+                  className={cn(
+                    "pressable mt-2.5 inline-flex min-h-11 items-center gap-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground md:min-h-8",
+                    FOCUS_RING,
+                  )}
+                >
+                  Other projects
+                  <span className="font-mono tabular-nums">{others.length}</span>
+                  <ChevronDownIcon
+                    className={cn("size-3.5 transition-transform", showOthers && "rotate-180")}
+                    aria-hidden="true"
+                  />
+                </button>
+                {showOthers && (
+                  <div className="mt-2.5">
+                    <ProjectGrid boards={others} offset={pinned.length} {...actions} />
+                  </div>
+                )}
+              </>
+            ))}
+        </>
       )}
     </section>
   );

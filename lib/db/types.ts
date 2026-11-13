@@ -27,7 +27,7 @@ export interface CreateBoardInput {
   worktrees?: boolean;
 }
 export type UpdateBoardInput = Partial<
-  Pick<Board, "name" | "workdir" | "extraFolders" | "model" | "autoRun" | "worktrees">
+  Pick<Board, "name" | "workdir" | "extraFolders" | "model" | "autoRun" | "worktrees" | "pinned">
 >;
 
 export interface CreateTaskInput {

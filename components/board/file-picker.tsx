@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { api } from "@/lib/api-client";
+import { type FileSource, fileSourceKey, listSourceFiles } from "@/lib/file-source";
 import { isMacPlatform, modKeyLabel } from "@/lib/hotkeys";
 import type { ProjectFileHit } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -21,22 +21,22 @@ const SEARCH_DEBOUNCE_MS = 120;
 const BADGE = "shrink-0 rounded-full border px-1.5 py-px text-[10px] font-normal text-muted-foreground";
 
 /**
- * "Open file…" button with a searchable dropdown of the board's project files (Mod-P).
+ * "Open file…" button with a searchable dropdown of the source's files (Mod-P).
  * Picking a directory browses into it; picking a file calls `onPick` with its path id
  * (`ProjectFileHit.insert`).
  */
 export function FilePicker({
-  boardId,
+  source,
   onPick,
   className,
 }: {
-  boardId: string;
+  source: FileSource;
   onPick: (path: string) => void;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  /** Hits for the search `key` (`${boardId}\n${query}`); kept while a newer search loads. */
+  /** Hits for the search `key` (`${sourceKey}\n${query}`); kept while a newer search loads. */
   const [results, setResults] = useState<{ key: string; hits: ProjectFileHit[]; error: string | null } | null>(null);
   const [index, setIndex] = useState(0);
   const [modLabel, setModLabel] = useState<string | null>(null);
@@ -45,6 +45,10 @@ export function FilePicker({
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const listId = useId();
+  // Callers may pass a fresh source object every render; effects follow its key instead.
+  const sourceKey = fileSourceKey(source);
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
 
   // The platform is only known in the browser; reading it during render would mismatch hydration.
   useEffect(() => setModLabel(modKeyLabel()), []);
@@ -71,14 +75,13 @@ export function FilePicker({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const key = `${boardId}\n${query}`;
+  const key = `${sourceKey}\n${query}`;
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
     const timer = setTimeout(
       () => {
-        api.boards
-          .projectFiles(boardId, query, { limit: PICKER_LIMIT, signal: controller.signal })
+        listSourceFiles(sourceRef.current, query, { limit: PICKER_LIMIT, signal: controller.signal })
           .then(({ files }) => {
             if (!controller.signal.aborted) setResults({ key, hits: files, error: null });
           })
@@ -93,7 +96,7 @@ export function FilePicker({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [open, boardId, query, key]);
+  }, [open, query, key]);
 
   const loading = results?.key !== key;
   const hits = results?.hits ?? [];

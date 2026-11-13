@@ -5,7 +5,7 @@ import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { ADMIN_PASSWORD, api, call, freshEnv, setupAdmin, teardown, tempDir, waitFor } from "./helpers";
+import { ADMIN_PASSWORD, api, call, freshEnv, readOmpLog, setupAdmin, teardown, tempDir, waitFor } from "./helpers";
 
 import * as boardsRoute from "@/app/api/v1/boards/route";
 import * as connectRoute from "@/app/api/v1/chat/discord/connect/route";
@@ -25,6 +25,9 @@ const USER = { id: "user1", username: "alice" };
 const DM_CHANNEL = "dm-user1";
 const GUILD_CHANNEL = "guild-chan";
 const WAIT_MS = 5000;
+/** Answers come from the chat assistant, a helper omp process (the fake omp) started on demand. */
+const ANSWER_MS = 15_000;
+const PLACEHOLDER = "🤔 Working on it…";
 
 // ---------------------------------------------------------------------------------------------
 // Fake Discord REST
@@ -34,6 +37,8 @@ interface RecordedRequest {
   path: string;
   auth: string | null;
   body: unknown;
+  /** JSON body of the fake's response (undefined when it has none). */
+  response?: unknown;
 }
 
 const keys = generateKeyPairSync("ed25519");
@@ -91,8 +96,14 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   const path = url.slice(API.length);
   const auth = new Headers(init?.headers).get("authorization");
   const body: unknown = typeof init?.body === "string" && init.body ? JSON.parse(init.body) : undefined;
-  requests.push({ method, path, auth, body });
-  return discordResponse(method, path, auth, body);
+  const res = discordResponse(method, path, auth, body);
+  const response: unknown = await res
+    .clone()
+    .json()
+    .catch(() => undefined);
+  // Recorded with its response before the bot sees it, so a recorded message always has its id.
+  requests.push({ method, path, auth, body, response });
+  return res;
 }
 
 function find(method: string, path: string): RecordedRequest[] {
@@ -112,6 +123,25 @@ function messagesTo(channelId: string): string[] {
 /** Wait for the bot's message number `index` (0-based) in `channelId`. */
 function messageAt(channelId: string, index: number): Promise<string> {
   return waitFor(() => messagesTo(channelId)[index], WAIT_MS);
+}
+
+/**
+ * The assistant's answer to a message: the bot's message number `index` in `channelId` must be the
+ * placeholder, and the answer is the edit that replaces it (progress edits start with "🤔 ").
+ */
+async function assistantAnswer(channelId: string, index: number): Promise<string> {
+  expect(await messageAt(channelId, index)).toBe(PLACEHOLDER);
+  const placeholderId = String(bodyField(find("POST", `/channels/${channelId}/messages`)[index].response, "id"));
+  const path = `/channels/${channelId}/messages/${placeholderId}`;
+  return waitFor(
+    () => find("PATCH", path).map((r) => String(bodyField(r.body, "content"))).find((text) => !text.startsWith("🤔")),
+    ANSWER_MS,
+  );
+}
+
+/** `<calls>` block making the fake omp's chat assistant call these AgentMan tools. */
+function toolCalls(...calls: { toolName: string; arguments: Record<string, unknown> }[]): string {
+  return `<calls>${JSON.stringify(calls)}</calls>`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -290,9 +320,14 @@ describe("Discord chat integration", () => {
 
     const registered = find("PUT", `/applications/${APP_ID}/commands`);
     expect(registered).toHaveLength(1);
-    // The registration body is the array of slash command definitions.
-    const names = (registered[0].body as { name: string }[]).map((c) => c.name);
-    expect(names).toEqual(expect.arrayContaining(["create", "boards", "status", "run", "stop", "login"]));
+    // The registration body is the array of slash command definitions: only the three commands left.
+    const commands = registered[0].body as { name: string; options?: { name: string; required: boolean }[] }[];
+    expect(commands.map((c) => c.name)).toEqual(["login", "logout", "stop"]);
+    const option = (name: string) => commands.find((c) => c.name === name)?.options;
+    expect(option("login")).toEqual([expect.objectContaining({ name: "value", required: true })]);
+    expect(option("logout")).toBeUndefined();
+    // `/stop` alone cancels the current request, so its card id must stay optional.
+    expect(option("stop")).toEqual([expect.objectContaining({ name: "value", required: false })]);
 
     // The owner gets a DM telling them how to take control.
     await waitFor(
@@ -308,28 +343,39 @@ describe("Discord chat integration", () => {
     expect(raw).not.toContain(VALID_TOKEN);
   });
 
-  it("answers DMs: locked until /login, then /boards and /create work", async () => {
-    sendDm("/boards");
+  it("answers DMs in plain language: locked until /login, then the assistant lists the boards", async () => {
+    sendDm("show my boards");
     expect(await messageAt(DM_CHANNEL, 0)).toMatch(/\/login/);
     expect(messagesTo(DM_CHANNEL)[0]).not.toContain(board.name);
 
     const loginId = sendDm(`/login ${ADMIN_PASSWORD}`);
+    // Index 1: the locked message never reached the assistant (no placeholder in between).
     expect(await messageAt(DM_CHANNEL, 1)).toContain("AgentMan connected");
     // The message carrying the password is deleted.
     expect(find("DELETE", `/channels/${DM_CHANNEL}/messages/${loginId}`)).toHaveLength(1);
     expect((await chatStatus()).authorizedUsers).toBe(1);
 
-    sendDm("/boards");
-    const list = await messageAt(DM_CHANNEL, 2);
-    expect(list).toContain(board.name);
-    expect(list).toContain(board.id);
+    sendDm(`list them ${toolCalls({ toolName: "agentman_list_boards", arguments: {} })}`);
+    const answer = await assistantAnswer(DM_CHANNEL, 2);
+    expect(answer).toMatch(/^Chat reply: /);
+    expect(answer).toContain(board.name);
+    expect(answer).toContain(board.id);
+    expect(answer).not.toContain('"isError":true');
+    // The answer replaces the placeholder instead of arriving as another message.
+    expect(messagesTo(DM_CHANNEL)).toHaveLength(3);
+    const prompts = readOmpLog().filter((e) => e.kind === "helper").map((e) => e.prompt ?? "");
+    expect(prompts.some((p) => p.includes("show my boards"))).toBe(false);
+  });
 
-    sendDm("/create Discord card");
-    const created = await messageAt(DM_CHANNEL, 3);
+  it("creates a card when asked in a DM and answers with its id", async () => {
+    const index = messagesTo(DM_CHANNEL).length;
+    sendDm(`add a card ${toolCalls({ toolName: "agentman_create_card", arguments: { title: "Discord card" } })}`);
+    const answer = await assistantAnswer(DM_CHANNEL, index);
     const tasks = await (await getRepo()).listTasks(board.id);
     expect(tasks.map((t) => t.title)).toEqual(["Discord card"]);
     expect(tasks[0].status).toBe("todo");
-    expect(created).toContain(tasks[0].id);
+    expect(answer).toContain(tasks[0].id);
+    expect(answer).not.toContain('"isError":true');
   });
 
   it("ignores guild chatter but answers a mention in the same channel", async () => {
@@ -345,15 +391,15 @@ describe("Discord chat integration", () => {
       id: "in-guild-2",
       guild_id: "g1",
       channel_id: GUILD_CHANNEL,
-      content: `<@${BOT_ID}> /boards`,
+      content: `<@${BOT_ID}> hello`,
       author: USER,
     });
-    expect(await messageAt(GUILD_CHANNEL, 0)).toContain(board.name);
-    // Messages of one channel are handled in order, so a reply to the first would already be here.
+    // Messages of one channel are handled in order, so a placeholder for the first would be number 0.
+    expect(await assistantAnswer(GUILD_CHANNEL, 0)).toBe("Chat reply: hello");
     expect(messagesTo(GUILD_CHANNEL)).toHaveLength(1);
   });
 
-  it("runs a slash command from the gateway: deferred callback, then the original response is filled", async () => {
+  it("runs a slash /stop from the gateway: deferred callback, then the original response is filled", async () => {
     gateway().dispatch("INTERACTION_CREATE", {
       id: "int1",
       application_id: APP_ID,
@@ -361,17 +407,28 @@ describe("Discord chat integration", () => {
       token: "itok1",
       channel_id: DM_CHANNEL,
       user: USER,
-      data: { name: "boards" },
+      data: { name: "stop" },
     });
     const patchPath = `/webhooks/${APP_ID}/itok1/messages/@original`;
     const patch = await waitFor(() => requests.find((r) => r.method === "PATCH" && r.path === patchPath), WAIT_MS);
-    expect(bodyField(patch.body, "content")).toContain(board.name);
+    expect(bodyField(patch.body, "content")).toBe("Nothing to stop.");
 
     const callbackPath = "/interactions/int1/itok1/callback";
     const callback = find("POST", callbackPath);
     expect(callback).toHaveLength(1);
     expect(bodyField(callback[0].body, "type")).toBe(5);
     expect(requests.indexOf(callback[0])).toBeLessThan(requests.indexOf(patch));
+  });
+
+  it("cancels the request in flight on /stop and says so in its placeholder", async () => {
+    const index = messagesTo(DM_CHANNEL).length;
+    sendDm("take your time [fake-chat:slow]");
+    expect(await messageAt(DM_CHANNEL, index)).toBe(PLACEHOLDER);
+    // The assistant is busy; /stop must not wait behind it.
+    sendDm("/stop");
+    expect(await assistantAnswer(DM_CHANNEL, index)).toBe("⏹ Cancelled.");
+    expect(await messageAt(DM_CHANNEL, index + 1)).toBe("⏹ Cancelled the current request.");
+    expect(messagesTo(DM_CHANNEL)).toHaveLength(index + 2);
   });
 
   it("serves the Interactions Endpoint URL with Ed25519 signature checks", async () => {
@@ -399,7 +456,7 @@ describe("Discord chat integration", () => {
       guild_id: "g1",
       channel_id: GUILD_CHANNEL,
       member: { user: USER },
-      data: { name: "boards" },
+      data: { name: "stop" },
     });
     const deferred = await signedWebhook(interaction);
     expect(deferred.status).toBe(200);
@@ -407,7 +464,7 @@ describe("Discord chat integration", () => {
 
     const patchPath = `/webhooks/${APP_ID}/itok2/messages/@original`;
     const patch = await waitFor(() => requests.find((r) => r.method === "PATCH" && r.path === patchPath), WAIT_MS);
-    expect(bodyField(patch.body, "content")).toContain(board.name);
+    expect(bodyField(patch.body, "content")).toBe("Nothing to stop.");
     // Already acknowledged in the HTTP response: no separate callback.
     expect(find("POST", "/interactions/int2/itok2/callback")).toHaveLength(0);
   });

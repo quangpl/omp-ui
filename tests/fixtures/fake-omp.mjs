@@ -49,10 +49,13 @@
 //   FAKE_OMP_DRAFT        Reply text of the card writer (an RPC prompt starting with "You are the card
 //                         writer"; see cardWriter), used verbatim instead of the card it writes.
 //
-// Helper workers (started with --no-session: card writer, advisor, queue planner) are pooled and
-// reused across prompts via new_session. They log "helper_argv" at startup instead of "argv",
-// every prompt as a "helper" entry {argv, cwd, prompt}, and other commands as "helper_command"
-// instead of "command", so card-run assertions only see card runs.
+// Helper workers (started with --no-session: card writer, advisor, queue planner, chat assistant) are
+// pooled and reused across prompts via new_session. They log "helper_argv" at startup instead of
+// "argv", every prompt as a "helper" entry {argv, cwd, prompt}, and other commands as
+// "helper_command" instead of "command", so card-run assertions only see card runs. A helper prompt
+// starting with "You are AgentMan's chat assistant" is answered by chatAssistant: it calls the host
+// tools the message lists as `<calls>[…]</calls>` and answers "Chat reply: …"; `[fake-chat:slow]`
+// never answers, `[fake-chat:fail]` exits 1 (see chatAssistant).
 //
 // Test-only commands (answered like real commands): fake_echo {value, delayMs}, fake_crash,
 // fake_chunked {size}, fake_bad_chunk.
@@ -437,6 +440,50 @@ async function boardTools(message) {
 }
 
 /**
+ * The chat assistant (a helper prompt starting with "You are AgentMan's chat assistant"): takes the
+ * message between the <new-message> and </new-message> lines. When it holds
+ * `<calls>[{"toolName", "arguments"}]</calls>`, it reports one tool call (intent "Using AgentMan's
+ * tools"), calls those host tools one after another (`"$created"` in arguments becomes the id of
+ * the card the last agentman_create_card made, from its `{card: {id}}` result), then answers
+ * `Chat reply: <JSON list of {toolName, isError, text}>`; otherwise it answers `Chat reply: <message>`.
+ * A `[fake-chat:<mode>]` marker in the message changes that:
+ *   slow         reports the tool call, then never answers (until aborted or killed).
+ *   fail         exits 1 without an answer.
+ */
+async function chatAssistant(prompt) {
+  const current = run;
+  const text = /^<new-message>\n([\s\S]*?)\n<\/new-message>$/m.exec(prompt)?.[1] ?? "";
+  const modes = [...text.matchAll(/\[fake-chat:([a-z]+)\]/g)].map((m) => m[1]);
+  if (modes.includes("fail")) {
+    process.stderr.write("fake omp: chat assistant exploded\n", () => process.exit(1));
+    return;
+  }
+  const match = /<calls>([\s\S]*?)<\/calls>/.exec(text);
+  const calls = match ? JSON.parse(match[1]) : [];
+  if (calls.length > 0 || modes.includes("slow")) {
+    emit({ type: "tool_execution_start", toolCallId: "chat-1", toolName: "agentman", args: {}, intent: "Using AgentMan's tools" });
+  }
+  if (modes.includes("slow")) return;
+  if (calls.length === 0) {
+    finishRun(assistant(`Chat reply: ${text}`, "stop"));
+    return;
+  }
+  const results = [];
+  let created = null;
+  for (const call of calls) {
+    const args = JSON.parse(JSON.stringify(call.arguments ?? {}).replaceAll('"$created"', JSON.stringify(created)));
+    const id = `host_${++hostCallSeq}`;
+    emit({ type: "host_tool_call", id, toolCallId: `toolu_${id}`, toolName: call.toolName, arguments: args });
+    const reply = await waitForHostResult(id);
+    if (run !== current) return;
+    const result = reply.result?.content?.map((c) => c.text).join("") ?? "";
+    if (call.toolName === "agentman_create_card" && !reply.isError) created = JSON.parse(result).card.id;
+    results.push({ toolName: call.toolName, isError: reply.isError === true, text: result });
+  }
+  finishRun(assistant(`Chat reply: ${JSON.stringify(results)}`, "stop"));
+}
+
+/**
  * The card writer (a prompt starting with "You are the card writer…"): takes the request between
  * the <request> and </request> lines, or reads the file the prompt says it "is saved in", reports
  * one tool call, then answers with FAKE_OMP_DRAFT or a card: the request's first line (without
@@ -573,6 +620,10 @@ async function startPrompt(command) {
   emit({ type: "turn_start" });
   if (cardWriterPrompt) {
     await cardWriter(command.message);
+    return;
+  }
+  if (helper && String(command.message ?? "").startsWith("You are AgentMan's chat assistant")) {
+    await chatAssistant(String(command.message));
     return;
   }
   if (helper) {

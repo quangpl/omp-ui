@@ -13,6 +13,7 @@ const board: Board = {
   model: null,
   autoRun: true,
   worktrees: false,
+  pinned: false,
   createdAt: NOW,
   updatedAt: NOW,
 };

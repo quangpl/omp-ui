@@ -40,6 +40,7 @@ import type {
 import {
   POSITION_STEP,
   type SchemaSnapshot,
+  boardPatchUpdatedAt,
   emptyStatusCounts,
   logSchemaMigrations,
   newId,
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS boards (
   model TEXT,
   auto_run INTEGER NOT NULL DEFAULT 1,
   worktrees INTEGER NOT NULL DEFAULT 0,
+  pinned INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -197,6 +199,7 @@ function toBoard(r: Row): Board {
     model: strOrNull(r.model),
     autoRun: num(r.auto_run) !== 0,
     worktrees: num(r.worktrees) !== 0,
+    pinned: num(r.pinned) !== 0,
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
   };
@@ -362,6 +365,7 @@ export class SqliteRepository implements Repository {
     this.addMissingColumns("boards", [
       ["extra_folders", "TEXT NOT NULL DEFAULT '[]'"],
       ["worktrees", "INTEGER NOT NULL DEFAULT 0"],
+      ["pinned", "INTEGER NOT NULL DEFAULT 0"],
     ]);
     this.addMissingColumns("tasks", [
       ["blocked_by", "TEXT NOT NULL DEFAULT '[]'"],
@@ -493,6 +497,7 @@ export class SqliteRepository implements Repository {
       model: input.model ?? null,
       autoRun: input.autoRun ?? true,
       worktrees: input.worktrees ?? false,
+      pinned: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -520,7 +525,8 @@ export class SqliteRepository implements Repository {
       ["model", patch.model],
       ["auto_run", patch.autoRun === undefined ? undefined : patch.autoRun ? 1 : 0],
       ["worktrees", patch.worktrees === undefined ? undefined : patch.worktrees ? 1 : 0],
-      ["updated_at", nowIso()],
+      ["pinned", patch.pinned === undefined ? undefined : patch.pinned ? 1 : 0],
+      ["updated_at", boardPatchUpdatedAt(patch)],
     ]);
     const res = this.db.prepare(`UPDATE boards SET ${sql} WHERE id = ?`).run(...params, id);
     if (Number(res.changes) === 0) return null;

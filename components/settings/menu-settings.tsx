@@ -24,6 +24,8 @@ const MENUS: Record<DashboardMenuId, { label: string; hint: string }> = {
   visualize: { label: "Visualize", hint: "Your agent crew at work, live across every project." },
   containers: { label: "Containers", hint: "Docker containers, stacks and the app catalog." },
   terminal: { label: "Terminal", hint: "A shell on the server in the browser." },
+  files: { label: "Files", hint: "Browse and edit a project's files or any server folder." },
+  artifacts: { label: "Artifacts", hint: "Final results and deliverables of finished cards, by project." },
   memory: { label: "Memory", hint: "What agents remember across sessions." },
   credentials: { label: "Credentials", hint: "Provider logins and API keys agents use." },
   stats: { label: "Stats", hint: "Usage, cost and throughput over time." },

@@ -1,4 +1,4 @@
-import type { DbDriver } from "@/lib/db/types";
+import type { DbDriver, UpdateBoardInput } from "@/lib/db/types";
 import { logEvent } from "@/lib/server/log-store";
 import { TASK_STATUSES, type Task, type TaskStatus } from "@/lib/types";
 
@@ -18,6 +18,15 @@ export function nowIso(): string {
   const now = Date.now();
   lastTimestamp = now > lastTimestamp ? now : lastTimestamp + 1;
   return new Date(lastTimestamp).toISOString();
+}
+
+/**
+ * A board patch's new `updatedAt`: undefined when it only (un)pins the board, which arranges the
+ * dashboard and is not a change to the project (its "Active …" time stays put).
+ */
+export function boardPatchUpdatedAt(patch: UpdateBoardInput): string | undefined {
+  const changes = Object.entries(patch).some(([key, value]) => key !== "pinned" && value !== undefined);
+  return changes ? nowIso() : undefined;
 }
 
 export function newId(): string {

@@ -17,13 +17,16 @@ import { cardHref } from "@/components/home/shared";
 import { ACTIVITY_ICON } from "@/components/visualize/activity-icons";
 import { type AchievementId, XP_PER_CARD, achievements, crewLevel, workerIdentity } from "@/components/visualize/game";
 import { agentVitals, moodTone, type Vitals } from "@/components/visualize/mood";
+import { ROLE_INFO, roleOf, subagentName } from "@/components/visualize/roles";
 import type { LiveAgent } from "@/components/visualize/use-live-agents";
-import { ManaBar, MOOD_LABEL, WorkerAvatar } from "@/components/visualize/worker-avatar";
+import { ManaBar, MOOD_LABEL, RoleTag, WorkerAvatar } from "@/components/visualize/worker-avatar";
 import type { Dashboard, QueueEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** Running cards listed in the ticker before it folds the rest into "+N more". */
 const MAX_TICKER = 3;
+/** Busy subagents named under a ticker row before the rest fold into "+N". */
+const MAX_CREW = 4;
 /** The XP gauge never draws more ticks than this; past it one tick stands for several cards. */
 const MAX_TICKS = 24;
 /** How long a stamp ("+100 XP", a freshly earned badge) stays marked as new. */
@@ -138,6 +141,34 @@ function VitalMeter({ label, value, className }: { label: string; value: number;
   );
 }
 
+/** The subagents a lead has working right now: robot, name and role each. */
+function Crew({ taskId, agent }: { taskId: string; agent: LiveAgent | undefined }) {
+  const busy = Object.values(agent?.helpers ?? {}).filter((s) => s.status === "running" || s.status === "pending");
+  if (busy.length === 0) return null;
+  const hidden = busy.length - MAX_CREW;
+  return (
+    <ul aria-label="Subagents at work" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+      {busy.slice(0, MAX_CREW).map((subagent) => {
+        const role = roleOf(subagent.agent);
+        const name = subagentName(subagent.id, subagent.agent);
+        const { hue } = workerIdentity(`${taskId}:${subagent.id}`);
+        return (
+          <li
+            key={subagent.id}
+            className="flex min-w-0 items-center gap-1"
+            title={`${name}: ${ROLE_INFO[role].label} (${subagent.agent} agent)${subagent.description ? `, ${subagent.description}` : ""}`}
+          >
+            <WorkerAvatar hue={hue} mood="working" role={role} animated={false} className="size-5 shrink-0" />
+            <span className="max-w-32 truncate font-mono text-muted-foreground">{name}</span>
+            <RoleTag hue={hue}>{ROLE_INFO[role].label}</RoleTag>
+          </li>
+        );
+      })}
+      {hidden > 0 && <li className="font-mono text-muted-foreground">+{hidden}</li>}
+    </ul>
+  );
+}
+
 function TickerRow({
   entry,
   agent,
@@ -170,7 +201,10 @@ function TickerRow({
       <WorkerAvatar hue={worker.hue} mood={vitals.mood} role="lead" help={vitals.help !== null} className="size-10" />
       <div className="min-w-0 flex-1 space-y-1">
         <p className="flex min-w-0 items-baseline gap-2.5">
-          <span className="shrink-0 font-mono text-xs text-muted-foreground">{worker.name}</span>
+          <span className="flex shrink-0 items-baseline gap-1.5">
+            <span className="font-mono text-xs text-muted-foreground">{worker.name}</span>
+            <RoleTag hue={worker.hue}>{ROLE_INFO.lead.label}</RoleTag>
+          </span>
           <Link
             href={href}
             title={`${entry.title} in ${entry.boardName}`}
@@ -184,6 +218,7 @@ function TickerRow({
           <span className="shrink-0 text-foreground">{activity?.label ?? "Clocking in"}</span>
           {activity?.detail && <span className="min-w-0 truncate">{activity.detail}</span>}
         </p>
+        <Crew taskId={entry.taskId} agent={agent} />
         <p
           className={cn(
             "flex min-w-0 items-center gap-2 text-xs",

@@ -1,6 +1,6 @@
 "use client";
 
-import { Circle, CircleCheck, CircleDot, CircleSlash, ListChecks } from "lucide-react";
+import { Circle, CircleCheck, CircleDot, CircleSlash, ListChecks, LoaderCircle } from "lucide-react";
 import { DetailSection } from "@/components/board/detail-section";
 import { formatEta, useNow } from "@/components/board/format";
 import { type Task, type TaskStatus, type TodoItemStatus, type TodoPhase } from "@/lib/types";
@@ -44,6 +44,9 @@ function RunningTodoEta({ todos, verbose, className }: { todos: TodoPhase[]; ver
 
 const RADIUS = 6.25;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
+/** Arc length bounds (fraction of the ring) while the ring spins for a running agent. */
+const SPIN_ARC_MIN = 0.25;
+const SPIN_ARC_MAX = 0.8;
 
 const RING_TONE: Record<TaskStatus, string> = {
   todo: "text-muted-foreground",
@@ -67,25 +70,29 @@ export function progressLabel(status: TaskStatus, progress: TodoProgress | null)
 
 /**
  * A card's progress ring: filled by the agent's todo list when it kept one, else by the card's
- * column (To do: empty dashed ring, In progress: half, Done: full with a check).
+ * column (To do: empty dashed ring, In progress: half, Done: full with a check). While the agent
+ * runs, the arc spins like a loading indicator; its length stays clamped so it never vanishes
+ * (0 %) or closes into a full ring (100 %), where the rotation would be invisible.
  */
 export function TaskProgressIcon({
   task,
   className,
 }: {
-  task: Pick<Task, "status" | "todos" | "openCommentCount">;
+  task: Pick<Task, "status" | "agentState" | "todos" | "openCommentCount">;
   className?: string;
 }) {
   const progress = todoProgress(task.todos, task.openCommentCount);
   const fraction = progressFraction(task.status, progress);
   const label = progressLabel(task.status, progress);
-  const notStarted = task.status === "todo" && fraction === 0;
+  const spinning = task.agentState === "running" && task.status !== "done";
+  const arc = spinning ? Math.min(Math.max(fraction, SPIN_ARC_MIN), SPIN_ARC_MAX) : fraction;
+  const notStarted = !spinning && task.status === "todo" && fraction === 0;
   return (
     <svg
       viewBox="0 0 16 16"
       role="img"
       aria-label={label}
-      className={cn("size-4 shrink-0", RING_TONE[task.status], className)}
+      className={cn("size-4 shrink-0", RING_TONE[task.status], spinning && "text-primary", className)}
       data-progress={Math.round(fraction * 100)}
     >
       <title>{label}</title>
@@ -99,19 +106,22 @@ export function TaskProgressIcon({
         strokeDasharray={notStarted ? "2.2 2.2" : undefined}
         className={notStarted ? "opacity-70" : "opacity-20"}
       />
-      {fraction > 0 && (
-        <circle
-          cx="8"
-          cy="8"
-          r={RADIUS}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-          strokeDasharray={`${fraction * CIRCUMFERENCE} ${CIRCUMFERENCE}`}
-          transform="rotate(-90 8 8)"
-          className="transition-[stroke-dasharray] duration-500 ease-out motion-reduce:transition-none"
-        />
+      {arc > 0 && (
+        // The spin lives on the group: CSS `transform` on the circle would replace its rotate(-90) attribute.
+        <g className={cn(spinning && "origin-center animate-spin motion-reduce:animate-none")}>
+          <circle
+            cx="8"
+            cy="8"
+            r={RADIUS}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+            strokeDasharray={`${arc * CIRCUMFERENCE} ${CIRCUMFERENCE}`}
+            transform="rotate(-90 8 8)"
+            className="transition-[stroke-dasharray] duration-500 ease-out motion-reduce:transition-none"
+          />
+        </g>
       )}
       {task.status === "done" && (
         <path
@@ -141,6 +151,7 @@ export function TodoListSection({
   task: Pick<Task, "status" | "agentState" | "todos" | "openCommentCount">;
 }) {
   const progress = todoProgress(task.todos, task.openCommentCount);
+  const running = task.agentState === "running";
   if (!progress) return null;
   return (
     <DetailSection
@@ -166,9 +177,17 @@ export function TodoListSection({
             <ul className="flex flex-col gap-1">
               {phase.tasks.map((item, itemIndex) => {
                 const { icon: Icon, className, label } = ITEM_ICON[item.status];
+                const active = running && item.status === "in_progress";
                 return (
                   <li key={`${itemIndex}:${item.content}`} className="flex min-w-0 items-start gap-2 text-sm">
-                    <Icon aria-hidden className={cn("mt-0.5 size-4 shrink-0", className)} />
+                    {active ? (
+                      <LoaderCircle
+                        aria-hidden
+                        className={cn("mt-0.5 size-4 shrink-0 animate-spin motion-reduce:animate-none", className)}
+                      />
+                    ) : (
+                      <Icon aria-hidden className={cn("mt-0.5 size-4 shrink-0", className)} />
+                    )}
                     <span
                       className={cn(
                         "min-w-0 break-words",

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import {
   CheckIcon,
   ChevronRightIcon,
+  CopyIcon,
   ExternalLinkIcon,
   Loader2Icon,
   MessageCircleIcon,
@@ -24,29 +25,86 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api-client";
 import { CHAT_PLATFORMS, type ChatPlatform, type ChatPlatformStatus, type ChatStatusResponse } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, copyText } from "@/lib/utils";
 
 const FIELD = "h-11 md:h-9";
+/** BotFather chat: t.me opens the Telegram app (desktop or mobile), with a web fallback page. */
+const BOTFATHER_URL = "https://t.me/BotFather";
+/** BotFather in Telegram Web, for browsers without the Telegram app. */
+const BOTFATHER_WEB_URL = "https://web.telegram.org/k/#@BotFather";
+/**
+ * A Telegram bot token inside pasted text (same shape lib/server/chat/telegram.ts checks), so
+ * BotFather's whole "Done! Congratulations…" reply can be pasted as is.
+ */
+const TELEGRAM_TOKEN_IN_TEXT = /\d+:[A-Za-z0-9_-]{30,}/;
 /** How often the section re-reads GET /chat/status while mounted. */
 const POLL_MS = 5_000;
 
 const CODE = "rounded bg-muted px-1 py-0.5 font-mono text-xs break-all text-foreground";
 const LINK = "font-medium text-foreground underline underline-offset-4 hover:text-primary";
 
-/** The chat commands, identical on Telegram and Discord (lib/server/chat/commands.ts). */
+/** Example requests shown in the "How to use" panel; the chat assistant handles any wording. */
+const EXAMPLES = [
+  "show my boards",
+  "create a card on omp-ui to fix the login page and start it",
+  "what is running right now?",
+  "tell card 1a2b to also add tests",
+];
+
+/** The only chat commands, identical on Telegram and Discord (lib/server/chat/commands.ts). */
 const COMMANDS: { usage: string; description: string }[] = [
   { usage: "/login <password>", description: "Unlock control with the admin password" },
-  { usage: "/boards", description: "List the projects" },
-  { usage: "/board <name>", description: "Pick the project /create adds cards to" },
-  { usage: "/create <title>", description: "Add a To do card; replies with its id" },
-  { usage: "/status [board]", description: "Cards and running agents" },
-  { usage: "/run <cardId>", description: "Start a card's agent; its output streams here" },
-  { usage: "/stop <cardId>", description: "Stop a card's agent" },
-  { usage: "/help", description: "Show the commands" },
+  { usage: "/logout", description: "Lock this chat again" },
+  { usage: "/stop [cardId]", description: "Stop a card's agent; without an id, cancel the current request" },
 ];
 
 function errorText(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
+}
+
+/** Telegram setup shortcut: open BotFather directly and copy `/newbot` to paste there. */
+function BotFatherShortcut() {
+  async function copyNewbot() {
+    try {
+      await copyText("/newbot");
+      toast.success("/newbot copied — paste it in the BotFather chat");
+    } catch {
+      toast.error("Couldn't copy", { description: "The browser blocked clipboard access." });
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center">
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <p className="text-sm font-medium">No bot yet?</p>
+        <p className="text-xs text-pretty text-muted-foreground">
+          Open BotFather, send <code className={CODE}>/newbot</code>, pick a name and a username ending in
+          &ldquo;bot&rdquo;, then paste its reply below. No Telegram app?{" "}
+          <a href={BOTFATHER_WEB_URL} target="_blank" rel="noreferrer" className={LINK}>
+            Use Telegram Web
+          </a>
+          .
+        </p>
+      </div>
+      <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+        <Button asChild className={cn(FIELD, "pressable gap-2")}>
+          <a href={BOTFATHER_URL} target="_blank" rel="noreferrer">
+            <SendIcon />
+            Open @BotFather
+          </a>
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => void copyNewbot()}
+          className={cn(FIELD, "pressable gap-2")}
+        >
+          <CopyIcon />
+          Copy /newbot
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 /** Per-platform copy: name, icon, token placeholder, bot link label and setup steps. */
@@ -62,15 +120,15 @@ const PLATFORMS: Record<
     steps: [
       <>
         Open{" "}
-        <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className={LINK}>
+        <a href={BOTFATHER_URL} target="_blank" rel="noreferrer" className={LINK}>
           @BotFather
         </a>{" "}
         and send <code className={CODE}>/newbot</code>.
       </>,
-      <>Copy the token it gives you, paste it here and click Connect.</>,
+      <>Copy the token it gives you (or its whole reply), paste it here and click Connect.</>,
       <>
         Open your bot and send <code className={CODE}>/login &lt;admin password&gt;</code>; it answers
-        &ldquo;AgentMan connected&rdquo;.
+        &ldquo;AgentMan connected&rdquo;. Then just tell it what you want.
       </>,
     ],
   },
@@ -94,7 +152,7 @@ const PLATFORMS: Record<
       <>Paste the token here and click Connect; the bot sends you a DM.</>,
       <>
         Use &ldquo;Add to server&rdquo; or DM the bot, then send{" "}
-        <code className={CODE}>/login &lt;admin password&gt;</code>.
+        <code className={CODE}>/login &lt;admin password&gt;</code> and tell it what you want.
       </>,
     ],
   },
@@ -269,12 +327,20 @@ function ChatPlatformPanel({
           </Alert>
         )}
 
+        {platform === "telegram" && !status.configured && <BotFatherShortcut />}
+
         <form onSubmit={(e) => void connect(e)} noValidate className="space-y-3">
           <SettingsField
             label={status.configured ? "New bot token" : "Bot token"}
             htmlFor={tokenId}
             error={error}
-            hint={status.configured ? "Paste a new token to replace the saved one." : undefined}
+            hint={
+              status.configured
+                ? "Paste a new token to replace the saved one."
+                : platform === "telegram"
+                  ? "Pasting BotFather's whole message works too; the token is picked out of it."
+                  : undefined
+            }
           >
             <div className="flex flex-col gap-2 sm:flex-row">
               <div className="min-w-0 flex-1">
@@ -282,7 +348,8 @@ function ChatPlatformPanel({
                   id={tokenId}
                   value={token}
                   onChange={(e) => {
-                    setToken(e.target.value);
+                    const value = e.target.value;
+                    setToken(platform === "telegram" ? (TELEGRAM_TOKEN_IN_TEXT.exec(value)?.[0] ?? value) : value);
                     setError(null);
                   }}
                   placeholder={meta.placeholder}
@@ -345,8 +412,9 @@ function ChatPlatformPanel({
 
 /**
  * Settings → Chat integrations: connect a Telegram and/or Discord bot by pasting its token. The
- * admin then controls AgentMan from chat (create cards, status, run/stop agents with streamed
- * output) after `/login <admin password>`. Status is re-read every 5 s while mounted.
+ * admin then controls AgentMan in natural language (an omp assistant with AgentMan tools manages
+ * boards and cards; started cards stream their output) after `/login <admin password>`. Status is
+ * re-read every 5 s while mounted.
  */
 export function ChatSettingsSection() {
   const [status, setStatus] = useState<ChatStatusResponse | null>(null);
@@ -436,8 +504,22 @@ export function ChatSettingsSection() {
       )}
 
       <SettingsPanel>
-        <SettingsGroup title="Commands" className="space-y-3">
-          <ul className="grid gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2">
+        <SettingsGroup title="How to use" className="space-y-3">
+          <p className="text-xs text-pretty text-muted-foreground">
+            Just write what you want. An AgentMan assistant (an omp agent using the default model from Settings →
+            Agent) lists boards and cards, creates, starts, stops, moves and messages cards, then replies. Started
+            cards stream their output into the chat.
+          </p>
+          <ul className="space-y-1.5 text-xs">
+            {EXAMPLES.map((example) => (
+              <li key={example} className="min-w-0">
+                <span className="rounded bg-muted px-1.5 py-0.5 text-pretty text-foreground">
+                  &ldquo;{example}&rdquo;
+                </span>
+              </li>
+            ))}
+          </ul>
+          <ul className="grid gap-x-6 gap-y-1.5 text-xs sm:grid-cols-3">
             {COMMANDS.map((command) => (
               <li key={command.usage} className="flex min-w-0 flex-col gap-0.5">
                 <code className="font-mono text-foreground">{command.usage}</code>
@@ -446,8 +528,8 @@ export function ChatSettingsSection() {
             ))}
           </ul>
           <p className="text-xs text-pretty text-muted-foreground">
-            The same commands work on Telegram and Discord. Only someone who knows the admin password can control
-            AgentMan. Changing the password logs every chat out.
+            Card ids may be shortened to a unique prefix. Everything works the same on Telegram and Discord. Only
+            someone who knows the admin password can control AgentMan. Changing the password logs every chat out.
           </p>
         </SettingsGroup>
       </SettingsPanel>

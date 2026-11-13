@@ -34,6 +34,8 @@ export interface Board {
    * working tree. Non-git folders stay shared. Default false.
    */
   worktrees: boolean;
+  /** Pinned projects are the ones the home dashboard lists; the rest sit behind "Other projects". Default false. */
+  pinned: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -338,7 +340,10 @@ export interface AppSettings {
   cleanupTargets: ScheduledCleanupId[];
   /** Show a browser notification when a card on the open board finishes (moves to Done). Permission is per browser; the UI asks for it when turning this on. */
   taskCompletionNotifications: boolean;
-  /** Optional sections shown in the navigation menu (sidebar, phone tabs, home "Go to"); default: all. */
+  /**
+   * Optional sections shown in the navigation menu (sidebar, phone tabs, home "Go to"); default: all.
+   * Sections added after the list was saved show until hidden (lib/settings.ts `knownDashboardMenus`).
+   */
   visibleDashboardMenus: DashboardMenuId[];
   /**
    * Telegram bot token (Settings → Chat integrations), AES-256-GCM sealed with the credentials key
@@ -450,12 +455,73 @@ export const DASHBOARD_MENU_IDS = [
   "visualize",
   "containers",
   "terminal",
+  "files",
+  "artifacts",
   "memory",
   "credentials",
   "stats",
   "settings",
 ] as const;
 export type DashboardMenuId = (typeof DASHBOARD_MENU_IDS)[number];
+
+/**
+ * Artifacts page period filter (GET /artifacts?from=&to=): a card counts when its latest succeeded
+ * run ended at or after `from` and before `to` (ISO timestamps; either may be omitted = unbounded).
+ */
+export interface ArtifactPeriod {
+  from?: string;
+  to?: string;
+}
+
+/** One project on the Artifacts page (GET /artifacts), with its final results in the period. */
+export interface ArtifactProject {
+  boardId: string;
+  name: string;
+  workdir: string;
+  pinned: boolean;
+  /** Cards whose latest succeeded run ended in the period. */
+  resultCount: number;
+  /** Final attachments across those cards. */
+  attachmentCount: number;
+  /** When the newest of those runs ended; null when none in the period. */
+  latestAt: string | null;
+}
+
+/**
+ * A final deliverable of a card: a file of the card's shared files (`/api/v1/tasks/:id/files/…`)
+ * linked or embedded in its final run summary. Other files of the card (screenshots and notes made
+ * while working) are not artifacts.
+ */
+export interface ArtifactFile {
+  /** Path relative to the card's files folder, `/`-separated. */
+  name: string;
+  /** `/api/v1/tasks/:id/files/<name>` (as linked in the summary, path segments encoded). */
+  url: string;
+  /** Bytes; null when the file no longer exists. */
+  size: number | null;
+  /** Null when the file no longer exists. */
+  modifiedAt: string | null;
+}
+
+/** One card's final result (GET /artifacts/:boardId), newest `finishedAt` first. */
+export interface ArtifactResult {
+  taskId: string;
+  boardId: string;
+  title: string;
+  status: TaskStatus;
+  /** The card's latest succeeded run. */
+  runId: string;
+  /** That run's final summary (markdown). */
+  summary: string;
+  /** That run's `endedAt`. */
+  finishedAt: string;
+  attachments: ArtifactFile[];
+}
+
+export interface ArtifactProjectResults {
+  board: { id: string; name: string; workdir: string };
+  results: ArtifactResult[];
+}
 
 /**
  * Browser control for agents: `off` disables omp's browser; `headless` (default) runs an

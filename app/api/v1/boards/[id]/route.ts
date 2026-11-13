@@ -35,6 +35,7 @@ export const PATCH = withApi<Params>(async ({ req, repo, params }) => {
   if (body.model !== undefined) patch.model = parseModel(body.model);
   if (body.autoRun !== undefined) patch.autoRun = parseBoolean(body.autoRun, "autoRun");
   if (body.worktrees !== undefined) patch.worktrees = parseBoolean(body.worktrees, "worktrees");
+  if (body.pinned !== undefined) patch.pinned = parseBoolean(body.pinned, "pinned");
   if (Object.keys(patch).length === 0) return json(current);
   const board = await repo.updateBoard(params.id, patch);
   if (!board) return error(404, "Board not found");

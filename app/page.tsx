@@ -7,6 +7,7 @@ import { AppHeader } from "@/components/app-header";
 import { useNow } from "@/components/board/format";
 import { BoardFormDialog } from "@/components/boards/board-form-dialog";
 import { BoardsEmptyState } from "@/components/boards/boards-empty-state";
+import { setBoardPinned } from "@/components/boards/pin-board";
 import { DeleteBoardDialog } from "@/components/boards/delete-board-dialog";
 import { ActivityFeed } from "@/components/home/activity-feed";
 import {
@@ -97,6 +98,12 @@ export default function HomePage() {
   }, [load]);
 
   const openCreate = () => setForm({ open: true, board: null });
+  const togglePin = async (board: BoardWithCounts) => {
+    const setPinned = (pinned: boolean) =>
+      setDashboard((d) => (d ? { ...d, boards: d.boards.map((b) => (b.id === board.id ? { ...b, pinned } : b)) } : d));
+    setPinned(!board.pinned);
+    if (!(await setBoardPinned(board, !board.pinned))) setPinned(board.pinned);
+  };
   const setup = dashboard?.setup;
   const setupComplete = Boolean(setup?.hasCard && setup.hasRun && setup.hasPush && setup.settingsSaved);
   const showSetup = Boolean(dashboard && !setupPrefs.dismissed);
@@ -181,6 +188,7 @@ export default function HomePage() {
                         now={now}
                         onEdit={(b) => setForm({ open: true, board: b })}
                         onDelete={setDeleting}
+                        onTogglePin={(b) => void togglePin(b)}
                       />
                     </div>
                     {setupComplete && steps && <div className="order-8 col-span-full min-w-0">{steps}</div>}

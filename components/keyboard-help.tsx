@@ -57,6 +57,8 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
       { label: "Visualize", keys: ["G V"] },
       { label: "Containers (Docker)", keys: ["G D"] },
       { label: "Terminal", keys: ["G X"] },
+      { label: "Files", keys: ["G F"] },
+      { label: "Artifacts", keys: ["G A"] },
       { label: "Stats", keys: ["G T"] },
       { label: "Logs", keys: ["G L"] },
       { label: "Memory", keys: ["G M"] },
