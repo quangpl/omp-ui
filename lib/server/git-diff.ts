@@ -1,4 +1,4 @@
-// A card's code changes for the Changes tab: per folder the card works in (its worktree, else the
+// A card's code changes for the Review tab: per folder the card works in (its worktree, else the
 // project folder), the uncommitted changes (staged, unstaged and untracked) plus the commits on
 // HEAD that are not on the base branch. Every git command runs via spawn with an argument array
 // (never a shell), reads at most a capped amount of output, and is scoped to the folder
@@ -439,7 +439,7 @@ const g = globalThis as unknown as { __ompUiTaskDiffs?: Map<string, { at: number
 const recent: Map<string, { at: number; diff: Promise<TaskDiff> }> = (g.__ompUiTaskDiffs ??= new Map());
 
 /**
- * The card's code changes. A diff computed in the last few seconds is reused (the Changes tab
+ * The card's code changes. A diff computed in the last few seconds is reused (the Review tab
  * asks for the diff and its summary together); `fresh` always recomputes.
  */
 export function taskDiff(board: Board, task: Pick<Task, "id" | "title">, fresh = false): Promise<TaskDiff> {

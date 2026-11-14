@@ -14,6 +14,7 @@ import type {
   SchedulerRun,
   SchedulerRunStatus,
   Task,
+  TaskReview,
   TaskStatus,
   TodoPhase,
 } from "@/lib/types";
@@ -42,6 +43,7 @@ import {
   normalizeRecentRunLimit,
   nowIso,
   parseFolderList,
+  parseTaskReview,
 } from "@/lib/db/util";
 import { parseTodoPhases } from "@/lib/todos";
 
@@ -89,6 +91,8 @@ interface TaskDoc {
   retryAt?: string | null;
   /** Missing on documents created before agent todo lists. */
   todos?: TodoPhase[];
+  /** Missing on documents created before code reviews. */
+  review?: TaskReview | null;
   /** Missing on documents created before schedulers. */
   schedulerId?: string | null;
   createdAt: string;
@@ -209,6 +213,7 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     autoRetries: d.autoRetries ?? 0,
     retryAt: d.retryAt ?? null,
     todos: parseTodoPhases(d.todos),
+    review: parseTaskReview(d.review),
     schedulerId: d.schedulerId ?? null,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
@@ -314,6 +319,7 @@ const TASK_PATCH_KEYS = [
   "autoRetries",
   "retryAt",
   "todos",
+  "review",
 ] as const satisfies readonly (keyof UpdateTaskInput)[];
 const RUN_PATCH_KEYS = ["status", "summary", "error", "endedAt"] as const satisfies readonly (keyof UpdateRunInput)[];
 const SCHEDULER_PATCH_KEYS = [
@@ -575,6 +581,7 @@ export class MongoRepository implements Repository {
       autoRetries: 0,
       retryAt: null,
       todos: [],
+      review: null,
       schedulerId: input.schedulerId ?? null,
       createdAt: now,
       updatedAt: now,

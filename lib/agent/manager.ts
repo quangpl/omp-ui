@@ -41,6 +41,7 @@ import { childEnv } from "@/lib/child-env";
 import { startCleanupScheduler } from "@/lib/cleanup";
 import { getRepo } from "@/lib/db";
 import type { Repository, UpdateTaskInput } from "@/lib/db/types";
+import { topPosition } from "@/lib/db/util";
 import { publish } from "@/lib/events";
 import { dataDir, ensureFilesFolder } from "@/lib/files";
 import { extractQuestion } from "@/lib/question";
@@ -351,7 +352,7 @@ class OmpAgentManager implements AgentManager {
       if (!auto) patch.autoRetries = 0;
       if (current.status !== "in_progress") {
         patch.status = "in_progress";
-        patch.position = await this.topPosition(current.boardId, "in_progress", taskId);
+        patch.position = await topPosition(this.repo, current.boardId, "in_progress", taskId);
       }
       task = await this.repo.updateTask(taskId, patch);
       if (!task) throw new Error("Task not found");
@@ -1710,7 +1711,7 @@ class OmpAgentManager implements AgentManager {
 
       // A card the advisor or the release gate sends back to work stays In progress.
       const task = await repo.updateTask(run.taskId, {
-        ...(sentBack ? {} : { status: "done" as const, position: await this.topPosition(run.boardId, "done", run.taskId) }),
+        ...(sentBack ? {} : { status: "done" as const, position: await topPosition(repo, run.boardId, "done", run.taskId) }),
         agentState: "idle",
         agentError: null,
         question,
@@ -1971,16 +1972,6 @@ class OmpAgentManager implements AgentManager {
       console.error(`[agent] failed to record the error for task ${taskId}:`, err);
       return null;
     }
-  }
-
-  /** Position that puts a card at the top of a column. */
-  private async topPosition(boardId: string, status: TaskStatus, excludeId: string): Promise<number> {
-    const tasks = await this.repo.listTasks(boardId);
-    let min = Number.POSITIVE_INFINITY;
-    for (const t of tasks) {
-      if (t.status === status && t.id !== excludeId && t.position < min) min = t.position;
-    }
-    return Number.isFinite(min) ? min - 1024 : 0;
   }
 }
 

@@ -49,6 +49,7 @@ import {
   normalizeRecentRunLimit,
   nowIso,
   parseFolderList,
+  parseTaskReview,
 } from "@/lib/db/util";
 import { parseTodoPhases } from "@/lib/todos";
 
@@ -91,6 +92,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   auto_retries INTEGER NOT NULL DEFAULT 0,
   retry_at TEXT,
   todos TEXT NOT NULL DEFAULT '[]',
+  review TEXT,
   scheduler_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -224,6 +226,7 @@ function toTask(r: Row): Task {
     autoRetries: num(r.auto_retries),
     retryAt: strOrNull(r.retry_at),
     todos: parseTodoPhases(r.todos),
+    review: parseTaskReview(r.review),
     schedulerId: strOrNull(r.scheduler_id),
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
@@ -374,6 +377,7 @@ export class SqliteRepository implements Repository {
       ["pushed_at", "TEXT"],
       ["auto_retries", "INTEGER NOT NULL DEFAULT 0"],
       ["todos", "TEXT NOT NULL DEFAULT '[]'"],
+      ["review", "TEXT"],
       ["scheduler_id", "TEXT"],
     ]);
     // After the migration: older databases only now have tasks.scheduler_id.
@@ -617,6 +621,7 @@ export class SqliteRepository implements Repository {
       ["auto_retries", patch.autoRetries],
       ["retry_at", patch.retryAt],
       ["todos", patch.todos === undefined ? undefined : JSON.stringify(patch.todos)],
+      ["review", patch.review === undefined ? undefined : patch.review === null ? null : JSON.stringify(patch.review)],
       ["updated_at", nowIso()],
     ]);
     const res = this.db.prepare(`UPDATE tasks SET ${sql} WHERE id = ?`).run(...params, id);

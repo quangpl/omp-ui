@@ -46,6 +46,7 @@ import type {
   SharedFiles,
   Task,
   TaskCheckpoint,
+  TaskReviewResult,
   TaskStatus,
   TaskWorkspace,
 } from "@/lib/types";
@@ -488,7 +489,7 @@ export const api = {
       request<{ deleted: string[] }>(`/boards/${id}/tasks`, { method: "DELETE", json: { ids } }),
     /**
      * "@" mention candidates from the board's project folders; pass `signal` to drop stale queries.
-     * A query ending in "/" (or "") lists that directory's children (the Files tab tree); `limit` ≤ 1000.
+     * A query ending in "/" (or "") lists that directory's children (the Files tree); `limit` ≤ 1000.
      */
     projectFiles: (boardId: string, query: string, init?: { signal?: AbortSignal; limit?: number }) =>
       request<{ files: ProjectFileHit[] }>(
@@ -579,6 +580,15 @@ export const api = {
     comments: (id: string) => request<Comment[]>(`/tasks/${id}/comments`),
     comment: (id: string, body: string) =>
       request<Comment>(`/tasks/${id}/comments`, { method: "POST", json: { body } }),
+    /**
+     * Code review decision: approve (agent idle; moves the card to Done) or request changes
+     * (`note` required; posted as feedback that steers or resumes the agent). `hash` is the
+     * `TaskDiff.hash` the reviewer saw.
+     */
+    review: (
+      id: string,
+      input: { decision: "approve" | "request_changes"; note?: string | null; hash?: string | null },
+    ) => request<TaskReviewResult>(`/tasks/${id}/review`, { method: "POST", json: input }),
     runs: (id: string) => request<Run[]>(`/tasks/${id}/runs`),
     /** The card's dedicated workspace (worktree per git project folder). */
     workspace: (id: string) => request<TaskWorkspace>(`/tasks/${id}/workspace`),

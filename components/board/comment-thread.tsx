@@ -238,7 +238,7 @@ export function CommentThread({
   /** Resolves true when the comment was posted. */
   onSend: (body: string) => Promise<boolean>;
   onSetResolved: (comment: Comment, resolved: boolean) => Promise<void>;
-  /** Enables "/" skills and "@" project-file completion in the composer (the Files tab's chat). */
+  /** Enables "/" skills and "@" project-file completion in the composer (the Review tab's chat). */
   boardId?: string;
   /** Called when an "@" file or directory is picked in the composer. */
   onPickFile?: (hit: ProjectFileHit) => void;

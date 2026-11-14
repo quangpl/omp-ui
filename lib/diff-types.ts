@@ -1,5 +1,5 @@
 // Shapes of `GET /api/v1/tasks/:id/diff` and `/diff/summary`, plus the deterministic summary line
-// (shared by the server and the Changes tab).
+// (shared by the server and the Review tab).
 
 /** A = added, M = modified, D = deleted, R = renamed (possibly also modified). */
 export type DiffFileStatus = "A" | "M" | "D" | "R";

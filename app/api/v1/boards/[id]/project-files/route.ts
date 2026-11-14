@@ -5,7 +5,7 @@ import { requireBoard } from "@/lib/server/validate";
 export const dynamic = "force-dynamic";
 
 const DEFAULT_LIMIT = 30;
-/** The Files tab tree lists whole directories ("dir/" queries) in one request. */
+/** The file tree (Review tab, Files page) lists whole directories ("dir/" queries) in one request. */
 const MAX_LIMIT = 1000;
 /** Long enough for an absolute directory path inside an extra project folder. */
 const MAX_QUERY_LENGTH = 1024;

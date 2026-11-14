@@ -267,6 +267,7 @@ export function runRepositoryContract(
           createdByTaskId: null,
           schedulerId: null,
           todos: [],
+          review: null,
           commentCount: 0,
           openCommentCount: 0,
         });
@@ -311,6 +312,23 @@ export function runRepositoryContract(
         expect(await repo.getTask(task.id)).toEqual(updated);
         expect((await repo.listTasks(board.id))[0]).toEqual(updated);
         expect((await repo.updateTask(task.id, { todos: [] }))!.todos).toEqual([]);
+      });
+
+      it("round-trips the code review decision", async () => {
+        const board = await newBoard();
+        const task = await repo.createTask({ boardId: board.id, title: "Review me" });
+        const review = {
+          decision: "changes_requested" as const,
+          hash: "abc123",
+          note: "Rename the helper",
+          at: "2026-01-02T03:04:05.000Z",
+        };
+
+        const updated = await repo.updateTask(task.id, { review });
+        expect(updated!.review).toEqual(review);
+        expect(await repo.getTask(task.id)).toEqual(updated);
+        expect((await repo.listTasks(board.id))[0]).toEqual(updated);
+        expect((await repo.updateTask(task.id, { review: null }))!.review).toBeNull();
       });
 
       it("appends to the end of each column by default (step 1024, per board and status)", async () => {

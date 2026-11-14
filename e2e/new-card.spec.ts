@@ -50,6 +50,7 @@ test("Create task never waits for the card agent: the card is written in the bac
   await expect(writing).toContainText("Writing card");
   await cardButton(done, title).click();
   const detail = page.getByRole("dialog", { name: title });
+  await detail.getByRole("button", { name: "Edit description", exact: true }).click();
   await expect(detail.getByLabel("Description", { exact: true })).toHaveValue(`## Goal\n\n${title}\n${detailLine}`);
 });
 
@@ -71,6 +72,7 @@ test("the column composer sends longer text through the card agent", async ({ pa
   await expect(cardButton(done, title)).toBeVisible({ timeout: AGENT_TIMEOUT });
   await cardButton(done, title).click();
   const detail = page.getByRole("dialog", { name: title });
+  await detail.getByRole("button", { name: "Edit description", exact: true }).click();
   await expect(detail.getByLabel("Description", { exact: true })).toHaveValue(`## Goal\n\n${title}\n${detailLine}`);
 });
 
@@ -94,6 +96,7 @@ test("a long request is attached to the card as brief.md", async ({ page, reques
   await expect(cardButton(done, title)).toBeVisible({ timeout: AGENT_TIMEOUT });
   await cardButton(done, title).click();
   const detail = page.getByRole("dialog", { name: title });
+  await detail.getByRole("button", { name: "Edit description", exact: true }).click();
   await expect(detail.getByLabel("Description", { exact: true })).toHaveValue(
     /The user's full original request, word for word, is in brief\.md among this card's files\./,
   );
