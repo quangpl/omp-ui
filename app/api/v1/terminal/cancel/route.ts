@@ -9,4 +9,4 @@ export const POST = withApi(async ({ req }) => {
   if (typeof id !== "string" || !id) throw new HttpError(400, "id is required");
   getTerminalSession().cancel(id);
   return json({ ok: true });
-});
+}, { admin: true });

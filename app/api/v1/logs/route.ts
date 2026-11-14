@@ -8,4 +8,4 @@ export const dynamic = "force-dynamic";
 export const GET = withApi(async () => {
   const body: LogSourcesResponse = { sources: await listLogSources() };
   return json(body);
-});
+}, { admin: true });

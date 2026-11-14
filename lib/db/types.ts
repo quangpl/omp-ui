@@ -14,7 +14,31 @@ import type {
   Task,
   TaskStatus,
   AgentState,
+  User,
+  UserRole,
 } from "@/lib/types";
+
+/** A user with the secrets only lib/auth.ts may read. Never send it to a client. */
+export interface UserAuthRecord extends User {
+  /** `scrypt$N$r$p$<salt>$<hash>` (lib/auth.ts). */
+  passwordHash: string;
+  /** Per-user session epoch: bumped to revoke that user's tokens and chat logins. Starts at 0. */
+  tokenEpoch: number;
+}
+
+/** `username`/`email` must already be normalized (trimmed, lowercase): drivers match them exactly. */
+export interface CreateUserInput {
+  username: string;
+  /** Default null. */
+  email?: string | null;
+  passwordHash: string;
+  role: UserRole;
+  /** Default true. */
+  isActive?: boolean;
+}
+export type UpdateUserInput = Partial<
+  Pick<UserAuthRecord, "username" | "email" | "passwordHash" | "role" | "isActive" | "tokenEpoch">
+>;
 
 export interface CreateBoardInput {
   name: string;
@@ -25,6 +49,8 @@ export interface CreateBoardInput {
   autoRun?: boolean;
   /** Default false. */
   worktrees?: boolean;
+  /** Owning user (users.id). Default null (unowned: only admins see it until boot assigns it). */
+  userId?: string | null;
 }
 export type UpdateBoardInput = Partial<
   Pick<Board, "name" | "workdir" | "extraFolders" | "model" | "autoRun" | "worktrees" | "pinned">
@@ -136,6 +162,11 @@ export interface AppendRunEventInput {
  * Every method returns fully-populated domain objects (including Task.commentCount /
  * Task.openCommentCount). Getters return null for unknown ids; mutators on unknown ids
  * return null (update) or false (delete) instead of throwing.
+ *
+ * Ownership: boards carry `userId`; tasks, comments, runs and schedulers copy it from their board
+ * (the driver stamps it on create, never the caller). Optional `userId` arguments of list methods
+ * restrict the result to that owner. Per-user access control lives in lib/db/scoped.ts, which wraps
+ * this interface for request handlers; drivers never check permissions.
  */
 export interface Repository {
   readonly driver: DbDriver;
@@ -154,7 +185,27 @@ export interface Repository {
   setSetting(key: string, value: string): Promise<void>;
   deleteSetting(key: string): Promise<void>;
 
-  listBoards(): Promise<BoardWithCounts[]>; // newest first
+  /** Oldest first (createdAt asc). */
+  listUsers(): Promise<User[]>;
+  getUser(id: string): Promise<User | null>;
+  /** With secrets; null for unknown ids. */
+  getUserAuth(id: string): Promise<UserAuthRecord | null>;
+  /** With secrets: the user whose `username` OR `email` equals `login` exactly; null if none. */
+  findUserAuthByLogin(login: string): Promise<UserAuthRecord | null>;
+  /** tokenEpoch 0; createdAt/updatedAt now. Throws when the username or email is already taken. */
+  createUser(input: CreateUserInput): Promise<User>;
+  /** Bumps updatedAt. Throws when the new username or email is already taken. */
+  updateUser(id: string, patch: UpdateUserInput): Promise<User | null>;
+  /** Deletes the user row only; callers move or delete the user's data first. */
+  deleteUser(id: string): Promise<boolean>;
+  /**
+   * Set `userId = toUserId` on every board, task, comment, run and scheduler owned by `fromUserId`
+   * (`null`: rows without an owner). Returns the number of boards moved.
+   */
+  reassignUserData(fromUserId: string | null, toUserId: string): Promise<number>;
+
+  /** Newest first. `userId`: only that user's boards. */
+  listBoards(userId?: string): Promise<BoardWithCounts[]>;
   getBoard(id: string): Promise<Board | null>;
   createBoard(input: CreateBoardInput): Promise<Board>;
   updateBoard(id: string, patch: UpdateBoardInput): Promise<Board | null>;
@@ -163,7 +214,8 @@ export interface Repository {
 
   /** Ordered by status then position ascending. */
   listTasks(boardId: string): Promise<Task[]>;
-  listTasksByAgentState(states: AgentState[]): Promise<Task[]>;
+  /** `userId`: only that user's tasks. */
+  listTasksByAgentState(states: AgentState[], userId?: string): Promise<Task[]>;
   getTask(id: string): Promise<Task | null>;
   createTask(input: CreateTaskInput): Promise<Task>;
   updateTask(id: string, patch: UpdateTaskInput): Promise<Task | null>;
@@ -182,8 +234,11 @@ export interface Repository {
 
   /** Newest first. */
   listRuns(taskId: string): Promise<Run[]>;
-  /** Runs of every card, newest first (startedAt desc), at most `limit` (default 500, max 5000). */
-  listRecentRuns(limit?: number): Promise<Run[]>;
+  /**
+   * Runs of every card (or only `userId`'s), newest first (startedAt desc), at most `limit`
+   * (default 500, max 5000).
+   */
+  listRecentRuns(limit?: number, userId?: string): Promise<Run[]>;
   getRun(id: string): Promise<Run | null>;
   createRun(input: CreateRunInput): Promise<Run>; // status "running", startedAt now
   updateRun(id: string, patch: UpdateRunInput): Promise<Run | null>;
@@ -194,12 +249,12 @@ export interface Repository {
   /** Events with seq > after, ascending, at most `limit` (default 500). */
   listRunEvents(runId: string, after?: number, limit?: number): Promise<RunEvent[]>;
 
-  /** All schedulers (or one board's), newest first. */
-  listSchedulers(boardId?: string): Promise<Scheduler[]>;
+  /** All schedulers (or one board's), newest first. `userId`: only that user's schedulers. */
+  listSchedulers(boardId?: string, userId?: string): Promise<Scheduler[]>;
   getScheduler(id: string): Promise<Scheduler | null>;
   /** runCount 0, last* null; createdAt/updatedAt now. */
   createScheduler(input: CreateSchedulerInput): Promise<Scheduler>;
-  /** Bumps updatedAt. */
+  /** Bumps updatedAt. A new `boardId` also re-stamps `userId` from that board. */
   updateScheduler(id: string, patch: UpdateSchedulerInput): Promise<Scheduler | null>;
   /** Cascades: its scheduler runs. Cards it created stay, with `schedulerId` cleared to null. */
   deleteScheduler(id: string): Promise<boolean>;

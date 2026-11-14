@@ -4,10 +4,12 @@
 // - tool calls become compact `🔧` lines, batched per TOOL_BATCH_MS; errors become `⚠️` lines;
 // - a final status message when the run ends, after which the card is no longer watched.
 // Everything a chat receives goes through its own promise chain, so edits never race sends and a
-// failing chat never affects other chats or the event bus.
+// failing chat never affects other chats or the event bus. Output only reaches a chat while the chat
+// user who asked for it is still logged in to an account that owns the card's board or is an admin.
 import { subscribe } from "@/lib/events";
 import type { ChatPlatform, Run, RunEvent, ServerEvent } from "@/lib/types";
 import { getChatAdapter } from "./service";
+import { chatAccount } from "./store";
 import type { ChatEnv, ChatTransport } from "./types";
 
 /** Minimum time between two edits of a live message. */
@@ -18,6 +20,8 @@ const TOOL_LINE_MAX = 200;
 const RUN_ERROR_MAX = 500;
 /** Live messages stay this far below the platform limit. */
 const LIVE_MARGIN = 20;
+/** How long a watch's access check is reused before the login and board owner are looked up again. */
+const ACCESS_TTL_MS = 10_000;
 
 /** The chat message showing an assistant message while it is generated. */
 interface LiveMessage {
@@ -41,6 +45,8 @@ interface LiveMessage {
 interface RelayChat {
   platform: ChatPlatform;
   chatId: string;
+  /** Orders event handling behind the access checks. Never rejects. */
+  gate: Promise<void>;
   /** Serializes everything sent to this chat. Never rejects. */
   chain: Promise<void>;
   /** runId → live message of the run's current assistant message. */
@@ -48,11 +54,22 @@ interface RelayChat {
   tools: { lines: string[]; timer: NodeJS.Timeout } | null;
 }
 
+/** A card streamed to a chat on behalf of a chat user. */
+interface Watch {
+  chat: RelayChat;
+  /** Platform id of the chat user who last started or messaged the card from this chat. */
+  chatUserId: string;
+  /** Last access check; null until checked (or after the watcher changed). */
+  access: { allowed: boolean; at: number } | null;
+  /** Unwatched: output still queued for it is dropped. */
+  ended: boolean;
+}
+
 interface RelayState {
   env: ChatEnv | null;
   unsubscribe: (() => void) | null;
-  /** taskId → watch keys (`${platform}\u0000${chatId}`). */
-  watches: Map<string, Set<string>>;
+  /** taskId → watch key (`${platform}\u0000${chatId}`) → watch. */
+  watches: Map<string, Map<string, Watch>>;
   /** watch key → chat. */
   chats: Map<string, RelayChat>;
 }
@@ -72,24 +89,34 @@ export function startChatRelay(env: ChatEnv): void {
   relay.unsubscribe ??= subscribe(onEvent);
 }
 
-/** Stream the card's runs to the chat until the current run ends. */
-export function watchCard(platform: ChatPlatform, chatId: string, taskId: string): void {
+/** Stream the card's runs to the chat until the current run ends, as long as `chatUserId` may see them. */
+export function watchCard(platform: ChatPlatform, chatId: string, taskId: string, chatUserId: string): void {
   const key = `${platform}\u0000${chatId}`;
-  if (!relay.chats.has(key)) {
-    relay.chats.set(key, { platform, chatId, chain: Promise.resolve(), live: new Map(), tools: null });
+  let chat = relay.chats.get(key);
+  if (!chat) {
+    chat = { platform, chatId, gate: Promise.resolve(), chain: Promise.resolve(), live: new Map(), tools: null };
+    relay.chats.set(key, chat);
   }
-  let keys = relay.watches.get(taskId);
-  if (!keys) relay.watches.set(taskId, (keys = new Set()));
-  keys.add(key);
+  let byChat = relay.watches.get(taskId);
+  if (!byChat) relay.watches.set(taskId, (byChat = new Map()));
+  const watch = byChat.get(key);
+  if (!watch) {
+    byChat.set(key, { chat, chatUserId, access: null, ended: false });
+  } else if (watch.chatUserId !== chatUserId) {
+    watch.chatUserId = chatUserId;
+    watch.access = null;
+  }
 }
 
 /** Stop streaming the card to the chat; its live message is left as it is. */
 export function unwatchCard(platform: ChatPlatform, chatId: string, taskId: string): void {
   const key = `${platform}\u0000${chatId}`;
-  const keys = relay.watches.get(taskId);
-  if (keys) {
-    keys.delete(key);
-    if (keys.size === 0) relay.watches.delete(taskId);
+  const byChat = relay.watches.get(taskId);
+  const watch = byChat?.get(key);
+  if (byChat && watch) {
+    watch.ended = true;
+    byChat.delete(key);
+    if (byChat.size === 0) relay.watches.delete(taskId);
   }
   const chat = relay.chats.get(key);
   if (!chat) return;
@@ -98,6 +125,18 @@ export function unwatchCard(platform: ChatPlatform, chatId: string, taskId: stri
     chat.live.delete(runId);
     live.done = true;
     clearTimeout(live.timer ?? undefined);
+  }
+}
+
+/**
+ * Forget the access checks of the chat user's watches (logout, login as another account), so the
+ * next output checks again instead of waiting for ACCESS_TTL_MS.
+ */
+export function recheckChatAccess(platform: ChatPlatform, chatUserId: string): void {
+  for (const byChat of relay.watches.values()) {
+    for (const watch of byChat.values()) {
+      if (watch.chat.platform === platform && watch.chatUserId === chatUserId) watch.access = null;
+    }
   }
 }
 
@@ -140,9 +179,14 @@ function onEvent(event: ServerEvent): void {
   try {
     if (event.type === "run.delta") {
       if (event.kind !== "text") return;
-      for (const chat of watchers(event.taskId)) onDelta(chat, event.taskId, event.runId, event.text);
+      const { taskId, runId, text } = event;
+      for (const watch of watchers(taskId)) gated(watch, taskId, () => onDelta(watch.chat, taskId, runId, text));
     } else if (event.type === "run.event") {
-      onRunEvent(event.event);
+      const runEvent = event.event;
+      if (runEvent.kind !== "text" && runEvent.kind !== "tool" && runEvent.kind !== "error") return;
+      for (const watch of watchers(runEvent.taskId)) {
+        gated(watch, runEvent.taskId, () => onRunEvent(watch.chat, runEvent));
+      }
     } else if (event.type === "run.updated" && event.run.status !== "running") {
       onRunFinished(event.run).catch((err) => console.error("[chat] relay run end failed:", err));
     }
@@ -151,15 +195,46 @@ function onEvent(event: ServerEvent): void {
   }
 }
 
-function watchers(taskId: string): RelayChat[] {
-  const keys = relay.watches.get(taskId);
-  if (!keys) return [];
-  const chats: RelayChat[] = [];
-  for (const key of keys) {
-    const chat = relay.chats.get(key);
-    if (chat) chats.push(chat);
+function watchers(taskId: string): Watch[] {
+  return [...(relay.watches.get(taskId)?.values() ?? [])];
+}
+
+/** Run `step` in the chat's event order once the watch passed its access check; dropped otherwise. */
+function gated(watch: Watch, taskId: string, step: () => void): void {
+  const chat = watch.chat;
+  chat.gate = chat.gate.then(async () => {
+    try {
+      if (!watch.ended && (await mayRelay(watch, taskId))) step();
+    } catch (err) {
+      console.error(`[chat] relay event failed (${chat.platform} ${chat.chatId}):`, err);
+    }
+  });
+}
+
+/**
+ * Whether the watch's chat user is still logged in (store.ts `chatAccount`) as an admin or as the
+ * owner of the card's board. Reused for ACCESS_TTL_MS; failed lookups deny.
+ */
+async function mayRelay(watch: Watch, taskId: string): Promise<boolean> {
+  if (watch.access && Date.now() - watch.access.at < ACCESS_TTL_MS) return watch.access.allowed;
+  let allowed = false;
+  const repo = relay.env?.repo;
+  if (repo) {
+    try {
+      const account = await chatAccount(repo, watch.chat.platform, watch.chatUserId);
+      if (account?.role === "admin") {
+        allowed = true;
+      } else if (account) {
+        const task = await repo.getTask(taskId);
+        const board = task ? await repo.getBoard(task.boardId) : null;
+        allowed = board?.userId === account.id;
+      }
+    } catch (err) {
+      console.error("[chat] relay access check failed:", err);
+    }
   }
-  return chats;
+  watch.access = { allowed, at: Date.now() };
+  return allowed;
 }
 
 /** Queue a step on the chat's chain; dropped when the platform is not connected. Errors are logged. */
@@ -282,20 +357,17 @@ function finalize(chat: RelayChat, runId: string, finalText: string | null): voi
   });
 }
 
-function onRunEvent(event: RunEvent): void {
-  if (event.kind !== "text" && event.kind !== "tool" && event.kind !== "error") return;
-  for (const chat of watchers(event.taskId)) {
-    if (event.kind === "text") {
-      finalize(chat, event.runId, event.text);
-    } else if (event.kind === "tool") {
-      addToolLine(chat, event.text);
-    } else {
-      flushTools(chat);
-      const text = `⚠️ ${event.text.trim()}`;
-      enqueue(chat, "error", async (transport) => {
-        for (const chunk of splitMessage(text, transport.maxMessageLength)) await transport.send(chat.chatId, chunk);
-      });
-    }
+function onRunEvent(chat: RelayChat, event: RunEvent): void {
+  if (event.kind === "text") {
+    finalize(chat, event.runId, event.text);
+  } else if (event.kind === "tool") {
+    addToolLine(chat, event.text);
+  } else {
+    flushTools(chat);
+    const text = `⚠️ ${event.text.trim()}`;
+    enqueue(chat, "error", async (transport) => {
+      for (const chunk of splitMessage(text, transport.maxMessageLength)) await transport.send(chat.chatId, chunk);
+    });
   }
 }
 
@@ -325,8 +397,8 @@ function flushTools(chat: RelayChat): void {
 
 /** Run ended: flush its output, send the outcome to every watching chat, then stop watching the card. */
 async function onRunFinished(run: Run): Promise<void> {
-  const chats = watchers(run.taskId);
-  if (chats.length === 0) return;
+  const watches = watchers(run.taskId);
+  if (watches.length === 0) return;
   relay.watches.delete(run.taskId);
   let title = run.taskId;
   try {
@@ -345,10 +417,13 @@ async function onRunFinished(run: Run): Promise<void> {
     outcome = "⏹ Run stopped";
   }
   const text = `${outcome} — "${title}"`;
-  for (const chat of chats) {
-    finalize(chat, run.id, null);
-    enqueue(chat, "run outcome", async (transport) => {
-      for (const chunk of splitMessage(text, transport.maxMessageLength)) await transport.send(chat.chatId, chunk);
+  for (const watch of watches) {
+    const chat = watch.chat;
+    gated(watch, run.taskId, () => {
+      finalize(chat, run.id, null);
+      enqueue(chat, "run outcome", async (transport) => {
+        for (const chunk of splitMessage(text, transport.maxMessageLength)) await transport.send(chat.chatId, chunk);
+      });
     });
   }
 }

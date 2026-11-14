@@ -1,14 +1,19 @@
 import {
+  authenticate,
   clearLoginFailures,
+  DEFAULT_ADMIN_USERNAME,
   isConfigured,
   loginRetryAfter,
   recordLoginFailure,
-  verifyPassword,
 } from "@/lib/auth";
 import { error, json, readJson, securityEvent, sessionResponse, withApi } from "@/lib/server/http";
 
 export const dynamic = "force-dynamic";
 
+/** Attempted login names are client-controlled: bound what lands in the security log. */
+const LOGGED_LOGIN_MAX = 100;
+
+/** Sign in with a username or email; `username` omitted → "admin" (password-only clients/CLI). */
 export const POST = withApi(
   async ({ req }) => {
     const retryAfter = loginRetryAfter(req);
@@ -20,20 +25,30 @@ export const POST = withApi(
       );
     }
     if (!(await isConfigured())) {
-      securityEvent(req, "warn", "login", "Login attempted before the admin password was set up");
-      return error(409, "Admin password is not set up yet");
+      securityEvent(req, "warn", "login", "Login attempted before setup");
+      return error(409, "Setup is not complete yet");
     }
-    const { password } = await readJson<{ password?: unknown }>(req);
-    if (typeof password !== "string" || !password || !(await verifyPassword(password))) {
+    const { username, password } = await readJson<{ username?: unknown; password?: unknown }>(req);
+    const login = typeof username === "string" && username.trim() ? username : DEFAULT_ADMIN_USERNAME;
+    const loggedLogin = login.trim().slice(0, LOGGED_LOGIN_MAX);
+    const user = typeof password === "string" && password ? await authenticate(login, password) : null;
+    if (!user) {
       recordLoginFailure(req);
       // Non-zero once this failure used up the allowed attempts: the client is now locked out.
       const lockedFor = loginRetryAfter(req);
-      securityEvent(req, "warn", "login", "Login failed: invalid password", lockedFor > 0 ? { lockedFor } : {});
-      return error(401, "Invalid password");
+      securityEvent(req, "warn", "login", "Login failed: invalid username or password", {
+        login: loggedLogin,
+        ...(lockedFor > 0 ? { lockedFor } : {}),
+      });
+      return error(401, "Invalid username or password");
     }
     clearLoginFailures(req);
-    securityEvent(req, "info", "login", "Login succeeded");
-    return sessionResponse(req);
+    securityEvent(req, "info", "login", "Login succeeded", {
+      login: loggedLogin,
+      user: user.username,
+      userId: user.id,
+    });
+    return sessionResponse(req, user);
   },
   { auth: false },
 );

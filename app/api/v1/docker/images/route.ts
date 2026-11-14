@@ -7,11 +7,11 @@ export const dynamic = "force-dynamic";
 export const POST = withApi(async ({ req }) => {
   const image = parseImageRef((await readJson(req)).image);
   return jobResponse((send) => pullImage(image, send));
-});
+}, { admin: true });
 
 /** Remove `?ref=<id or repo:tag>`; `force=1` untags images used by several tags / stopped containers. */
 export const DELETE = withApi(async ({ req }) => {
   const query = new URL(req.url).searchParams;
   await removeImage(parseImageRef(query.get("ref")), query.get("force") === "1");
   return json({ ok: true });
-});
+}, { admin: true });

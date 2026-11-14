@@ -20,6 +20,7 @@ export const PATCH = withApi<Params>(async ({ req, repo, params }) =>
     });
     return json(updated);
   }),
+  { admin: true },
 );
 
 /** Remove the server from mcp.json; `?deleteCredential=1` also deletes its credential. */
@@ -37,4 +38,5 @@ export const DELETE = withApi<Params>(async ({ req, repo, params }) =>
     });
     return json({ ok: true });
   }),
+  { admin: true },
 );

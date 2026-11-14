@@ -2,13 +2,14 @@
 import { randomBytes } from "node:crypto";
 import type { AgentManager } from "@/lib/agent/types";
 import { currentTokenEpoch } from "@/lib/auth";
+import { getRepo } from "@/lib/db";
 import type { Repository } from "@/lib/db/types";
 import { handleChatMessage } from "@/lib/server/chat/commands";
 import { createDiscordAdapter, validateDiscordToken } from "@/lib/server/chat/discord";
 import { startChatRelay } from "@/lib/server/chat/relay";
 import {
   CHAT_TOKEN_FIELDS,
-  activeUsers,
+  activeLogins,
   loadChatState,
   readChatToken,
   setChatToken,
@@ -38,7 +39,7 @@ import {
 const TELEGRAM_WEBHOOK_PATH = "/api/v1/chat/telegram/webhook";
 const MAX_TOKEN_LENGTH = 512;
 const CONNECTED_TEXT = "AgentMan connected ✅ — just tell me what you want, e.g. \"show my boards\".";
-const OWNER_TEXT = "AgentMan connected ✅ — send /login <admin password> here to take control.";
+const OWNER_TEXT = "AgentMan connected ✅ — send /login <username> <password> here to take control.";
 
 type DiscordAdapter = ChatAdapter & { sendDirect(userId: string, text: string): Promise<void> };
 type TelegramWebhook = { url: string; secret: string } | null;
@@ -124,11 +125,14 @@ async function launch(
   bot: ChatBotInfo,
   webhook: TelegramWebhook,
 ): Promise<ChatAdapter> {
-  startChatRelay(env);
+  // Settings routes hand in their admin-scoped repository; the bots act for every account (each
+  // message is scoped to its sender in commands.ts), so they get the base one.
+  const system: ChatEnv = { repo: await getRepo(), manager: env.manager };
+  startChatRelay(system);
   const options: ChatAdapterOptions = {
     token,
     bot,
-    onMessage: (msg) => handleChatMessage(env, msg),
+    onMessage: (msg) => handleChatMessage(system, msg),
     onStateChange: (state, error) => {
       // The registered adapter's state() is authoritative; a replaced or stopped one is ignored.
       if (registry.adapters.get(platform) !== adapter) return;
@@ -169,14 +173,14 @@ function hasSendDirect(adapter: ChatAdapter): adapter is DiscordAdapter {
 /** Tell logged-in users (their last chat) and, on Discord, the app owner that the bot is up. Never throws. */
 async function announce(repo: Repository, platform: ChatPlatform, adapter: ChatAdapter): Promise<void> {
   const [state, epoch] = await Promise.all([loadChatState(repo), currentTokenEpoch()]);
-  const users = activeUsers(state, platform, epoch);
-  for (const chatId of new Set(users.map((u) => u.chatId))) {
+  const logins = await activeLogins(repo, state, platform, epoch);
+  for (const chatId of new Set(logins.map(({ login }) => login.chatId))) {
     await adapter.send(chatId, CONNECTED_TEXT).catch((err: unknown) => {
       console.error(`[chat] ${platform}: cannot notify chat ${chatId}:`, errorMessage(err));
     });
   }
   const ownerId = adapter.bot.ownerId;
-  if (ownerId && hasSendDirect(adapter) && !users.some((u) => u.userId === ownerId)) {
+  if (ownerId && hasSendDirect(adapter) && !logins.some(({ login }) => login.userId === ownerId)) {
     await adapter.sendDirect(ownerId, OWNER_TEXT).catch((err: unknown) => {
       console.error(`[chat] ${platform}: cannot message the bot owner:`, errorMessage(err));
     });
@@ -186,7 +190,7 @@ async function announce(repo: Repository, platform: ChatPlatform, adapter: ChatA
 function platformStatus(
   settings: AppSettings,
   state: ChatState,
-  epoch: number,
+  authorizedUsers: number,
   platform: ChatPlatform,
 ): ChatPlatformStatus {
   const token = readChatToken(settings, platform);
@@ -204,15 +208,18 @@ function platformStatus(
     mode: adapter?.mode ?? null,
     webhookUrl: platform === "telegram" ? state.telegram.webhookUrl : null,
     tokenHint: token ? token.slice(-4) : null,
-    authorizedUsers: activeUsers(state, platform, epoch).length,
+    authorizedUsers,
   };
 }
 
 export async function getChatStatus(repo: Repository): Promise<ChatStatusResponse> {
   const [settings, state, epoch] = await Promise.all([getAppSettings(repo), loadChatState(repo), currentTokenEpoch()]);
+  const [telegram, discord] = await Promise.all(
+    (["telegram", "discord"] as const).map(async (platform) => (await activeLogins(repo, state, platform, epoch)).length),
+  );
   return {
-    telegram: platformStatus(settings, state, epoch, "telegram"),
-    discord: platformStatus(settings, state, epoch, "discord"),
+    telegram: platformStatus(settings, state, telegram, "telegram"),
+    discord: platformStatus(settings, state, discord, "discord"),
   };
 }
 

@@ -348,7 +348,7 @@ describe("passwd (server not running)", () => {
 
     const r = await project.run(["passwd", "new-password-1"]);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("Admin password saved to .env");
+    expect(r.stdout).toContain("Password of the admin account saved to .env");
     expect(r.stdout).toContain("Applied at next boot");
     expect(project.readEnv()).toEqual({ ...before, ADMIN_PASSWORD: "new-password-1" });
     expect(fileMode(project.envFile)).toBe(0o600);

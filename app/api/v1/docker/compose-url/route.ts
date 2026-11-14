@@ -9,4 +9,4 @@ export const GET = withApi(async ({ req }) => {
   if (!url) throw new HttpError(400, "url is required");
   if (url.length > 2048) throw new HttpError(400, "URL is too long");
   return json(await fetchComposeUrl(url));
-});
+}, { admin: true });

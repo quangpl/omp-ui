@@ -17,6 +17,8 @@ import type {
   TaskReview,
   TaskStatus,
   TodoPhase,
+  User,
+  UserRole,
 } from "@/lib/types";
 import type {
   AppendRunEventInput,
@@ -26,11 +28,14 @@ import type {
   CreateSchedulerInput,
   CreateSchedulerRunInput,
   CreateTaskInput,
+  CreateUserInput,
   Repository,
   UpdateBoardInput,
   UpdateRunInput,
   UpdateSchedulerInput,
   UpdateTaskInput,
+  UpdateUserInput,
+  UserAuthRecord,
 } from "@/lib/db/types";
 import {
   POSITION_STEP,
@@ -52,6 +57,18 @@ interface SettingDoc {
   value: string;
 }
 
+interface UserDoc {
+  _id: string;
+  username: string;
+  email: string | null;
+  passwordHash: string;
+  role: UserRole;
+  isActive: boolean;
+  tokenEpoch: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface BoardDoc {
   _id: string;
   name: string;
@@ -64,6 +81,8 @@ interface BoardDoc {
   worktrees?: boolean;
   /** Missing on documents created before projects could be pinned. */
   pinned?: boolean;
+  /** Owning user. Missing on documents created before multi-user support (read as null). */
+  userId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -95,6 +114,8 @@ interface TaskDoc {
   review?: TaskReview | null;
   /** Missing on documents created before schedulers. */
   schedulerId?: string | null;
+  /** Copied from the board on create. Missing on documents created before multi-user support. */
+  userId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -109,6 +130,8 @@ interface CommentDoc {
   resolvedByRunId: string | null;
   /** Missing on documents created before agent-to-agent messages. */
   fromTaskId?: string | null;
+  /** Copied from the task on create. Missing on documents created before multi-user support. */
+  userId?: string | null;
   createdAt: string;
 }
 
@@ -121,6 +144,8 @@ interface RunDoc {
   error: string | null;
   startedAt: string;
   endedAt: string | null;
+  /** Copied from the task on create. Missing on documents created before multi-user support. */
+  userId?: string | null;
 }
 
 /** Run events are keyed by their sequence number (`_id` = seq). */
@@ -148,6 +173,8 @@ interface SchedulerDoc {
   lastStatus: SchedulerRunStatus | null;
   lastTaskId: string | null;
   lastError: string | null;
+  /** Copied from the board on create/move. Missing on documents created before multi-user support. */
+  userId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -179,6 +206,22 @@ const RUN_EVENTS_COUNTER = "run_events";
 const DEFAULT_SCHEDULER_RUN_LIMIT = 100;
 const MAX_SCHEDULER_RUN_LIMIT = 1000;
 
+function toUser(d: UserDoc): User {
+  return {
+    id: d._id,
+    username: d.username,
+    email: d.email ?? null,
+    role: d.role,
+    isActive: d.isActive,
+    createdAt: d.createdAt,
+    updatedAt: d.updatedAt,
+  };
+}
+
+function toUserAuth(d: UserDoc): UserAuthRecord {
+  return { ...toUser(d), passwordHash: d.passwordHash, tokenEpoch: d.tokenEpoch ?? 0 };
+}
+
 function toBoard(d: BoardDoc): Board {
   return {
     id: d._id,
@@ -189,6 +232,7 @@ function toBoard(d: BoardDoc): Board {
     autoRun: d.autoRun,
     worktrees: d.worktrees ?? false,
     pinned: d.pinned ?? false,
+    userId: d.userId ?? null,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
   };
@@ -215,6 +259,7 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     todos: parseTodoPhases(d.todos),
     review: parseTaskReview(d.review),
     schedulerId: d.schedulerId ?? null,
+    userId: d.userId ?? null,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
     commentCount: stats?.total ?? 0,
@@ -232,6 +277,7 @@ function toComment(d: CommentDoc): Comment {
     resolvedAt: d.resolvedAt ?? null,
     resolvedByRunId: d.resolvedByRunId ?? null,
     fromTaskId: d.fromTaskId ?? null,
+    userId: d.userId ?? null,
     createdAt: d.createdAt,
   };
 }
@@ -246,6 +292,7 @@ function toRun(d: RunDoc): Run {
     error: d.error ?? null,
     startedAt: d.startedAt,
     endedAt: d.endedAt ?? null,
+    userId: d.userId ?? null,
   };
 }
 
@@ -276,6 +323,7 @@ function toScheduler(d: SchedulerDoc): Scheduler {
     lastStatus: d.lastStatus ?? null,
     lastTaskId: d.lastTaskId ?? null,
     lastError: d.lastError ?? null,
+    userId: d.userId ?? null,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
   };
@@ -337,11 +385,20 @@ const SCHEDULER_PATCH_KEYS = [
   "lastTaskId",
   "lastError",
 ] as const satisfies readonly (keyof UpdateSchedulerInput)[];
+const USER_PATCH_KEYS = [
+  "username",
+  "email",
+  "passwordHash",
+  "role",
+  "isActive",
+  "tokenEpoch",
+] as const satisfies readonly (keyof UpdateUserInput)[];
 
 export class MongoRepository implements Repository {
   readonly driver = "mongodb" as const;
   private readonly client: MongoClient;
   private readonly settings: Collection<SettingDoc>;
+  private readonly users: Collection<UserDoc>;
   private readonly boards: Collection<BoardDoc>;
   private readonly tasks: Collection<TaskDoc>;
   private readonly comments: Collection<CommentDoc>;
@@ -355,6 +412,7 @@ export class MongoRepository implements Repository {
     this.client = new MongoClient(url, { appName: "omp-ui" });
     const db = this.client.db(dbName);
     this.settings = db.collection<SettingDoc>("settings");
+    this.users = db.collection<UserDoc>("users");
     this.boards = db.collection<BoardDoc>("boards");
     this.tasks = db.collection<TaskDoc>("tasks");
     this.comments = db.collection<CommentDoc>("comments");
@@ -368,18 +426,29 @@ export class MongoRepository implements Repository {
   async init(): Promise<void> {
     await this.client.connect();
     await Promise.all([
+      this.users.createIndex({ username: 1 }, { unique: true }),
+      // Partial: accounts without an email (null) must not collide with each other.
+      this.users.createIndex(
+        { email: 1 },
+        { unique: true, partialFilterExpression: { email: { $type: "string" } } },
+      ),
+      this.users.createIndex({ createdAt: 1 }),
       this.boards.createIndex({ createdAt: -1 }),
+      this.boards.createIndex({ userId: 1, createdAt: -1 }),
       this.tasks.createIndex({ boardId: 1, status: 1, position: 1 }),
       this.tasks.createIndex({ agentState: 1 }),
       this.tasks.createIndex({ schedulerId: 1 }),
+      this.tasks.createIndex({ userId: 1 }),
       this.comments.createIndex({ taskId: 1, createdAt: 1 }),
       this.runs.createIndex({ taskId: 1, startedAt: -1 }),
       this.runs.createIndex({ status: 1 }),
       this.runs.createIndex({ startedAt: -1 }),
+      this.runs.createIndex({ userId: 1, startedAt: -1 }),
       this.runEvents.createIndex({ runId: 1, _id: 1 }),
       this.runEvents.createIndex({ taskId: 1 }),
       this.schedulers.createIndex({ boardId: 1 }),
       this.schedulers.createIndex({ createdAt: -1 }),
+      this.schedulers.createIndex({ userId: 1 }),
       this.schedulerRuns.createIndex({ schedulerId: 1, createdAt: -1 }),
     ]);
   }
@@ -443,13 +512,83 @@ export class MongoRepository implements Repository {
     await this.settings.deleteOne({ _id: key });
   }
 
+  // ------------------------------------------------------------------- users
+
+  async listUsers(): Promise<User[]> {
+    const docs = await this.users.find().sort({ createdAt: 1, _id: 1 }).toArray();
+    return docs.map(toUser);
+  }
+
+  async getUser(id: string): Promise<User | null> {
+    const doc = await this.users.findOne({ _id: id });
+    return doc ? toUser(doc) : null;
+  }
+
+  async getUserAuth(id: string): Promise<UserAuthRecord | null> {
+    const doc = await this.users.findOne({ _id: id });
+    return doc ? toUserAuth(doc) : null;
+  }
+
+  async findUserAuthByLogin(login: string): Promise<UserAuthRecord | null> {
+    const doc = await this.users.findOne({ $or: [{ username: login }, { email: login }] });
+    return doc ? toUserAuth(doc) : null;
+  }
+
+  /** Duplicate usernames/emails fail on the unique indexes (MongoServerError code 11000). */
+  async createUser(input: CreateUserInput): Promise<User> {
+    const now = nowIso();
+    const doc: UserDoc = {
+      _id: newId(),
+      username: input.username,
+      email: input.email ?? null,
+      passwordHash: input.passwordHash,
+      role: input.role,
+      isActive: input.isActive ?? true,
+      tokenEpoch: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.users.insertOne(doc);
+    return toUser(doc);
+  }
+
+  async updateUser(id: string, patch: UpdateUserInput): Promise<User | null> {
+    const doc = await this.users.findOneAndUpdate(
+      { _id: id },
+      { $set: { ...pickDefined(patch, USER_PATCH_KEYS), updatedAt: nowIso() } },
+      { returnDocument: "after" },
+    );
+    return doc ? toUser(doc) : null;
+  }
+
+  async deleteUser(id: string): Promise<boolean> {
+    const res = await this.users.deleteOne({ _id: id });
+    return res.deletedCount > 0;
+  }
+
+  /** `{ userId: null }` also matches documents without the field (written before multi-user support). */
+  async reassignUserData(fromUserId: string | null, toUserId: string): Promise<number> {
+    const filter = { userId: fromUserId };
+    const update = { $set: { userId: toUserId } };
+    const [boards] = await Promise.all([
+      this.boards.updateMany(filter, update),
+      this.tasks.updateMany(filter, update),
+      this.comments.updateMany(filter, update),
+      this.runs.updateMany(filter, update),
+      this.schedulers.updateMany(filter, update),
+    ]);
+    return boards.modifiedCount;
+  }
+
   // ------------------------------------------------------------------ boards
 
-  async listBoards(): Promise<BoardWithCounts[]> {
+  async listBoards(userId?: string): Promise<BoardWithCounts[]> {
+    const owner = userId === undefined ? {} : { userId };
     const [boards, stats] = await Promise.all([
-      this.boards.find().sort({ createdAt: -1 }).toArray(),
+      this.boards.find(owner).sort({ createdAt: -1 }).toArray(),
       this.tasks
         .aggregate<{ _id: { boardId: string; status: TaskStatus }; n: number; active: number }>([
+          { $match: owner },
           {
             $group: {
               _id: { boardId: "$boardId", status: "$status" },
@@ -491,6 +630,7 @@ export class MongoRepository implements Repository {
       autoRun: input.autoRun ?? true,
       worktrees: input.worktrees ?? false,
       pinned: false,
+      userId: input.userId ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -533,10 +673,10 @@ export class MongoRepository implements Repository {
     return (await this.withCommentStats(docs)).sort(compareTasks);
   }
 
-  async listTasksByAgentState(states: AgentState[]): Promise<Task[]> {
+  async listTasksByAgentState(states: AgentState[], userId?: string): Promise<Task[]> {
     if (states.length === 0) return [];
     const docs = await this.tasks
-      .find({ agentState: { $in: states } })
+      .find({ agentState: { $in: states }, ...(userId !== undefined && { userId }) })
       .sort({ updatedAt: 1, createdAt: 1 })
       .toArray();
     return this.withCommentStats(docs);
@@ -550,9 +690,8 @@ export class MongoRepository implements Repository {
   }
 
   async createTask(input: CreateTaskInput): Promise<Task> {
-    if ((await this.boards.countDocuments({ _id: input.boardId }, { limit: 1 })) === 0) {
-      throw new Error(`Board ${input.boardId} does not exist`);
-    }
+    const board = await this.boards.findOne({ _id: input.boardId }, { projection: { userId: 1 } });
+    if (!board) throw new Error(`Board ${input.boardId} does not exist`);
     const status = input.status ?? "todo";
     let position = input.position;
     if (position === undefined) {
@@ -583,6 +722,7 @@ export class MongoRepository implements Repository {
       todos: [],
       review: null,
       schedulerId: input.schedulerId ?? null,
+      userId: board.userId ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -621,9 +761,8 @@ export class MongoRepository implements Repository {
   }
 
   async addComment(input: CreateCommentInput): Promise<Comment> {
-    if ((await this.tasks.countDocuments({ _id: input.taskId }, { limit: 1 })) === 0) {
-      throw new Error(`Task ${input.taskId} does not exist`);
-    }
+    const task = await this.tasks.findOne({ _id: input.taskId }, { projection: { userId: 1 } });
+    if (!task) throw new Error(`Task ${input.taskId} does not exist`);
     const now = nowIso();
     const resolved = input.resolved ?? input.author === "agent";
     const doc: CommentDoc = {
@@ -635,6 +774,7 @@ export class MongoRepository implements Repository {
       resolvedAt: resolved ? now : null,
       resolvedByRunId: null,
       fromTaskId: input.fromTaskId ?? null,
+      userId: task.userId ?? null,
       createdAt: now,
     };
     await this.comments.insertOne(doc);
@@ -693,9 +833,9 @@ export class MongoRepository implements Repository {
     return docs.map(toRun);
   }
 
-  async listRecentRuns(limit?: number): Promise<Run[]> {
+  async listRecentRuns(limit?: number, userId?: string): Promise<Run[]> {
     const docs = await this.runs
-      .find()
+      .find(userId === undefined ? {} : { userId })
       .sort({ startedAt: -1 })
       .limit(normalizeRecentRunLimit(limit))
       .toArray();
@@ -708,9 +848,8 @@ export class MongoRepository implements Repository {
   }
 
   async createRun(input: CreateRunInput): Promise<Run> {
-    if ((await this.tasks.countDocuments({ _id: input.taskId }, { limit: 1 })) === 0) {
-      throw new Error(`Task ${input.taskId} does not exist`);
-    }
+    const task = await this.tasks.findOne({ _id: input.taskId }, { projection: { userId: 1 } });
+    if (!task) throw new Error(`Task ${input.taskId} does not exist`);
     const doc: RunDoc = {
       _id: newId(),
       taskId: input.taskId,
@@ -720,6 +859,7 @@ export class MongoRepository implements Repository {
       error: null,
       startedAt: nowIso(),
       endedAt: null,
+      userId: task.userId ?? null,
     };
     await this.runs.insertOne(doc);
     return toRun(doc);
@@ -772,9 +912,9 @@ export class MongoRepository implements Repository {
 
   // -------------------------------------------------------------- schedulers
 
-  async listSchedulers(boardId?: string): Promise<Scheduler[]> {
+  async listSchedulers(boardId?: string, userId?: string): Promise<Scheduler[]> {
     const docs = await this.schedulers
-      .find(boardId === undefined ? {} : { boardId })
+      .find({ ...(boardId !== undefined && { boardId }), ...(userId !== undefined && { userId }) })
       .sort({ createdAt: -1 })
       .toArray();
     return docs.map(toScheduler);
@@ -786,9 +926,8 @@ export class MongoRepository implements Repository {
   }
 
   async createScheduler(input: CreateSchedulerInput): Promise<Scheduler> {
-    if ((await this.boards.countDocuments({ _id: input.boardId }, { limit: 1 })) === 0) {
-      throw new Error(`Board ${input.boardId} does not exist`);
-    }
+    const board = await this.boards.findOne({ _id: input.boardId }, { projection: { userId: 1 } });
+    if (!board) throw new Error(`Board ${input.boardId} does not exist`);
     const now = nowIso();
     const doc: SchedulerDoc = {
       _id: newId(),
@@ -805,6 +944,7 @@ export class MongoRepository implements Repository {
       lastStatus: null,
       lastTaskId: null,
       lastError: null,
+      userId: board.userId ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -812,12 +952,15 @@ export class MongoRepository implements Repository {
     return toScheduler(doc);
   }
 
+  /** Moving to another board (unknown boards throw, like the SQL foreign keys) re-stamps the owner. */
   async updateScheduler(id: string, patch: UpdateSchedulerInput): Promise<Scheduler | null> {
-    const doc = await this.schedulers.findOneAndUpdate(
-      { _id: id },
-      { $set: { ...pickDefined(patch, SCHEDULER_PATCH_KEYS), updatedAt: nowIso() } },
-      { returnDocument: "after" },
-    );
+    const set: Partial<SchedulerDoc> = { ...pickDefined(patch, SCHEDULER_PATCH_KEYS), updatedAt: nowIso() };
+    if (set.boardId !== undefined) {
+      const board = await this.boards.findOne({ _id: set.boardId }, { projection: { userId: 1 } });
+      if (!board) throw new Error(`Board ${set.boardId} does not exist`);
+      set.userId = board.userId ?? null;
+    }
+    const doc = await this.schedulers.findOneAndUpdate({ _id: id }, { $set: set }, { returnDocument: "after" });
     return doc ? toScheduler(doc) : null;
   }
 

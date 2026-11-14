@@ -6,6 +6,7 @@ import { LogoMark } from "@/components/app-header";
 import { PasswordInput } from "@/components/password-input";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDocumentTitle } from "@/hooks/use-document-title";
@@ -45,10 +46,13 @@ function nextTarget(): string {
 export default function LoginPage() {
   useDocumentTitle("Sign in");
   const [mode, setMode] = useState<Mode>("loading");
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const usernameRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -61,7 +65,12 @@ export default function LoginPage() {
           window.location.replace(nextTarget());
           return;
         }
-        setMode(status.configured ? "login" : "setup");
+        if (status.configured) {
+          setMode("login");
+        } else {
+          setUsername("admin");
+          setMode("setup");
+        }
       })
       .catch(() => {
         if (!cancelled) setMode("login");
@@ -71,16 +80,23 @@ export default function LoginPage() {
     };
   }, []);
 
+  // Sign-in starts at the login name; setup keeps the suggested "admin" and starts at the password.
   useEffect(() => {
-    if (mode !== "loading") passwordRef.current?.focus();
+    if (mode === "login") usernameRef.current?.focus();
+    else if (mode === "setup") passwordRef.current?.focus();
   }, [mode]);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (submitting) return;
     setError(null);
-
+    const login = username.trim();
     if (mode === "setup") {
+      if (!login) {
+        setError("Choose a username for the admin account.");
+        usernameRef.current?.focus();
+        return;
+      }
       if (password.length < MIN_PASSWORD) {
         setError(`Use at least ${MIN_PASSWORD} characters.`);
         return;
@@ -89,15 +105,20 @@ export default function LoginPage() {
         setError("Passwords don't match.");
         return;
       }
+    } else if (!login) {
+      setError("Enter your username or email.");
+      usernameRef.current?.focus();
+      return;
     } else if (!password) {
-      setError("Enter the admin password.");
+      setError("Enter your password.");
+      passwordRef.current?.focus();
       return;
     }
 
     setSubmitting(true);
     try {
-      if (mode === "setup") await api.auth.setup(password);
-      else await api.auth.login(password);
+      if (mode === "setup") await api.auth.setup({ username: login, email: email.trim() || null, password });
+      else await api.auth.login(login, password);
       window.location.replace(nextTarget());
     } catch (err) {
       setError(err instanceof Error && err.message ? err.message : "Something went wrong. Try again.");
@@ -171,30 +192,68 @@ export default function LoginPage() {
                 {mode === "loading"
                   ? "Checking your session…"
                   : isSetup
-                    ? "Set an admin password to protect this server."
-                    : "Enter the admin password to continue."}
+                    ? "Create the admin account to protect this server."
+                    : "Sign in with your username or email."}
               </p>
             </div>
 
             {mode === "loading" ? (
               <div className="space-y-5" aria-hidden="true">
-                <div className="space-y-2">
-                  <Skeleton className="h-4 w-20" />
-                  <Skeleton className="h-11 w-full md:h-9" />
-                </div>
+                {[0, 1].map((field) => (
+                  <div key={field} className="space-y-2">
+                    <Skeleton className="h-4 w-20" />
+                    <Skeleton className="h-11 w-full md:h-9" />
+                  </div>
+                ))}
                 <Skeleton className="h-12 w-full md:h-10" />
               </div>
             ) : (
               <form onSubmit={onSubmit} noValidate aria-busy={submitting || undefined} className="space-y-5">
-                {/* Helps password managers associate the credential with this server. */}
-                <input
-                  type="text"
-                  name="username"
-                  autoComplete="username"
-                  value="admin"
-                  readOnly
-                  hidden
-                />
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="username">{isSetup ? "Admin username" : "Username or email"}</Label>
+                  <Input
+                    id="username"
+                    name="username"
+                    ref={usernameRef}
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    autoComplete="username"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    aria-invalid={error && !username.trim() ? true : undefined}
+                    aria-describedby={error ? "auth-error" : undefined}
+                    disabled={submitting}
+                    required
+                    className="h-11 md:h-9"
+                  />
+                </div>
+
+                {isSetup && (
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="email">
+                      Email <span className="font-normal text-muted-foreground">(optional)</span>
+                    </Label>
+                    <Input
+                      id="email"
+                      name="email"
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      autoComplete="email"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      aria-describedby="email-hint"
+                      disabled={submitting}
+                      className="h-11 md:h-9"
+                    />
+                    <p id="email-hint" className="text-xs text-muted-foreground">
+                      Lets you sign in with your email instead of the username.
+                    </p>
+                  </div>
+                )}
+
                 <div className="flex flex-col gap-2">
                   <Label htmlFor="password">{isSetup ? "New admin password" : "Password"}</Label>
                   <PasswordInput
@@ -245,14 +304,18 @@ export default function LoginPage() {
                   disabled={submitting}
                 >
                   {submitting && <Loader2Icon className="animate-spin" />}
-                  {isSetup ? "Set password and continue" : "Sign in"}
+                  {isSetup ? "Create admin and continue" : "Sign in"}
                 </Button>
               </form>
             )}
 
-            <p className="mt-8 border-t pt-4 text-xs leading-relaxed text-muted-foreground">
-              Forgot it? Restart the server with <code className="font-mono">ADMIN_PASSWORD</code> set.
-            </p>
+            {!isSetup && (
+              <p className="mt-8 border-t pt-4 text-xs leading-relaxed text-muted-foreground">
+                Forgot your password? An admin can reset it in Settings → Users. The{" "}
+                <code className="font-mono">admin</code> account can be recovered by restarting the server with{" "}
+                <code className="font-mono">ADMIN_PASSWORD</code> set.
+              </p>
+            )}
           </div>
         </div>
       </div>

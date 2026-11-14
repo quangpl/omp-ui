@@ -111,6 +111,8 @@ export interface CredentialSummary {
   id: string;
   providerId: CredentialProviderId;
   name: string;
+  /** Owning omp-ui user; null for credentials saved before multi-user support (claimed by the first admin at boot). */
+  userId: string | null;
   /** Non-secret fields verbatim; secret fields masked (`maskSecret`). Missing optional fields are absent. */
   fields: Record<string, string>;
   /** Keys of the secret fields that hold a value. */

@@ -22,6 +22,8 @@ import type {
   SchedulerRunStatus,
   Task,
   TaskStatus,
+  User,
+  UserRole,
 } from "@/lib/types";
 import type {
   AppendRunEventInput,
@@ -31,11 +33,14 @@ import type {
   CreateSchedulerInput,
   CreateSchedulerRunInput,
   CreateTaskInput,
+  CreateUserInput,
   Repository,
   UpdateBoardInput,
   UpdateRunInput,
   UpdateSchedulerInput,
   UpdateTaskInput,
+  UpdateUserInput,
+  UserAuthRecord,
 } from "@/lib/db/types";
 import {
   POSITION_STEP,
@@ -61,6 +66,18 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  email TEXT UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+  is_active INTEGER NOT NULL DEFAULT 1,
+  token_epoch INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS boards (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -70,6 +87,7 @@ CREATE TABLE IF NOT EXISTS boards (
   auto_run INTEGER NOT NULL DEFAULT 1,
   worktrees INTEGER NOT NULL DEFAULT 0,
   pinned INTEGER NOT NULL DEFAULT 0,
+  user_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -94,6 +112,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   todos TEXT NOT NULL DEFAULT '[]',
   review TEXT,
   scheduler_id TEXT,
+  user_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -109,6 +128,7 @@ CREATE TABLE IF NOT EXISTS comments (
   resolved_at TEXT,
   resolved_by_run_id TEXT,
   from_task_id TEXT,
+  user_id TEXT,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_comments_task ON comments (task_id);
@@ -121,7 +141,8 @@ CREATE TABLE IF NOT EXISTS runs (
   summary TEXT,
   error TEXT,
   started_at TEXT NOT NULL,
-  ended_at TEXT
+  ended_at TEXT,
+  user_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_task_started ON runs (task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (status);
@@ -152,6 +173,7 @@ CREATE TABLE IF NOT EXISTS schedulers (
   last_status TEXT CHECK (last_status IN ('created', 'failed')),
   last_task_id TEXT,
   last_error TEXT,
+  user_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -202,6 +224,7 @@ function toBoard(r: Row): Board {
     autoRun: num(r.auto_run) !== 0,
     worktrees: num(r.worktrees) !== 0,
     pinned: num(r.pinned) !== 0,
+    userId: strOrNull(r.user_id),
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
   };
@@ -232,6 +255,7 @@ function toTask(r: Row): Task {
     updatedAt: str(r.updated_at),
     commentCount: num(r.comment_count),
     openCommentCount: num(r.open_comment_count),
+    userId: strOrNull(r.user_id),
   };
 }
 
@@ -245,6 +269,7 @@ function toComment(r: Row): Comment {
     resolvedAt: strOrNull(r.resolved_at),
     resolvedByRunId: strOrNull(r.resolved_by_run_id),
     fromTaskId: strOrNull(r.from_task_id),
+    userId: strOrNull(r.user_id),
     createdAt: str(r.created_at),
   };
 }
@@ -259,6 +284,7 @@ function toRun(r: Row): Run {
     error: strOrNull(r.error),
     startedAt: str(r.started_at),
     endedAt: strOrNull(r.ended_at),
+    userId: strOrNull(r.user_id),
   };
 }
 
@@ -289,6 +315,7 @@ function toScheduler(r: Row): Scheduler {
     lastStatus: strOrNull(r.last_status) as SchedulerRunStatus | null,
     lastTaskId: strOrNull(r.last_task_id),
     lastError: strOrNull(r.last_error),
+    userId: strOrNull(r.user_id),
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
   };
@@ -305,6 +332,22 @@ function toSchedulerRun(r: Row): SchedulerRun {
     error: strOrNull(r.error),
     createdAt: str(r.created_at),
   };
+}
+
+function toUser(r: Row): User {
+  return {
+    id: str(r.id),
+    username: str(r.username),
+    email: strOrNull(r.email),
+    role: str(r.role) as UserRole,
+    isActive: num(r.is_active) !== 0,
+    createdAt: str(r.created_at),
+    updatedAt: str(r.updated_at),
+  };
+}
+
+function toUserAuth(r: Row): UserAuthRecord {
+  return { ...toUser(r), passwordHash: str(r.password_hash), tokenEpoch: num(r.token_epoch) };
 }
 
 /** Normalizes the `limit` of `listSchedulerRuns` into 1..1000 (default 100). */
@@ -369,6 +412,7 @@ export class SqliteRepository implements Repository {
       ["extra_folders", "TEXT NOT NULL DEFAULT '[]'"],
       ["worktrees", "INTEGER NOT NULL DEFAULT 0"],
       ["pinned", "INTEGER NOT NULL DEFAULT 0"],
+      ["user_id", "TEXT"],
     ]);
     this.addMissingColumns("tasks", [
       ["blocked_by", "TEXT NOT NULL DEFAULT '[]'"],
@@ -379,10 +423,22 @@ export class SqliteRepository implements Repository {
       ["todos", "TEXT NOT NULL DEFAULT '[]'"],
       ["review", "TEXT"],
       ["scheduler_id", "TEXT"],
+      ["user_id", "TEXT"],
     ]);
-    // After the migration: older databases only now have tasks.scheduler_id.
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_scheduler ON tasks (scheduler_id)");
-    this.addMissingColumns("comments", [["from_task_id", "TEXT"]]);
+    this.addMissingColumns("comments", [
+      ["from_task_id", "TEXT"],
+      ["user_id", "TEXT"],
+    ]);
+    this.addMissingColumns("runs", [["user_id", "TEXT"]]);
+    this.addMissingColumns("schedulers", [["user_id", "TEXT"]]);
+    // After the migrations: older databases only now have these columns.
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_tasks_scheduler ON tasks (scheduler_id);
+      CREATE INDEX IF NOT EXISTS idx_boards_user ON boards (user_id);
+      CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks (user_id);
+      CREATE INDEX IF NOT EXISTS idx_runs_user_started ON runs (user_id, started_at);
+      CREATE INDEX IF NOT EXISTS idx_schedulers_user ON schedulers (user_id);
+    `);
     logSchemaMigrations("sqlite", before, this.schemaSnapshot());
   }
 
@@ -417,6 +473,12 @@ export class SqliteRepository implements Repository {
     for (const [name, definition] of columns) {
       if (!existing.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
     }
+  }
+
+  /** `user_id` of the row `id` in `table` (the owner a child row inherits); null when unowned or missing. */
+  private ownerOf(table: "boards" | "tasks", id: string): string | null {
+    const row = this.stmt(`SELECT user_id FROM ${table} WHERE id = ?`).get(id);
+    return row ? strOrNull(row.user_id) : null;
   }
 
   async close(): Promise<void> {
@@ -461,15 +523,101 @@ export class SqliteRepository implements Repository {
     this.stmt("DELETE FROM settings WHERE key = ?").run(key);
   }
 
+  // ------------------------------------------------------------------- users
+
+  async listUsers(): Promise<User[]> {
+    return this.stmt("SELECT * FROM users ORDER BY created_at ASC, rowid ASC").all().map(toUser);
+  }
+
+  async getUser(id: string): Promise<User | null> {
+    const row = this.stmt("SELECT * FROM users WHERE id = ?").get(id);
+    return row ? toUser(row) : null;
+  }
+
+  async getUserAuth(id: string): Promise<UserAuthRecord | null> {
+    const row = this.stmt("SELECT * FROM users WHERE id = ?").get(id);
+    return row ? toUserAuth(row) : null;
+  }
+
+  async findUserAuthByLogin(login: string): Promise<UserAuthRecord | null> {
+    const row = this.stmt("SELECT * FROM users WHERE username = ? OR email = ? LIMIT 1").get(login, login);
+    return row ? toUserAuth(row) : null;
+  }
+
+  async createUser(input: CreateUserInput): Promise<User> {
+    const now = nowIso();
+    const user: User = {
+      id: newId(),
+      username: input.username,
+      email: input.email ?? null,
+      role: input.role,
+      isActive: input.isActive ?? true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    // UNIQUE(username) / UNIQUE(email) violations throw: the caller maps them to 409.
+    this.stmt(
+      `INSERT INTO users (id, username, email, password_hash, role, is_active, token_epoch, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+    ).run(
+      user.id,
+      user.username,
+      user.email,
+      input.passwordHash,
+      user.role,
+      user.isActive ? 1 : 0,
+      user.createdAt,
+      user.updatedAt,
+    );
+    return user;
+  }
+
+  async updateUser(id: string, patch: UpdateUserInput): Promise<User | null> {
+    const { sql, params } = buildSet([
+      ["username", patch.username],
+      ["email", patch.email],
+      ["password_hash", patch.passwordHash],
+      ["role", patch.role],
+      ["is_active", patch.isActive === undefined ? undefined : patch.isActive ? 1 : 0],
+      ["token_epoch", patch.tokenEpoch],
+      ["updated_at", nowIso()],
+    ]);
+    const res = this.db.prepare(`UPDATE users SET ${sql} WHERE id = ?`).run(...params, id);
+    if (Number(res.changes) === 0) return null;
+    return this.getUser(id);
+  }
+
+  async deleteUser(id: string): Promise<boolean> {
+    const res = this.stmt("DELETE FROM users WHERE id = ?").run(id);
+    return Number(res.changes) > 0;
+  }
+
+  async reassignUserData(fromUserId: string | null, toUserId: string): Promise<number> {
+    const where = fromUserId === null ? "user_id IS NULL" : "user_id = ?";
+    const params: SQLInputValue[] = fromUserId === null ? [toUserId] : [toUserId, fromUserId];
+    return this.transaction(() => {
+      const boards = this.stmt(`UPDATE boards SET user_id = ? WHERE ${where}`).run(...params);
+      for (const table of ["tasks", "comments", "runs", "schedulers"]) {
+        this.stmt(`UPDATE ${table} SET user_id = ? WHERE ${where}`).run(...params);
+      }
+      return Number(boards.changes);
+    });
+  }
+
   // ------------------------------------------------------------------ boards
 
-  async listBoards(): Promise<BoardWithCounts[]> {
-    const boards = this.stmt("SELECT * FROM boards ORDER BY created_at DESC").all().map(toBoard);
+  async listBoards(userId?: string): Promise<BoardWithCounts[]> {
+    const owned = userId !== undefined;
+    const boards = (
+      owned
+        ? this.stmt("SELECT * FROM boards WHERE user_id = ? ORDER BY created_at DESC").all(userId)
+        : this.stmt("SELECT * FROM boards ORDER BY created_at DESC").all()
+    ).map(toBoard);
     const stats = this.stmt(
       `SELECT board_id, status, COUNT(*) AS n,
          SUM(CASE WHEN agent_state IN ('running', 'queued') THEN 1 ELSE 0 END) AS active
-       FROM tasks GROUP BY board_id, status`,
-    ).all();
+       FROM tasks ${owned ? "WHERE user_id = ?" : ""} GROUP BY board_id, status`,
+    ).all(...(owned ? [userId] : []));
     const byBoard = new Map<string, BoardWithCounts>();
     const result = boards.map((b) => {
       const withCounts: BoardWithCounts = { ...b, counts: emptyStatusCounts(), runningCount: 0 };
@@ -502,11 +650,12 @@ export class SqliteRepository implements Repository {
       autoRun: input.autoRun ?? true,
       worktrees: input.worktrees ?? false,
       pinned: false,
+      userId: input.userId ?? null,
       createdAt: now,
       updatedAt: now,
     };
     this.stmt(
-      "INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       board.id,
       board.name,
@@ -515,6 +664,7 @@ export class SqliteRepository implements Repository {
       board.model,
       board.autoRun ? 1 : 0,
       board.worktrees ? 1 : 0,
+      board.userId,
       board.createdAt,
       board.updatedAt,
     );
@@ -555,14 +705,16 @@ export class SqliteRepository implements Repository {
     return this.stmt(`${TASK_SELECT} WHERE t.board_id = ? ${TASK_ORDER}`).all(boardId).map(toTask);
   }
 
-  async listTasksByAgentState(states: AgentState[]): Promise<Task[]> {
+  async listTasksByAgentState(states: AgentState[], userId?: string): Promise<Task[]> {
     if (states.length === 0) return [];
     const placeholders = states.map(() => "?").join(", ");
+    const owned = userId !== undefined;
     return this.db
       .prepare(
-        `${TASK_SELECT} WHERE t.agent_state IN (${placeholders}) ORDER BY t.updated_at ASC, t.created_at ASC`,
+        `${TASK_SELECT} WHERE t.agent_state IN (${placeholders}) ${owned ? "AND t.user_id = ?" : ""}
+         ORDER BY t.updated_at ASC, t.created_at ASC`,
       )
-      .all(...states)
+      .all(...states, ...(owned ? [userId] : []))
       .map(toTask);
   }
 
@@ -583,9 +735,10 @@ export class SqliteRepository implements Repository {
         ).get(input.boardId, status);
         position = row && row.m != null ? Number(row.m) + POSITION_STEP : POSITION_STEP;
       }
+      // The card inherits its board's owner.
       this.stmt(
-        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, blocked_by, created_by_task_id, scheduler_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, blocked_by, created_by_task_id, scheduler_id, user_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?)`,
       ).run(
         id,
         input.boardId,
@@ -596,6 +749,7 @@ export class SqliteRepository implements Repository {
         JSON.stringify(input.blockedBy ?? []),
         input.createdByTaskId ?? null,
         input.schedulerId ?? null,
+        this.ownerOf("boards", input.boardId),
         now,
         now,
       );
@@ -659,11 +813,12 @@ export class SqliteRepository implements Repository {
       resolvedAt: resolved ? now : null,
       resolvedByRunId: null,
       fromTaskId: input.fromTaskId ?? null,
+      userId: this.ownerOf("tasks", input.taskId),
       createdAt: now,
     };
     this.stmt(
-      `INSERT INTO comments (id, task_id, author, body, resolved, resolved_at, resolved_by_run_id, from_task_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO comments (id, task_id, author, body, resolved, resolved_at, resolved_by_run_id, from_task_id, user_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       comment.id,
       comment.taskId,
@@ -673,6 +828,7 @@ export class SqliteRepository implements Repository {
       comment.resolvedAt,
       comment.resolvedByRunId,
       comment.fromTaskId,
+      comment.userId,
       comment.createdAt,
     );
     return comment;
@@ -726,10 +882,17 @@ export class SqliteRepository implements Repository {
       .map(toRun);
   }
 
-  async listRecentRuns(limit?: number): Promise<Run[]> {
-    return this.stmt("SELECT * FROM runs ORDER BY started_at DESC, rowid DESC LIMIT ?")
-      .all(normalizeRecentRunLimit(limit))
-      .map(toRun);
+  async listRecentRuns(limit?: number, userId?: string): Promise<Run[]> {
+    const rows =
+      userId === undefined
+        ? this.stmt("SELECT * FROM runs ORDER BY started_at DESC, rowid DESC LIMIT ?").all(
+            normalizeRecentRunLimit(limit),
+          )
+        : this.stmt("SELECT * FROM runs WHERE user_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?").all(
+            userId,
+            normalizeRecentRunLimit(limit),
+          );
+    return rows.map(toRun);
   }
 
   async getRun(id: string): Promise<Run | null> {
@@ -747,11 +910,12 @@ export class SqliteRepository implements Repository {
       error: null,
       startedAt: nowIso(),
       endedAt: null,
+      userId: this.ownerOf("tasks", input.taskId),
     };
     this.stmt(
-      `INSERT INTO runs (id, task_id, status, prompt, summary, error, started_at, ended_at)
-       VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL)`,
-    ).run(run.id, run.taskId, run.status, run.prompt, run.startedAt);
+      `INSERT INTO runs (id, task_id, status, prompt, summary, error, started_at, ended_at, user_id)
+       VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, ?)`,
+    ).run(run.id, run.taskId, run.status, run.prompt, run.startedAt, run.userId);
     return run;
   }
 
@@ -802,14 +966,21 @@ export class SqliteRepository implements Repository {
 
   // -------------------------------------------------------------- schedulers
 
-  async listSchedulers(boardId?: string): Promise<Scheduler[]> {
-    const rows =
-      boardId === undefined
-        ? this.stmt("SELECT * FROM schedulers ORDER BY created_at DESC, rowid DESC").all()
-        : this.stmt(
-            "SELECT * FROM schedulers WHERE board_id = ? ORDER BY created_at DESC, rowid DESC",
-          ).all(boardId);
-    return rows.map(toScheduler);
+  async listSchedulers(boardId?: string, userId?: string): Promise<Scheduler[]> {
+    const where: string[] = [];
+    const params: SQLInputValue[] = [];
+    if (boardId !== undefined) {
+      where.push("board_id = ?");
+      params.push(boardId);
+    }
+    if (userId !== undefined) {
+      where.push("user_id = ?");
+      params.push(userId);
+    }
+    const filter = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+    return this.stmt(`SELECT * FROM schedulers ${filter} ORDER BY created_at DESC, rowid DESC`)
+      .all(...params)
+      .map(toScheduler);
   }
 
   async getScheduler(id: string): Promise<Scheduler | null> {
@@ -834,12 +1005,13 @@ export class SqliteRepository implements Repository {
       lastStatus: null,
       lastTaskId: null,
       lastError: null,
+      userId: this.ownerOf("boards", input.boardId),
       createdAt: now,
       updatedAt: now,
     };
     this.stmt(
-      `INSERT INTO schedulers (id, board_id, name, prompt, cron, timezone, enabled, max_runs, run_count, last_run_at, next_run_at, last_status, last_task_id, last_error, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, NULL, NULL, ?, ?)`,
+      `INSERT INTO schedulers (id, board_id, name, prompt, cron, timezone, enabled, max_runs, run_count, last_run_at, next_run_at, last_status, last_task_id, last_error, user_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, NULL, NULL, ?, ?, ?)`,
     ).run(
       scheduler.id,
       scheduler.boardId,
@@ -850,6 +1022,7 @@ export class SqliteRepository implements Repository {
       scheduler.enabled ? 1 : 0,
       scheduler.maxRuns,
       scheduler.nextRunAt,
+      scheduler.userId,
       scheduler.createdAt,
       scheduler.updatedAt,
     );
@@ -859,6 +1032,8 @@ export class SqliteRepository implements Repository {
   async updateScheduler(id: string, patch: UpdateSchedulerInput): Promise<Scheduler | null> {
     const { sql, params } = buildSet([
       ["board_id", patch.boardId],
+      // Moving to another board moves the scheduler to that board's owner.
+      ["user_id", patch.boardId === undefined ? undefined : this.ownerOf("boards", patch.boardId)],
       ["name", patch.name],
       ["prompt", patch.prompt],
       ["cron", patch.cron],

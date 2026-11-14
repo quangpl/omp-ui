@@ -13,4 +13,4 @@ export const POST = withApi(async ({ req }) => {
   }
   const block = await getTerminalSession().execute(body.command, body.cwd || undefined);
   return json(block, { status: 201 });
-});
+}, { admin: true });

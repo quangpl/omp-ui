@@ -1,21 +1,35 @@
-// Corpus for the composer's inline word completion: the user's omp prompt history plus this
-// app's card titles and descriptions, condensed into an n-gram model the client looks up locally.
-// Building reads every card and spawns omp once, so the model is cached for a few minutes.
+// Corpus for the composer's inline word completion, condensed into an n-gram model the client
+// looks up locally. Admins get omp's prompt history plus every card's title and description; a
+// regular user only the cards their scoped repository shows (omp's history holds everyone's prompts).
+// Building reads every visible card (and spawns omp for admins), so models are cached for a few
+// minutes per viewer.
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { repoActor } from "@/lib/db/scoped";
 import type { Repository } from "@/lib/db/types";
 import { agentDir } from "@/lib/server/omp-config";
 import { buildWordModelData, type WordModelData } from "@/lib/word-completion";
 
 const CACHE_TTL_MS = 5 * 60_000;
+/** Cached models at most (one per viewer active in the last few minutes); the oldest go first. */
+const CACHE_MAX_ENTRIES = 50;
 const HISTORY_LIMIT = 5000;
 // omp stands in these for pasted blocks and images; they are not prose the user typed.
 const PLACEHOLDER = /\[(?:Pasted text|Image) #\d+[^\]]*\]/g;
 
+interface CachedModel {
+  /** omp path the history was read through; null for regular users' card-only models. */
+  path: string | null;
+  at: number;
+  agentDir: Promise<string> | null;
+  model: Promise<WordModelData>;
+}
+
 const g = globalThis as unknown as {
-  __ompUiWordModel?: { path: string; at: number; agentDir: Promise<string>; model: Promise<WordModelData> };
+  /** Viewer key (see `viewerKey`) → model. Map order is build order, oldest first. */
+  __ompUiWordModels?: Map<string, CachedModel>;
 };
 
 /** omp's agent dir; falls back to its default location when omp is missing or fails. */
@@ -53,7 +67,7 @@ function historyPrompts(dir: string): string[] {
   }
 }
 
-/** Titles and descriptions of every card on every board. */
+/** Titles and descriptions of every card on every board `repo` shows. */
 async function cardTexts(repo: Repository): Promise<string[]> {
   const boards = await repo.listBoards();
   const tasks = await Promise.all(boards.map((board) => repo.listTasks(board.id)));
@@ -65,30 +79,61 @@ async function cardTexts(repo: Repository): Promise<string[]> {
   return texts;
 }
 
-async function buildModel(repo: Repository, dir: Promise<string>): Promise<WordModelData> {
-  const [prompts, cards] = await Promise.all([dir.then(historyPrompts), cardTexts(repo)]);
+async function buildModel(repo: Repository, dir: Promise<string> | null): Promise<WordModelData> {
+  const [prompts, cards] = await Promise.all([dir ? dir.then(historyPrompts) : [], cardTexts(repo)]);
   return buildWordModelData([...prompts, ...cards]);
 }
 
+const ADMIN_KEY = "admin";
+
+/** Admins and the unscoped repository see the same corpus and share one model; each user gets their own. */
+function viewerKey(repo: Repository): string {
+  const actor = repoActor(repo);
+  return actor && actor.role !== "admin" ? `user:${actor.id}` : ADMIN_KEY;
+}
+
+/** Drop expired models, then the oldest while over the cap. */
+function prune(cache: Map<string, CachedModel>, now: number): void {
+  for (const [key, entry] of cache) {
+    if (now - entry.at > CACHE_TTL_MS) cache.delete(key);
+  }
+  for (const key of cache.keys()) {
+    if (cache.size <= CACHE_MAX_ENTRIES) break;
+    cache.delete(key);
+  }
+}
+
 /**
- * The word-completion model (cached for five minutes per omp path; `refresh` rebuilds).
- * Concurrent callers share one build; a failed build is not cached.
+ * The word-completion model for `repo`'s viewer (cached for five minutes per viewer and, for
+ * admins, per omp path; `refresh` rebuilds the viewer's own model). Concurrent callers share one
+ * build; a failed build is not cached.
  */
 export function wordCompletionModel(
   repo: Repository,
   ompPath: string,
   options: { refresh?: boolean } = {},
 ): Promise<WordModelData> {
-  const cached = g.__ompUiWordModel;
-  if (options.refresh || !cached || cached.path !== ompPath || Date.now() - cached.at > CACHE_TTL_MS) {
-    // The agent dir rarely changes; reuse the resolved one so a rebuild does not spawn omp again.
-    const dir = cached && cached.path === ompPath ? cached.agentDir : resolveAgentDir(ompPath);
-    const model = buildModel(repo, dir);
-    const entry = { path: ompPath, at: Date.now(), agentDir: dir, model };
-    g.__ompUiWordModel = entry;
-    model.catch(() => {
-      if (g.__ompUiWordModel === entry) g.__ompUiWordModel = undefined;
-    });
+  const cache = (g.__ompUiWordModels ??= new Map());
+  const key = viewerKey(repo);
+  // Only the admin model reads omp's history.
+  const historyFrom = key === ADMIN_KEY ? ompPath : null;
+  const now = Date.now();
+  const cached = cache.get(key);
+  if (!options.refresh && cached && cached.path === historyFrom && now - cached.at <= CACHE_TTL_MS) {
+    return cached.model;
   }
-  return g.__ompUiWordModel!.model;
+
+  // The agent dir rarely changes; reuse the resolved one so a rebuild does not spawn omp again.
+  const dir =
+    historyFrom === null ? null : cached?.path === historyFrom ? cached.agentDir : resolveAgentDir(historyFrom);
+  const model = buildModel(repo, dir);
+  const entry: CachedModel = { path: historyFrom, at: now, agentDir: dir, model };
+  // Re-inserting moves the key to the end: Map order stays oldest build first.
+  cache.delete(key);
+  cache.set(key, entry);
+  prune(cache, now);
+  model.catch(() => {
+    if (cache.get(key) === entry) cache.delete(key);
+  });
+  return model;
 }

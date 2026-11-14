@@ -50,7 +50,7 @@ describe("sqlite migration", () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ui-migrate-"));
     const file = path.join(dir, "omp-ui.db");
     try {
-      // Schema as it was before extra folders, worktrees, dependencies and agent messages.
+      // Schema as it was before extra folders, worktrees, dependencies, agent messages and users.
       const old = new DatabaseSync(file);
       old.exec(`
         CREATE TABLE boards (id TEXT PRIMARY KEY, name TEXT NOT NULL, workdir TEXT NOT NULL, model TEXT,
@@ -72,12 +72,20 @@ describe("sqlite migration", () => {
       const repo = new SqliteRepository(file);
       await repo.init();
       try {
-        expect(await repo.getBoard("b1")).toMatchObject({ extraFolders: [], worktrees: false });
-        expect(await repo.getTask("t1")).toMatchObject({ blockedBy: [], createdByTaskId: null });
-        expect(await repo.getComment("c1")).toMatchObject({ fromTaskId: null });
+        expect(await repo.getBoard("b1")).toMatchObject({ extraFolders: [], worktrees: false, userId: null });
+        expect(await repo.getTask("t1")).toMatchObject({ blockedBy: [], createdByTaskId: null, userId: null });
+        expect(await repo.getComment("c1")).toMatchObject({ fromTaskId: null, userId: null });
 
         const updated = await repo.updateTask("t1", { blockedBy: ["t0"] });
         expect(updated!.blockedBy).toEqual(["t0"]);
+
+        // The users table and the user_id columns exist: boot can hand the legacy rows to the first admin.
+        const admin = await repo.createUser({ username: "admin", passwordHash: "scrypt$admin", role: "admin" });
+        expect(await repo.listUsers()).toEqual([admin]);
+        expect(await repo.reassignUserData(null, admin.id)).toBe(1);
+        expect((await repo.listBoards(admin.id)).map((b) => b.id)).toEqual(["b1"]);
+        expect(await repo.getTask("t1")).toMatchObject({ userId: admin.id });
+        expect(await repo.getComment("c1")).toMatchObject({ userId: admin.id });
       } finally {
         await repo.close();
       }

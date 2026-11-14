@@ -15,6 +15,7 @@ const board: Board = {
   autoRun: true,
   worktrees: false,
   pinned: false,
+  userId: null,
   createdAt: NOW,
   updatedAt: NOW,
 };
@@ -34,6 +35,7 @@ const task: Task = {
   blockedBy: [],
   createdByTaskId: null,
   schedulerId: null,
+  userId: null,
   pushedAt: null,
   autoRetries: 0,
   retryAt: null,
@@ -56,6 +58,7 @@ function comment(body: string, overrides: Partial<Comment> = {}): Comment {
     resolvedAt: null,
     resolvedByRunId: null,
     fromTaskId: null,
+    userId: null,
     createdAt: NOW,
     ...overrides,
   };
