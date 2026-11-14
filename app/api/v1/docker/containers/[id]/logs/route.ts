@@ -8,4 +8,4 @@ export const GET = withApi<{ id: string }>(async ({ req, params }) => {
   const ref = parseContainerRef(params.id);
   const tail = parseTail(new URL(req.url).searchParams.get("tail"));
   return json({ logs: await containerLogs(ref, tail) });
-});
+}, { admin: true });

@@ -15,4 +15,5 @@ export const POST = withApi(async ({ req, repo }) =>
     const { ompPath } = await getAppSettings(repo);
     return json(await testAiProvider(repo, ompPath, input));
   }),
+  { admin: true },
 );

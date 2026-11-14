@@ -17,7 +17,7 @@ const PAGE_PATH_MAX = 512;
 export const GET = withApi<Params>(async ({ req, repo, params }) => {
   const source = requireLogSource(params.source);
   return json(await queryLogs(repo, source, parseLogQuery(new URL(req.url).searchParams)));
-});
+}, { admin: true });
 
 /** Record a page view `{ path }` in the access log (only the "access" source accepts POST). */
 export const POST = withApi<Params>(async ({ req, params }) => {

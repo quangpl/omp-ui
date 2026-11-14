@@ -2,6 +2,7 @@
 import { execFile } from "node:child_process";
 import type { AgentManager } from "@/lib/agent/types";
 import { childEnv } from "@/lib/child-env";
+import { repoActor } from "@/lib/db/scoped";
 import type { Repository } from "@/lib/db/types";
 import { gitStatus } from "@/lib/git";
 import { activityLine } from "@/lib/run-activity";
@@ -18,6 +19,7 @@ import type {
   GitStatus,
   NeedsYouCard,
   NeedsYouReason,
+  QueueSnapshot,
   Run,
   Task,
   TaskStatus,
@@ -91,6 +93,19 @@ const newestFirst = (a: { updatedAt: string }, b: { updatedAt: string }) =>
   b.updatedAt.localeCompare(a.updatedAt);
 
 const truncate = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+/**
+ * `queue` (the manager's, which spans every user) limited to the cards of `boardIds`, the boards the
+ * caller can see. The agent limit and concurrency stay machine-wide.
+ */
+export function visibleQueue(queue: QueueSnapshot, boardIds: ReadonlySet<string>): QueueSnapshot {
+  return {
+    ...queue,
+    running: queue.running.filter((entry) => boardIds.has(entry.boardId)),
+    queued: queue.queued.filter((entry) => boardIds.has(entry.boardId)),
+    planning: queue.planning.filter((plan) => boardIds.has(plan.boardId)),
+  };
+}
 
 // ---------------------------------------------------------------------------------------------
 // Process-wide caches: the home page reloads the dashboard on every card change.
@@ -210,13 +225,17 @@ async function runDigest(repo: Repository, runId: string): Promise<RunEventDiges
 
 export async function buildDashboard(repo: Repository, manager: AgentManager): Promise<Dashboard> {
   const now = Date.now();
-  const [boards, queue, settings, storedSettings, docker] = await Promise.all([
+  const [boards, managerQueue, settings, storedSettings, docker] = await Promise.all([
     repo.listBoards(),
     manager.queueSnapshot(),
     getAppSettings(repo),
     repo.getSetting(SETTINGS_KEY),
     dockerAvailable(now),
   ]);
+  const actor = repoActor(repo);
+  // The process-wide caches may only be pruned by a caller that sees every card.
+  const seesAll = !actor || actor.role === "admin";
+  const queue = seesAll ? managerQueue : visibleQueue(managerQueue, new Set(boards.map((board) => board.id)));
   const [tasksByBoard, gitByBoard] = await Promise.all([
     Promise.all(boards.map((board) => repo.listTasks(board.id))),
     Promise.all(boards.map((board) => Promise.all([board.workdir, ...board.extraFolders].map((f) => cachedGitStatus(f, now))))),
@@ -236,7 +255,7 @@ export async function buildDashboard(repo: Repository, manager: AgentManager): P
       .map(async (task) => runsByTask.set(task.id, await cardRuns(repo, task))),
   );
   const liveIds = new Set(allTasks.map((task) => task.id));
-  for (const id of caches.runs.keys()) if (!liveIds.has(id)) caches.runs.delete(id);
+  if (seesAll) for (const id of caches.runs.keys()) if (!liveIds.has(id)) caches.runs.delete(id);
 
   const totals: Record<TaskStatus, number> = { todo: 0, in_progress: 0, done: 0 };
   const failed: (DashboardCard & { reason: AttentionReason })[] = [];
@@ -399,7 +418,7 @@ export async function buildDashboard(repo: Repository, manager: AgentManager): P
       return agent.startedAt && runId ? [runId] : [];
     }),
   );
-  for (const id of caches.events.keys()) if (!runningRuns.has(id)) caches.events.delete(id);
+  if (seesAll) for (const id of caches.events.keys()) if (!runningRuns.has(id)) caches.events.delete(id);
 
   needsYou.sort(
     (a, b) => NEEDS_YOU_ORDER.indexOf(a.reasons[0]) - NEEDS_YOU_ORDER.indexOf(b.reasons[0]) || newestFirst(a, b),

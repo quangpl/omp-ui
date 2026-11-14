@@ -49,6 +49,11 @@ import type {
   TaskReviewResult,
   TaskStatus,
   TaskWorkspace,
+  AuthStatus,
+  CreateUserRequest,
+  DeleteUserResult,
+  UpdateUserRequest,
+  User,
 } from "@/lib/types";
 import type {
   ComposeAction,
@@ -168,6 +173,8 @@ async function request<T>(path: string, init: RequestInit & { json?: unknown } =
 export interface TokenResponse {
   token: string;
   expiresAt: string;
+  /** The account the token signs in. */
+  user: User;
 }
 
 export interface TaskDetail {
@@ -272,14 +279,34 @@ function logQuery(query: LogQuery, extra: Record<string, string> = {}): string {
 
 export const api = {
   auth: {
-    status: () => request<{ configured: boolean; authenticated: boolean }>("/auth/status"),
-    setup: (password: string) =>
-      request<TokenResponse>("/auth/setup", { method: "POST", json: { password } }),
-    login: (password: string) =>
-      request<TokenResponse>("/auth/login", { method: "POST", json: { password } }),
+    status: () => request<AuthStatus>("/auth/status"),
+    /** First run: creates the first admin account (`username` defaults to "admin" server-side). */
+    setup: (input: { username?: string; email?: string | null; password: string }) =>
+      request<TokenResponse>("/auth/setup", { method: "POST", json: input }),
+    /** `username`: a username or an email address. */
+    login: (username: string, password: string) =>
+      request<TokenResponse>("/auth/login", { method: "POST", json: { username, password } }),
     logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
+    /** Change the signed-in user's own password; signs out that user's other sessions. */
     changePassword: (current: string, next: string) =>
       request<TokenResponse>("/auth/password", { method: "POST", json: { current, next } }),
+  },
+  /** User management (admins only). */
+  users: {
+    list: () => request<User[]>("/users"),
+    get: (id: string) => request<User>(`/users/${encodeURIComponent(id)}`),
+    create: (input: CreateUserRequest) => request<User>("/users", { method: "POST", json: input }),
+    update: (id: string, patch: UpdateUserRequest) =>
+      request<User>(`/users/${encodeURIComponent(id)}`, { method: "PATCH", json: patch }),
+    /** Without `reassignTo` the user's boards and credentials are deleted with the account. */
+    remove: (id: string, options: { reassignTo?: string } = {}) =>
+      request<DeleteUserResult>(
+        `/users/${encodeURIComponent(id)}${options.reassignTo ? `?reassignTo=${encodeURIComponent(options.reassignTo)}` : ""}`,
+        { method: "DELETE" },
+      ),
+    /** Set another user's password (signs that user out everywhere). */
+    setPassword: (id: string, password: string) =>
+      request<{ ok: true }>(`/users/${encodeURIComponent(id)}/password`, { method: "PATCH", json: { password } }),
   },
   system: () => request<SystemInfo>("/system"),
   restart: {

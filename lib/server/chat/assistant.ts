@@ -14,7 +14,7 @@ import { STATUS_LABELS, TASK_STATUSES, type BoardWithCounts, type ChatPlatform, 
 import { splitMessage, unwatchCard, watchCard } from "./relay";
 import { getChatAdapter } from "./service";
 import { loadChatState, updateChatState } from "./store";
-import type { ChatEnv, IncomingChatMessage } from "./types";
+import type { ChatEnv, ChatUserEnv, IncomingChatMessage } from "./types";
 
 /** The assistant is cancelled after this long. */
 const TIMEOUT_SECONDS = 240;
@@ -41,6 +41,8 @@ type Json = Record<string, unknown>;
 export interface ChatToolContext {
   platform: ChatPlatform;
   chatId: string;
+  /** Platform id of the chat user the tools run for; cards they start stream to the chat on their behalf. */
+  userId: string;
 }
 
 interface Exchange {
@@ -49,8 +51,8 @@ interface Exchange {
 }
 
 interface ChatQueue {
-  /** Messages waiting for the current request to finish. */
-  pending: IncomingChatMessage[];
+  /** Messages waiting for the current request to finish, each with its sender's scoped env. */
+  pending: { env: ChatUserEnv; msg: IncomingChatMessage }[];
   /** The request in flight; null when idle. */
   current: AbortController | null;
 }
@@ -65,13 +67,21 @@ function chatKey(platform: ChatPlatform, chatId: string): string {
   return `${platform}:${chatId}`;
 }
 
+/**
+ * Conversations are remembered per chat and account: in a shared chat, one account's exchanges
+ * never reach another account's prompt.
+ */
+function memoryKey(platform: ChatPlatform, chatId: string, accountId: string): string {
+  return `${chatKey(platform, chatId)}:${accountId}`;
+}
+
 /** Hand a message to the assistant; returns at once. Messages of one chat run one after another. */
-export function runChatAssistant(env: ChatEnv, msg: IncomingChatMessage): void {
+export function runChatAssistant(env: ChatUserEnv, msg: IncomingChatMessage): void {
   const key = chatKey(msg.platform, msg.chatId);
   let queue = state.queues.get(key);
   if (!queue) state.queues.set(key, (queue = { pending: [], current: null }));
-  queue.pending.push(msg);
-  if (!queue.current) void drain(env, key, queue);
+  queue.pending.push({ env, msg });
+  if (!queue.current) void drain(key, queue);
 }
 
 /** Abort the chat's request in flight and drop its waiting messages; true when there was any. */
@@ -83,17 +93,17 @@ export function cancelChatAssistant(platform: ChatPlatform, chatId: string): boo
   return true;
 }
 
-/** Forget the chat's conversation (logout). */
-export function forgetChatConversation(platform: ChatPlatform, chatId: string): void {
-  state.memory.delete(chatKey(platform, chatId));
+/** Forget the account's conversation in the chat (logout). */
+export function forgetChatConversation(platform: ChatPlatform, chatId: string, accountId: string): void {
+  state.memory.delete(memoryKey(platform, chatId, accountId));
 }
 
-async function drain(env: ChatEnv, key: string, queue: ChatQueue): Promise<void> {
-  for (let msg = queue.pending.shift(); msg; msg = queue.pending.shift()) {
+async function drain(key: string, queue: ChatQueue): Promise<void> {
+  for (let next = queue.pending.shift(); next; next = queue.pending.shift()) {
     const controller = new AbortController();
     queue.current = controller;
     try {
-      await answer(env, msg, controller.signal);
+      await answer(next.env, next.msg, controller.signal);
     } catch (err) {
       console.error("[chat] assistant failed:", err);
     } finally {
@@ -104,7 +114,7 @@ async function drain(env: ChatEnv, key: string, queue: ChatQueue): Promise<void>
 }
 
 /** One request: placeholder message, live progress, then the answer in its place. */
-async function answer(env: ChatEnv, msg: IncomingChatMessage, signal: AbortSignal): Promise<void> {
+async function answer(env: ChatUserEnv, msg: IncomingChatMessage, signal: AbortSignal): Promise<void> {
   const adapter = getChatAdapter(msg.platform);
   let placeholderId: string | null = null;
   try {
@@ -125,7 +135,7 @@ async function answer(env: ChatEnv, msg: IncomingChatMessage, signal: AbortSigna
   let text: string;
   try {
     text = await ask(env, msg, signal, onActivity);
-    remember(msg, text);
+    remember(memoryKey(msg.platform, msg.chatId, env.user.id), msg, text);
   } catch (err) {
     text = signal.aborted ? "⏹ Cancelled." : `⚠️ ${err instanceof Error ? err.message : String(err)}`;
   }
@@ -146,7 +156,7 @@ async function answer(env: ChatEnv, msg: IncomingChatMessage, signal: AbortSigna
 }
 
 async function ask(
-  env: ChatEnv,
+  env: ChatUserEnv,
   msg: IncomingChatMessage,
   signal: AbortSignal,
   onActivity: (text: string) => void,
@@ -154,7 +164,7 @@ async function ask(
   const settings = await getAppSettings(env.repo);
   const cwd = path.join(dataDir(), "chat-assistant");
   await mkdir(cwd, { recursive: true });
-  const ctx: ChatToolContext = { platform: msg.platform, chatId: msg.chatId };
+  const ctx: ChatToolContext = { platform: msg.platform, chatId: msg.chatId, userId: msg.userId };
   return runOmpHelper({
     command: settings.ompPath,
     cwd,
@@ -181,8 +191,7 @@ function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
-function remember(msg: IncomingChatMessage, reply: string): void {
-  const key = chatKey(msg.platform, msg.chatId);
+function remember(key: string, msg: IncomingChatMessage, reply: string): void {
   const exchanges = state.memory.get(key) ?? [];
   exchanges.push({ user: clip(msg.text, MEMORY_CLIP), assistant: clip(reply, MEMORY_CLIP) });
   if (exchanges.length > MEMORY_EXCHANGES) exchanges.splice(0, exchanges.length - MEMORY_EXCHANGES);
@@ -195,15 +204,20 @@ function remember(msg: IncomingChatMessage, reply: string): void {
   }
 }
 
-async function buildPrompt(env: ChatEnv, msg: IncomingChatMessage): Promise<string> {
+async function buildPrompt(env: ChatUserEnv, msg: IncomingChatMessage): Promise<string> {
+  // Scoped: a regular account only sees its own boards, so a default board it cannot see falls back to its first.
   const boards = await env.repo.listBoards();
   const selectedId = (await loadChatState(env.repo)).selectedBoards[chatKey(msg.platform, msg.chatId)];
   const selected = boards.find((board) => board.id === selectedId) ?? boards[0];
   const platform = msg.platform === "telegram" ? "Telegram" : "Discord";
-  const history = state.memory.get(chatKey(msg.platform, msg.chatId)) ?? [];
+  const history = state.memory.get(memoryKey(msg.platform, msg.chatId, env.user.id)) ?? [];
+  const account =
+    env.user.role === "admin"
+      ? `AgentMan's administrator "${env.user.username}" (they see every account's boards)`
+      : `AgentMan user "${env.user.username}" (they see only their own boards)`;
   return [
     "You are AgentMan's chat assistant. AgentMan runs omp coding agents on projects. Each project is a board of cards in three columns: To do, In progress, Done. Each card is a piece of work with its own omp agent; starting a card's agent moves it to In progress.",
-    `The user is AgentMan's authenticated admin, writing to you from ${platform}${msg.isPrivate ? " (direct message)" : " (group or server channel)"}. They control AgentMan by talking to you in plain language.`,
+    `The user is the authenticated ${account}, writing to you from ${platform}${msg.isPrivate ? " (direct message)" : " (group or server channel)"}. They control AgentMan by talking to you in plain language.`,
     "",
     "How to work:",
     "- Do what the user asks with the agentman_* tools instead of describing how to do it. Look things up (agentman_list_boards, agentman_list_cards, agentman_read_card) before acting when you need ids or context.",
@@ -375,12 +389,16 @@ export async function runChatTool(
       if (!board) throw new Error(NO_BOARDS);
       const status = optionalStatus(args);
       const tasks = (await repo.listTasks(board.id)).filter((task) => !status || task.status === status);
+      // Counted over the cards the account can see: a regular user must not learn about other accounts' work.
       const { running, queued } = manager.stats();
+      const [runningCards, queuedCards] = await Promise.all(
+        [running, queued].map((ids) => Promise.all(ids.map((id) => repo.getTask(id)))),
+      );
       return JSON.stringify({
         board: { id: board.id, name: board.name },
         cards: tasks.slice(0, MAX_LISTED_CARDS).map(cardSummary),
         ...(tasks.length > MAX_LISTED_CARDS ? { more: tasks.length - MAX_LISTED_CARDS } : {}),
-        queue: { running: running.length, queued: queued.length },
+        queue: { running: runningCards.filter(Boolean).length, queued: queuedCards.filter(Boolean).length },
       });
     }
     case "agentman_read_card": {
@@ -431,7 +449,7 @@ export async function runChatTool(
       const task = await resolveCard(env, requiredString(args, "cardId"));
       const body = requiredString(args, "message");
       if (body.length > MAX_MESSAGE) throw new Error(`message is longer than ${MAX_MESSAGE} characters`);
-      watchCard(ctx.platform, ctx.chatId, task.id);
+      watchCard(ctx.platform, ctx.chatId, task.id, ctx.userId);
       const comment = await repo.addComment({ taskId: task.id, author: "user", body });
       publish({ type: "comment.added", comment, boardId: task.boardId });
       const counted = (await repo.getTask(task.id)) ?? task;
@@ -447,7 +465,7 @@ export async function runChatTool(
       const task = await repo.updateTask(previous.id, { status });
       if (!task) throw new Error("Card not found");
       publish({ type: "task.updated", task });
-      if (status === "in_progress") watchCard(ctx.platform, ctx.chatId, task.id);
+      if (status === "in_progress") watchCard(ctx.platform, ctx.chatId, task.id, ctx.userId);
       await manager.onTaskMoved(task, previous.status);
       return JSON.stringify({ card: cardSummary((await repo.getTask(task.id)) ?? task), moved: true });
     }
@@ -460,7 +478,7 @@ const NO_BOARDS = "There are no boards yet: create a project in AgentMan first."
 
 /** Start a card's agent and stream it to the chat (watch first so no output is missed). */
 async function startCard(env: ChatEnv, ctx: ChatToolContext, task: Task): Promise<Task> {
-  watchCard(ctx.platform, ctx.chatId, task.id);
+  watchCard(ctx.platform, ctx.chatId, task.id, ctx.userId);
   try {
     return await env.manager.start(task.id);
   } catch (err) {
@@ -497,7 +515,10 @@ function optionalStatus(args: Json): TaskStatus | null {
   throw new Error(`status must be one of: ${TASK_STATUSES.join(", ")}`);
 }
 
-/** The board `query` names, else the chat's default board, else the first board; null when none exist. */
+/**
+ * The board `query` names, else the chat's default board, else the first board; null when none exist.
+ * Only boards `env.repo` shows count, so a default board the account cannot see is treated as unselected.
+ */
 async function chatBoard(env: ChatEnv, ctx: ChatToolContext, query: string): Promise<BoardWithCounts | null> {
   const boards = await env.repo.listBoards();
   if (boards.length === 0) return null;

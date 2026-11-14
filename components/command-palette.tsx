@@ -39,6 +39,7 @@ import { useNewCard } from "@/components/new-card";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { compareTasks, POSITION_GAP, useBoardTasks } from "@/hooks/use-board";
+import { useCurrentUser } from "@/hooks/use-current-user";
 import { api } from "@/lib/api-client";
 import { tokenScore } from "@/lib/fuzzy-match";
 import { isTypingTarget, modKeyLabel } from "@/lib/hotkeys";
@@ -185,6 +186,7 @@ export function CommandPalette() {
   const pathname = usePathname();
   const openNewCard = useNewCard();
   const { resolvedTheme, setTheme } = useTheme();
+  const { isAdmin } = useCurrentUser();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
@@ -477,24 +479,29 @@ export function CommandPalette() {
         icon: <RadarIcon className="size-4" />,
         run: go("/visualize"),
       },
-      {
-        id: "go:containers",
-        group: "Go to",
-        label: "Containers",
-        hint: "Docker",
-        keys: ["G", "D"],
-        icon: <Container className="size-4" />,
-        run: go("/containers"),
-      },
-      {
-        id: "go:terminal",
-        group: "Go to",
-        label: "Terminal",
-        hint: "Server shell",
-        keys: ["G", "X"],
-        icon: <SquareTerminal className="size-4" />,
-        run: go("/terminal"),
-      },
+      // Docker and the server shell are admin-only APIs; regular users don't get the links.
+      ...(isAdmin
+        ? [
+            {
+              id: "go:containers",
+              group: "Go to",
+              label: "Containers",
+              hint: "Docker",
+              keys: ["G", "D"],
+              icon: <Container className="size-4" />,
+              run: go("/containers"),
+            },
+            {
+              id: "go:terminal",
+              group: "Go to",
+              label: "Terminal",
+              hint: "Server shell",
+              keys: ["G", "X"],
+              icon: <SquareTerminal className="size-4" />,
+              run: go("/terminal"),
+            },
+          ]
+        : []),
       {
         id: "go:files",
         group: "Go to",
@@ -522,24 +529,29 @@ export function CommandPalette() {
         icon: <ChartColumn className="size-4" />,
         run: go("/stats"),
       },
-      {
-        id: "go:logs",
-        group: "Go to",
-        label: "Logs",
-        hint: "Security, access, system, agent logs",
-        keys: ["G", "L"],
-        icon: <ScrollText className="size-4" />,
-        run: go("/logs"),
-      },
-      {
-        id: "go:memory",
-        group: "Go to",
-        label: "Memory",
-        hint: "agentmemory",
-        keys: ["G", "M"],
-        icon: <Brain className="size-4" />,
-        run: go("/memory"),
-      },
+      // Logs and agent memory (every user's agent runs) are admin-only APIs.
+      ...(isAdmin
+        ? [
+            {
+              id: "go:logs",
+              group: "Go to",
+              label: "Logs",
+              hint: "Security, access, system, agent logs",
+              keys: ["G", "L"],
+              icon: <ScrollText className="size-4" />,
+              run: go("/logs"),
+            },
+            {
+              id: "go:memory",
+              group: "Go to",
+              label: "Memory",
+              hint: "agentmemory",
+              keys: ["G", "M"],
+              icon: <Brain className="size-4" />,
+              run: go("/memory"),
+            },
+          ]
+        : []),
       {
         id: "go:credentials",
         group: "Go to",
@@ -605,6 +617,7 @@ export function CommandPalette() {
     resolvedTheme,
     setTheme,
     router,
+    isAdmin,
   ]);
 
   const tokensKey = query.trim().toLowerCase();

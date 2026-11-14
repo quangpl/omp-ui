@@ -10,4 +10,4 @@ export const dynamic = "force-dynamic";
 export const POST = withApi(async ({ req }) => {
   const spec = await parseComposeDeploy(await readJson(req));
   return jobResponse((send) => deployCompose(spec, send));
-});
+}, { admin: true });

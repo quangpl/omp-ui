@@ -22,6 +22,7 @@ import {
   SmartphoneIcon,
   SquareTerminalIcon,
   TriangleAlertIcon,
+  UsersIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
@@ -41,10 +42,12 @@ import {
   SettingsGroup,
   SettingsPanel,
   SettingsRows,
+  SettingsReadOnly,
   SettingsSaveBar,
   SettingsSection,
   SettingsToggle,
 } from "@/components/settings/settings-section";
+import { UsersSettingsSection } from "@/components/settings/users-settings";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -58,6 +61,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { useCurrentUser } from "@/hooks/use-current-user";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { api, type SystemInfo } from "@/lib/api-client";
 import type { AppSettings, ApprovalMode, BrowserMode, ConcurrencyInfo } from "@/lib/types";
@@ -113,8 +117,13 @@ const SECTIONS: SettingsNavItem[] = [
   { id: "appearance", label: "Appearance", icon: <PaletteIcon /> },
   { id: "system", label: "System", icon: <ServerIcon /> },
   { id: "security", label: "Security", icon: <KeyRoundIcon /> },
+  { id: "users", label: "Users", icon: <UsersIcon /> },
   { id: "api", label: "Mobile & API", icon: <SmartphoneIcon /> },
 ];
+
+/** Sections only admins get: the agent runtime, orchestration, cleanup, chat bots and accounts. */
+const ADMIN_ONLY_SECTIONS: Record<string, true> = { agent: true, orchestration: true, cleanup: true, chat: true, users: true };
+const USER_SECTIONS = SECTIONS.filter((section) => !ADMIN_ONLY_SECTIONS[section.id]);
 
 const MIN_PASSWORD = 8;
 /** Highest explicit agent limit the server accepts (MAX_EXPLICIT_AGENTS). */
@@ -668,7 +677,8 @@ function SystemInfoSection() {
 
 type PasswordField = "current" | "next" | "confirm";
 
-function SecuritySection() {
+/** Change the signed-in account's password; `username` feeds password managers. */
+function SecuritySection({ username }: { username: string }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -695,7 +705,7 @@ function SecuritySection() {
       setCurrent("");
       setNext("");
       setConfirm("");
-      toast.success("Password changed — other devices were signed out");
+      toast.success("Password changed — your other devices were signed out");
     } catch (err) {
       setError({ field: null, message: errorText(err, "Could not change the password.") });
     } finally {
@@ -708,12 +718,12 @@ function SecuritySection() {
       id="security"
       icon={<KeyRoundIcon />}
       title="Security"
-      description="Change the admin password. Signs out every other device."
+      description="Change your password. Signs out your other devices."
     >
       <form onSubmit={onSubmit} noValidate>
         <SettingsPanel>
           <SettingsGroup>
-            <input type="text" name="username" autoComplete="username" value="admin" readOnly hidden />
+            <input type="text" name="username" autoComplete="username" value={username} readOnly hidden />
             <SettingsField
               label="Current password"
               htmlFor="current-password"
@@ -835,9 +845,13 @@ function ApiAccessSection() {
           <div className="flex gap-2.5 rounded-lg bg-muted/60 p-3 text-sm text-muted-foreground">
             <InfoIcon className="mt-0.5 size-4 shrink-0" />
             <p className="min-w-0">
-              Clients sign in with this URL and the admin password:{" "}
+              Clients sign in with this URL and a username (or email) and password:{" "}
               <code className="rounded bg-background px-1 py-0.5 font-mono text-xs break-all text-foreground">
                 POST /api/v1/auth/login
+              </code>{" "}
+              with a JSON body{" "}
+              <code className="rounded bg-background px-1 py-0.5 font-mono text-xs break-all text-foreground">
+                {'{ "username": "…", "password": "…" }'}
               </code>{" "}
               returns a token; send it as{" "}
               <code className="rounded bg-background px-1 py-0.5 font-mono text-xs break-all text-foreground">
@@ -855,34 +869,60 @@ function ApiAccessSection() {
 
 export default function SettingsPage() {
   useDocumentTitle("Settings");
+  const { user, loading, isAdmin } = useCurrentUser();
+  const readOnly = !isAdmin;
   return (
     <div className="flex min-h-dvh flex-col">
       <AppHeader title="Settings" backHref="/" />
       <main className="px-safe pb-safe flex-1">
         <div className="mx-auto grid w-full max-w-[1400px] grid-cols-1 gap-6 px-4 py-6 sm:px-6 md:py-8 lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-10 lg:px-8 xl:grid-cols-[14rem_minmax(0,1fr)] xl:gap-14">
-          <SettingsNav items={SECTIONS} />
-          <div
-            className={cn(
-              "min-w-0 max-w-3xl space-y-10 md:space-y-12",
-              "[&>section+section]:border-t [&>section+section]:pt-10 md:[&>section+section]:pt-12",
-              "[&>section]:animate-card-in motion-reduce:[&>section]:animate-none",
-              "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12] [&>section:nth-child(8)]:[--stagger:14] [&>section:nth-child(9)]:[--stagger:16] [&>section:nth-child(10)]:[--stagger:18] [&>section:nth-child(11)]:[--stagger:20] [&>section:nth-child(12)]:[--stagger:22] [&>section:nth-child(13)]:[--stagger:24]",
-            )}
-          >
-            <AgentSettingsSection />
-            <OrchestrationSettingsSection />
-            <OmpSettingsSection />
-            <AiProvidersSettingsSection />
-            <MemorySettingsSection />
-            <CleanupSettingsSection />
-            <NotificationSettingsSection />
-            <ChatSettingsSection />
-            <MenuSettingsSection />
-            <AppearanceSettingsSection />
-            <SystemInfoSection />
-            <SecuritySection />
-            <ApiAccessSection />
-          </div>
+          {loading ? (
+            // Which sections show (and which are read-only) depends on the role; wait for it.
+            <div aria-busy="true" aria-label="Loading settings" className="min-w-0 max-w-3xl space-y-4 lg:col-start-2">
+              <div className="flex items-start gap-3">
+                <Skeleton className="size-8 shrink-0 rounded-lg" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <Skeleton className="h-5 w-32" />
+                  <Skeleton className="h-4 w-72 max-w-full" />
+                </div>
+              </div>
+              <Skeleton className="h-48 rounded-xl" />
+            </div>
+          ) : (
+            <>
+              {/* SettingsNav reads its items once: remount it when the role changes. */}
+              <SettingsNav key={isAdmin ? "admin" : "user"} items={isAdmin ? SECTIONS : USER_SECTIONS} />
+              <div
+                className={cn(
+                  "min-w-0 max-w-3xl space-y-10 md:space-y-12",
+                  "[&>section+section]:border-t [&>section+section]:pt-10 md:[&>section+section]:pt-12",
+                  "[&>section]:animate-card-in motion-reduce:[&>section]:animate-none",
+                  "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12] [&>section:nth-child(8)]:[--stagger:14] [&>section:nth-child(9)]:[--stagger:16] [&>section:nth-child(10)]:[--stagger:18] [&>section:nth-child(11)]:[--stagger:20] [&>section:nth-child(12)]:[--stagger:22] [&>section:nth-child(13)]:[--stagger:24] [&>section:nth-child(14)]:[--stagger:26]",
+                )}
+              >
+                {isAdmin && <AgentSettingsSection />}
+                {isAdmin && <OrchestrationSettingsSection />}
+                <SettingsReadOnly value={readOnly}>
+                  <OmpSettingsSection />
+                  <AiProvidersSettingsSection />
+                  <MemorySettingsSection />
+                </SettingsReadOnly>
+                {isAdmin && <CleanupSettingsSection />}
+                <SettingsReadOnly value={readOnly}>
+                  <NotificationSettingsSection />
+                </SettingsReadOnly>
+                {isAdmin && <ChatSettingsSection />}
+                <SettingsReadOnly value={readOnly}>
+                  <MenuSettingsSection />
+                  <AppearanceSettingsSection />
+                </SettingsReadOnly>
+                <SystemInfoSection />
+                <SecuritySection username={user?.username ?? ""} />
+                {isAdmin && <UsersSettingsSection />}
+                <ApiAccessSection />
+              </div>
+            </>
+          )}
         </div>
       </main>
     </div>

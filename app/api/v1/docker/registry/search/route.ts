@@ -10,4 +10,4 @@ export const GET = withApi(async ({ req }) => {
   if (!q) throw new HttpError(400, "q is required");
   if (q.length > 100) throw new HttpError(400, "Search text is too long");
   return json(await searchImages(parseRegistry(query.get("registry")), q));
-});
+}, { admin: true });

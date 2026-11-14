@@ -1,11 +1,13 @@
 // Shared helpers for `app/api/v1/**/route.ts` handlers (Node runtime).
 import { getAgentManager } from "@/lib/agent/manager";
 import type { AgentManager } from "@/lib/agent/types";
-import { clientIp, ensureAuthBoot, getRequestToken, isAuthenticated, issueToken, sessionCookie } from "@/lib/auth";
+import { clientIp, ensureAuthBoot, getRequestToken, getRequestUser, issueToken, sessionCookie } from "@/lib/auth";
 import { getRepo } from "@/lib/db";
+import { ScopeError, scopeRepo } from "@/lib/db/scoped";
 import type { Repository } from "@/lib/db/types";
 import type { LogLevel, StoredLogEvent } from "@/lib/log-types";
 import { logEvent } from "@/lib/server/log-store";
+import type { User } from "@/lib/types";
 
 /** Throw from a handler (or helper) to answer with `{ error: message }` and the given status. */
 export class HttpError extends Error {
@@ -45,22 +47,47 @@ export async function readJson<T = Record<string, unknown>>(req: Request): Promi
   return data as T;
 }
 
-/** Issue a new token and answer `{ token, expiresAt }` with the session cookie set (web). */
-export async function sessionResponse(req: Request): Promise<Response> {
-  const { token, expiresAt } = await issueToken();
-  return json({ token, expiresAt }, { headers: { "set-cookie": sessionCookie(token, expiresAt, req) } });
+/** Signed-in user per request (set by withApi and sessionResponse) so log entries name the user. */
+const requestUsers = new WeakMap<Request, User>();
+
+/** `{ user, userId }` log meta for the request's signed-in user; empty when anonymous. */
+function userMeta(req: Request): Record<string, string> {
+  const user = requestUsers.get(req);
+  return user ? { user: user.username, userId: user.id } : {};
 }
 
-export interface ApiContext<P> {
+/** Issue a new token for `user` and answer `{ token, expiresAt, user }` with the session cookie set (web). */
+export async function sessionResponse(req: Request, user: User): Promise<Response> {
+  const { token, expiresAt } = await issueToken(user.id);
+  requestUsers.set(req, user);
+  return json({ token, expiresAt, user }, { headers: { "set-cookie": sessionCookie(token, expiresAt, req) } });
+}
+
+/** Throw 403 unless `user` is an admin (for checks finer than a whole route's `{ admin: true }`). */
+export function requireAdmin(user: User): void {
+  if (user.role !== "admin") throw new HttpError(403, "Admin only");
+}
+
+/**
+ * `user` is the signed-in user: always set on authenticated routes, null on `auth: false` routes
+ * without a valid token. `repo` is scoped to `user` on authenticated routes (lib/db/scoped.ts) and the
+ * unscoped base repository on `auth: false` routes.
+ */
+export interface ApiContext<P, U = User> {
   req: Request;
   repo: Repository;
   manager: AgentManager;
   params: P;
+  user: U;
 }
 
-type ApiHandler<P> = (ctx: ApiContext<P>) => Response | Promise<Response>;
+type ApiHandler<P, U> = (ctx: ApiContext<P, U>) => Response | Promise<Response>;
+type RouteHandler<P> = (req: Request, context?: { params?: Promise<P> }) => Promise<Response>;
 
-/** Record a security-log event for this request (adds the client `ip`). Never throws or blocks. */
+/**
+ * Record a security-log event for this request (adds the client `ip`, and `user`/`userId` once the
+ * request is authenticated). Never throws or blocks.
+ */
 export function securityEvent(
   req: Request,
   level: LogLevel,
@@ -68,7 +95,7 @@ export function securityEvent(
   message: string,
   meta: StoredLogEvent["meta"] = {},
 ): void {
-  void logEvent("security", { level, category, message, meta: { ...meta, ip: clientIp(req) } });
+  void logEvent("security", { level, category, message, meta: { ...userMeta(req), ...meta, ip: clientIp(req) } });
 }
 
 /**
@@ -157,37 +184,59 @@ function recordAccess(req: Request, pathname: string, status: number, durationMs
     level: status >= 500 ? "error" : status >= 400 ? "warn" : "info",
     category: "api",
     message: `${method} ${pathname} ${status}`,
-    meta: { method, path: pathname, status, durationMs, ip: clientIp(req) },
+    meta: { method, path: pathname, status, durationMs, ...userMeta(req), ip: clientIp(req) },
   });
 }
 
 /**
  * Wrap a route handler: boots the repo, auth (ADMIN_PASSWORD) and agent manager, enforces
- * authentication unless `auth: false`, awaits route params, and maps thrown errors to JSON.
- * Every request is recorded in the access log, unauthorized ones in the security log.
+ * authentication unless `auth: false` (and the admin role with `admin: true`), awaits route params,
+ * and maps thrown errors to JSON (`ScopeError` → 404). Authenticated handlers get the signed-in
+ * `user` and a repository scoped to them. Every request is recorded in the access log, unauthorized
+ * and forbidden ones in the security log.
  */
 export function withApi<P extends Record<string, string | string[]> = Record<string, never>>(
-  handler: ApiHandler<P>,
-  options: { auth?: boolean } = {},
-): (req: Request, context?: { params?: Promise<P> }) => Promise<Response> {
+  handler: ApiHandler<P, User>,
+  options?: { auth?: true; admin?: boolean },
+): RouteHandler<P>;
+export function withApi<P extends Record<string, string | string[]> = Record<string, never>>(
+  handler: ApiHandler<P, User | null>,
+  options: { auth: false },
+): RouteHandler<P>;
+export function withApi<P extends Record<string, string | string[]> = Record<string, never>>(
+  handler: ApiHandler<P, User> | ApiHandler<P, User | null>,
+  options: { auth?: boolean; admin?: boolean } = {},
+): RouteHandler<P> {
   const requireAuth = options.auth ?? true;
+  const adminOnly = requireAuth && options.admin === true;
+  // The overloads pair `auth: false` with nullable-user handlers; authenticated routes never see null.
+  const run = handler as ApiHandler<P, User | null>;
   return async (req, context) => {
     const startedAt = Date.now();
     const pathname = new URL(req.url).pathname;
     let response: Response;
     try {
-      const repo = await getRepo();
+      const baseRepo = await getRepo();
       await ensureAuthBoot();
       const manager = await getAgentManager();
-      if (requireAuth && !(await isAuthenticated(req))) {
+      const user = await getRequestUser(req);
+      if (user) requestUsers.set(req, user);
+      if (requireAuth && !user) {
         recordUnauthorized(req, pathname);
         response = error(401, "Unauthorized");
+      } else if (adminOnly && user?.role !== "admin") {
+        securityEvent(req, "warn", "auth", `Forbidden (admin only): ${req.method} ${pathname}`, {
+          method: req.method,
+          path: pathname,
+        });
+        response = error(403, "Admin only");
       } else {
         const params = ((await context?.params) ?? {}) as P;
-        response = await handler({ req, repo, manager, params });
+        const repo = requireAuth && user ? scopeRepo(baseRepo, user) : baseRepo;
+        response = await run({ req, repo, manager, params, user });
       }
     } catch (err) {
-      if (err instanceof HttpError) {
+      if (err instanceof HttpError || err instanceof ScopeError) {
         response = error(err.status, err.message);
       } else {
         console.error(`[api] ${req.method} ${pathname} failed:`, err);

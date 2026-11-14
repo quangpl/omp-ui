@@ -38,4 +38,4 @@ export const GET = memoryRoute(async ({ req, repo }) => {
     nextCursor: body.nextCursor ?? null,
   };
   return json(result);
-});
+}, { admin: true });

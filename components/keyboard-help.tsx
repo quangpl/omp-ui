@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
+import { useCurrentUser } from "@/hooks/use-current-user";
 import { isMacPlatform, isPlainKey } from "@/lib/hotkeys";
 
 const KEYBOARD_HELP_EVENT = "omp-ui:keyboard-help";
@@ -30,12 +31,16 @@ interface Shortcut {
   label: string;
   /** Alternative bindings; any of them works. */
   keys: Binding[];
+  /** Leads to an admin-only page (terminal, docker, logs, memory): listed for admins only. */
+  adminOnly?: boolean;
 }
 
 interface ShortcutGroup {
   title: string;
   note?: string;
   shortcuts: Shortcut[];
+  /** Shortcuts of an admin-only page: listed for admins only. */
+  adminOnly?: boolean;
 }
 
 /** Every keyboard shortcut of the app; the cheat sheet renders (and filters) this list. */
@@ -55,13 +60,13 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
       { label: "Projects home", keys: ["G P", "G H"] },
       { label: "Schedulers", keys: ["G C"] },
       { label: "Visualize", keys: ["G V"] },
-      { label: "Containers (Docker)", keys: ["G D"] },
-      { label: "Terminal", keys: ["G X"] },
+      { label: "Containers (Docker)", keys: ["G D"], adminOnly: true },
+      { label: "Terminal", keys: ["G X"], adminOnly: true },
       { label: "Files", keys: ["G F"] },
       { label: "Artifacts", keys: ["G A"] },
       { label: "Stats", keys: ["G T"] },
-      { label: "Logs", keys: ["G L"] },
-      { label: "Memory", keys: ["G M"] },
+      { label: "Logs", keys: ["G L"], adminOnly: true },
+      { label: "Memory", keys: ["G M"], adminOnly: true },
       { label: "Credentials", keys: ["G K"] },
       { label: "MCP servers", keys: ["G I"] },
       { label: "Settings", keys: ["G S"] },
@@ -69,6 +74,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
   },
   {
     title: "Containers",
+    adminOnly: true,
     shortcuts: [
       { label: "Focus the launcher", keys: ["L"] },
       { label: "Previous / next result", keys: ["↑", "↓"] },
@@ -79,6 +85,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
   },
   {
     title: "Memory",
+    adminOnly: true,
     shortcuts: [
       { label: "Focus search", keys: ["F"] },
       { label: "Previous / next memory", keys: ["K", "J"] },
@@ -239,18 +246,22 @@ function ShortcutRow({ shortcut, mac }: { shortcut: Shortcut; mac: boolean }) {
   );
 }
 
-/** Groups whose title, rows or keys match every word of `query` (a matching title keeps the whole group). */
-function filterGroups(query: string, mac: boolean): ShortcutGroup[] {
+/**
+ * Groups whose title, rows or keys match every word of `query` (a matching title keeps the whole group).
+ * Admin-only groups and rows are left out unless `isAdmin`.
+ */
+function filterGroups(query: string, mac: boolean, isAdmin: boolean): ShortcutGroup[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return [...SHORTCUT_GROUPS];
   const matches = (text: string) => words.every((word) => text.includes(word));
   const result: ShortcutGroup[] = [];
   for (const group of SHORTCUT_GROUPS) {
-    if (matches(group.title.toLowerCase())) {
-      result.push(group);
+    if (group.adminOnly && !isAdmin) continue;
+    const allowed = isAdmin ? group : { ...group, shortcuts: group.shortcuts.filter((shortcut) => !shortcut.adminOnly) };
+    if (words.length === 0 || matches(group.title.toLowerCase())) {
+      result.push(allowed);
       continue;
     }
-    const shortcuts = group.shortcuts.filter((shortcut) =>
+    const shortcuts = allowed.shortcuts.filter((shortcut) =>
       matches(
         `${group.title} ${shortcut.label} ${shortcut.keys.map((binding) => bindingText(binding, mac)).join(" ")}`.toLowerCase(),
       ),
@@ -268,6 +279,7 @@ export function KeyboardHelpDialog() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const pathname = usePathname();
   const signedOut = pathname === "/login";
+  const { isAdmin } = useCurrentUser();
 
   useEffect(() => {
     setMac(isMacPlatform());
@@ -293,7 +305,7 @@ export function KeyboardHelpDialog() {
     if (open) setQuery("");
   }, [open]);
 
-  const groups = useMemo(() => filterGroups(query, mac), [query, mac]);
+  const groups = useMemo(() => filterGroups(query, mac, isAdmin), [query, mac, isAdmin]);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

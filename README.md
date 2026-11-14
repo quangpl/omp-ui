@@ -8,7 +8,7 @@ Self-hosted kanban board for [omp](https://omp.sh/docs) coding agents. Write a c
 ./omp-ui up
 ```
 
-`up` asks for an admin password, then installs, builds and starts AgentMan. It prints a local link and one for your phone on the same Wi-Fi.
+`up` asks for a password for the `admin` account, then installs, builds and starts AgentMan. It prints a local link and one for your phone on the same Wi-Fi. Add more accounts later in **Settings → Users** (see [Users](#users)).
 
 Requires **Node.js 24+** and **omp**, installed and signed in:
 
@@ -109,7 +109,7 @@ Ship the result with one tap: **Create PR/MR** or **Push to main**.
 - **AI providers.** **Settings → AI Providers** sets up the model providers agents run on: API keys (encrypted, applied to the next run without a restart) or an **OAuth sign-in** with a subscription instead of a key — Claude Pro/Max, ChatGPT Plus/Pro (browser or device code), a Google account (Gemini CLI, Antigravity), an OpenRouter account, and under **Also available through omp** GitHub Copilot, Cursor, Kimi Code, GitLab Duo and Devin. **Sign in** runs `omp login` on the server and shows its sign-in page, device code or question: approve in your browser, and when the server is another machine paste the address the browser ends on. omp keeps and refreshes the tokens in `~/.omp`; nothing is stored in AgentMan. Sign out with `/logout` in omp.
 - **Logs.** The **Logs** tab shows one sub-tab per log type: **System** (server output, `DATA_DIR/omp-ui.log`), **Security** (logins, failed and blocked attempts, password and credential changes, unauthorized requests), **Access** (API requests and page views), **Agents** (runs of every card: starts, completions, failures), **Database** (connections, migrations, failed and slow queries), **Restarts** and **Tunnel**. Newest first, with search, severity and time-range filters, paging, refresh and auto-refresh, and export as JSON, NDJSON or text. Rotated `*.log.1` archives are included and can be picked per file. Security, access and database events are written as JSON lines to `DATA_DIR/{security,access,database}.log`, rotated past 5 MB; secrets and query strings are never logged.
 - **OMP settings.** **Settings → OMP** edits omp's own `config.yml` (in the agent folder `omp config path` reports) via a form (model roles as model and thinking-level dropdowns listing the models omp can use, thinking level, approval mode, steering and interrupt modes, retry, compaction, advisor, tools), **All settings** (every setting omp knows, grouped by section and searchable, each with a control for its type: dropdowns for on/off and choice settings, number and text fields, password fields for secrets, JSON for lists and mappings, and **Reset to default** for keys the file sets) or raw YAML. Each save is validated with the omp CLI on a temporary copy, the previous file is kept as `config.yml.bak`, and the file is replaced atomically; saving raw YAML over a file that changed meanwhile is refused. AgentMan's own approval mode, project or default model, and **Auto-select model per card** override the matching omp settings for its runs.
-- **Chat control (Telegram, Discord).** **Settings → Chat integrations**: paste a bot token (from [@BotFather](https://t.me/BotFather), or a Discord application's Bot → Token) and click **Connect**; AgentMan checks the token and starts the bot (Telegram long polling, or a webhook when you give a public HTTPS URL; Discord over its gateway, so no public URL is needed). Without a Telegram bot yet, **Open @BotFather** opens BotFather straight in Telegram (with a Telegram Web link as fallback) and **Copy /newbot** copies the command to send there; pasting BotFather's whole reply works, the token is picked out of it. Then send `/login <admin password>` to the bot, preferably in a direct message; it answers "AgentMan connected". After that just write what you want in natural language ("show my boards", "create a card on omp-ui to fix the login page and start it", "what is running right now?", "tell card 1a2b to also add tests"): an AgentMan assistant (an omp helper agent with AgentMan tools, using the default model from **Settings → Agent**, omp's default when empty) lists boards and cards, reads, creates, runs, stops, moves and messages cards, picks the chat's default board, and replies; cards it starts stream their output into the chat. The only commands are `/login <password>`, `/logout` and `/stop [cardId]` (without an id it cancels the assistant's current request); card ids may be shortened to a unique prefix. Tokens are stored AES-256-GCM encrypted with the credentials key. Changing the admin password logs every chat out. On Discord, enable **Message Content Intent** to talk to the bot in server channels without mentioning it (slash commands work either way).
+- **Chat control (Telegram, Discord).** **Settings → Chat integrations**: paste a bot token (from [@BotFather](https://t.me/BotFather), or a Discord application's Bot → Token) and click **Connect**; AgentMan checks the token and starts the bot (Telegram long polling, or a webhook when you give a public HTTPS URL; Discord over its gateway, so no public URL is needed). Without a Telegram bot yet, **Open @BotFather** opens BotFather straight in Telegram (with a Telegram Web link as fallback) and **Copy /newbot** copies the command to send there; pasting BotFather's whole reply works, the token is picked out of it. Then send `/login <username> <password>` to the bot (`/login <password>` signs in as `admin`), preferably in a direct message; it answers "AgentMan connected". Each chat acts as the account it signed in with: it sees and runs only that user's projects (an admin's chat sees all), and finished runs are reported only to chats of the project's owner and of admins. After that just write what you want in natural language ("show my boards", "create a card on omp-ui to fix the login page and start it", "what is running right now?", "tell card 1a2b to also add tests"): an AgentMan assistant (an omp helper agent with AgentMan tools, using the default model from **Settings → Agent**, omp's default when empty) lists boards and cards, reads, creates, runs, stops, moves and messages cards, picks the chat's default board, and replies; cards it starts stream their output into the chat. The only commands are `/login [username] <password>`, `/logout` and `/stop [cardId]` (without an id it cancels the assistant's current request); card ids may be shortened to a unique prefix. Tokens are stored AES-256-GCM encrypted with the credentials key. Changing an account's password, role or active state, or deleting it, logs its chats out. On Discord, enable **Message Content Intent** to talk to the bot in server channels without mentioning it (slash commands work either way).
 
 ## Keyboard shortcuts
 
@@ -200,6 +200,17 @@ Pushing over SSH uses your normal `~/.ssh` keys and ssh-agent. See [Credentials]
 
 To change branches, tap the branch name in the board header, then the branch next to a folder. The list shows local branches and `origin` branches you haven't checked out yet. Uncommitted changes come along unless they would be overwritten. Switching is blocked while an agent on the board is running or queued.
 
+## Users
+
+AgentMan has user accounts with two roles, **admin** and **user**. The first account is the admin `admin`, created by `up` (or the setup page on first open).
+
+- **Sign in** with your username or email and password. **Settings → Security** changes your own password and signs out your other devices.
+- **Settings → Users** (admins only): add users (username, optional email, role, password), edit them, activate or deactivate them, set their password, or delete them. Deleting a user either transfers their projects and credentials to another user (the current admin by default) or deletes them with all their cards. Admins cannot delete, demote or deactivate their own account, and at least one active admin always remains. Changing a user's password, role or active state, or deleting them, signs them out at once, including live updates and the terminal.
+- **Own data.** Each user sees only their own projects and their cards, comments, runs, credentials and files; admins see everyone's. AgentMan's data directory is off-limits to users in the folder picker, the Files page and project folders.
+- **Shared settings.** OMP settings, AI providers, Memory, Notifications, Menu and Appearance apply to everyone: admins change them, users see them read-only. Agent, Orchestration, data cleanup and chat integration settings are admin-only.
+- **Admin-only tools.** Terminal, Containers, Logs and the Memory browser are hidden from users.
+- **Upgrading** from a single-password install: the old admin password becomes the password of user `admin`, every existing project, card and credential is assigned to the first admin, and everyone signs in once more after the upgrade.
+
 ## Credentials
 
 AgentMan never asks for your AI or Git logins; it uses what this machine already has.
@@ -250,7 +261,7 @@ Run `./omp-ui <command>`. Add `--help` to any command for details.
 | `stop` / `start` / `restart` | Stop or start the server. `restart` rebuilds first when the sources changed (`--rebuild` always rebuilds), so committed changes go live with one command. If the build fails, the previous build is put back and started, and the command exits with an error |
 | `logs -f` | Follow the server log |
 | `open` | Open AgentMan in your browser |
-| `passwd` | Change the admin password |
+| `passwd` | Set the password of the `admin` account (created if missing, made an active admin) at the next start; signs out that account only |
 | `public` | Get a public `https://` link (cloudflared, or ngrok) · `public stop` |
 | `doctor` | Check that Node, omp, git, gh/glab, the port and the database are OK, and list the credentials found |
 | `init` | Re-run setup (`--force` overwrites `.env`, `--max-agents <n\|auto>` sets the agent limit) |
@@ -287,7 +298,7 @@ pm2 start ecosystem.config.cjs    # or: omp-ui up --pm2
 pm2 save && pm2 startup           # start on boot (or: omp-ui pm2 save, omp-ui pm2 startup)
 ```
 
-This works on a fresh clone. The first run sets everything up and builds the app, which takes a few minutes. If you didn't set `ADMIN_PASSWORD`, the generated password is printed to `data/pm2-out.log` (search for `AgentMan ADMIN PASSWORD`). `omp-ui up --pm2` also shows it in your terminal.
+This works on a fresh clone. The first run sets everything up and builds the app, which takes a few minutes. If you didn't set `ADMIN_PASSWORD`, the generated password of the `admin` account is printed to `data/pm2-out.log` (search for `AgentMan ADMIN PASSWORD`). `omp-ui up --pm2` also shows it in your terminal.
 
 - Follow the logs with `omp-ui pm2 logs`.
 - While pm2 runs it, use `omp-ui pm2 stop` / `restart`. Plain `omp-ui stop` refuses so it doesn't fight pm2.
@@ -392,7 +403,7 @@ To see it, look for `[supervisor …] health check failed (n/3)` and `server is 
 - **Quick link:** `omp-ui public` prints an `https://….trycloudflare.com` link. The link changes on each start. The CLI refuses to open the link if no admin password is set. With Docker, use `docker compose --profile public up -d`, then `docker compose logs tunnel`.
 - **Your own domain:** put a TLS reverse proxy in front of `127.0.0.1:3000` and set `VINEXT_TRUST_PROXY=1` in `.env`. Turn off response buffering for live updates, e.g. `proxy_buffering off;` in nginx. A Caddy example: `omp.example.com { reverse_proxy 127.0.0.1:3000 }`.
 - **Phone:** open the link, then tap **Share → Add to Home Screen**.
-- **Your own app:** a client only needs the server URL and the admin password. See [`docs/API.md`](docs/API.md).
+- **Your own app:** a client only needs the server URL and an account's username (or email) and password; a password-only sign-in uses the `admin` account. See [`docs/API.md`](docs/API.md).
 
 ## Configuration
 
@@ -401,7 +412,7 @@ To see it, look for `[supervisor …] health check failed (n/3)` and `server is 
 | Variable | Default | |
 | --- | --- | --- |
 | `PORT` / `HOST` | `3000` / `0.0.0.0` | Where the server listens. `HOST=127.0.0.1` keeps it to this computer |
-| `ADMIN_PASSWORD` | – | Applied at every start. Change it with `omp-ui passwd` |
+| `ADMIN_PASSWORD` | – | Password of the `admin` account, applied at every start (creates the account if missing and makes it an active admin). Change it with `omp-ui passwd` |
 | `AUTH_SECRET` | generated | Signs login tokens |
 | `DATA_DIR` | `./data` | Database, logs, pid files |
 | `DATABASE_URL` | `sqlite:${DATA_DIR}/omp-ui.db` | `sqlite:` · `postgres://` · `mongodb://` (see [Databases](#databases)) |
@@ -426,9 +437,10 @@ To see it, look for `[supervisor …] health check failed (n/3)` and `server is 
 
 ## Security
 
-- **Set a strong admin password before you make AgentMan public.** It is the only thing protecting a tool that runs commands on your machine.
+- **Set strong passwords before you make AgentMan public**, for the `admin` account and every other one. They are the only thing protecting a tool that runs commands on your machine.
+- Agents run commands on the host as the server user for every account, not only for admins. Only give accounts to people you trust with that machine.
 - Agents run in **`yolo`** approval mode by default: they run commands and edit files without asking. Only point projects at folders you are happy for an agent to change. Use Docker if you want isolation. You can change the mode in **Settings**.
-- Changing the password signs out every session. Keep `.env` private.
+- Changing a password signs out that account's sessions. Keep `.env` private.
 - Use HTTPS outside your home network: either the `public` link or a reverse proxy.
 
 ## Development

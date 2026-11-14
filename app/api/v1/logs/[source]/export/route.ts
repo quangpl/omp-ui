@@ -50,4 +50,4 @@ export const GET = withApi<Params>(async ({ req, repo, params }) => {
       "cache-control": "no-store",
     },
   });
-});
+}, { admin: true });

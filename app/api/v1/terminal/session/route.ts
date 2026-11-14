@@ -7,4 +7,4 @@ export const dynamic = "force-dynamic";
 export const DELETE = withApi(() => {
   getTerminalSession().clear();
   return json({ ok: true });
-});
+}, { admin: true });
