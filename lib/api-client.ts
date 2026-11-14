@@ -87,6 +87,7 @@ import type {
   CredentialUpdate,
 } from "@/lib/credential-types";
 import type {
+  AiOAuthSession,
   AiProvidersResponse,
   AiProviderTestInput,
   AiProviderTestResponse,
@@ -95,6 +96,7 @@ import type {
 import type {
   McpConnectInput,
   McpConnectResult,
+  McpDirectoryResponse,
   McpServerSummary,
   McpServersResponse,
   McpServerUpdate,
@@ -352,6 +354,18 @@ export const api = {
     /** Probe typed values (empty ones fall back to the effective values); 400 when nothing to test. */
     test: (input: AiProviderTestInput) =>
       request<AiProviderTestResponse>("/settings/ai-providers/test", { method: "POST", json: input }),
+    /** OAuth sign-in through `omp login` on the server; poll `oauthStatus` until it is no longer running. */
+    oauthStart: (loginId: string) =>
+      request<AiOAuthSession>("/settings/ai-providers/oauth", { method: "POST", json: { loginId } }),
+    oauthStatus: (id: string) => request<AiOAuthSession>(`/settings/ai-providers/oauth/${encodeURIComponent(id)}`),
+    /** Answer omp's pending question (pasted redirect URL or code, …); 409 when it is not asking. */
+    oauthAnswer: (id: string, input: string) =>
+      request<AiOAuthSession>(`/settings/ai-providers/oauth/${encodeURIComponent(id)}`, {
+        method: "POST",
+        json: { input },
+      }),
+    oauthCancel: (id: string) =>
+      request<AiOAuthSession>(`/settings/ai-providers/oauth/${encodeURIComponent(id)}`, { method: "DELETE" }),
   },
   /** Credentials for MCP servers and connector services (the /credentials page). */
   credentials: {
@@ -403,6 +417,17 @@ export const api = {
       request<McpServerSummary>(`/mcp/${encodeURIComponent(name)}/test`, { method: "POST" }),
     /** Rewrite every managed entry into mcp.json (repairs hand edits). */
     sync: () => request<McpServersResponse>("/mcp/sync", { method: "POST" }),
+    /** One page of the mcpservers.org server list; `refresh` re-reads it instead of the 12 h cache. */
+    directory: (query: { q?: string; featured?: boolean; offset?: number; limit?: number; refresh?: boolean } = {}) => {
+      const params = new URLSearchParams();
+      if (query.q) params.set("q", query.q);
+      if (query.featured) params.set("featured", "1");
+      if (query.offset) params.set("offset", String(query.offset));
+      if (query.limit) params.set("limit", String(query.limit));
+      if (query.refresh) params.set("refresh", "1");
+      const search = params.toString();
+      return request<McpDirectoryResponse>(`/mcp/directory${search ? `?${search}` : ""}`);
+    },
   },
   /** The local agentmemory server (Settings → Memory). */
   memory: {

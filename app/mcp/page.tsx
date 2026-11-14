@@ -10,6 +10,7 @@ import { CREDENTIALS_CHANGED_EVENT } from "@/components/credentials/credential-n
 import { errorText, notifyCredentialsChanged } from "@/components/credentials/credentials-view";
 import { McpCatalog } from "@/components/mcp/mcp-catalog";
 import { McpConnectDialog } from "@/components/mcp/mcp-connect-dialog";
+import { McpDirectory } from "@/components/mcp/mcp-directory";
 import { McpServerList } from "@/components/mcp/mcp-server-list";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -359,6 +360,19 @@ export default function McpPage() {
               </p>
             </div>
             <McpCatalog servers={servers} onConnect={setConnecting} />
+          </section>
+
+          <section id="mcp-directory" aria-labelledby="mcp-directory-title" className="scroll-mt-24 space-y-3">
+            <div className="space-y-1">
+              <h2 id="mcp-directory-title" className="text-lg font-semibold tracking-tight">
+                mcpservers.org
+              </h2>
+              <p className="text-sm text-pretty text-muted-foreground">
+                Every server listed on mcpservers.org. Open one for its description and setup; connect a
+                remote one with its endpoint through Custom MCP server (HTTP) in the Catalog.
+              </p>
+            </div>
+            <McpDirectory />
           </section>
         </div>
       </main>

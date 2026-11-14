@@ -6,6 +6,7 @@ import {
   AlignLeft,
   ArrowUp,
   CalendarClock,
+  ChevronRight,
   CircleHelp,
   Ellipsis,
   FileDiff,
@@ -1285,8 +1286,12 @@ function DescriptionEditor({
   const [base, setBase] = useState(task.description);
   const [draft, setDraft] = useState(task.description);
   const [saving, setSaving] = useState(false);
+  // Collapsed by default so the activity below stays in view; the body remounts per card.
+  const [expanded, setExpanded] = useState(false);
+  const focusOnExpandRef = useRef(false);
   const dirty = draft !== base;
   const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const fieldId = `description-${task.id}`;
   // "/" skills and shortcuts, "@" project files, "skill://" skill names, like the new-card composer.
   const slash = useComposerAutocomplete(fieldRef, draft, setDraft, { boardId: task.boardId });
   // The textarea can't open links, so files linked in the saved description get preview chips.
@@ -1298,6 +1303,17 @@ function DescriptionEditor({
     setBase(task.description);
     // Only react to remote changes of the description; `base`/`dirty` are read, not tracked.
   }, [task.description]);
+
+  useEffect(() => {
+    if (!expanded || !focusOnExpandRef.current) return;
+    focusOnExpandRef.current = false;
+    fieldRef.current?.focus();
+  }, [expanded]);
+
+  const expandAndEdit = () => {
+    focusOnExpandRef.current = true;
+    setExpanded(true);
+  };
 
   const save = async () => {
     setSaving(true);
@@ -1311,38 +1327,66 @@ function DescriptionEditor({
 
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <label htmlFor={`description-${task.id}`} className={cn(DETAIL_HEADING_CLASS, "min-h-9")}>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={expanded ? fieldId : undefined}
+        onClick={() => setExpanded((open) => !open)}
+        className={cn(
+          DETAIL_HEADING_CLASS,
+          "-mx-1 min-h-9 self-start rounded-md px-1 pressable hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none max-md:min-h-11",
+        )}
+      >
         <AlignLeft aria-hidden />
         Description
-      </label>
-      {/* `relative` anchors the word ghost on the textarea. */}
-      <div className="relative">
-        <Textarea
-          id={`description-${task.id}`}
-          ref={fieldRef}
-          value={draft}
-          placeholder="Add more detail for the agent: context, acceptance criteria, files to look at…"
-          className="max-h-[50dvh] min-h-24 resize-none leading-relaxed"
-          aria-autocomplete="list"
-          aria-expanded={slash.open}
-          data-suggesting={slash.suggesting || undefined}
-          onChange={(event) => setDraft(event.target.value)}
-          onSelect={slash.onSelect}
-          onKeyDown={(event) => {
-            if (slash.onKeyDown(event)) return;
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && dirty) {
-              event.preventDefault();
-              void save();
-            } else if (event.key === "Escape" && dirty) {
-              event.preventDefault();
-              setDraft(base);
-            }
-          }}
-        />
-        {slash.ghost}
-      </div>
-      {slash.suggestion}
-      {slash.menu}
+        <ChevronRight aria-hidden className={cn("transition-transform", expanded && "rotate-90")} />
+      </button>
+      {expanded ? (
+        <>
+          {/* `relative` anchors the word ghost on the textarea. */}
+          <div className="relative">
+            <Textarea
+              id={fieldId}
+              ref={fieldRef}
+              aria-label="Description"
+              value={draft}
+              placeholder="Add more detail for the agent: context, acceptance criteria, files to look at…"
+              className="max-h-[50dvh] min-h-24 resize-none leading-relaxed"
+              aria-autocomplete="list"
+              aria-expanded={slash.open}
+              data-suggesting={slash.suggesting || undefined}
+              onChange={(event) => setDraft(event.target.value)}
+              onSelect={slash.onSelect}
+              onKeyDown={(event) => {
+                if (slash.onKeyDown(event)) return;
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && dirty) {
+                  event.preventDefault();
+                  void save();
+                } else if (event.key === "Escape" && dirty) {
+                  event.preventDefault();
+                  setDraft(base);
+                }
+              }}
+            />
+            {slash.ghost}
+          </div>
+          {slash.suggestion}
+          {slash.menu}
+        </>
+      ) : (
+        // The preview shows the draft so unsaved edits stay visible while collapsed.
+        <button
+          type="button"
+          onClick={expandAndEdit}
+          title="Edit description"
+          className={cn(
+            "line-clamp-2 rounded-md text-left text-sm leading-relaxed break-words whitespace-pre-line pressable hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+            draft.trim() ? "text-muted-foreground" : "text-muted-foreground/70 italic",
+          )}
+        >
+          {draft.trim() || "No description. Add detail for the agent…"}
+        </button>
+      )}
       {linked.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs text-muted-foreground">Linked files</span>

@@ -311,6 +311,25 @@ describe("sdlcPipeline", () => {
     expect(stations.implementation.breaches).toEqual([]);
     expect(stations.maintenance.breaches).toEqual([]);
   });
+
+  it("lists visible phases: the required ones plus when-needed phases a card includes or a subagent executes", () => {
+    // No running cards: only the required phases.
+    expect(sdlcPipeline(queue([]), {}).visible).toEqual(["planning", "implementation", "testing"]);
+    // A minimal plan (and a card without a plan) adds nothing.
+    const minimal = queue([
+      entry(A, "running", { sdlc: progress({ planning: "done", implementation: "active", testing: "pending" }, "implementation") }),
+      entry(B, "running"),
+    ]);
+    expect(sdlcPipeline(minimal, {}).visible).toEqual(["planning", "implementation", "testing"]);
+    // A plan that includes Design reveals it, in SDLC order.
+    const withDesign = queue([
+      entry(A, "running", { sdlc: progress({ planning: "done", design: "active", implementation: "pending", testing: "pending" }, "design") }),
+    ]);
+    expect(sdlcPipeline(withDesign, {}).visible).toEqual(["planning", "design", "implementation", "testing"]);
+    // A busy designer subagent reveals Design even when no plan includes it.
+    const live = { [A]: liveAgent({ helpers: { d: helper("d", "running", undefined, "designer") } }) };
+    expect(sdlcPipeline(queue([entry(A, "running")]), live).visible).toEqual(["planning", "design", "implementation", "testing"]);
+  });
 });
 
 describe("sdlcStation", () => {

@@ -1,16 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   BrainCircuitIcon,
   CheckIcon,
   ChevronDownIcon,
   CircleDashedIcon,
   CircleQuestionMarkIcon,
+  CopyIcon,
   ExternalLinkIcon,
   FlaskConicalIcon,
   KeyRoundIcon,
   Loader2Icon,
+  LogInIcon,
   RefreshCwIcon,
   SearchIcon,
   Trash2Icon,
@@ -30,9 +32,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  AI_OTHER_OAUTH_LOGINS,
   AI_PROVIDERS,
   aiFieldError,
   type AiAuthMethod,
+  type AiOAuthLogin,
+  type AiOAuthSession,
   type AiOtherProvider,
   type AiProviderDefinition,
   type AiProviderField,
@@ -56,6 +61,8 @@ const FIELD = "h-11 md:h-9";
 const MODELS_PREVIEW = 12;
 /** Above this many models the list gets a text filter (OpenRouter lists hundreds). */
 const MODELS_FILTER_MIN = 24;
+/** How often a running OAuth sign-in is polled. */
+const OAUTH_POLL_MS = 1000;
 const LINK =
   "inline-flex min-h-11 items-center gap-1 rounded-sm text-xs font-medium text-primary underline-offset-4 outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-0 [&_svg]:size-3";
 
@@ -195,6 +202,12 @@ export function AiProvidersSettingsSection() {
     );
   }, []);
 
+  /** After an OAuth sign-in: omp's model list and sign-ins changed. */
+  const refreshAfterSignIn = useCallback(async () => {
+    await load(true);
+    notifyChanged();
+  }, [load]);
+
   const description = (
     <>
       Keys for the model providers omp runs agents on. Saved values are encrypted with the credentials key,
@@ -290,12 +303,13 @@ export function AiProvidersSettingsSection() {
                   state={state}
                   onResponse={setData}
                   onProvider={replaceProvider}
+                  onSignedIn={refreshAfterSignIn}
                 />
               ))}
             </ul>
           </SettingsPanel>
 
-          {data.other.length > 0 && <OtherProviders providers={data.other} />}
+          <OtherProviders providers={data.other} onSignedIn={refreshAfterSignIn} />
 
           <p className="flex gap-2 text-xs text-pretty text-muted-foreground">
             <KeyRoundIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
@@ -324,11 +338,13 @@ function ProviderRow({
   state,
   onResponse,
   onProvider,
+  onSignedIn,
 }: {
   provider: AiProviderDefinition;
   state: AiProviderState;
   onResponse: (response: AiProvidersResponse) => void;
   onProvider: (provider: AiProviderState) => void;
+  onSignedIn: () => Promise<void>;
 }) {
   const now = useNow();
   const formId = useId();
@@ -482,6 +498,21 @@ function ProviderRow({
                   </li>
                 );
               })}
+              {provider.oauthLogins && (
+                <li
+                  title="OAuth sign-in through omp (Claude, ChatGPT or Google account, …)"
+                  className={cn(
+                    "inline-flex h-6 items-center gap-1 rounded-md px-2 text-xs ring-1 ring-inset [&_svg]:size-3",
+                    state.ompSignIn
+                      ? "bg-primary/10 font-medium text-primary ring-primary/30"
+                      : "text-muted-foreground ring-border",
+                  )}
+                >
+                  {state.ompSignIn && <CheckIcon aria-hidden="true" />}
+                  OAuth sign-in
+                  {state.ompSignIn && <span className="sr-only">(active)</span>}
+                </li>
+              )}
             </ul>
             {hints.length > 0 && (
               <p className="text-xs text-muted-foreground">
@@ -531,13 +562,7 @@ function ProviderRow({
       )}
 
       {open && (
-        <form
-          id={formId}
-          onSubmit={save}
-          noValidate
-          aria-label={`${provider.name} credentials`}
-          className="animate-fade-in-soft border-t bg-muted/30"
-        >
+        <div id={formId} className="animate-fade-in-soft border-t bg-muted/30">
           <div className="flex flex-wrap gap-x-4 px-4 pt-3 sm:px-5">
             {provider.keyUrl && (
               <a href={provider.keyUrl} target="_blank" rel="noreferrer" className={LINK}>
@@ -549,76 +574,100 @@ function ProviderRow({
             </a>
           </div>
 
-          {groups.map((group) => {
-            const active = group.method ? state.activeMethods.includes(group.method.id) : false;
-            return (
-              <SettingsGroup key={group.key}>
-                <div className="space-y-1">
-                  <h4 className="flex flex-wrap items-center gap-2 text-sm font-medium">
-                    {group.title}
-                    {active && (
-                      <Badge className="bg-primary/10 text-primary">
-                        <CheckIcon />
-                        Active
-                      </Badge>
-                    )}
-                  </h4>
-                  <p className="text-xs text-pretty text-muted-foreground">{group.description}</p>
-                </div>
-                <div className="grid grid-cols-1 gap-4">
-                  {group.fields.map(({ field, optional }) => (
-                    <ProviderField
-                      key={field.envVar}
-                      provider={provider}
-                      field={field}
-                      optional={optional}
-                      state={state}
-                      value={drafts[field.envVar] ?? ""}
-                      error={errors[field.envVar] ?? null}
-                      busy={busy}
-                      onChange={(value) => edit(field.envVar, value)}
-                      onClear={() => void clear(field)}
-                    />
-                  ))}
-                </div>
-              </SettingsGroup>
-            );
-          })}
+          {provider.oauthLogins && (
+            <SettingsGroup>
+              <div className="space-y-1">
+                <h4 className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                  Sign in with OAuth
+                  {state.ompSignIn && (
+                    <Badge className="bg-primary/10 text-primary">
+                      <CheckIcon />
+                      Signed in{state.ompSignIn.account ? ` · ${state.ompSignIn.account}` : ""}
+                    </Badge>
+                  )}
+                </h4>
+                <p className="text-xs text-pretty text-muted-foreground">{OAUTH_HINT}</p>
+              </div>
+              <ul className="divide-y divide-border/70">
+                {provider.oauthLogins.map((login) => (
+                  <OAuthSignIn key={login.id} login={login} onSignedIn={onSignedIn} />
+                ))}
+              </ul>
+            </SettingsGroup>
+          )}
 
-          <div className="space-y-3 border-t p-4 sm:px-5">
-            {formError && (
-              <p role="alert" className="flex gap-2 text-xs text-destructive">
-                <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-                <span className="min-w-0 break-words">{formError}</span>
-              </p>
-            )}
-            {shownTest && <TestResult result={shownTest.result} typed={shownTest.typed} now={now} />}
-            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
-              <p className="text-xs text-muted-foreground sm:mr-auto">
-                Test {hasTyped ? "the typed values" : "the current values"}:{" "}
-                <span className="break-words">{provider.healthCheck}</span>
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => void runTest()}
-                disabled={!canTest || busy !== null}
-                className={cn(FIELD, "w-full sm:w-auto")}
-              >
-                {busy === "test" ? <Loader2Icon className="animate-spin" /> : <FlaskConicalIcon />}
-                Test
-              </Button>
-              <Button
-                type="submit"
-                disabled={!hasTyped || !typedValid || busy !== null}
-                className={cn(FIELD, "w-full sm:w-auto")}
-              >
-                {busy === "save" && <Loader2Icon className="animate-spin" />}
-                Save
-              </Button>
+          <form onSubmit={save} noValidate aria-label={`${provider.name} credentials`} className="border-t">
+            {groups.map((group) => {
+              const active = group.method ? state.activeMethods.includes(group.method.id) : false;
+              return (
+                <SettingsGroup key={group.key}>
+                  <div className="space-y-1">
+                    <h4 className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                      {group.title}
+                      {active && (
+                        <Badge className="bg-primary/10 text-primary">
+                          <CheckIcon />
+                          Active
+                        </Badge>
+                      )}
+                    </h4>
+                    <p className="text-xs text-pretty text-muted-foreground">{group.description}</p>
+                  </div>
+                  <div className="grid grid-cols-1 gap-4">
+                    {group.fields.map(({ field, optional }) => (
+                      <ProviderField
+                        key={field.envVar}
+                        provider={provider}
+                        field={field}
+                        optional={optional}
+                        state={state}
+                        value={drafts[field.envVar] ?? ""}
+                        error={errors[field.envVar] ?? null}
+                        busy={busy}
+                        onChange={(value) => edit(field.envVar, value)}
+                        onClear={() => void clear(field)}
+                      />
+                    ))}
+                  </div>
+                </SettingsGroup>
+              );
+            })}
+
+            <div className="space-y-3 border-t p-4 sm:px-5">
+              {formError && (
+                <p role="alert" className="flex gap-2 text-xs text-destructive">
+                  <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 break-words">{formError}</span>
+                </p>
+              )}
+              {shownTest && <TestResult result={shownTest.result} typed={shownTest.typed} now={now} />}
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
+                <p className="text-xs text-muted-foreground sm:mr-auto">
+                  Test {hasTyped ? "the typed values" : "the current values"}:{" "}
+                  <span className="break-words">{provider.healthCheck}</span>
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void runTest()}
+                  disabled={!canTest || busy !== null}
+                  className={cn(FIELD, "w-full sm:w-auto")}
+                >
+                  {busy === "test" ? <Loader2Icon className="animate-spin" /> : <FlaskConicalIcon />}
+                  Test
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={!hasTyped || !typedValid || busy !== null}
+                  className={cn(FIELD, "w-full sm:w-auto")}
+                >
+                  {busy === "save" && <Loader2Icon className="animate-spin" />}
+                  Save
+                </Button>
+              </div>
             </div>
-          </div>
-        </form>
+          </form>
+        </div>
       )}
     </li>
   );
@@ -807,31 +856,333 @@ function ModelList({ models, label }: { models: AiProviderModel[]; label: string
   );
 }
 
-/** omp providers outside the catalog (signed in through omp itself), read-only. */
-function OtherProviders({ providers }: { providers: AiOtherProvider[] }) {
+/** omp providers outside the catalog: OAuth sign-ins for them, and the ones omp already uses. */
+function OtherProviders({ providers, onSignedIn }: { providers: AiOtherProvider[]; onSignedIn: () => Promise<void> }) {
   return (
     <SettingsPanel>
       <SettingsGroup title="Also available through omp">
         <p className="-mt-2 text-xs text-pretty text-muted-foreground">
-          Providers omp is signed in to or lists models for that are managed outside this page (e.g. with{" "}
-          <code className="font-mono">omp login</code> on the server).
+          Subscriptions omp can sign in to besides the providers above. {OAUTH_HINT}
         </p>
         <ul className="divide-y divide-border/70">
-          {providers.map((p) => (
-            <li key={p.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 first:pt-0 last:pb-0">
-              <code className="font-mono text-sm">{p.id}</code>
-              <span className="text-xs text-muted-foreground tabular-nums">
-                {p.models.length} model{p.models.length === 1 ? "" : "s"}
-              </span>
-              {p.ompSignIn && (
-                <span className="text-xs text-muted-foreground sm:ml-auto">
-                  Signed in{p.ompSignIn.account ? ` · ${p.ompSignIn.account}` : ""}
-                </span>
-              )}
-            </li>
+          {AI_OTHER_OAUTH_LOGINS.map((login) => (
+            <OAuthSignIn
+              key={login.id}
+              login={login}
+              signedIn={providers.find((p) => p.id === login.id)?.ompSignIn ?? null}
+              onSignedIn={onSignedIn}
+            />
           ))}
         </ul>
       </SettingsGroup>
+      {providers.length > 0 && (
+        <SettingsGroup title="In use by omp">
+          <p className="-mt-2 text-xs text-pretty text-muted-foreground">
+            Providers omp is signed in to or lists models for that are managed outside this page (e.g. with{" "}
+            <code className="font-mono">omp login</code> on the server).
+          </p>
+          <ul className="divide-y divide-border/70">
+            {providers.map((p) => (
+              <li key={p.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 first:pt-0 last:pb-0">
+                <code className="font-mono text-sm">{p.id}</code>
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {p.models.length} model{p.models.length === 1 ? "" : "s"}
+                </span>
+                {p.ompSignIn && (
+                  <span className="text-xs text-muted-foreground sm:ml-auto">
+                    Signed in{p.ompSignIn.account ? ` · ${p.ompSignIn.account}` : ""}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </SettingsGroup>
+      )}
     </SettingsPanel>
+  );
+}
+
+const OAUTH_HINT =
+  "omp signs in on the server and keeps the tokens in its own credential store (~/.omp), refreshing them itself; nothing is saved in Settings. Sign out with /logout in omp.";
+
+/**
+ * One `omp login` sign-in: a Sign in button, then the live dialog the server relays (the page to
+ * open, a device code, omp's question) until it succeeds, fails or is cancelled. A running sign-in
+ * is cancelled when this unmounts (the form closes), so no `omp login` is left waiting.
+ */
+function OAuthSignIn({
+  login,
+  signedIn,
+  onSignedIn,
+}: {
+  login: AiOAuthLogin;
+  /** Shown next to the label (the catalog rows show their sign-in on the provider instead). */
+  signedIn?: { account: string | null } | null;
+  onSignedIn: () => Promise<void>;
+}) {
+  const answerId = useId();
+  const [session, setSession] = useState<AiOAuthSession | null>(null);
+  const [busy, setBusy] = useState<"start" | "answer" | "cancel" | null>(null);
+  const [answer, setAnswer] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const running = session?.status === "running" ? session.id : null;
+  /** Pasting the redirect URL is only needed when the browser cannot reach the server's localhost. */
+  const redirectPrompt = !!session?.prompt && /redirect url|authorization code/i.test(session.prompt);
+  const runningRef = useRef<string | null>(null);
+  useEffect(() => {
+    runningRef.current = running;
+  }, [running]);
+
+  // Poll while omp waits for the browser or an answer.
+  useEffect(() => {
+    if (!session || session.status !== "running") return;
+    const timer = setTimeout(async () => {
+      try {
+        setSession(await api.aiProviders.oauthStatus(session.id));
+      } catch (err) {
+        setSession((prev) =>
+          prev?.id === session.id
+            ? { ...prev, status: "failed", prompt: null, error: message(err, "Lost track of the sign-in.") }
+            : prev,
+        );
+      }
+    }, OAUTH_POLL_MS);
+    return () => clearTimeout(timer);
+  }, [session]);
+
+  const finished = session && session.status !== "running" ? `${session.id}:${session.status}` : null;
+  useEffect(() => {
+    if (!finished || !session) return;
+    if (session.status === "succeeded") {
+      toast.success(`Signed in to ${login.label}`, {
+        description: session.account ? `As ${session.account}. Applies to the next agent run.` : "Applies to the next agent run.",
+      });
+      void onSignedIn();
+    } else if (session.status === "failed") {
+      toast.error(`${login.label} sign-in failed`, { description: session.error ?? undefined });
+    }
+    // Once per finished session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finished]);
+
+  // Closing the form must not leave `omp login` holding its callback port for minutes.
+  useEffect(
+    () => () => {
+      if (runningRef.current) void api.aiProviders.oauthCancel(runningRef.current).catch(() => undefined);
+    },
+    [],
+  );
+
+  async function start() {
+    if (busy) return;
+    setBusy("start");
+    setError(null);
+    setAnswer("");
+    try {
+      setSession(await api.aiProviders.oauthStart(login.id));
+    } catch (err) {
+      setError(message(err, `Could not start the ${login.label} sign-in.`));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function submitAnswer(event: React.FormEvent) {
+    event.preventDefault();
+    // A blank answer is meaningful for some questions (e.g. "blank for github.com"), never for a code.
+    if (!session || (redirectPrompt && !answer.trim()) || busy) return;
+    setBusy("answer");
+    setError(null);
+    try {
+      setSession(await api.aiProviders.oauthAnswer(session.id, answer.trim()));
+      setAnswer("");
+    } catch (err) {
+      setError(message(err, "Could not send the answer."));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function cancel() {
+    if (!session || busy) return;
+    setBusy("cancel");
+    setError(null);
+    try {
+      setSession(await api.aiProviders.oauthCancel(session.id));
+    } catch (err) {
+      setError(message(err, "Could not cancel the sign-in."));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function copyCode(code: string) {
+    try {
+      await navigator.clipboard.writeText(code);
+      toast.success("Code copied");
+    } catch {
+      toast.error("Could not copy: select the code and copy it");
+    }
+  }
+
+  const done = session?.status === "succeeded";
+  return (
+    <li className="space-y-3 py-3 first:pt-0 last:pb-0">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium">
+            {login.label}
+            {(signedIn || done) && (
+              <Badge className="bg-primary/10 font-normal text-primary">
+                <CheckIcon />
+                Signed in
+                {(done ? session.account : signedIn?.account) ? ` · ${done ? session.account : signedIn?.account}` : ""}
+              </Badge>
+            )}
+          </p>
+          <p className="text-xs text-pretty text-muted-foreground">{login.description}</p>
+        </div>
+        {running ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => void cancel()}
+            disabled={busy !== null}
+            className="h-11 w-full shrink-0 text-muted-foreground sm:w-auto md:h-8"
+          >
+            {busy === "cancel" ? <Loader2Icon className="animate-spin" /> : <XIcon />}
+            Cancel
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void start()}
+            disabled={busy !== null}
+            className="h-11 w-full shrink-0 sm:w-auto md:h-8"
+          >
+            {busy === "start" ? <Loader2Icon className="animate-spin" /> : <LogInIcon />}
+            {signedIn || done ? "Sign in again" : "Sign in"}
+            <span className="sr-only"> with {login.label}</span>
+          </Button>
+        )}
+      </div>
+
+      {session?.status === "running" && (
+        <div
+          role="region"
+          aria-label={`${login.label} sign-in`}
+          className="animate-fade-in-soft space-y-3 rounded-lg bg-background p-3 ring-1 ring-border"
+        >
+          {session.url ? (
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <p className="min-w-0 flex-1 text-xs text-pretty text-muted-foreground">
+                {session.userCode
+                  ? "1. Open the page and enter the code below."
+                  : "1. Open the page and approve access. You'll be sent back automatically when this server is on your machine."}
+              </p>
+              <Button asChild size="sm" className="h-11 w-full shrink-0 sm:w-auto md:h-8">
+                <a href={session.url} target="_blank" rel="noreferrer noopener">
+                  Open sign-in page
+                  <ExternalLinkIcon aria-hidden="true" />
+                </a>
+              </Button>
+            </div>
+          ) : (
+            !session.prompt && (
+              <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2Icon className="size-3.5 animate-spin" aria-hidden="true" />
+                Starting omp login…
+              </p>
+            )
+          )}
+
+          {session.userCode && (
+            <div className="flex flex-wrap items-center gap-2">
+              <code className="rounded-md bg-muted px-3 py-1.5 font-mono text-lg font-semibold tracking-widest select-all">
+                {session.userCode}
+              </code>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => void copyCode(session.userCode!)}
+                className="h-11 md:h-8"
+              >
+                <CopyIcon />
+                Copy code
+              </Button>
+            </div>
+          )}
+
+          {session.prompt && (
+            <form onSubmit={submitAnswer} className="space-y-2">
+              <SettingsField
+                label={session.url ? `2. ${session.prompt.replace(/:\s*$/, "")}` : session.prompt.replace(/:\s*$/, "")}
+                htmlFor={answerId}
+                hint={
+                  redirectPrompt
+                    ? "Only if the page after approving doesn't load (this server is another machine): copy that page's full address from the address bar and paste it here."
+                    : undefined
+                }
+              >
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    id={answerId}
+                    value={answer}
+                    onChange={(event) => setAnswer(event.target.value)}
+                    placeholder={redirectPrompt ? "http://localhost:…/callback?code=…" : undefined}
+                    autoComplete="off"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    className={cn(FIELD, "min-w-0 flex-1 font-mono")}
+                  />
+                  <Button
+                    type="submit"
+                    disabled={(redirectPrompt && !answer.trim()) || busy !== null}
+                    className={cn(FIELD, "w-full sm:w-auto")}
+                  >
+                    {busy === "answer" && <Loader2Icon className="animate-spin" />}
+                    Submit
+                  </Button>
+                </div>
+              </SettingsField>
+            </form>
+          )}
+
+          {session.url && (
+            <p className="flex items-center gap-2 text-xs text-muted-foreground" aria-live="polite">
+              <Loader2Icon className="size-3.5 animate-spin" aria-hidden="true" />
+              Waiting for the sign-in to finish…
+            </p>
+          )}
+
+          {session.output.length > 0 && (
+            <ul aria-label="omp output" className="space-y-0.5 text-xs break-words text-muted-foreground">
+              {session.output.map((line, i) => (
+                <li key={i}>{line}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {session?.status === "failed" && (
+        <p role="alert" className="flex gap-2 text-xs text-destructive">
+          <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 break-words">{session.error ?? "The sign-in failed."}</span>
+        </p>
+      )}
+      {session?.status === "cancelled" && <p className="text-xs text-muted-foreground">Sign-in cancelled.</p>}
+      {error && (
+        <p role="alert" className="flex gap-2 text-xs text-destructive">
+          <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 break-words">{error}</span>
+        </p>
+      )}
+    </li>
   );
 }

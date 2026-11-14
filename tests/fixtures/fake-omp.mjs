@@ -65,6 +65,14 @@
 //                         entry, not "argv".
 //   FAKE_OMP_DRAFT        Reply text of the card writer (an RPC prompt starting with "You are the card
 //                         writer"; see cardWriter), used verbatim instead of the card it writes.
+//   `omp login <id>`      Speaks omp's login dialog on stdio (logged as a "login" entry): prints the
+//                         page to open, then asks for the pasted code ("Paste the authorization code
+//                         (or full redirect URL): "); "good-code" or a URL with code=good-code
+//                         logs in ("Logged in to Fake <id> as fake@example.com", exit 0), anything
+//                         else fails ("Login failed: Invalid authorization code", exit 1), closed
+//                         stdin cancels. "github-copilot" first asks for an Enterprise domain, then
+//                         prints a device URL and "Enter code: FAKE-1234" and logs in after
+//                         FAKE_OMP_LOGIN_DEVICE_MS (default 300).
 //
 // Helper workers (started with --no-session: card writer, advisor, queue planner, chat assistant) are
 // pooled and reused across prompts via new_session. They log "helper_argv" at startup instead of
@@ -139,6 +147,44 @@ if (argv[0] === "usage") {
 if (argv[0] === "stats") {
   log("stats", { argv });
   await printJson(JSON.parse(process.env.FAKE_OMP_STATS || "{}"));
+}
+
+if (argv[0] === "login") {
+  const id = argv[1] ?? "";
+  log("login", { argv });
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (question) =>
+    new Promise((resolve) => {
+      rl.once("close", () => resolve(null));
+      rl.question(question, resolve);
+    });
+  const out = (text) => process.stdout.write(text);
+  const fail = (reason) => {
+    process.stderr.write(`Login failed: ${reason}\n`, () => process.exit(1));
+  };
+  const succeed = () => {
+    out(`\nLogged in to Fake ${id} as fake@example.com\nCredentials saved to /tmp/fake-omp/agent.db\n`);
+    process.stdout.write("", () => process.exit(0));
+  };
+  if (id === "github-copilot") {
+    const domain = await ask("GitHub Enterprise URL/domain (blank for github.com) (company.ghe.com): ");
+    if (domain === null) {
+      fail("Login cancelled: stdin closed");
+    } else {
+      out("\nOpen this URL in your browser:\nhttps://github.com/login/device\nEnter code: FAKE-1234\n\n");
+      setTimeout(succeed, Number(process.env.FAKE_OMP_LOGIN_DEVICE_MS || 300));
+    }
+  } else {
+    out(`\nOpen this URL in your browser:\nhttps://auth.example.test/authorize?login=${id}&state=fake\n`);
+    out("Local shortcut (this machine only): http://localhost:54545/launch\n");
+    out("Complete login in your browser. If the browser cannot reach this machine, paste the final redirect URL or authorization code when prompted.\n\n");
+    out("Waiting for browser authentication...\n");
+    const code = await ask("Paste the authorization code (or full redirect URL): ");
+    if (code === null) fail("Login cancelled: stdin closed");
+    else if (code === "good-code" || /[?&]code=good-code(&|$)/.test(code)) succeed();
+    else fail("Invalid authorization code");
+  }
+  await new Promise(() => undefined);
 }
 
 // Helper replies (advisor and queue planner prompts on a helper worker): one assistant message
