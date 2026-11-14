@@ -2,6 +2,7 @@
 // and (later) mobile clients. All timestamps are ISO-8601 strings; all ids are strings.
 
 import { DEFAULT_PRIMARY_COLOR, type PrimaryColorId } from "@/lib/primary-colors";
+import type { SdlcProgress } from "@/lib/sdlc";
 
 export const TASK_STATUSES = ["todo", "in_progress", "done"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
@@ -466,6 +467,7 @@ export const DASHBOARD_MENU_IDS = [
   "artifacts",
   "memory",
   "credentials",
+  "mcp",
   "stats",
   "settings",
 ] as const;
@@ -768,6 +770,8 @@ export interface QueueEntry {
   planNote: string | null;
   /** Card whose agent created this card (Task.createdByTaskId); null when a person did. */
   createdByTaskId: string | null;
+  /** SDLC progress derived from the card's todo list (lib/sdlc.ts); null until the agent keeps one. */
+  sdlc: SdlcProgress | null;
 }
 
 /** The agent limit in effect and where it comes from (GET /queue). */
@@ -1345,11 +1349,33 @@ export interface OmpConfigSnapshot {
   /** Schema key → value omp uses when the file leaves it unset. */
   defaults: Record<string, OmpConfigValue>;
   schema: OmpConfigField[];
+  /** Every key the file sets (dotted, as `omp config list --scope global` reports it) → its value; secrets left out. */
+  settings: Record<string, OmpSettingValue>;
+  /** Secret keys (omp redacts them) the file sets. */
+  secretsSet: string[];
 }
 
-/** PUT /omp-config: structured `values` (null unsets a key) or a whole `raw` file. */
+/** Any value of an omp setting: scalars, lists (`array`) and mappings (`record`). */
+export type OmpSettingValue = string | number | boolean | null | OmpSettingValue[] | { [key: string]: OmpSettingValue };
+
+export type OmpSettingType = "boolean" | "number" | "string" | "enum" | "array" | "record";
+
+/** One of every setting omp knows (GET /omp-config/settings), from `omp config list` on an empty config. */
+export interface OmpSettingInfo {
+  key: string;
+  type: OmpSettingType;
+  description: string;
+  /** `enum` choices, as `omp config set` validates them; empty when omp did not report them. */
+  options: string[];
+  /** omp's built-in default (null when it has none, or for secrets). */
+  default: OmpSettingValue;
+  /** omp redacts the value (tokens, passwords). */
+  secret: boolean;
+}
+
+/** PUT /omp-config: structured `values` (form keys or any omp setting key; null unsets it) or a whole `raw` file. */
 export type OmpConfigUpdate =
-  | { values: Record<string, OmpConfigValue>; version?: string }
+  | { values: Record<string, OmpSettingValue>; version?: string }
   | { raw: string; version?: string };
 
 /** One chat model of `omp models --json`. */

@@ -18,6 +18,7 @@ import type {
   OmpConfigSnapshot,
   OmpConfigUpdate,
   OmpModel,
+  OmpSettingInfo,
   MemoryStatus,
   Dashboard,
   FileOp,
@@ -85,6 +86,19 @@ import type {
   CredentialTestResult,
   CredentialUpdate,
 } from "@/lib/credential-types";
+import type {
+  AiProvidersResponse,
+  AiProviderTestInput,
+  AiProviderTestResponse,
+  AiProviderUpdate,
+} from "@/lib/ai-providers";
+import type {
+  McpConnectInput,
+  McpConnectResult,
+  McpServerSummary,
+  McpServersResponse,
+  McpServerUpdate,
+} from "@/lib/mcp-types";
 import type { WordModelData } from "@/lib/word-completion";
 import {
   TERMINAL_PING_INTERVAL_MS,
@@ -94,11 +108,15 @@ import {
 } from "@/lib/terminal-types";
 import type { LogExportFormat, LogPage, LogQuery, LogSource, LogSourcesResponse } from "@/lib/log-types";
 
-/** Thrown for non-2xx responses. `status` 401 means the session expired. */
+/**
+ * Thrown for non-2xx responses. `status` 401 means the session expired. `fields`: per-field
+ * messages from a 400 `{ error, fields }` body (keyed like the request's fields), when present.
+ */
 export class ApiRequestError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly fields: Record<string, string> = {},
   ) {
     super(message);
   }
@@ -120,14 +138,22 @@ async function send(path: string, init: RequestInit & { json?: unknown } = {}): 
   });
   if (!res.ok) {
     let message = res.statusText || `HTTP ${res.status}`;
+    let fields: Record<string, string> = {};
     try {
-      const data = (await res.json()) as { error?: string };
+      const data = (await res.json()) as { error?: string; fields?: unknown };
       if (data?.error) message = data.error;
+      if (data?.fields && typeof data.fields === "object") {
+        fields = Object.fromEntries(
+          Object.entries(data.fields as Record<string, unknown>).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string",
+          ),
+        );
+      }
     } catch {}
     if (res.status === 401 && typeof window !== "undefined" && !path.startsWith("/auth/")) {
       window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
     }
-    throw new ApiRequestError(message, res.status);
+    throw new ApiRequestError(message, res.status, fields);
   }
   return res;
 }
@@ -312,6 +338,20 @@ export const api = {
     /** Chat models omp can use; `refresh` bypasses the server's 5 min cache. */
     models: (refresh = false) =>
       request<{ models: OmpModel[] }>(`/omp-config/models${refresh ? "?refresh=1" : ""}`),
+    /** Every setting omp knows (Settings → OMP → All settings); cached 10 min, `refresh` re-lists. */
+    settings: (refresh = false) =>
+      request<{ settings: OmpSettingInfo[] }>(`/omp-config/settings${refresh ? "?refresh=1" : ""}`),
+  },
+  /** AI model provider keys omp children get (Settings → AI Providers); `refresh` re-reads omp's model list. */
+  aiProviders: {
+    list: (refresh = false) =>
+      request<AiProvidersResponse>(`/settings/ai-providers${refresh ? "?refresh=1" : ""}`),
+    /** Save/clear values; 400 `{ error, fields }` (keyed by env var) for invalid ones. */
+    update: (update: AiProviderUpdate) =>
+      request<AiProvidersResponse>("/settings/ai-providers", { method: "PATCH", json: update }),
+    /** Probe typed values (empty ones fall back to the effective values); 400 when nothing to test. */
+    test: (input: AiProviderTestInput) =>
+      request<AiProviderTestResponse>("/settings/ai-providers/test", { method: "POST", json: input }),
   },
   /** Credentials for MCP servers and connector services (the /credentials page). */
   credentials: {
@@ -344,6 +384,25 @@ export const api = {
         method: "POST",
         json: { action, ids },
       }),
+  },
+  /** MCP servers connected to every agent through omp's mcp.json (the /mcp page). */
+  mcp: {
+    list: () => request<McpServersResponse>("/mcp"),
+    /** Save or reuse a credential, write the server into mcp.json and (unless `test: false`) probe it. */
+    connect: (input: McpConnectInput) =>
+      request<McpConnectResult>("/mcp", { method: "POST", json: input }),
+    update: (name: string, update: McpServerUpdate) =>
+      request<McpServerSummary>(`/mcp/${encodeURIComponent(name)}`, { method: "PATCH", json: update }),
+    /** Remove from mcp.json; `deleteCredential` also deletes its credential. */
+    remove: (name: string, deleteCredential = false) =>
+      request<{ ok: true }>(`/mcp/${encodeURIComponent(name)}${deleteCredential ? "?deleteCredential=1" : ""}`, {
+        method: "DELETE",
+      }),
+    /** Health-check the credential and probe the MCP server (initialize + tools/list) now. */
+    test: (name: string) =>
+      request<McpServerSummary>(`/mcp/${encodeURIComponent(name)}/test`, { method: "POST" }),
+    /** Rewrite every managed entry into mcp.json (repairs hand edits). */
+    sync: () => request<McpServersResponse>("/mcp/sync", { method: "POST" }),
   },
   /** The local agentmemory server (Settings → Memory). */
   memory: {

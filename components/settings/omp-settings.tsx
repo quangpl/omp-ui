@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useId, useState } from "react";
 import { ChevronDownIcon, Loader2Icon, RefreshCwIcon, SquareTerminalIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
+import { AI_PROVIDERS_CHANGED_EVENT } from "@/components/settings/ai-providers-settings";
+import { OmpAllSettings } from "@/components/settings/omp-all-settings";
 import {
   SettingsField,
   SettingsGroup,
@@ -17,7 +19,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -69,6 +79,21 @@ function describe(field: OmpConfigField, value: OmpConfigValue): string {
   return field.options?.find((o) => o.value === value)?.label ?? String(value);
 }
 
+/** A model role value "provider/model-id[:thinking]" split into its model and thinking level ("" = none). */
+function splitModel(value: string, levels: ReadonlySet<string>): { model: string; thinking: string } {
+  const text = value.trim();
+  const colon = text.lastIndexOf(":");
+  if (colon > 0 && levels.has(text.slice(colon + 1))) return { model: text.slice(0, colon), thinking: text.slice(colon + 1) };
+  return { model: text, thinking: "" };
+}
+
+/** Models by provider, in omp's order. */
+function byProvider(models: OmpModel[]): [string, OmpModel[]][] {
+  const groups = new Map<string, OmpModel[]>();
+  for (const m of models) groups.set(m.provider, [...(groups.get(m.provider) ?? []), m]);
+  return [...groups];
+}
+
 function message(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
 }
@@ -79,14 +104,15 @@ export function OmpSettingsSection() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [draft, setDraft] = useState<FormState>({});
   const [saving, setSaving] = useState(false);
+  /** `omp models` for the model role dropdowns; on failure the roles fall back to text inputs. */
   const [models, setModels] = useState<OmpModel[]>([]);
+  const [modelsStatus, setModelsStatus] = useState<"loading" | "ready" | "failed">("loading");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [raw, setRaw] = useState("");
   /** The file version `raw` was loaded from: a raw save refuses to overwrite newer edits. */
   const [rawVersion, setRawVersion] = useState("");
   const [rawError, setRawError] = useState<string | null>(null);
   const [rawSaving, setRawSaving] = useState(false);
-  const modelListId = useId();
   const rawErrorId = useId();
   const advancedId = useId();
 
@@ -105,13 +131,26 @@ export function OmpSettingsSection() {
     }
   }, []);
 
-  useEffect(() => {
-    void load();
+  const loadModels = useCallback(() => {
     api.ompConfig
       .models()
-      .then((res) => setModels(res.models))
-      .catch(() => setModels([]));
-  }, [load]);
+      .then((res) => {
+        setModels(res.models);
+        setModelsStatus(res.models.length > 0 ? "ready" : "failed");
+      })
+      .catch(() => setModelsStatus("failed"));
+  }, []);
+
+  useEffect(() => {
+    void load();
+    loadModels();
+  }, [load, loadModels]);
+
+  // Saved or tested AI provider keys change which models omp lists (the server refreshed its cache).
+  useEffect(() => {
+    window.addEventListener(AI_PROVIDERS_CHANGED_EVENT, loadModels);
+    return () => window.removeEventListener(AI_PROVIDERS_CHANGED_EVENT, loadModels);
+  }, [loadModels]);
 
   const saved = snapshot ? toForm(snapshot) : {};
   const changedKeys = snapshot ? snapshot.schema.filter((f) => draft[f.key] !== saved[f.key]).map((f) => f.key) : [];
@@ -119,6 +158,8 @@ export function OmpSettingsSection() {
   const errors = Object.fromEntries((snapshot?.schema ?? []).map((f) => [f.key, fieldError(f, draft[f.key] ?? null)]));
   const valid = Object.values(errors).every((e) => e === null);
   const rawDirty = snapshot !== null && (raw !== snapshot.raw || rawVersion !== snapshot.version);
+  const thinkingOptions = snapshot?.schema.find((f) => f.key === "defaultThinkingLevel")?.options ?? [];
+  const thinkingLevels = new Set(["off", ...thinkingOptions.map((o) => o.value), ...models.flatMap((m) => m.thinking)]);
 
   function applySaved(next: OmpConfigSnapshot, { keepDraft, keepRaw }: { keepDraft: boolean; keepRaw: boolean }) {
     setSnapshot(next);
@@ -213,6 +254,85 @@ export function OmpSettingsSection() {
       );
     }
 
+    if (field.type === "model" && modelsStatus !== "failed") {
+      const { model, thinking } = splitModel(typeof value === "string" ? value : "", thinkingLevels);
+      const known = models.find((m) => m.selector === model);
+      // Levels the picked model supports; an unknown model offers every level, a current one always stays listed.
+      const levels = known ? [...known.thinking] : model ? [...thinkingLevels] : [];
+      if (thinking && !levels.includes(thinking)) levels.push(thinking);
+      const setRole = (nextModel: string, nextThinking: string) =>
+        setDraft((d) => ({ ...d, [field.key]: nextModel && nextThinking ? `${nextModel}:${nextThinking}` : nextModel }));
+      return (
+        <SettingsField key={field.key} label={field.label} htmlFor={id} hint={field.help}>
+          <div className="flex min-w-0 gap-2">
+            <Select
+              value={model || DEFAULT_OPTION}
+              onValueChange={(next) => {
+                if (next === DEFAULT_OPTION) return setRole("", "");
+                const supported = models.find((m) => m.selector === next)?.thinking ?? [];
+                setRole(next, supported.includes(thinking) ? thinking : "");
+              }}
+              disabled={saving}
+            >
+              <SelectTrigger id={id} className="w-full min-w-0 flex-1 data-[size=default]:h-11 md:data-[size=default]:h-9">
+                <SelectValue>{model ? (known?.name ?? model) : `omp default (${describe(field, fallback)})`}</SelectValue>
+              </SelectTrigger>
+              <SelectContent position="popper">
+                <SelectItem value={DEFAULT_OPTION} className="min-h-11 md:min-h-8">
+                  omp default ({describe(field, fallback)})
+                </SelectItem>
+                {model && !known && (
+                  <SelectItem value={model} className="min-h-11 font-mono md:min-h-8 md:text-xs">
+                    {model}
+                  </SelectItem>
+                )}
+                {modelsStatus === "loading" && (
+                  <SelectItem value="__loading__" disabled className="min-h-11 md:min-h-8">
+                    <Loader2Icon className="animate-spin" />
+                    Loading models…
+                  </SelectItem>
+                )}
+                {byProvider(models).map(([provider, list]) => (
+                  <SelectGroup key={provider}>
+                    <SelectLabel>{provider}</SelectLabel>
+                    {list.map((m) => (
+                      <SelectItem key={m.selector} value={m.selector} className="min-h-11 md:min-h-8">
+                        {m.name}
+                        <span className="font-mono text-xs text-muted-foreground">{m.selector.slice(provider.length + 1)}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={thinking || DEFAULT_OPTION}
+              onValueChange={(next) => setRole(model, next === DEFAULT_OPTION ? "" : next)}
+              disabled={saving || levels.length === 0}
+            >
+              <SelectTrigger
+                aria-label={`${field.label}: thinking level`}
+                title="Thinking level"
+                className="w-28 shrink-0 data-[size=default]:h-11 md:data-[size=default]:h-9"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper" align="end">
+                <SelectItem value={DEFAULT_OPTION} className="min-h-11 md:min-h-8">
+                  Default
+                </SelectItem>
+                {levels.map((level) => (
+                  <SelectItem key={level} value={level} className="min-h-11 md:min-h-8">
+                    {thinkingOptions.find((o) => o.value === level)?.label ?? level}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </SettingsField>
+      );
+    }
+
     const error = errors[field.key];
     const text = typeof value === "string" ? value : "";
     const placeholder =
@@ -224,7 +344,6 @@ export function OmpSettingsSection() {
           value={text}
           onChange={(e) => setDraft((d) => ({ ...d, [field.key]: e.target.value }))}
           placeholder={placeholder}
-          list={field.type === "model" && models.length > 0 ? modelListId : undefined}
           type={field.type === "number" ? "number" : "text"}
           inputMode={field.type === "number" ? "numeric" : undefined}
           min={field.min}
@@ -323,16 +442,9 @@ export function OmpSettingsSection() {
                 discardLabel="Reset"
               />
             </SettingsPanel>
-            {models.length > 0 && (
-              <datalist id={modelListId}>
-                {models.map((m) => (
-                  <option key={m.selector} value={m.selector}>
-                    {m.name}
-                  </option>
-                ))}
-              </datalist>
-            )}
           </form>
+
+          <OmpAllSettings snapshot={snapshot} onSaved={(next) => applySaved(next, { keepDraft: dirty, keepRaw: rawDirty })} />
 
           <SettingsPanel>
             <button

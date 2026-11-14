@@ -32,7 +32,8 @@ export function ProviderTile({
   size = "md",
   className,
 }: {
-  provider: CredentialProvider | undefined;
+  /** Anything with a monogram and brand color (credential or AI provider). */
+  provider: Pick<CredentialProvider, "monogram" | "brandColor"> | undefined;
   size?: keyof typeof SIZES;
   className?: string;
 }) {

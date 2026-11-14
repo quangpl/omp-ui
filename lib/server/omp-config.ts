@@ -16,6 +16,9 @@ import type {
   OmpConfigSnapshot,
   OmpConfigValue,
   OmpModel,
+  OmpSettingInfo,
+  OmpSettingType,
+  OmpSettingValue,
 } from "@/lib/types";
 
 const CONFIG_FILE = "config.yml";
@@ -23,6 +26,10 @@ const BACKUP_SUFFIX = ".bak";
 const CLI_TIMEOUT_MS = 15_000;
 const MODELS_TIMEOUT_MS = 30_000;
 const MODELS_TTL_MS = 5 * 60_000;
+const SETTINGS_TTL_MS = 10 * 60_000;
+/** `omp config set <enum key> <this>` fails with "Valid values: a, b, c": how omp tells its enum choices. */
+const ENUM_PROBE_VALUE = "__omp_ui_invalid__";
+const ENUM_PROBE_CONCURRENCY = 8;
 const MAX_RAW_BYTES = 1024 * 1024;
 const MAX_STRING = 500;
 const ROLE_PREFIX = "modelRoles.";
@@ -53,7 +60,7 @@ export const OMP_CONFIG_SCHEMA: readonly OmpConfigField[] = [
   role(
     "default",
     "Default model",
-    "Used unless a board, AgentMan's default model or auto-select picks another. Append :<level> to pin thinking, e.g. anthropic/claude-opus-5-5:high.",
+    "Used unless a board, AgentMan's default model or auto-select picks another. A thinking level set here overrides the default thinking level.",
   ),
   role("smol", "Fast model (smol)", "Lightweight work. AgentMan's auto-select runs small edits on it."),
   role(
@@ -248,6 +255,9 @@ function cliError(result: CliResult): string {
 interface ListedSetting {
   value?: unknown;
   type?: string;
+  description?: string;
+  /** Secrets (tokens, passwords): omp lists them without `value`. */
+  redacted?: boolean;
 }
 
 /** `omp config list --json [--scope global]` → key → { value, type }. */
@@ -327,6 +337,7 @@ async function withScratch<T>(raw: string | null, fn: (dir: string) => Promise<T
 const g = globalThis as unknown as {
   __ompUiConfigLock?: Promise<unknown>;
   __ompUiModels?: { path: string; at: number; models: Promise<OmpModel[]> };
+  __ompUiSettings?: { path: string; at: number; settings: Promise<OmpSettingInfo[]> };
 };
 
 function locked<T>(fn: () => Promise<T>): Promise<T> {
@@ -454,6 +465,12 @@ export async function getOmpConfig(ompPath: string): Promise<OmpConfigSnapshot> 
         }),
       )
     : {};
+  const settings: Record<string, OmpSettingValue> = {};
+  const secretsSet: string[] = [];
+  for (const [key, entry] of Object.entries(own)) {
+    if (entry.redacted) secretsSet.push(key);
+    else if (entry.value !== undefined) settings[key] = entry.value as OmpSettingValue;
+  }
   return {
     path: file,
     backupPath: `${file}${BACKUP_SUFFIX}`,
@@ -464,6 +481,8 @@ export async function getOmpConfig(ompPath: string): Promise<OmpConfigSnapshot> 
     values: schemaValues(own),
     defaults: schemaValues(effective),
     schema: [...OMP_CONFIG_SCHEMA],
+    settings,
+    secretsSet,
   };
 }
 
@@ -477,18 +496,21 @@ function checkVersion(current: string | null, version: unknown): void {
 
 /**
  * Apply structured edits (null unsets a key) through `omp config set/reset` on a scratch copy, then
- * replace the file. Unknown keys and keys outside the schema are kept as they are.
+ * replace the file. Keys are the form's schema keys or any setting omp knows (typed per `omp config
+ * list`; lists and mappings as JSON values). Keys not edited are kept as they are.
  */
 export function updateOmpConfigValues(
   ompPath: string,
   input: Record<string, unknown>,
   version?: unknown,
 ): Promise<OmpConfigSnapshot> {
-  const next = new Map<string, OmpConfigValue>();
+  const next = new Map<string, OmpSettingValue>();
   for (const [key, value] of Object.entries(input)) {
     const field = FIELDS.get(key);
-    if (!field) throw new HttpError(400, `Unknown omp setting: ${key}`);
-    next.set(key, normalize(field, value));
+    next.set(key, field ? normalize(field, value) : ((value ?? null) as OmpSettingValue));
+  }
+  if (next.has("modelRoles") && [...next.keys()].some((key) => key.startsWith(ROLE_PREFIX))) {
+    throw new HttpError(400, "Edit modelRoles either as a whole or per role, not both at once");
   }
   return locked(async () => {
     const file = path.join(await agentDir(ompPath), CONFIG_FILE);
@@ -497,28 +519,43 @@ export function updateOmpConfigValues(
     const updated = await withScratch(current, async (scratch) => {
       const opts = { cwd: scratch, agentDir: scratch };
       const own = current?.trim() ? await listSettings(ompPath, { ...opts, scope: "global" }) : {};
+      const generic = [...next.keys()].filter((key) => !FIELDS.has(key));
+      const known = generic.length > 0 ? await listSettings(ompPath, opts) : {};
       const have = schemaValues(own);
       const roles = { ...roleMap(own) };
       let rolesChanged = false;
-      const commands: { field: OmpConfigField; args: string[] }[] = [];
+      const commands: { label: string; args: string[] }[] = [];
       for (const [key, value] of next) {
-        if (have[key] === value) continue;
-        const field = FIELDS.get(key)!;
-        if (key.startsWith(ROLE_PREFIX)) {
+        const field = FIELDS.get(key);
+        if (!field) {
+          const type = known[key]?.type;
+          if (!type) throw new HttpError(400, `Unknown omp setting: ${key}`);
+          if (value !== null && LIST_TYPE_CHECKS[type] && !LIST_TYPE_CHECKS[type](value)) {
+            throw new HttpError(400, `${key} must be ${TYPE_NAMES[type]}`);
+          }
+          const text = typeof value === "object" ? JSON.stringify(value) : String(value);
+          if (Buffer.byteLength(text) > MAX_RAW_BYTES) throw new HttpError(400, `${key} is larger than 1 MB`);
+          const was = own[key];
+          const unchanged =
+            value === null ? was === undefined : !was?.redacted && JSON.stringify(was?.value) === JSON.stringify(value);
+          if (unchanged) continue;
+          commands.push({ label: key, args: value === null ? ["config", "reset", key] : ["config", "set", key, text] });
+        } else if (have[key] === value) {
+          continue;
+        } else if (key.startsWith(ROLE_PREFIX)) {
           const name = key.slice(ROLE_PREFIX.length);
           if (value === null) delete roles[name];
           else roles[name] = value;
           rolesChanged = true;
         } else if (value === null) {
-          commands.push({ field, args: ["config", "reset", key] });
+          commands.push({ label: field.label, args: ["config", "reset", key] });
         } else {
-          commands.push({ field, args: ["config", "set", key, String(value)] });
+          commands.push({ label: field.label, args: ["config", "set", key, String(value)] });
         }
       }
       if (rolesChanged) {
-        const field = FIELDS.get(`${ROLE_PREFIX}default`)!;
         commands.push({
-          field: { ...field, label: "Model roles" },
+          label: "Model roles",
           args:
             Object.keys(roles).length === 0
               ? ["config", "reset", "modelRoles"]
@@ -526,9 +563,9 @@ export function updateOmpConfigValues(
         });
       }
       if (commands.length === 0) return current;
-      for (const { field, args } of commands) {
+      for (const { label, args } of commands) {
         const result = await runOmp(ompPath, args, opts);
-        if (result.code !== 0) throw new HttpError(400, `${field.label}: ${cliError(result)}`);
+        if (result.code !== 0) throw new HttpError(400, `${label}: ${cliError(result)}`);
       }
       return readRaw(path.join(scratch, CONFIG_FILE));
     });
@@ -602,4 +639,64 @@ export function listOmpModels(ompPath: string, options: { refresh?: boolean } = 
     });
   }
   return g.__ompUiModels!.models;
+}
+
+/** Every setting omp knows, with its built-in default (listed on an empty config) and enum choices. */
+function loadOmpSettings(ompPath: string): Promise<OmpSettingInfo[]> {
+  return withScratch(null, async (scratch) => {
+    const opts = { cwd: scratch, agentDir: scratch };
+    // Types this module knows how to check (all of omp's today).
+    const listed = Object.entries(await listSettings(ompPath, opts)).filter(([, s]) => s.type && s.type in LIST_TYPE_CHECKS);
+    // omp's listing has no enum choices; an invalid `config set` names them. The probe fails, so the scratch stays empty.
+    const enums = listed.filter(([, s]) => s.type === "enum").map(([key]) => key);
+    const options = new Map<string, string[]>();
+    for (let i = 0; i < enums.length; i += ENUM_PROBE_CONCURRENCY) {
+      await Promise.all(
+        enums.slice(i, i + ENUM_PROBE_CONCURRENCY).map(async (key) => {
+          const result = await runOmp(ompPath, ["config", "set", key, ENUM_PROBE_VALUE], opts);
+          const match = /Valid values: (.+)$/m.exec(`${result.stderr}\n${result.stdout}`);
+          options.set(key, match ? match[1].split(",").map((v) => v.trim()).filter(Boolean) : []);
+        }),
+      );
+    }
+    // omp redacts secrets only once they hold a value: list a config that sets every value-less string.
+    const probe: Record<string, unknown> = {};
+    for (const [key, s] of listed) {
+      if (s.type !== "string" || s.value !== undefined || s.redacted) continue;
+      const parts = key.split(".");
+      let node = probe;
+      for (const part of parts.slice(0, -1)) {
+        const child = node[part];
+        node = (child && typeof child === "object" ? child : (node[part] = {})) as Record<string, unknown>;
+      }
+      node[parts[parts.length - 1]] = ENUM_PROBE_VALUE;
+    }
+    // JSON is YAML; a failed probe only loses the secret flags of unset keys.
+    await writeFile(path.join(scratch, CONFIG_FILE), JSON.stringify(probe), { mode: 0o600 });
+    const probed = await listSettings(ompPath, { ...opts, scope: "global" }).catch(() => ({}) as Record<string, ListedSetting>);
+    return listed.map(([key, s]) => ({
+      key,
+      type: s.type as OmpSettingType,
+      description: s.description ?? "",
+      options: options.get(key) ?? [],
+      default: s.redacted ? null : ((s.value ?? null) as OmpSettingValue),
+      secret: s.redacted === true || probed[key]?.redacted === true,
+    }));
+  });
+}
+
+/**
+ * Every omp setting (`omp config list` on an empty config, plus one probe per enum for its choices; a
+ * few seconds), cached for 10 minutes per omp path; `refresh` re-lists. A failed listing is not cached.
+ */
+export function listOmpSettings(ompPath: string, options: { refresh?: boolean } = {}): Promise<OmpSettingInfo[]> {
+  const cached = g.__ompUiSettings;
+  if (options.refresh || !cached || cached.path !== ompPath || Date.now() - cached.at > SETTINGS_TTL_MS) {
+    const settings = loadOmpSettings(ompPath);
+    g.__ompUiSettings = { path: ompPath, at: Date.now(), settings };
+    settings.catch(() => {
+      if (g.__ompUiSettings?.settings === settings) g.__ompUiSettings = undefined;
+    });
+  }
+  return g.__ompUiSettings!.settings;
 }

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   BellIcon,
+  BrainCircuitIcon,
   BrainIcon,
   BrushCleaningIcon,
   CheckIcon,
@@ -25,6 +26,7 @@ import {
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
 import { PasswordInput } from "@/components/password-input";
+import { AiProvidersSettingsSection } from "@/components/settings/ai-providers-settings";
 import { AppearanceSettingsSection } from "@/components/settings/appearance-settings";
 import { ChatSettingsSection } from "@/components/settings/chat-settings";
 import { CleanupSettingsSection } from "@/components/settings/cleanup-settings";
@@ -102,6 +104,7 @@ const SECTIONS: SettingsNavItem[] = [
   { id: "agent", label: "Agent", icon: <CpuIcon /> },
   { id: "orchestration", label: "Orchestration", icon: <ShieldCheckIcon /> },
   { id: "omp", label: "OMP", icon: <SquareTerminalIcon /> },
+  { id: "ai-providers", label: "AI Providers", icon: <BrainCircuitIcon /> },
   { id: "memory", label: "Memory", icon: <BrainIcon /> },
   { id: "cleanup", label: "Data cleanup", icon: <BrushCleaningIcon /> },
   { id: "notifications", label: "Notifications", icon: <BellIcon /> },
@@ -863,12 +866,13 @@ export default function SettingsPage() {
               "min-w-0 max-w-3xl space-y-10 md:space-y-12",
               "[&>section+section]:border-t [&>section+section]:pt-10 md:[&>section+section]:pt-12",
               "[&>section]:animate-card-in motion-reduce:[&>section]:animate-none",
-              "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12] [&>section:nth-child(8)]:[--stagger:14] [&>section:nth-child(9)]:[--stagger:16] [&>section:nth-child(10)]:[--stagger:18] [&>section:nth-child(11)]:[--stagger:20] [&>section:nth-child(12)]:[--stagger:22]",
+              "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12] [&>section:nth-child(8)]:[--stagger:14] [&>section:nth-child(9)]:[--stagger:16] [&>section:nth-child(10)]:[--stagger:18] [&>section:nth-child(11)]:[--stagger:20] [&>section:nth-child(12)]:[--stagger:22] [&>section:nth-child(13)]:[--stagger:24]",
             )}
           >
             <AgentSettingsSection />
             <OrchestrationSettingsSection />
             <OmpSettingsSection />
+            <AiProvidersSettingsSection />
             <MemorySettingsSection />
             <CleanupSettingsSection />
             <NotificationSettingsSection />

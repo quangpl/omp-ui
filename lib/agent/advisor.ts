@@ -10,6 +10,7 @@ import { readModelRoles } from "@/lib/agent/model-select";
 import { existingFolders, extractJsonObject, runOmpHelper } from "@/lib/agent/omp-helper";
 import { clip } from "@/lib/card-draft";
 import { childEnv } from "@/lib/child-env";
+import { mcpAgentEnv } from "@/lib/server/mcp-env";
 import type { AppSettings, Board, Task } from "@/lib/types";
 
 /** The advisor is cancelled after this long. */
@@ -161,6 +162,7 @@ export function buildConsultPrompt(scope: Pick<AdvisorScope, "task" | "board" | 
     ...USER_ONLY,
     "",
     "How to work: when the answer depends on the code, look it up with a few quick glob/grep/read calls (skim, stop once you know). Do not change files or run commands. Pick one clear answer; you may choose an option not listed.",
+    "Decide like a senior engineer following the SDLC: keep the quality gates (design before implementation, testing before release), but don't add process the task doesn't need.",
     "",
     "Reply with only this JSON object — no other text, no code fence:",
     '{"needsUser": false, "decision": "the answer, specific enough to act on", "reason": "why, in one or two sentences"}',
@@ -231,7 +233,7 @@ export function formatAnswers(answers: QuestionTriage["answers"]): string {
 
 async function runAdvisor(scope: AdvisorScope, prompt: string): Promise<string> {
   const { settings, workdir, board, signal } = scope;
-  const env = childEnv();
+  const env = childEnv(await mcpAgentEnv());
   const [addDirs, roles] = await Promise.all([
     existingFolders(scope.extraFolders, workdir),
     readModelRoles(settings.ompPath, workdir, env),

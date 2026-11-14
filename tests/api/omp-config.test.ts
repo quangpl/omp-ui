@@ -7,7 +7,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { api, freshEnv, setupAdmin, teardown, tempDir } from "./helpers";
 
 import * as ompConfigRoute from "@/app/api/v1/omp-config/route";
-import type { OmpConfigSnapshot } from "@/lib/types";
+import * as ompSettingsRoute from "@/app/api/v1/omp-config/settings/route";
+import type { OmpConfigSnapshot, OmpSettingInfo } from "@/lib/types";
 
 // These suites drive the real omp CLI (it parses and validates config.yml) against a throwaway
 // agent dir (PI_CODING_AGENT_DIR); they are skipped where omp is not installed.
@@ -148,5 +149,41 @@ describe.skipIf(!REAL_OMP)("/omp-config", () => {
     expect(stale.status).toBe(409);
     expect(readFileSync(configFile, "utf8")).toBe(raw);
     expect(existsSync(configFile)).toBe(true);
+  });
+
+  it("lists every omp setting with types, defaults and enum choices", async () => {
+    const res = await api<{ settings: OmpSettingInfo[] }>(ompSettingsRoute, "GET", "/omp-config/settings");
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const byKey = new Map(res.body.settings.map((s) => [s.key, s]));
+    expect(byKey.size).toBeGreaterThan(100);
+    expect(byKey.get("symbolPreset")).toMatchObject({ type: "enum", default: "unicode", secret: false });
+    expect(byKey.get("symbolPreset")?.options).toEqual(expect.arrayContaining(["unicode", "nerd", "ascii"]));
+    expect(byKey.get("cycleOrder")?.type).toBe("array");
+    expect(byKey.get("auth.broker.token")).toMatchObject({ type: "string", secret: true, default: null });
+    expect((await api(ompSettingsRoute, "GET", "/omp-config/settings", { token: null })).status).toBe(401);
+  });
+
+  it("saves and resets any omp setting, keeping secrets out of the snapshot", async () => {
+    const res = await put({
+      values: { symbolPreset: "ascii", cycleOrder: ["smol", "slow"], autoResume: true, "auth.broker.token": "s3cret" },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.settings).toMatchObject({ symbolPreset: "ascii", cycleOrder: ["smol", "slow"], autoResume: true });
+    expect(res.body.settings).not.toHaveProperty("auth.broker.token");
+    expect(res.body.secretsSet).toContain("auth.broker.token");
+    expect(readFileSync(configFile, "utf8")).toContain("s3cret");
+
+    const before = readFileSync(configFile, "utf8");
+    expect((await put({ values: { symbolPreset: "fancy" } })).status).toBe(400);
+    expect((await put({ values: { cycleOrder: "smol" } })).status).toBe(400);
+    expect((await put({ values: { modelRoles: {}, "modelRoles.default": null } })).status).toBe(400);
+    expect(readFileSync(configFile, "utf8")).toBe(before);
+
+    const reset = await put({ values: { symbolPreset: null, cycleOrder: null, "auth.broker.token": null } });
+    expect(reset.status, JSON.stringify(reset.body)).toBe(200);
+    expect(reset.body.settings).not.toHaveProperty("symbolPreset");
+    expect(reset.body.settings).not.toHaveProperty("cycleOrder");
+    expect(reset.body.secretsSet).toEqual([]);
+    expect(reset.body.settings.autoResume).toBe(true);
   });
 });

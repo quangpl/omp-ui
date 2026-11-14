@@ -7,6 +7,7 @@ import { runOmpHelper } from "@/lib/agent/omp-helper";
 import { childEnv } from "@/lib/child-env";
 import { publish } from "@/lib/events";
 import { dataDir } from "@/lib/files";
+import { mcpAgentEnv } from "@/lib/server/mcp-env";
 import { parseTitle } from "@/lib/server/validate";
 import { getAppSettings } from "@/lib/settings";
 import { STATUS_LABELS, TASK_STATUSES, type BoardWithCounts, type ChatPlatform, type Task, type TaskStatus } from "@/lib/types";
@@ -161,7 +162,7 @@ async function ask(
     model: settings.defaultModel.trim() || null,
     thinking: null,
     timeoutSeconds: TIMEOUT_SECONDS,
-    env: childEnv(),
+    env: childEnv(await mcpAgentEnv()),
     prompt: await buildPrompt(env, msg),
     signal,
     label: "chat assistant",

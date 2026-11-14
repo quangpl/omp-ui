@@ -65,7 +65,7 @@ describe("/settings visibleDashboardMenus", () => {
   it("menus added since a legacy list was saved show by default", async () => {
     const legacy = ["visualize", "terminal", "settings"];
     await (await getRepo()).setSetting("app_settings", JSON.stringify({ ompPath: "omp", visibleDashboardMenus: legacy }));
-    expect((await getSettings()).visibleDashboardMenus).toEqual(["visualize", "terminal", "files", "artifacts", "settings"]);
+    expect((await getSettings()).visibleDashboardMenus).toEqual(["visualize", "terminal", "files", "artifacts", "mcp", "settings"]);
   });
 
   it("a menu hidden after it existed stays hidden", async () => {
@@ -73,7 +73,7 @@ describe("/settings visibleDashboardMenus", () => {
       "app_settings",
       JSON.stringify({ ompPath: "omp", visibleDashboardMenus: ["visualize", "stats"] }),
     );
-    expect((await getSettings()).visibleDashboardMenus).toEqual(["visualize", "files", "artifacts", "stats"]);
+    expect((await getSettings()).visibleDashboardMenus).toEqual(["visualize", "files", "artifacts", "mcp", "stats"]);
 
     const saved = await patchSettings({ visibleDashboardMenus: ["visualize", "stats"] });
     expect(saved.visibleDashboardMenus).toEqual(["visualize", "stats"]);

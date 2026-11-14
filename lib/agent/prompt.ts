@@ -1,3 +1,4 @@
+import { SDLC_PHASE_INFO, SDLC_PHASES, sdlcProgress } from "@/lib/sdlc";
 import type { Board, BrowserMode, Comment, Task } from "@/lib/types";
 
 /** Per-run facts beyond the card: shared folders, workspace, browser, message senders. */
@@ -37,6 +38,32 @@ const HEADLESS_INSTRUCTION =
  */
 const ORCHESTRATE_INSTRUCTION =
   "This task spans several pieces of work: orchestrate it by splitting it into parallel subagent tasks, then verify and integrate the results.";
+
+const SDLC_LABELS = SDLC_PHASES.map((id) => SDLC_PHASE_INFO[id].label);
+
+/**
+ * The SDLC workflow every run follows: todo-list phases named after the SDLC phases (the server derives
+ * progress and enforces the gates from those names), with each phase's exit criteria as its quality gate.
+ */
+const SDLC_INSTRUCTION = [
+  `Work through the software development lifecycle like an enterprise software team, scaled to the task. Keep your todo list with the todo tool and name its phases exactly after the SDLC phases you use, in this order: ${SDLC_LABELS.join(", ")}.`,
+  "Planning, Implementation and Testing are always included; add Feasibility only for real risks or unknowns, Design when architecture, APIs, data shapes or UI change, Deployment for release work (docs, changelog, report; commit/PR only when asked).",
+  `Finish (or drop) every item of a phase before starting the next; each phase's exit criteria are its quality gate: ${SDLC_PHASES.map((id) => `${SDLC_PHASE_INFO[id].label}: ${SDLC_PHASE_INFO[id].gate}`).join("; ")}.`,
+  "Testing must pass before Deployment. A small fix needs one or two items per phase, not ceremony.",
+].join(" ");
+
+/** Who does the work in each SDLC phase of an orchestrated run. */
+const SDLC_STAFFING_INSTRUCTION =
+  "Staff each SDLC phase: Planning and Feasibility → read-only scout subagents in parallel; Design → you (the lead) fix the shared contracts (types, APIs, schemas, UI) before fanning out; Implementation → parallel task subagents on disjoint files (sonic for mechanical edits); Testing → you run the gates plus a reviewer subagent (security-reviewer when auth, input handling or secrets change); Deployment → docs, changelog and report.";
+
+/** Where a feedback round sits in the SDLC: Maintenance once every included phase is done, else the current phase. */
+function feedbackSdlcInstruction(task: Task): string {
+  const progress = sdlcProgress(task.todos ?? []);
+  if (progress && progress.current === null) {
+    return "This feedback is Maintenance on delivered work: add a Maintenance phase to the todo list for this round (fix, re-test, report) after the earlier phases, without reopening them.";
+  }
+  return "Continue in the current SDLC phase and add the new items to the phase they belong to.";
+}
 
 /** Separate work items (list entries, feedback comments) at which a run is orchestrated. */
 const ORCHESTRATE_MIN_ITEMS = 4;
@@ -89,7 +116,9 @@ export function buildPrompt(
       "",
       ...(folders ? [folders, ""] : []),
       `Address all of the feedback above in ${where}. Make the changes and verify them.`,
-      ...(needsOrchestration(null, feedback) ? [ORCHESTRATE_INSTRUCTION] : []),
+      SDLC_INSTRUCTION,
+      feedbackSdlcInstruction(task),
+      ...(needsOrchestration(null, feedback) ? [ORCHESTRATE_INSTRUCTION, SDLC_STAFFING_INSTRUCTION] : []),
       HEADLESS_INSTRUCTION,
       PUSH_INSTRUCTION,
       SUMMARY_INSTRUCTION,
@@ -105,7 +134,9 @@ export function buildPrompt(
       "",
       ...(folders ? [folders, ""] : []),
       `Check the current state of ${where}, finish any remaining work, and verify it.`,
-      ...(needsOrchestration(task, []) ? [ORCHESTRATE_INSTRUCTION] : []),
+      SDLC_INSTRUCTION,
+      "Continue from the SDLC phase your todo list shows.",
+      ...(needsOrchestration(task, []) ? [ORCHESTRATE_INSTRUCTION, SDLC_STAFFING_INSTRUCTION] : []),
       HEADLESS_INSTRUCTION,
       PUSH_INSTRUCTION,
       SUMMARY_INSTRUCTION,
@@ -130,7 +161,8 @@ export function buildPrompt(
     "## Instructions",
     "",
     `- Work in ${where} and make the change described above${feedback.length > 0 ? ", taking all of the feedback into account" : ""}.`,
-    ...(needsOrchestration(task, feedback) ? [`- ${ORCHESTRATE_INSTRUCTION}`] : []),
+    `- ${SDLC_INSTRUCTION}`,
+    ...(needsOrchestration(task, feedback) ? [`- ${ORCHESTRATE_INSTRUCTION}`, `- ${SDLC_STAFFING_INSTRUCTION}`] : []),
     "- Verify it: run the relevant build, tests, or a quick check as appropriate.",
     `- ${HEADLESS_INSTRUCTION}`,
     `- ${PUSH_INSTRUCTION}`,

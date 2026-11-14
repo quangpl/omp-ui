@@ -63,6 +63,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
       { label: "Logs", keys: ["G L"] },
       { label: "Memory", keys: ["G M"] },
       { label: "Credentials", keys: ["G K"] },
+      { label: "MCP servers", keys: ["G I"] },
       { label: "Settings", keys: ["G S"] },
     ],
   },

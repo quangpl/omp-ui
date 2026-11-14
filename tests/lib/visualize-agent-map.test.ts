@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   CONTACT_TTL_MS,
+  ROLE_PHASE,
   activitySystem,
   boardContact,
   buildLinks,
   floorPlan,
+  type SdlcPipeline,
+  sdlcPipeline,
+  sdlcStation,
   toolSystem,
 } from "@/components/visualize/agent-map";
+import type { AgentRole } from "@/components/visualize/roles";
 import { EMPTY_STATS, type LiveAgent } from "@/components/visualize/use-live-agents";
+import { SDLC_PHASES, type SdlcPhaseId, type SdlcPhaseStatus, type SdlcProgress, type SdlcViolation } from "@/lib/sdlc";
 import type { Dashboard, QueueEntry, QueueSnapshot, SubagentSnapshot } from "@/lib/types";
 
 const A = "11111111-1111-4111-8111-111111111111";
@@ -26,6 +32,7 @@ function entry(taskId: string, state: QueueEntry["state"], extra: Partial<QueueE
     drafting: false,
     planNote: null,
     createdByTaskId: null,
+    sdlc: null,
     ...extra,
   };
 }
@@ -38,8 +45,28 @@ function liveAgent(extra: Partial<LiveAgent> = {}): LiveAgent {
   return { helpers: {}, contacts: [], stats: EMPTY_STATS, ...extra };
 }
 
-function helper(id: string, status: SubagentSnapshot["status"], currentTool?: string): SubagentSnapshot {
-  return { id, agent: "task", status, currentTool };
+function helper(id: string, status: SubagentSnapshot["status"], currentTool?: string, agent = "task"): SubagentSnapshot {
+  return { id, agent, status, currentTool };
+}
+
+/** SDLC progress: listed phases get their status, the rest are skipped. */
+function progress(
+  statuses: Partial<Record<SdlcPhaseId, SdlcPhaseStatus>>,
+  current: SdlcPhaseId | null,
+  violations: SdlcViolation[] = [],
+): SdlcProgress {
+  const phases = SDLC_PHASES.map((id) => {
+    const status = statuses[id] ?? "skipped";
+    return { id, status, done: status === "done" ? 2 : 0, total: status === "skipped" ? 0 : 2, current: null, startedAt: null, completedAt: null };
+  });
+  return {
+    phases,
+    current,
+    completed: phases.filter((p) => p.status === "done").length,
+    included: phases.filter((p) => p.status !== "skipped").length,
+    canonical: true,
+    violations,
+  };
 }
 
 describe("toolSystem", () => {
@@ -203,5 +230,92 @@ describe("floorPlan", () => {
     expect(ids(rooms.intake)).toEqual([`card:${B}`, `card:${C}`]);
     expect(ids(rooms.rework)).toEqual([`card:${D}`]);
     expect(ids(rooms.shipping)).toEqual([]);
+  });
+});
+
+describe("ROLE_PHASE", () => {
+  it("staffs each SDLC phase with the roles that work in it", () => {
+    const byPhase = (phase: SdlcPhaseId | null) =>
+      (Object.keys(ROLE_PHASE) as AgentRole[]).filter((role) => ROLE_PHASE[role] === phase).sort();
+    expect(byPhase("planning")).toEqual(["oracle", "planner", "scout"]);
+    expect(byPhase("design")).toEqual(["designer"]);
+    expect(byPhase("implementation")).toEqual(["sprinter", "worker"]);
+    expect(byPhase("testing")).toEqual(["guard", "reviewer"]);
+    expect(byPhase(null)).toEqual(["helper", "lead"]);
+  });
+});
+
+describe("sdlcPipeline", () => {
+  const ids = (pipeline: SdlcPipeline, phase: SdlcPhaseId) =>
+    pipeline.stations[phase].workers.map((worker) => worker.id);
+
+  it("puts a running card at its current phase, at Planning without a plan, at its last included phase when all are done", () => {
+    const D = "44444444-4444-4444-8444-444444444444";
+    const q = queue(
+      [
+        entry(A, "running", { sdlc: progress({ planning: "done", implementation: "active", testing: "pending" }, "implementation") }),
+        entry(B, "running"),
+        entry(C, "running", { sdlc: progress({ planning: "done", implementation: "done", testing: "done" }, null) }),
+      ],
+      [entry(D, "queued")],
+    );
+    const pipeline = sdlcPipeline(q, {});
+    expect(ids(pipeline, "implementation")).toEqual([`card:${A}`]);
+    expect(ids(pipeline, "planning")).toEqual([`card:${B}`]);
+    expect(ids(pipeline, "testing")).toEqual([`card:${C}`]);
+    expect(ids(pipeline, "deployment")).toEqual([]);
+    expect(pipeline.backlog).toBe(1);
+  });
+
+  it("puts busy subagents at their role's phase, helpers at their lead's phase, after the leads", () => {
+    const q = queue([
+      entry(A, "running", { sdlc: progress({ planning: "done", design: "active" }, "design") }),
+      entry(B, "running", { sdlc: progress({ planning: "active" }, "planning") }),
+    ]);
+    const live = {
+      [A]: liveAgent({
+        helpers: {
+          s: helper("s", "running", undefined, "scout"),
+          w: helper("w", "pending", undefined, "task"),
+          r: helper("r", "running", undefined, "reviewer"),
+          h: helper("h", "running", undefined, "my-custom-agent"),
+          done: helper("done", "completed", undefined, "task"),
+        },
+      }),
+    };
+    const pipeline = sdlcPipeline(q, live);
+    expect(ids(pipeline, "planning")).toEqual([`card:${B}`, `sub:${A}:s`]);
+    expect(ids(pipeline, "design")).toEqual([`card:${A}`, `sub:${A}:h`]);
+    expect(ids(pipeline, "implementation")).toEqual([`sub:${A}:w`]);
+    expect(ids(pipeline, "testing")).toEqual([`sub:${A}:r`]);
+  });
+
+  it("counts early starts per phase and breaches per quality gate crossed", () => {
+    const early: SdlcViolation = { phase: "deployment", requires: "testing", message: "Deployment started before Testing was complete" };
+    const skipped: SdlcViolation = { phase: "implementation", requires: "planning", message: "Implementation started before Planning was complete" };
+    const q = queue([
+      entry(A, "running", { sdlc: progress({ planning: "done", implementation: "done", testing: "active", deployment: "active" }, "testing", [early]) }),
+      entry(B, "running", { sdlc: progress({ planning: "active", implementation: "active" }, "planning", [skipped]) }),
+      entry(C, "running", { sdlc: progress({ planning: "done", implementation: "active" }, "implementation") }),
+    ]);
+    const { stations } = sdlcPipeline(q, {});
+    expect(stations.deployment.alerts).toBe(1);
+    expect(stations.implementation.alerts).toBe(1);
+    expect(stations.testing.alerts).toBe(0);
+    // The release gate (Testing → Deployment) was crossed by A only.
+    expect(stations.testing.breaches.map((breach) => breach.entry.taskId)).toEqual([A]);
+    // B skipped past the Planning, Feasibility and Design gates.
+    expect(stations.planning.breaches.map((breach) => breach.entry.taskId)).toEqual([B]);
+    expect(stations.feasibility.breaches.map((breach) => breach.violation)).toEqual([skipped]);
+    expect(stations.design.breaches.map((breach) => breach.entry.taskId)).toEqual([B]);
+    expect(stations.implementation.breaches).toEqual([]);
+    expect(stations.maintenance.breaches).toEqual([]);
+  });
+});
+
+describe("sdlcStation", () => {
+  it("falls back to Planning when nothing is included", () => {
+    expect(sdlcStation(progress({}, null))).toBe("planning");
+    expect(sdlcStation(null)).toBe("planning");
   });
 });

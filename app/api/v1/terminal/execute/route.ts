@@ -11,6 +11,6 @@ export const POST = withApi(async ({ req }) => {
   if (body.cwd !== undefined && body.cwd !== null && typeof body.cwd !== "string") {
     throw new HttpError(400, "cwd must be a string");
   }
-  const block = getTerminalSession().execute(body.command, body.cwd || undefined);
+  const block = await getTerminalSession().execute(body.command, body.cwd || undefined);
   return json(block, { status: 201 });
 });

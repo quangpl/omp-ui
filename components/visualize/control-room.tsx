@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ComponentType, type CSSProperties } f
 import Link from "next/link";
 import {
   Building2Icon,
+  CheckIcon,
   CrownIcon,
   FlameIcon,
   LockIcon,
@@ -12,14 +13,17 @@ import {
   RocketIcon,
   ShieldCheckIcon,
   StickyNoteIcon,
+  TriangleAlertIcon,
 } from "lucide-react";
 import { cardHref } from "@/components/home/shared";
 import { ACTIVITY_ICON } from "@/components/visualize/activity-icons";
+import { sdlcStation } from "@/components/visualize/agent-map";
 import { type AchievementId, XP_PER_CARD, achievements, crewLevel, workerIdentity } from "@/components/visualize/game";
 import { agentVitals, moodTone, type Vitals } from "@/components/visualize/mood";
 import { ROLE_INFO, roleOf, subagentName } from "@/components/visualize/roles";
 import type { LiveAgent } from "@/components/visualize/use-live-agents";
 import { ManaBar, MOOD_LABEL, RoleTag, WorkerAvatar } from "@/components/visualize/worker-avatar";
+import { SDLC_PHASE_INFO, type SdlcProgress } from "@/lib/sdlc";
 import type { Dashboard, QueueEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -169,6 +173,42 @@ function Crew({ taskId, agent }: { taskId: string; agent: LiveAgent | undefined 
   );
 }
 
+/** "5/7 Testing": the SDLC phase a card's agent is in; warns when it crossed a quality gate early. */
+function SdlcChip({ sdlc }: { sdlc: SdlcProgress }) {
+  const info = SDLC_PHASE_INFO[sdlcStation(sdlc)];
+  const phase = sdlc.phases.find((p) => p.id === info.id);
+  const delivered = sdlc.current === null;
+  const flagged = sdlc.violations.length > 0;
+  const title = [
+    delivered
+      ? `Every SDLC phase done (${sdlc.completed} of ${sdlc.included})`
+      : `SDLC phase ${info.step} of 7: ${info.label}, ${phase?.done ?? 0} of ${phase?.total ?? 0} items done, ${sdlc.completed} of ${sdlc.included} phases done`,
+    ...sdlc.violations.map((violation) => `Quality gate: ${violation.message}`),
+  ].join("\n");
+  return (
+    <span
+      role="img"
+      aria-label={title}
+      title={title}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 self-center rounded-[3px] border px-1.5 font-mono text-[11px] leading-[18px] tabular-nums",
+        flagged
+          ? "border-destructive/40 bg-destructive/10 text-destructive"
+          : delivered
+            ? "border-success/40 text-success"
+            : "text-muted-foreground",
+      )}
+    >
+      {flagged ? (
+        <TriangleAlertIcon className="size-3" aria-hidden />
+      ) : (
+        delivered && <CheckIcon className="size-3" aria-hidden />
+      )}
+      {delivered ? `${sdlc.completed}/${sdlc.included} done` : `${info.step}/7 ${info.label}`}
+    </span>
+  );
+}
+
 function TickerRow({
   entry,
   agent,
@@ -212,6 +252,7 @@ function TickerRow({
           >
             {entry.title}
           </Link>
+          {entry.sdlc && <SdlcChip sdlc={entry.sdlc} />}
         </p>
         <p className="flex min-w-0 items-center gap-2 font-mono text-sm text-muted-foreground">
           {Icon && <Icon className="size-4 shrink-0" aria-hidden />}

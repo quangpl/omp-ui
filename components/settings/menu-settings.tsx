@@ -28,6 +28,7 @@ const MENUS: Record<DashboardMenuId, { label: string; hint: string }> = {
   artifacts: { label: "Artifacts", hint: "Final results and deliverables of finished cards, by project." },
   memory: { label: "Memory", hint: "What agents remember across sessions." },
   credentials: { label: "Credentials", hint: "Provider logins and API keys agents use." },
+  mcp: { label: "MCP servers", hint: "Popular MCP servers connected to every agent." },
   stats: { label: "Stats", hint: "Usage, cost and throughput over time." },
   settings: {
     label: "Settings",

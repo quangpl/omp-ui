@@ -14,6 +14,7 @@ import { DESCRIPTION_MAX, TITLE_MAX, clip } from "@/lib/card-draft";
 import { childEnv } from "@/lib/child-env";
 import { dataDir } from "@/lib/files";
 import { listOmpSkills } from "@/lib/omp-skills";
+import { mcpAgentEnv } from "@/lib/server/mcp-env";
 import {
   STATUS_LABELS,
   type AppSettings,
@@ -116,7 +117,7 @@ export async function draftCard(options: DraftOptions): Promise<DraftResult> {
 async function writeDraft(options: DraftOptions): Promise<DraftResult> {
   const { text, board, tasks, settings, signal, onActivity } = options;
   const workdir = board.workdir;
-  const env = childEnv();
+  const env = childEnv(await mcpAgentEnv());
   const [found, extras, roles, skills] = await Promise.all([
     isDirectory(workdir),
     existingFolders(board.extraFolders ?? [], workdir),
