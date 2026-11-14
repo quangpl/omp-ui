@@ -36,7 +36,7 @@ export interface Board {
    * working tree. Non-git folders stay shared. Default false.
    */
   worktrees: boolean;
-  /** Pinned projects are the ones the home dashboard lists; the rest sit behind "Other projects". Default false. */
+  /** Pinned projects lead the home dashboard and fill the sidebar; the rest follow under "Other projects". Default false. */
   pinned: boolean;
   createdAt: string;
   updatedAt: string;
