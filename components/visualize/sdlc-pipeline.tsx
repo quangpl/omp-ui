@@ -1,8 +1,16 @@
 "use client";
 
-import { type ComponentType, useMemo } from "react";
+import { type ComponentType, type CSSProperties, useMemo } from "react";
 import Link from "next/link";
-import { CheckIcon, InboxIcon, PackageCheckIcon, ShieldAlertIcon, ShieldCheckIcon, TriangleAlertIcon } from "lucide-react";
+import {
+  CheckIcon,
+  InboxIcon,
+  PackageCheckIcon,
+  RotateCcwIcon,
+  ShieldAlertIcon,
+  ShieldCheckIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { FOCUS_RING, cardHref, plural } from "@/components/home/shared";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -15,18 +23,29 @@ import {
 import { workerIdentity } from "@/components/visualize/game";
 import { agentVitals, subagentVitals } from "@/components/visualize/mood";
 import { ROLE_INFO, roleOf, subagentName } from "@/components/visualize/roles";
+import { CycleRing, type RingSegment, ringAngle, ringPoint } from "@/components/visualize/sdlc-cycle-ring";
 import type { LiveAgent } from "@/components/visualize/use-live-agents";
 import { RoleTag, WorkerAvatar, WorkerOutline } from "@/components/visualize/worker-avatar";
 import { SDLC_PHASE_INFO, SDLC_PHASES, type SdlcPhaseId, type SdlcPhaseStatus, type SdlcProgress } from "@/lib/sdlc";
 import type { ContextUsage, Dashboard, QueueEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-/** Card agents drawn per station; the rest fold into "+N more". */
+/** Card agents drawn per stacked station; the rest fold into "+N more". */
 const MAX_CARDS = 4;
-/** Subagents drawn per station; the rest fold into "+N". */
+/** Subagents drawn per stacked station; the rest fold into "+N". */
 const MAX_CREW = 6;
+/** Card agents drawn per node on the ring, where neighbours leave little room. */
+const MAX_RING_CARDS = 2;
+/** Subagent avatars drawn per node on the ring. */
+const MAX_RING_CREW = 4;
 /** The gate that leaves this phase is the release gate: nothing ships before Testing passes. */
 const RELEASE_FROM: SdlcPhaseId = "testing";
+const PHASE_COUNT = SDLC_PHASES.length;
+/** Mount stagger between neighbouring nodes on the ring. */
+const STAGGER_MS = 60;
+
+type TooltipSide = "top" | "right" | "bottom" | "left";
+type CrewMember = Extract<PipelineWorker, { kind: "subagent" }>;
 
 const STATUS_LABEL: Record<SdlcPhaseStatus, string> = {
   done: "done",
@@ -42,16 +61,30 @@ const DOT: Record<SdlcPhaseStatus, string> = {
   skipped: "bg-muted-foreground/15",
 };
 
+/** The phase after `phase`; Maintenance wraps around to Planning, closing the cycle. */
+function nextPhase(phase: SdlcPhaseId): SdlcPhaseId {
+  return SDLC_PHASES[(SDLC_PHASES.indexOf(phase) + 1) % PHASE_COUNT];
+}
+
+/** Tooltip side pointing away from the ring's center at slot `index`, so tips never cover the hub. */
+function outwardSide(index: number): TooltipSide {
+  const radians = (ringAngle(index, PHASE_COUNT) * Math.PI) / 180;
+  const x = Math.sin(radians);
+  const y = -Math.cos(radians);
+  if (Math.abs(y) >= Math.abs(x)) return y < 0 ? "top" : "bottom";
+  return x > 0 ? "right" : "left";
+}
+
+/** Entry stagger for the `index`-th element drawn on the ring. */
+function stagger(index: number): CSSProperties {
+  return { animationDelay: `${index * STAGGER_MS}ms` };
+}
+
 /** One dot per SDLC phase, in order: done, active (ringed while current), to do, skipped. */
 function PhaseTrack({ sdlc }: { sdlc: SdlcProgress }) {
   const summary = sdlc.phases.map((phase) => `${SDLC_PHASE_INFO[phase.id].label}: ${STATUS_LABEL[phase.status]}`);
   return (
-    <span
-      role="img"
-      aria-label={`Phases. ${summary.join(", ")}`}
-      title={summary.join("\n")}
-      className="flex items-center gap-1 @min-[62.5rem]:gap-[3px]"
-    >
+    <span role="img" aria-label={`Phases. ${summary.join(", ")}`} title={summary.join("\n")} className="flex items-center gap-1">
       {sdlc.phases.map((phase) => (
         <span
           key={phase.id}
@@ -77,17 +110,22 @@ function progressSentence(entry: QueueEntry): string {
   return `${info.label} (phase ${info.step} of 7), ${items}, ${sdlc.completed} of ${sdlc.included} phases done${violations ? `. Quality gate: ${violations}` : ""}`;
 }
 
-/** A running card's agent at its station: robot, name, title, phase track and phase progress. */
+/**
+ * A running card's agent at its station: robot, name, title, phase track and phase progress.
+ * `compact` is the ring node variant: smaller robot, one-line title, no role tag.
+ */
 function CardWorker({
   entry,
   agent,
   context,
   now,
+  compact = false,
 }: {
   entry: QueueEntry;
   agent: LiveAgent | undefined;
   context: ContextUsage | null | undefined;
   now: number;
+  compact?: boolean;
 }) {
   const worker = workerIdentity(entry.taskId);
   const vitals = agentVitals(agent, now, context);
@@ -96,13 +134,14 @@ function CardWorker({
   const flagged = (sdlc?.violations.length ?? 0) > 0;
   const progress = progressSentence(entry);
   return (
-    <li>
+    <li className="min-w-0">
       <Link
         href={cardHref({ boardId: entry.boardId, id: entry.taskId })}
         aria-label={`${worker.name}, lead on ${entry.title}: ${progress}`}
         title={`${entry.title} in ${entry.boardName}\n${progress}`}
         className={cn(
-          "grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 gap-y-1 rounded-[3px] p-1.5 transition-colors hover:bg-muted motion-reduce:transition-none @min-[62.5rem]:gap-x-1.5 @min-[62.5rem]:p-1",
+          "grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start rounded-[3px] transition-colors hover:bg-muted motion-reduce:transition-none",
+          compact ? "gap-x-1.5 gap-y-0.5 p-1" : "gap-x-2 gap-y-1 p-1.5",
           FOCUS_RING,
         )}
       >
@@ -110,20 +149,32 @@ function CardWorker({
           hue={worker.hue}
           mood={vitals.mood}
           help={vitals.help !== null}
-          className="row-span-3 size-9 shrink-0 @min-[62.5rem]:row-span-1 @min-[62.5rem]:size-7"
+          className={cn("row-span-3 shrink-0", compact ? "size-7" : "size-9")}
         />
-        <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 self-center">
-          <span className="max-w-full truncate font-mono text-[11px] leading-tight font-medium">{worker.name}</span>
-          <RoleTag hue={worker.hue} className="shrink-0">
-            {ROLE_INFO.lead.label}
-          </RoleTag>
+        <span
+          className={cn(
+            "flex min-w-0 items-center gap-x-1.5 gap-y-0.5 self-center",
+            compact ? "flex-nowrap" : "flex-wrap",
+          )}
+        >
+          <span className="max-w-full min-w-0 truncate font-mono text-[11px] leading-tight font-medium">{worker.name}</span>
+          {!compact && (
+            <RoleTag hue={worker.hue} className="shrink-0">
+              {ROLE_INFO.lead.label}
+            </RoleTag>
+          )}
           {flagged && <TriangleAlertIcon className="size-3 shrink-0 text-destructive" aria-hidden />}
         </span>
-        <span className="col-start-2 line-clamp-2 text-xs leading-snug font-medium break-words @min-[62.5rem]:col-span-2 @min-[62.5rem]:col-start-1">
+        <span
+          className={cn(
+            "col-start-2 font-medium break-words",
+            compact ? "truncate text-[11px] leading-tight" : "line-clamp-2 text-xs leading-snug",
+          )}
+        >
           {entry.title}
         </span>
         {sdlc ? (
-          <span className="col-start-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 @min-[62.5rem]:col-span-2 @min-[62.5rem]:col-start-1">
+          <span className="col-start-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
             <PhaseTrack sdlc={sdlc} />
             {sdlc.current === null ? (
               <CheckIcon className="size-3 text-success" aria-hidden />
@@ -134,45 +185,113 @@ function CardWorker({
             )}
           </span>
         ) : (
-          <span className="col-start-2 block truncate font-mono text-[10px] text-muted-foreground @min-[62.5rem]:col-span-2 @min-[62.5rem]:col-start-1">
-            No plan yet
-          </span>
+          <span className="col-start-2 block truncate font-mono text-[10px] text-muted-foreground">No plan yet</span>
         )}
       </Link>
     </li>
   );
 }
 
-/** A busy subagent at the station of its role: small robot, name and role tag; links to its lead's card. */
-function CrewWorker({ worker, now }: { worker: Extract<PipelineWorker, { kind: "subagent" }>; now: number }) {
-  const { entry, subagent } = worker;
+/** Who a busy subagent is: its robot, role and the one-line description used for tooltips and screen readers. */
+function crewIdentity({ entry, subagent }: CrewMember, now: number) {
   const role = roleOf(subagent.agent);
   const name = subagentName(subagent.id, subagent.agent);
   const { hue } = workerIdentity(`${entry.taskId}:${subagent.id}`);
-  const label = `${name}: ${ROLE_INFO[role].label} (${subagent.agent} agent) for ${entry.title}${subagent.description ? `, ${subagent.description}` : ""}`;
+  return {
+    role,
+    name,
+    hue,
+    mood: subagentVitals(subagent, now).mood,
+    href: cardHref({ boardId: entry.boardId, id: entry.taskId }),
+    label: `${name}: ${ROLE_INFO[role].label} (${subagent.agent} agent) for ${entry.title}${subagent.description ? `, ${subagent.description}` : ""}`,
+  };
+}
+
+/** A busy subagent at the station of its role: small robot, name and role tag; links to its lead's card. */
+function CrewWorker({ worker, now }: { worker: CrewMember; now: number }) {
+  const crew = crewIdentity(worker, now);
   return (
     <li className="min-w-0">
       <Link
-        href={cardHref({ boardId: entry.boardId, id: entry.taskId })}
-        aria-label={label}
-        title={label}
+        href={crew.href}
+        aria-label={crew.label}
+        title={crew.label}
         className={cn(
           "flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-[3px] px-1 py-0.5 transition-colors hover:bg-muted motion-reduce:transition-none",
           FOCUS_RING,
         )}
       >
-        <WorkerAvatar hue={hue} mood={subagentVitals(subagent, now).mood} role={role} animated={false} className="size-6 shrink-0" />
-        <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground">{name}</span>
-        <RoleTag hue={hue} className="ml-auto shrink-0">
-          {ROLE_INFO[role].label}
+        <WorkerAvatar hue={crew.hue} mood={crew.mood} role={crew.role} animated={false} className="size-6 shrink-0" />
+        <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground">{crew.name}</span>
+        <RoleTag hue={crew.hue} className="ml-auto shrink-0">
+          {ROLE_INFO[crew.role].label}
         </RoleTag>
       </Link>
     </li>
   );
 }
 
-/** One SDLC phase: its step, name and job, plus every agent working in it right now. */
-function Station({
+/** A busy subagent folded into a ring node's avatar cluster; same link and description as CrewWorker. */
+function CrewAvatar({ worker, now }: { worker: CrewMember; now: number }) {
+  const crew = crewIdentity(worker, now);
+  return (
+    <li>
+      <Link
+        href={crew.href}
+        aria-label={crew.label}
+        title={crew.label}
+        className={cn(
+          "block rounded-[3px] p-0.5 transition-colors hover:bg-muted motion-reduce:transition-none",
+          FOCUS_RING,
+        )}
+      >
+        <WorkerAvatar hue={crew.hue} mood={crew.mood} role={crew.role} animated={false} className="size-6" />
+      </Link>
+    </li>
+  );
+}
+
+/** The phase's step number, lit while someone works in it. */
+function StepNumber({ step, occupied, compact = false }: { step: number; occupied: boolean; compact?: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "flex shrink-0 items-center justify-center rounded-[3px] border font-mono text-[11px] tabular-nums transition-colors duration-500 motion-reduce:transition-none",
+        compact ? "size-5" : "mt-0.5 size-6",
+        occupied ? "border-signal bg-signal-soft text-signal-ink" : "text-muted-foreground",
+      )}
+    >
+      {step}
+    </span>
+  );
+}
+
+/** How many agents stand at the station. */
+function WorkerCount({ count }: { count: number }) {
+  return (
+    <span className={cn("shrink-0 font-mono text-xs tabular-nums", count > 0 ? "text-foreground" : "text-muted-foreground/60")}>
+      {count}
+      <span className="sr-only"> {count === 1 ? "agent" : "agents"}</span>
+    </span>
+  );
+}
+
+/** Cards that started this phase before an earlier one was complete. */
+function AlertLine({ phase, alerts, className }: { phase: SdlcPhaseId; alerts: number; className?: string }) {
+  return (
+    <p
+      className={cn("flex min-w-0 items-center gap-1 text-[11px] font-medium text-destructive", className)}
+      title={`${plural(alerts, "card")} started ${SDLC_PHASE_INFO[phase].label} before an earlier phase was complete`}
+    >
+      <TriangleAlertIcon className="size-3 shrink-0" aria-hidden />
+      <span className="min-w-0 truncate">{plural(alerts, "card")} started early</span>
+    </p>
+  );
+}
+
+/** Stacked layout: one SDLC phase full width, its step, name and job, plus every agent working in it right now. */
+function StackStation({
   phase,
   station,
   live,
@@ -193,65 +312,30 @@ function Station({
   const hiddenCrew = crew.length - MAX_CREW;
   return (
     <section
-      aria-labelledby={`sdlc-${phase}`}
+      aria-labelledby={`sdlc-stack-${phase}`}
       className={cn(
-        "flex min-w-0 flex-col rounded-[3px] border bg-card transition-colors duration-500 motion-reduce:transition-none @min-[40rem]:w-44 @min-[40rem]:shrink-0 @min-[40rem]:snap-start @min-[62.5rem]:w-auto @min-[62.5rem]:shrink @min-[62.5rem]:grow @min-[62.5rem]:basis-0",
+        "flex min-w-0 flex-col rounded-[3px] border bg-card transition-colors duration-500 motion-reduce:transition-none",
         occupied && "border-signal",
         station.alerts > 0 && "border-destructive/50",
       )}
     >
-      <header
-        className="flex items-start gap-2 px-3 pt-2.5 @min-[62.5rem]:flex-wrap @min-[62.5rem]:gap-y-1 @min-[62.5rem]:px-2 @min-[62.5rem]:pt-2"
-        title={info.description}
-      >
-        <span
-          aria-hidden
-          className={cn(
-            "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-[3px] border font-mono text-[11px] tabular-nums transition-colors duration-500 motion-reduce:transition-none @min-[62.5rem]:mt-0 @min-[62.5rem]:size-5",
-            occupied ? "border-signal bg-signal-soft text-signal-ink" : "text-muted-foreground",
-          )}
-        >
-          {info.step}
-        </span>
-        <div className="min-w-0 flex-1 @min-[62.5rem]:order-last @min-[62.5rem]:basis-full">
-          <h3
-            id={`sdlc-${phase}`}
-            className="truncate text-sm leading-tight font-semibold tracking-tight @min-[62.5rem]:text-xs"
-          >
+      <header className="flex items-start gap-2 px-3 pt-2.5" title={info.description}>
+        <StepNumber step={info.step} occupied={occupied} />
+        <div className="min-w-0 flex-1">
+          <h3 id={`sdlc-stack-${phase}`} className="truncate text-sm leading-tight font-semibold tracking-tight">
             <span className="sr-only">Phase {info.step} of 7: </span>
             {info.label}
           </h3>
-          <p className="truncate font-mono text-[10px] text-muted-foreground">
-            {info.required ? "Always" : "When needed"}
-          </p>
+          <p className="truncate font-mono text-[10px] text-muted-foreground">{info.required ? "Always" : "When needed"}</p>
         </div>
-        <span
-          className={cn(
-            "font-mono text-xs tabular-nums @min-[62.5rem]:ml-auto",
-            occupied ? "text-foreground" : "text-muted-foreground/60",
-          )}
-        >
-          {station.workers.length}
-          <span className="sr-only"> {station.workers.length === 1 ? "agent" : "agents"}</span>
-        </span>
+        <WorkerCount count={station.workers.length} />
       </header>
-      <p
-        className="line-clamp-2 px-3 pt-1 text-xs leading-snug break-words text-muted-foreground @min-[62.5rem]:px-2 @min-[62.5rem]:text-[11px]"
-        title={info.description}
-      >
+      <p className="line-clamp-2 px-3 pt-1 text-xs leading-snug break-words text-muted-foreground" title={info.description}>
         {info.description}
       </p>
-      {station.alerts > 0 && (
-        <p
-          className="mx-3 mt-2 flex min-w-0 items-center gap-1 text-[11px] font-medium text-destructive @min-[62.5rem]:mx-2"
-          title={`${plural(station.alerts, "card")} started ${info.label} before an earlier phase was complete`}
-        >
-          <TriangleAlertIcon className="size-3 shrink-0" aria-hidden />
-          <span className="min-w-0 truncate">{plural(station.alerts, "card")} started early</span>
-        </p>
-      )}
+      {station.alerts > 0 && <AlertLine phase={phase} alerts={station.alerts} className="mx-3 mt-2" />}
       {occupied ? (
-        <div className="flex flex-1 flex-col gap-2 p-2 @min-[62.5rem]:p-1">
+        <div className="flex flex-1 flex-col gap-2 p-2">
           {cards.length > 0 && (
             <ul aria-label="Card agents" className="grid gap-0.5">
               {cards.slice(0, MAX_CARDS).map((worker) => (
@@ -263,9 +347,7 @@ function Station({
                   now={now}
                 />
               ))}
-              {hiddenCards > 0 && (
-                <li className="px-1.5 font-mono text-xs text-muted-foreground">+{hiddenCards} more</li>
-              )}
+              {hiddenCards > 0 && <li className="px-1.5 font-mono text-xs text-muted-foreground">+{hiddenCards} more</li>}
             </ul>
           )}
           {crew.length > 0 && (
@@ -278,8 +360,96 @@ function Station({
           )}
         </div>
       ) : (
-        <p className="flex min-h-12 flex-1 items-center justify-center gap-2 p-2 font-mono text-xs text-muted-foreground/70 @min-[40rem]:min-h-24">
+        <p className="flex min-h-12 flex-1 items-center justify-center gap-2 p-2 font-mono text-xs text-muted-foreground/70">
           <WorkerOutline className="size-6 text-muted-foreground/40" />
+          Open
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** Ring layout: one SDLC phase as a compact node on the cycle, its first agents and a cluster of its subagents. */
+function RingStation({
+  phase,
+  station,
+  live,
+  contexts,
+  now,
+}: {
+  phase: SdlcPhaseId;
+  station: PipelineStation;
+  live: Record<string, LiveAgent>;
+  contexts: ReadonlyMap<string, ContextUsage | null>;
+  now: number;
+}) {
+  const info = SDLC_PHASE_INFO[phase];
+  const cards = station.workers.filter((worker) => worker.kind === "running");
+  const crew = station.workers.filter((worker) => worker.kind === "subagent");
+  const occupied = station.workers.length > 0;
+  const hiddenCards = cards.length - MAX_RING_CARDS;
+  const hiddenCrew = crew.length - MAX_RING_CREW;
+  return (
+    <section
+      aria-labelledby={`sdlc-ring-${phase}`}
+      style={stagger(info.step - 1)}
+      className={cn(
+        "flex w-40 min-w-0 animate-page-in flex-col rounded-[3px] border bg-card shadow-xs transition-colors duration-500 motion-reduce:animate-none motion-reduce:transition-none @min-[60rem]:w-44",
+        occupied && "border-signal",
+        station.alerts > 0 && "border-destructive/50",
+      )}
+    >
+      <header className="flex items-center gap-1.5 px-2 pt-2" title={info.description}>
+        <StepNumber step={info.step} occupied={occupied} compact />
+        <div className="min-w-0 flex-1">
+          <h3 id={`sdlc-ring-${phase}`} className="truncate text-xs leading-tight font-semibold tracking-tight">
+            <span className="sr-only">Phase {info.step} of 7: </span>
+            {info.label}
+          </h3>
+          <p className="truncate font-mono text-[10px] leading-tight text-muted-foreground">
+            {info.required ? "Always" : "When needed"}
+          </p>
+          <span className="sr-only">{info.description}</span>
+        </div>
+        <WorkerCount count={station.workers.length} />
+      </header>
+      {station.alerts > 0 && <AlertLine phase={phase} alerts={station.alerts} className="mx-2 mt-1.5" />}
+      {occupied ? (
+        <div className="flex min-w-0 flex-col gap-1 p-1">
+          {cards.length > 0 && (
+            <ul aria-label="Card agents" className="grid min-w-0 gap-0.5">
+              {cards.slice(0, MAX_RING_CARDS).map((worker) => (
+                <CardWorker
+                  key={worker.id}
+                  entry={worker.entry}
+                  agent={live[worker.entry.taskId]}
+                  context={contexts.get(worker.entry.taskId)}
+                  now={now}
+                  compact
+                />
+              ))}
+              {hiddenCards > 0 && (
+                <li className="px-1 font-mono text-[10px] text-muted-foreground tabular-nums">+{hiddenCards} more</li>
+              )}
+            </ul>
+          )}
+          {crew.length > 0 && (
+            <ul
+              aria-label="Subagents"
+              className={cn("flex min-w-0 flex-wrap items-center gap-0.5 px-0.5", cards.length > 0 && "border-t pt-1")}
+            >
+              {crew.slice(0, MAX_RING_CREW).map((worker) => (
+                <CrewAvatar key={worker.id} worker={worker} now={now} />
+              ))}
+              {hiddenCrew > 0 && (
+                <li className="pl-0.5 font-mono text-[10px] text-muted-foreground tabular-nums">+{hiddenCrew}</li>
+              )}
+            </ul>
+          )}
+        </div>
+      ) : (
+        <p className="flex items-center gap-1.5 px-2 pt-1 pb-2 font-mono text-[11px] text-muted-foreground/70">
+          <WorkerOutline className="size-5 text-muted-foreground/40" />
           Open
         </p>
       )}
@@ -291,9 +461,9 @@ function Station({
  * Quality-gate checkpoint leaving `from` for the next phase. Hover or focus it for the exit
  * criteria; it turns red while a running card crossed it before the phase it skipped was done.
  */
-function Gate({ from, breaches }: { from: SdlcPhaseId; breaches: GateBreach[] }) {
+function GateShield({ from, breaches, side }: { from: SdlcPhaseId; breaches: GateBreach[]; side: TooltipSide }) {
   const info = SDLC_PHASE_INFO[from];
-  const next = SDLC_PHASE_INFO[SDLC_PHASES[info.step]];
+  const next = SDLC_PHASE_INFO[nextPhase(from)];
   const release = from === RELEASE_FROM;
   const alert = breaches.length > 0;
   const name = release ? "Release gate" : `${info.label} gate`;
@@ -301,73 +471,105 @@ function Gate({ from, breaches }: { from: SdlcPhaseId; breaches: GateBreach[] })
   const crossed = breaches.map((breach) => `${breach.entry.title}: ${breach.violation.message}`);
   const label = `${name}: leave ${info.label} for ${next.label} only when ${info.gate}.${alert ? ` ${plural(breaches.length, "card")} crossed it early. ${crossed.join(". ")}` : ""}`;
   return (
-    <div
-      className={cn(
-        "relative flex items-center justify-center py-1.5 @min-[40rem]:shrink-0 @min-[40rem]:flex-col @min-[40rem]:justify-start @min-[40rem]:py-0 @min-[40rem]:pt-2",
-        release ? "@min-[40rem]:w-16 @min-[62.5rem]:w-12" : "@min-[40rem]:w-10 @min-[62.5rem]:w-6",
-      )}
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          className={cn(
+            "relative flex items-center gap-1 rounded-[3px] border bg-card px-1 py-1 transition-colors motion-reduce:transition-none",
+            FOCUS_RING,
+            alert
+              ? "border-destructive/50 bg-destructive/10 text-destructive"
+              : release
+                ? "border-foreground/40 text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          <Icon className={cn("shrink-0", release ? "size-4.5" : "size-3.5")} aria-hidden />
+          {release && (
+            <span className="font-mono text-[9px] leading-none font-medium tracking-wide uppercase">Release</span>
+          )}
+          {alert && (
+            <span className="flex items-center gap-0.5 font-mono text-[10px] leading-none font-medium tabular-nums">
+              <TriangleAlertIcon className="size-2.5" aria-hidden />
+              {breaches.length}
+            </span>
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side={side} className="max-w-72">
+        <div className="space-y-1 text-left">
+          <p className="font-medium">
+            {name}: {info.label} → {next.label}
+          </p>
+          <p className="opacity-80">Exit criteria: {info.gate}.</p>
+          {release && <p className="opacity-80">A card ships only once Testing has passed.</p>}
+          {crossed.map((line) => (
+            <p key={line} className="flex gap-1">
+              <TriangleAlertIcon className="mt-0.5 size-3 shrink-0" aria-hidden />
+              {line}
+            </p>
+          ))}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Shared by the marker's tooltip and its screen-reader text. */
+const FEEDBACK_NOTE = "Maintenance feeds the next Planning round: the cycle never ends";
+
+/** The feedback edge closing the cycle, Maintenance back to Planning. Not a quality gate, so no exit criteria. */
+function FeedbackMarker() {
+  return (
+    <span
+      title={FEEDBACK_NOTE}
+      className="flex items-center gap-1 rounded-full border border-dashed border-muted-foreground/50 bg-card px-2 py-1 font-mono text-[9px] leading-none font-medium tracking-wide text-muted-foreground uppercase"
     >
+      <RotateCcwIcon className="size-3 shrink-0" aria-hidden />
+      Feedback
+      <span className="sr-only">: {FEEDBACK_NOTE}</span>
+    </span>
+  );
+}
+
+/** Stacked layout: the gate between two stations on a vertical flow line. */
+function StackGate({ from, breaches }: { from: SdlcPhaseId; breaches: GateBreach[] }) {
+  const alert = breaches.length > 0;
+  return (
+    <div className="relative flex items-center justify-center py-1.5">
       <span
         aria-hidden
         className={cn(
-          "absolute inset-y-0 left-1/2 w-px @min-[40rem]:inset-x-0 @min-[40rem]:top-5.5 @min-[40rem]:bottom-auto @min-[40rem]:left-0 @min-[40rem]:h-px @min-[40rem]:w-auto",
-          alert ? "bg-destructive/50" : release ? "bg-foreground/30" : "bg-border",
+          "absolute inset-y-0 left-1/2 w-px",
+          alert ? "bg-destructive/50" : from === RELEASE_FROM ? "bg-foreground/30" : "bg-border",
         )}
       />
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            aria-label={label}
-            className={cn(
-              "relative flex max-w-full items-center gap-1.5 rounded-[3px] border bg-card px-1.5 py-1 transition-colors motion-reduce:transition-none @min-[40rem]:flex-col @min-[40rem]:gap-0.5 @min-[62.5rem]:px-0.5",
-              FOCUS_RING,
-              alert
-                ? "border-destructive/50 bg-destructive/10 text-destructive"
-                : release
-                  ? "border-foreground/40 text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            <Icon className={cn("shrink-0", release ? "size-5" : "size-4")} aria-hidden />
-            {(release || alert) && (
-              <span className="text-center font-mono text-[9px] leading-tight font-medium tracking-wide uppercase @min-[62.5rem]:tracking-normal">
-                {[release && "Release", alert && `⚠${breaches.length}`].filter(Boolean).join(" ")}
-              </span>
-            )}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-72">
-          <div className="space-y-1 text-left">
-            <p className="font-medium">
-              {name}: {info.label} → {next.label}
-            </p>
-            <p className="opacity-80">Exit criteria: {info.gate}.</p>
-            {release && <p className="opacity-80">A card ships only once Testing has passed.</p>}
-            {crossed.map((line) => (
-              <p key={line} className="flex gap-1">
-                <TriangleAlertIcon className="mt-0.5 size-3 shrink-0" aria-hidden />
-                {line}
-              </p>
-            ))}
-          </div>
-        </TooltipContent>
-      </Tooltip>
+      <GateShield from={from} breaches={breaches} side="bottom" />
     </div>
   );
 }
 
-/** Plain flow arrow between an end cap and the pipeline. */
-function Connector() {
+/** Stacked layout: after Maintenance, the flow line turns back to Planning. */
+function StackLoopBack() {
   return (
-    <span
-      aria-hidden
-      className="mx-auto h-3 w-px bg-border @min-[40rem]:mx-0 @min-[40rem]:mt-5.5 @min-[40rem]:h-px @min-[40rem]:w-3 @min-[40rem]:shrink-0 @min-[62.5rem]:w-2"
-    />
+    <div className="flex flex-col items-center">
+      <Connector />
+      <p className="flex items-center gap-2">
+        <FeedbackMarker />
+        <span className="font-mono text-xs text-muted-foreground">back to Planning</span>
+      </p>
+    </div>
   );
 }
 
-/** Backlog / Delivered: where cards wait before Planning and where they land after the run. */
+/** Plain flow line between an end cap and the stacked stations. */
+function Connector() {
+  return <span aria-hidden className="mx-auto h-3 w-px bg-border" />;
+}
+
+/** Stacked layout: Backlog / Delivered, where cards wait before Planning and where they land after the run. */
 function EndCap({
   icon: Icon,
   label,
@@ -380,20 +582,15 @@ function EndCap({
   hint: string;
 }) {
   return (
-    <div
-      title={hint}
-      className="flex items-center gap-3 rounded-[3px] border border-dashed bg-card px-3 py-2.5 @min-[40rem]:w-28 @min-[40rem]:shrink-0 @min-[40rem]:snap-start @min-[40rem]:flex-col @min-[40rem]:items-start @min-[40rem]:gap-1 @min-[62.5rem]:w-[4.5rem] @min-[62.5rem]:px-1.5"
-    >
+    <div title={hint} className="flex items-center gap-3 rounded-[3px] border border-dashed bg-card px-3 py-2.5">
       <span className="flex size-6 shrink-0 items-center justify-center rounded-[3px] border text-muted-foreground">
         <Icon className="size-3.5" aria-hidden />
       </span>
       <div className="min-w-0 flex-1">
-        <p className="font-mono text-[10px] tracking-wide text-muted-foreground uppercase @min-[62.5rem]:tracking-normal">
-          {label}
-        </p>
-        <p className="text-xs leading-snug break-words text-muted-foreground @min-[62.5rem]:text-[11px]">{hint}</p>
+        <p className="font-mono text-[10px] tracking-wide text-muted-foreground uppercase">{label}</p>
+        <p className="text-xs leading-snug break-words text-muted-foreground">{hint}</p>
       </div>
-      <p className="text-3xl leading-none font-semibold tracking-[-0.05em] tabular-nums @min-[62.5rem]:text-2xl">
+      <p className="text-3xl leading-none font-semibold tracking-[-0.05em] tabular-nums">
         {count}
         <span className="sr-only"> {count === 1 ? "card" : "cards"}</span>
       </p>
@@ -401,7 +598,68 @@ function EndCap({
   );
 }
 
-/** What the dots and shields mean. */
+/** One Backlog / Delivered tally inside the ring's hub. */
+function HubTally({
+  icon: Icon,
+  label,
+  count,
+  hint,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+  count: number;
+  hint: string;
+}) {
+  return (
+    <div title={hint} className="flex min-w-0 flex-col items-center gap-1">
+      <p className="flex items-center gap-1 font-mono text-[10px] tracking-wide text-muted-foreground uppercase">
+        <Icon className="size-3 shrink-0" aria-hidden />
+        {label}
+      </p>
+      <p className="text-4xl leading-none font-semibold tracking-[-0.05em] tabular-nums">
+        {count}
+        <span className="sr-only"> {count === 1 ? "card" : "cards"}</span>
+      </p>
+      <p className="max-w-full truncate font-mono text-[10px] text-muted-foreground">{hint}</p>
+    </div>
+  );
+}
+
+/** Center of the ring: what waits before the cycle, what left it, and what is moving through it. */
+function CycleHub({
+  backlog,
+  delivered,
+  running,
+  subagents,
+  flagged,
+}: {
+  backlog: number;
+  delivered: number;
+  running: number;
+  subagents: number;
+  flagged: number;
+}) {
+  return (
+    <div
+      className="absolute top-1/2 left-1/2 flex w-[44%] -translate-x-1/2 -translate-y-1/2 animate-page-in flex-col items-center gap-3 text-center motion-reduce:animate-none"
+      style={stagger(PHASE_COUNT)}
+    >
+      <div className="grid w-full grid-cols-2 gap-4">
+        <HubTally icon={InboxIcon} label="Backlog" count={backlog} hint="In line, before Planning" />
+        <HubTally icon={PackageCheckIcon} label="Delivered" count={delivered} hint="Recently done" />
+      </div>
+      <span aria-hidden className="w-3/4 border-t border-dashed" />
+      <p aria-hidden className="font-mono text-[11px] leading-relaxed text-muted-foreground">
+        <span className="text-foreground tabular-nums">{running}</span> {running === 1 ? "card" : "cards"} in flight
+        {" · "}
+        <span className="text-foreground tabular-nums">{subagents}</span> {subagents === 1 ? "subagent" : "subagents"}
+        {flagged > 0 && <span className="text-destructive"> · {plural(flagged, "gate alert")}</span>}
+      </p>
+    </div>
+  );
+}
+
+/** What the dots, shields and flow mean. */
 function PipelineLegend() {
   const statuses: SdlcPhaseStatus[] = ["done", "active", "pending", "skipped"];
   return (
@@ -420,17 +678,31 @@ function PipelineLegend() {
         <ShieldAlertIcon className="size-3.5" aria-hidden />
         crossed before the earlier phase was done
       </li>
+      <li className="flex items-center gap-1.5">
+        <RotateCcwIcon className="size-3.5" aria-hidden />
+        feedback: Maintenance feeds the next Planning round
+      </li>
+      <li className="hidden items-center gap-1.5 @min-[56rem]:flex">
+        <span aria-hidden className="relative h-px w-4 bg-border">
+          <span className="absolute top-1/2 left-1/2 size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-signal" />
+        </span>
+        cards flow clockwise through the cycle
+      </li>
     </ul>
   );
 }
 
 /**
- * The software lifecycle as a production line: Backlog, the seven SDLC phases with a quality gate
- * between each pair (the gate before Deployment is the release gate), then Delivered. Every running
- * card's agent stands at the phase it is executing with its progress through all phases; busy
- * subagents stand at the phase their role works in. Sized from the section (an `@container`):
- * narrow sections stack the stations; from 40rem they run left to right and scroll sideways; from
- * 62.5rem the whole line (both end caps, every station and gate) fits without scrolling.
+ * The software lifecycle as a continuous cycle: the seven SDLC phases with a quality gate between
+ * each consecutive pair (the gate leaving Testing is the release gate) and a Feedback marker on the
+ * Maintenance → Planning edge, since what Maintenance learns feeds the next Planning round. Every
+ * running card's agent stands at the phase it is executing with its progress through all phases;
+ * busy subagents stand at the phase their role works in. Sized from the section (an `@container`):
+ * - from 56rem, the phases sit clockwise from 12 o'clock on a ring (CycleRing, with flow dots while
+ *   cards run), gates on the arcs between them, and a hub in the middle tallies Backlog, Delivered
+ *   and what is in flight;
+ * - below, the phases stack top to bottom between the Backlog and Delivered end caps, gates on the
+ *   flow line between them, and a dashed rail plus a loop-back row turn Maintenance back to Planning.
  */
 export function SdlcPipeline({
   dashboard,
@@ -447,11 +719,22 @@ export function SdlcPipeline({
     () => new Map(dashboard.live.map((agent) => [agent.taskId, agent.context])),
     [dashboard.live],
   );
+  const segments = useMemo<RingSegment[]>(
+    () =>
+      SDLC_PHASES.map((phase) => ({
+        id: phase,
+        occupied: pipeline.stations[phase].workers.length > 0,
+        alert: pipeline.stations[phase].breaches.length > 0,
+      })),
+    [pipeline],
+  );
   const subagents = SDLC_PHASES.reduce(
     (sum, phase) => sum + pipeline.stations[phase].workers.filter((worker) => worker.kind === "subagent").length,
     0,
   );
+  const flowing = queue.running.length > 0;
   const flagged = queue.running.filter((entry) => (entry.sdlc?.violations.length ?? 0) > 0).length;
+  const delivered = dashboard.finished.length;
 
   return (
     <section aria-labelledby="viz-sdlc" className="@container min-w-0">
@@ -466,49 +749,86 @@ export function SdlcPipeline({
       </div>
       <div
         role="region"
-        aria-label="SDLC stations"
-        tabIndex={0}
-        className={cn(
-          "flex flex-col rounded-[3px] border bg-muted/50 p-2 @min-[40rem]:snap-x @min-[40rem]:snap-proximity @min-[40rem]:scroll-px-2 @min-[40rem]:flex-row @min-[40rem]:overflow-x-auto @min-[62.5rem]:snap-none",
-          FOCUS_RING,
-        )}
+        aria-label="SDLC cycle"
+        className="rounded-[3px] border bg-muted/50 p-2 @min-[56rem]:px-4 @min-[56rem]:py-14"
       >
-        <EndCap
-          icon={InboxIcon}
-          label="Backlog"
-          count={pipeline.backlog}
-          hint="In line, before Planning"
-        />
-        <Connector />
-        <ol
-          aria-label="Phases"
-          className="flex flex-col @min-[40rem]:shrink-0 @min-[40rem]:flex-row @min-[62.5rem]:min-w-0 @min-[62.5rem]:shrink @min-[62.5rem]:grow"
-        >
-          {SDLC_PHASES.map((phase, i) => (
-            <li
-              key={phase}
-              className={cn(
-                "flex flex-col @min-[40rem]:shrink-0 @min-[40rem]:flex-row @min-[62.5rem]:min-w-0 @min-[62.5rem]:shrink @min-[62.5rem]:grow",
-                // Basis = the gate's width, so every station gets the same share of the rest.
-                i === SDLC_PHASES.length - 1
-                  ? "@min-[62.5rem]:basis-0"
-                  : phase === RELEASE_FROM
-                    ? "@min-[62.5rem]:basis-12"
-                    : "@min-[62.5rem]:basis-6",
-              )}
-            >
-              <Station phase={phase} station={pipeline.stations[phase]} live={live} contexts={contexts} now={now} />
-              {i < SDLC_PHASES.length - 1 && <Gate from={phase} breaches={pipeline.stations[phase].breaches} />}
-            </li>
-          ))}
-        </ol>
-        <Connector />
-        <EndCap
-          icon={PackageCheckIcon}
-          label="Delivered"
-          count={dashboard.finished.length}
-          hint="Recently done"
-        />
+        {/* Wide: the cycle as a ring. */}
+        <div className="relative mx-auto hidden aspect-square w-full max-w-[46rem] @min-[56rem]:block">
+          <CycleRing segments={segments} flowing={flowing} />
+          <CycleHub
+            backlog={pipeline.backlog}
+            delivered={delivered}
+            running={queue.running.length}
+            subagents={subagents}
+            flagged={flagged}
+          />
+          <ol aria-label="Phases" className="pointer-events-none absolute inset-0">
+            {SDLC_PHASES.map((phase, i) => {
+              const last = i === PHASE_COUNT - 1;
+              return (
+                <li key={phase}>
+                  <div
+                    className="pointer-events-auto absolute z-10 -translate-x-1/2 -translate-y-1/2 focus-within:z-20 hover:z-20"
+                    style={ringPoint(i, PHASE_COUNT)}
+                  >
+                    <RingStation
+                      phase={phase}
+                      station={pipeline.stations[phase]}
+                      live={live}
+                      contexts={contexts}
+                      now={now}
+                    />
+                  </div>
+                  <div
+                    className="pointer-events-auto absolute z-10 -translate-x-1/2 -translate-y-1/2 animate-page-in motion-reduce:animate-none"
+                    // Gates sit slightly outside the track so tall occupied stations never cover them.
+                    style={{ ...ringPoint(i + 0.5, PHASE_COUNT, 47), ...stagger(i + 1) }}
+                  >
+                    {last ? (
+                      <FeedbackMarker />
+                    ) : (
+                      <GateShield
+                        from={phase}
+                        breaches={pipeline.stations[phase].breaches}
+                        side={outwardSide(i + 0.5)}
+                      />
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+
+        {/* Narrow: the cycle stacked, with a rail looping Maintenance back to Planning. */}
+        <div className="flex flex-col @min-[56rem]:hidden">
+          <EndCap icon={InboxIcon} label="Backlog" count={pipeline.backlog} hint="In line, before Planning" />
+          <Connector />
+          <ol aria-label="Phases" className="relative flex flex-col pl-5">
+            <span
+              aria-hidden
+              className="absolute top-4 bottom-4 left-1.5 w-3.5 rounded-l-[3px] border-y border-l border-dashed border-muted-foreground/40"
+            />
+            {SDLC_PHASES.map((phase, i) => (
+              <li key={phase} className="flex flex-col">
+                <StackStation
+                  phase={phase}
+                  station={pipeline.stations[phase]}
+                  live={live}
+                  contexts={contexts}
+                  now={now}
+                />
+                {i < PHASE_COUNT - 1 ? (
+                  <StackGate from={phase} breaches={pipeline.stations[phase].breaches} />
+                ) : (
+                  <StackLoopBack />
+                )}
+              </li>
+            ))}
+          </ol>
+          <Connector />
+          <EndCap icon={PackageCheckIcon} label="Delivered" count={delivered} hint="Recently done" />
+        </div>
       </div>
       <PipelineLegend />
     </section>

@@ -3,7 +3,15 @@
 // Live AI quota, CPU, RAM and load in the page header. Same pollers and formatting as the Stats page.
 import Link from "next/link";
 import { ActivityIcon, CpuIcon, MemoryStickIcon, SparklesIcon, type LucideIcon } from "lucide-react";
-import { formatPercent, providerName, TONE_TEXT, toneForFraction } from "@/components/stats/shared";
+import {
+  formatBytes,
+  formatPercent,
+  providerName,
+  TONE_STROKE,
+  TONE_TEXT,
+  toneForFraction,
+  type Tone,
+} from "@/components/stats/shared";
 import { useAiStats, useSystemStats, type AiState, type SystemState } from "@/components/stats/use-stats";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { AiProviderQuota, AiQuotaLimit } from "@/lib/types";
@@ -29,13 +37,12 @@ export function tightestQuota(providers: AiProviderQuota[]): TightestQuota | nul
 
 interface MetricInput {
   key: "ai" | "cpu" | "ram" | "load";
-  label: string;
   /** Screen-reader name of the metric, e.g. "AI quota". */
   name: string;
   icon: LucideIcon;
   /** Formatted value; null while loading or when unavailable. */
   value: string | null;
-  /** 0–1 usage that drives the warning tone; null for no tone. */
+  /** 0–1 usage that drives the ring arc and tone; null while loading or unavailable. */
   fraction: number | null;
   /** Latest error; with a value it means the value is stale. */
   error: string | null;
@@ -47,8 +54,8 @@ interface Metric extends MetricInput {
   note: string | undefined;
   /** e.g. "CPU 23%". */
   spoken: string;
-  /** Value text colour: tone from 75%, muted while there is no value. */
-  tone: string;
+  /** Ring + icon tone: usage tone from `toneForFraction`, muted while there is no value. */
+  tone: Tone;
 }
 
 const LOAD_WINDOWS = ["1 min", "5 min", "15 min"] as const;
@@ -66,7 +73,6 @@ function buildMetrics(system: SystemState, ai: AiState): Metric[] {
   const inputs: MetricInput[] = [
     {
       key: "ai",
-      label: "AI",
       name: "AI quota",
       icon: SparklesIcon,
       value: tightest ? formatPercent(tightest.fraction) : null,
@@ -75,7 +81,6 @@ function buildMetrics(system: SystemState, ai: AiState): Metric[] {
     },
     {
       key: "cpu",
-      label: "CPU",
       name: "CPU",
       icon: CpuIcon,
       value: cpuFraction === null ? null : formatPercent(cpuFraction),
@@ -84,7 +89,6 @@ function buildMetrics(system: SystemState, ai: AiState): Metric[] {
     },
     {
       key: "ram",
-      label: "RAM",
       name: "Memory",
       icon: MemoryStickIcon,
       value: memoryFraction === null ? null : formatPercent(memoryFraction),
@@ -93,7 +97,6 @@ function buildMetrics(system: SystemState, ai: AiState): Metric[] {
     },
     {
       key: "load",
-      label: "Load",
       name: "Load average",
       icon: ActivityIcon,
       value: stats ? stats.cpu.loadAvg[0].toFixed(2) : null,
@@ -104,30 +107,77 @@ function buildMetrics(system: SystemState, ai: AiState): Metric[] {
   ];
   return inputs.map((input) => {
     const stale = input.value !== null && input.error !== null;
-    let tone = "text-foreground";
-    if (input.value === null) tone = "text-muted-foreground";
-    else if (input.fraction !== null && input.fraction >= 0.75) tone = TONE_TEXT[toneForFraction(input.fraction)];
     return {
       ...input,
       stale,
       note: input.error === null ? undefined : stale ? `Stale: ${input.error}` : input.error,
       spoken: `${input.name} ${input.value ?? "unavailable"}`,
-      tone,
+      tone: input.value === null || input.fraction === null ? "muted" : toneForFraction(input.fraction),
     };
   });
 }
 
-/** Fixed min width + tabular digits so the header never jitters between polls. */
-function MetricValue({ metric }: { metric: Metric }) {
+// ---------------------------------------------------------------------------------------------
+// Icon ring
+
+const RING_SIZE = 26;
+const RING_THICKNESS = 2;
+const RING_RADIUS = (RING_SIZE - RING_THICKNESS) / 2;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+const RING_CENTER = RING_SIZE / 2;
+
+/**
+ * Icon inside a thin progress ring; arc length and tone carry the value so no text is needed.
+ * Decorative only — the surrounding link labels the metric for screen readers.
+ */
+function MetricRing({ metric }: { metric: Metric }) {
+  const Icon = metric.icon;
+  const fraction = metric.fraction === null ? 0 : Math.min(1, Math.max(0, metric.fraction));
   return (
     <span
+      aria-hidden="true"
       className={cn(
-        "min-w-[4ch] text-right font-mono font-medium tabular-nums transition-opacity",
-        metric.tone,
+        "relative flex shrink-0 items-center justify-center transition-opacity",
         metric.stale && "opacity-60",
       )}
+      style={{ width: RING_SIZE, height: RING_SIZE }}
     >
-      {metric.value ?? "—"}
+      <svg width={RING_SIZE} height={RING_SIZE} viewBox={`0 0 ${RING_SIZE} ${RING_SIZE}`} className="absolute inset-0">
+        <circle
+          cx={RING_CENTER}
+          cy={RING_CENTER}
+          r={RING_RADIUS}
+          fill="none"
+          strokeWidth={RING_THICKNESS}
+          className="stroke-foreground/10"
+        />
+        <circle
+          cx={RING_CENTER}
+          cy={RING_CENTER}
+          r={RING_RADIUS}
+          fill="none"
+          strokeWidth={RING_THICKNESS}
+          strokeLinecap="round"
+          strokeDasharray={RING_CIRCUMFERENCE}
+          strokeDashoffset={RING_CIRCUMFERENCE * (1 - fraction)}
+          transform={`rotate(-90 ${RING_CENTER} ${RING_CENTER})`}
+          className={cn(
+            "transition-[stroke-dashoffset,opacity] duration-700 ease-(--ease-out-smooth) motion-reduce:transition-none",
+            TONE_STROKE[metric.tone],
+            fraction === 0 && "opacity-0",
+          )}
+        />
+      </svg>
+      <Icon
+        className={cn(
+          "size-3 transition-colors duration-500 motion-reduce:transition-none",
+          metric.tone === "warning" || metric.tone === "destructive"
+            ? TONE_TEXT[metric.tone]
+            : "text-muted-foreground",
+          // No value yet (loading/unavailable): dim the icon so it cannot pass for a healthy 0% reading.
+          metric.tone === "muted" && "opacity-40",
+        )}
+      />
     </span>
   );
 }
@@ -135,7 +185,7 @@ function MetricValue({ metric }: { metric: Metric }) {
 // ---------------------------------------------------------------------------------------------
 // Tooltips (desktop only)
 
-const TOOLTIP_ROW = "flex justify-between gap-4 tabular-nums";
+const TOOLTIP_ROW = "flex justify-between gap-4 font-mono tabular-nums";
 const TOOLTIP_MUTED = "text-background/70";
 
 function StaleLine({ metric }: { metric: Metric }) {
@@ -152,7 +202,7 @@ function AiTooltip({ ai, metric }: { ai: AiState; metric: Metric }) {
     body = quota.providers.flatMap((provider, p) =>
       provider.limits.map((limit, l) => (
         <p key={`${p}-${l}`} className={TOOLTIP_ROW}>
-          <span className="truncate">
+          <span className="truncate font-sans">
             {providerName(provider.provider)} · {limit.label}
           </span>
           <span className="font-medium">{limit.usedFraction === null ? "—" : formatPercent(limit.usedFraction)}</span>
@@ -169,6 +219,57 @@ function AiTooltip({ ai, metric }: { ai: AiState; metric: Metric }) {
   );
 }
 
+function CpuTooltip({ system, metric }: { system: SystemState; metric: Metric }) {
+  const cpu = system.stats?.cpu;
+  return (
+    <>
+      <p className="font-medium">CPU</p>
+      {cpu ? (
+        <>
+          <p className={TOOLTIP_ROW}>
+            <span className="font-sans">Usage</span>
+            <span className="font-medium">{formatPercent(cpu.usagePercent / 100)}</span>
+          </p>
+          <p className={TOOLTIP_ROW}>
+            <span className="font-sans">Cores</span>
+            <span className="font-medium">{cpu.cores}</span>
+          </p>
+        </>
+      ) : system.error ? null : (
+        <p className={TOOLTIP_MUTED}>Loading…</p>
+      )}
+      <StaleLine metric={metric} />
+    </>
+  );
+}
+
+function MemoryTooltip({ system, metric }: { system: SystemState; metric: Metric }) {
+  const memory = system.stats?.memory;
+  return (
+    <>
+      <p className="font-medium">Memory</p>
+      {memory ? (
+        <>
+          <p className={TOOLTIP_ROW}>
+            <span className="font-sans">Used</span>
+            <span className="font-medium">
+              {formatBytes(memory.usedBytes)}
+              {metric.value !== null && <span className={TOOLTIP_MUTED}> · {metric.value}</span>}
+            </span>
+          </p>
+          <p className={TOOLTIP_ROW}>
+            <span className="font-sans">Total</span>
+            <span className="font-medium">{formatBytes(memory.totalBytes)}</span>
+          </p>
+        </>
+      ) : system.error ? null : (
+        <p className={TOOLTIP_MUTED}>Loading…</p>
+      )}
+      <StaleLine metric={metric} />
+    </>
+  );
+}
+
 function LoadTooltip({ system, metric }: { system: SystemState; metric: Metric }) {
   const cpu = system.stats?.cpu;
   return (
@@ -179,7 +280,7 @@ function LoadTooltip({ system, metric }: { system: SystemState; metric: Metric }
       {cpu ? (
         cpu.loadAvg.map((load, i) => (
           <p key={LOAD_WINDOWS[i]} className={TOOLTIP_ROW}>
-            <span>{LOAD_WINDOWS[i]}</span>
+            <span className="font-sans">{LOAD_WINDOWS[i]}</span>
             <span className="font-medium">{load.toFixed(2)}</span>
           </p>
         ))
@@ -194,26 +295,16 @@ function LoadTooltip({ system, metric }: { system: SystemState; metric: Metric }
 // ---------------------------------------------------------------------------------------------
 
 const INLINE_CHIP =
-  "flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs outline-none transition-colors hover:bg-muted focus-visible:ring-[3px] focus-visible:ring-ring/50";
+  "flex h-8 shrink-0 items-center justify-center rounded-md px-1.5 outline-none transition-colors hover:bg-muted focus-visible:ring-[3px] focus-visible:ring-ring/50";
 
-function InlineChip({ metric, tooltip }: { metric: Metric; tooltip?: React.ReactNode }) {
-  const Icon = metric.icon;
-  const chip = (
-    <Link
-      href="/stats"
-      aria-label={`${metric.spoken} — open Stats`}
-      title={tooltip ? undefined : metric.note}
-      className={INLINE_CHIP}
-    >
-      <Icon aria-hidden="true" className="hidden size-3.5 shrink-0 text-muted-foreground xl:block" />
-      <span className="text-muted-foreground">{metric.label}</span>
-      <MetricValue metric={metric} />
-    </Link>
-  );
-  if (!tooltip) return chip;
+function InlineChip({ metric, tooltip }: { metric: Metric; tooltip: React.ReactNode }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>{chip}</TooltipTrigger>
+      <TooltipTrigger asChild>
+        <Link href="/stats" aria-label={`${metric.spoken} — open Stats`} className={INLINE_CHIP}>
+          <MetricRing metric={metric} />
+        </Link>
+      </TooltipTrigger>
       <TooltipContent className="flex-col items-stretch gap-0.5">{tooltip}</TooltipContent>
     </Tooltip>
   );
@@ -236,7 +327,7 @@ export function HeaderMetrics({ className, variant }: { className?: string; vari
         href="/stats"
         aria-label={`${metrics.map((metric) => metric.spoken).join(", ")} — open Stats`}
         className={cn(
-          "scroll-row flex h-9 items-center justify-between gap-4 text-[11px] whitespace-nowrap outline-none transition-colors [-webkit-tap-highlight-color:transparent] active:bg-muted focus-visible:bg-muted sm:justify-start sm:gap-6",
+          "scroll-row flex h-9 items-center justify-between gap-4 whitespace-nowrap outline-none transition-colors [-webkit-tap-highlight-color:transparent] active:bg-muted focus-visible:bg-muted sm:justify-start sm:gap-6",
           className,
         )}
       >
@@ -249,16 +340,15 @@ export function HeaderMetrics({ className, variant }: { className?: string; vari
             )}
           />
         </span>
-        {metrics.map((metric) => {
-          const Icon = metric.icon;
-          return (
-            <span key={metric.key} title={metric.note} className="flex shrink-0 items-center gap-1">
-              <Icon aria-hidden="true" className="size-3 shrink-0 text-muted-foreground" />
-              <span className="text-muted-foreground">{metric.label}</span>
-              <MetricValue metric={metric} />
-            </span>
-          );
-        })}
+        {metrics.map((metric) => (
+          <span
+            key={metric.key}
+            title={metric.note ? `${metric.spoken} — ${metric.note}` : metric.spoken}
+            className="flex shrink-0 items-center"
+          >
+            <MetricRing metric={metric} />
+          </span>
+        ))}
       </Link>
     );
   }
@@ -267,8 +357,8 @@ export function HeaderMetrics({ className, variant }: { className?: string; vari
   return (
     <nav aria-label="System metrics" className={cn("flex shrink-0 items-center gap-0.5", className)}>
       <InlineChip metric={aiMetric} tooltip={<AiTooltip ai={ai} metric={aiMetric} />} />
-      <InlineChip metric={cpuMetric} />
-      <InlineChip metric={ramMetric} />
+      <InlineChip metric={cpuMetric} tooltip={<CpuTooltip system={system} metric={cpuMetric} />} />
+      <InlineChip metric={ramMetric} tooltip={<MemoryTooltip system={system} metric={ramMetric} />} />
       <InlineChip metric={loadMetric} tooltip={<LoadTooltip system={system} metric={loadMetric} />} />
     </nav>
   );
