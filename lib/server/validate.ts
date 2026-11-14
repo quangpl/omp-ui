@@ -1,6 +1,7 @@
 // Strict input validation for API route bodies. Every parser throws HttpError(400) on bad input.
 import fs from "node:fs";
 import path from "node:path";
+import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
 import { BRIEF_MAX, DESCRIPTION_MAX, TITLE_MAX } from "@/lib/card-draft";
 import { cronError, isValidTimeZone } from "@/lib/cron";
 import type { Repository } from "@/lib/db/types";
@@ -8,12 +9,14 @@ import { HttpError } from "@/lib/server/http";
 import {
   CLEANUP_IDS,
   TASK_STATUSES,
+  USER_ROLES,
   type Board,
   type CleanupId,
   type MaintenanceAction,
   type Scheduler,
   type Task,
   type TaskStatus,
+  type UserRole,
 } from "@/lib/types";
 
 function text(value: unknown, field: string, min: number, max: number): string {
@@ -104,6 +107,53 @@ export function parsePosition(value: unknown): number {
 
 export function parseBoolean(value: unknown, field: string): boolean {
   if (typeof value !== "boolean") throw new HttpError(400, `${field} must be a boolean`);
+  return value;
+}
+
+const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{1,31}$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_MAX = 254;
+const PASSWORD_MAX = 1024;
+
+/** Account name, normalized (trimmed, lowercase): 2–32 of `a-z 0-9 . _ -`, starting with a letter or digit. */
+export function parseUsername(value: unknown): string {
+  if (typeof value !== "string") throw new HttpError(400, "username must be a string");
+  const username = value.trim().toLowerCase();
+  if (!username) throw new HttpError(400, "username is required");
+  if (!USERNAME_RE.test(username)) {
+    throw new HttpError(
+      400,
+      "username must be 2–32 characters of a-z, 0-9, '.', '_' or '-', starting with a letter or digit",
+    );
+  }
+  return username;
+}
+
+/** Optional email, normalized (trimmed, lowercase); null, absent or empty → null. */
+export function parseEmail(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") throw new HttpError(400, "email must be a string");
+  const email = value.trim().toLowerCase();
+  if (!email) return null;
+  if (email.length > EMAIL_MAX) throw new HttpError(400, `email must be at most ${EMAIL_MAX} characters`);
+  if (!EMAIL_RE.test(email)) throw new HttpError(400, "email is not a valid email address");
+  return email;
+}
+
+export function parseUserRole(value: unknown): UserRole {
+  if (typeof value !== "string" || !(USER_ROLES as readonly string[]).includes(value)) {
+    throw new HttpError(400, `role must be one of: ${USER_ROLES.join(", ")}`);
+  }
+  return value as UserRole;
+}
+
+/** A password to store: taken verbatim (never trimmed), MIN_PASSWORD_LENGTH–1024 characters. */
+export function parseNewPassword(value: unknown): string {
+  if (typeof value !== "string") throw new HttpError(400, "password must be a string");
+  if (value.length < MIN_PASSWORD_LENGTH) {
+    throw new HttpError(400, `password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+  }
+  if (value.length > PASSWORD_MAX) throw new HttpError(400, `password must be at most ${PASSWORD_MAX} characters`);
   return value;
 }
 

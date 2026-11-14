@@ -31,6 +31,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { useCurrentUser } from "@/hooks/use-current-user";
 import { ApiRequestError, api } from "@/lib/api-client";
 import type { OmpConfigField, OmpConfigSnapshot, OmpConfigValue, OmpModel } from "@/lib/types";
 
@@ -98,8 +99,12 @@ function message(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
 }
 
-/** Settings → OMP: omp's own user config (config.yml), as a form plus a raw YAML editor. */
+/**
+ * Settings → OMP: omp's own user config (config.yml), as a form plus a raw YAML editor. The raw
+ * editor is admin-only: the API sends non-admins no raw text (it may hold secrets).
+ */
 export function OmpSettingsSection() {
+  const { isAdmin } = useCurrentUser();
   const [snapshot, setSnapshot] = useState<OmpConfigSnapshot | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [draft, setDraft] = useState<FormState>({});
@@ -446,88 +451,90 @@ export function OmpSettingsSection() {
 
           <OmpAllSettings snapshot={snapshot} onSaved={(next) => applySaved(next, { keepDraft: dirty, keepRaw: rawDirty })} />
 
-          <SettingsPanel>
-            <button
-              type="button"
-              onClick={() => setAdvancedOpen((open) => !open)}
-              aria-expanded={advancedOpen}
-              aria-controls={advancedId}
-              className="flex min-h-12 w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none active:bg-muted/70 sm:px-5"
-            >
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium">Advanced: edit config.yml</span>
-                <span className="mt-0.5 block text-xs text-pretty text-muted-foreground">
-                  All omp settings, comments included. omp validates the file before saving.
+          {isAdmin && (
+            <SettingsPanel>
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((open) => !open)}
+                aria-expanded={advancedOpen}
+                aria-controls={advancedId}
+                className="flex min-h-12 w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none active:bg-muted/70 sm:px-5"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium">Advanced: edit config.yml</span>
+                  <span className="mt-0.5 block text-xs text-pretty text-muted-foreground">
+                    All omp settings, comments included. omp validates the file before saving.
+                  </span>
                 </span>
-              </span>
-              {rawDirty && <Badge variant="secondary">Unsaved</Badge>}
-              <ChevronDownIcon
-                className={`size-4 shrink-0 text-muted-foreground transition-transform ${advancedOpen ? "rotate-180" : ""}`}
-              />
-            </button>
-            {advancedOpen && (
-              <div id={advancedId} className="space-y-3 border-t p-4 sm:p-5">
-                <Textarea
-                  value={raw}
-                  onChange={(e) => {
-                    setRaw(e.target.value);
-                    setRawError(null);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                      e.preventDefault();
-                      void saveRaw();
-                    }
-                  }}
-                  aria-label="config.yml"
-                  aria-invalid={rawError ? true : undefined}
-                  aria-describedby={rawError ? rawErrorId : undefined}
-                  placeholder={"# omp settings (YAML), e.g.\ndefaultThinkingLevel: high"}
-                  spellCheck={false}
-                  autoCapitalize="off"
-                  autoCorrect="off"
-                  wrap="off"
-                  disabled={rawSaving}
-                  className="max-h-[70dvh] min-h-64 overflow-auto font-mono text-base leading-6 md:text-xs md:leading-5"
+                {rawDirty && <Badge variant="secondary">Unsaved</Badge>}
+                <ChevronDownIcon
+                  className={`size-4 shrink-0 text-muted-foreground transition-transform ${advancedOpen ? "rotate-180" : ""}`}
                 />
-                {rawError && (
-                  <p id={rawErrorId} role="alert" className="text-xs whitespace-pre-wrap text-destructive">
-                    {rawError}
-                  </p>
-                )}
-                <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
-                  <p className="hidden text-xs text-muted-foreground sm:mr-auto sm:block">
-                    <Kbd>Ctrl</Kbd> / <Kbd>⌘</Kbd> + <Kbd>Enter</Kbd> to save. Previous file kept as{" "}
-                    <code className="font-mono">config.yml.bak</code>.
-                  </p>
-                  {rawDirty && (
+              </button>
+              {advancedOpen && (
+                <div id={advancedId} className="space-y-3 border-t p-4 sm:p-5">
+                  <Textarea
+                    value={raw}
+                    onChange={(e) => {
+                      setRaw(e.target.value);
+                      setRawError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        void saveRaw();
+                      }
+                    }}
+                    aria-label="config.yml"
+                    aria-invalid={rawError ? true : undefined}
+                    aria-describedby={rawError ? rawErrorId : undefined}
+                    placeholder={"# omp settings (YAML), e.g.\ndefaultThinkingLevel: high"}
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    wrap="off"
+                    disabled={rawSaving}
+                    className="max-h-[70dvh] min-h-64 overflow-auto font-mono text-base leading-6 md:text-xs md:leading-5"
+                  />
+                  {rawError && (
+                    <p id={rawErrorId} role="alert" className="text-xs whitespace-pre-wrap text-destructive">
+                      {rawError}
+                    </p>
+                  )}
+                  <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
+                    <p className="hidden text-xs text-muted-foreground sm:mr-auto sm:block">
+                      <Kbd>Ctrl</Kbd> / <Kbd>⌘</Kbd> + <Kbd>Enter</Kbd> to save. Previous file kept as{" "}
+                      <code className="font-mono">config.yml.bak</code>.
+                    </p>
+                    {rawDirty && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        disabled={rawSaving}
+                        onClick={() => {
+                          setRaw(snapshot.raw);
+                          setRawVersion(snapshot.version);
+                          setRawError(null);
+                        }}
+                        className={`${FIELD} pressable`}
+                      >
+                        Revert
+                      </Button>
+                    )}
                     <Button
                       type="button"
-                      variant="ghost"
-                      disabled={rawSaving}
-                      onClick={() => {
-                        setRaw(snapshot.raw);
-                        setRawVersion(snapshot.version);
-                        setRawError(null);
-                      }}
+                      onClick={() => void saveRaw()}
+                      disabled={!rawDirty || rawSaving}
                       className={`${FIELD} pressable`}
                     >
-                      Revert
+                      {rawSaving && <Loader2Icon className="animate-spin" />}
+                      Save config.yml
                     </Button>
-                  )}
-                  <Button
-                    type="button"
-                    onClick={() => void saveRaw()}
-                    disabled={!rawDirty || rawSaving}
-                    className={`${FIELD} pressable`}
-                  >
-                    {rawSaving && <Loader2Icon className="animate-spin" />}
-                    Save config.yml
-                  </Button>
+                  </div>
                 </div>
-              </div>
-            )}
-          </SettingsPanel>
+              )}
+            </SettingsPanel>
+          )}
         </>
       )}
     </SettingsSection>

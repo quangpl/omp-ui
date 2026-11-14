@@ -175,4 +175,4 @@ export const PATCH = withApi(async ({ req, repo }) => {
   // A new schedule counts from now, so enabling it never runs a cleanup right away.
   if (next.cleanupSchedule !== before.cleanupSchedule) await resetCleanupAnchor(repo);
   return json(redact(next));
-});
+}, { admin: true });

@@ -10,4 +10,5 @@ export const POST = withApi(async ({ req, repo, manager }) =>
     securityEvent(req, "info", "chat", "Telegram bot disconnected");
     return json(status);
   }),
+  { admin: true },
 );

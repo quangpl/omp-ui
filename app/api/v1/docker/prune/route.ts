@@ -11,4 +11,4 @@ export const POST = withApi(async ({ req }) => {
     throw new HttpError(400, `kind must be one of ${PRUNE_KINDS.join(", ")}`);
   }
   return json({ message: await prune(kind as PruneKind) });
-});
+}, { admin: true });

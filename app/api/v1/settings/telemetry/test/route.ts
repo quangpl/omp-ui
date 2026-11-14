@@ -16,4 +16,4 @@ export const POST = withApi(async ({ req, repo }) => {
   const endpoint = (given ?? (await getAppSettings(repo)).telemetryEndpoint).trim();
   if (!endpoint) throw new HttpError(400, "No telemetry endpoint is set");
   return json(await exportTestSpan(endpoint));
-});
+}, { admin: true });

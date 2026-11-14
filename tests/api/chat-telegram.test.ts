@@ -7,9 +7,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   ADMIN_PASSWORD,
   api,
+  createUser,
   freshEnv,
+  loginAs,
   readOmpLog,
   setupAdmin,
+  sleep,
   teardown,
   tempDir,
   useToken,
@@ -23,10 +26,10 @@ import * as connectRoute from "@/app/api/v1/chat/telegram/connect/route";
 import * as disconnectRoute from "@/app/api/v1/chat/telegram/disconnect/route";
 import * as settingsRoute from "@/app/api/v1/settings/route";
 import { getAgentManager } from "@/lib/agent/manager";
-import { setPassword } from "@/lib/auth";
+import { setUserPassword } from "@/lib/auth";
 import { getRepo } from "@/lib/db";
 import { disconnectChat } from "@/lib/server/chat/service";
-import { getChatToken } from "@/lib/server/chat/store";
+import { getChatToken, updateChatState } from "@/lib/server/chat/store";
 import {
   REDACTED_SECRET,
   type AppSettings,
@@ -41,6 +44,8 @@ const VALID_TOKEN = "123456789:AAEhBOweik6ad9r_QXMENQjcrGbqCr4K-xx";
 const TOKEN_SECRET_PART = VALID_TOKEN.split(":")[1];
 const BOT_USERNAME = "agentman_test_bot";
 const NEW_PASSWORD = "a-brand-new-admin-password";
+/** Password of "bob", a regular (non-admin) account. */
+const BOB_PASSWORD = "bobs-own-password";
 /** Text the fake omp "stream" scenario streams (tests/fixtures/fake-omp.mjs STREAM_WORDS). */
 const STREAMED_TEXT =
   "Streamed summary: I updated the login form, added validation, wrote tests, and verified everything passes.";
@@ -271,32 +276,38 @@ function promptFor(text: string): string | undefined {
 }
 
 /** What the message shows now, edits applied. */
-function shown(messageId: number): string | undefined {
-  return displayed().find((m) => m.message_id === messageId)?.text;
+function shown(messageId: number, chatId = 42): string | undefined {
+  return displayed(chatId).find((m) => m.message_id === messageId)?.text;
 }
 
-/** Send `text` as the logged-in user; returns the assistant's placeholder message id once it is sent. */
-async function ask(text: string): Promise<number> {
+/** A chat user and the chat they write in; the admin's own private chat 42 by default. */
+interface Sender {
+  userId?: number;
+  chatId?: number;
+}
+
+/** Send `text` as a logged-in user; returns the assistant's placeholder message id once it is sent. */
+async function ask(text: string, { userId = 42, chatId = 42 }: Sender = {}): Promise<number> {
   const from = tg.sent.length;
-  push(text);
+  push(text, { userId, chatId });
   const placeholder = await waitFor(
-    () => tg.sent.slice(from).find((m) => m.chat_id === "42" && m.text === PLACEHOLDER),
+    () => tg.sent.slice(from).find((m) => m.chat_id === String(chatId) && m.text === PLACEHOLDER),
     REPLY_TIMEOUT,
   );
   return placeholder.message_id;
 }
 
 /** The placeholder's final text: the assistant's answer (or cancellation/error) instead of `🤔 …`. */
-async function answerOf(placeholder: number): Promise<string> {
+async function answerOf(placeholder: number, chatId = 42): Promise<string> {
   return waitFor(() => {
-    const text = shown(placeholder);
+    const text = shown(placeholder, chatId);
     return text && !text.startsWith("🤔") ? text : undefined;
   }, REPLY_TIMEOUT);
 }
 
 /** Send `text` to the assistant and return its answer. */
-async function chat(text: string): Promise<string> {
-  return answerOf(await ask(text));
+async function chat(text: string, sender: Sender = {}): Promise<string> {
+  return answerOf(await ask(text, sender), sender.chatId ?? 42);
 }
 
 // Test-only peek at assistant.ts's process-wide state; the suite runs the app in this process.
@@ -378,7 +389,7 @@ describe("Telegram bot", () => {
     expect(await getChatToken(repo, "telegram")).toBe(VALID_TOKEN);
   });
 
-  it("only answers users who logged in with the admin password", async () => {
+  it("only answers users who logged in (`/login <password>` signs in as admin)", async () => {
     const from = tg.sent.length;
     const locked = await say("show my boards");
     expect(locked).toContain("/login");
@@ -388,7 +399,7 @@ describe("Telegram bot", () => {
     expect(promptFor("show my boards")).toBeUndefined();
 
     const wrongId = tg.nextIncomingMessageId;
-    expect(await say("/login wrong")).toContain("Wrong password");
+    expect(await say("/login wrong")).toContain("Wrong username or password");
     // The password never stays in the chat, right or wrong.
     expect(tg.deletes).toContainEqual({ chat_id: "42", message_id: wrongId });
     expect(await say("show my boards")).toContain("/login");
@@ -567,11 +578,86 @@ describe("Telegram bot", () => {
     expect(promptFor("show my boards")).toBeUndefined();
   });
 
+  it("logs in by username: a regular account only sees, creates and stops its own cards", async () => {
+    const bobChat = { userId: 77, chatId: 77 };
+    const bob = await createUser({ username: "bob", password: BOB_PASSWORD });
+    const created = await api<Board>(boardsRoute, "POST", "/boards", {
+      body: { name: "bob-board", workdir: tempDir("bob-board") },
+      token: await loginAs("bob", BOB_PASSWORD),
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const bobBoard = created.body;
+    expect(bobBoard.userId).toBe(bob.id);
+
+    // `/login <password>` signs in as "admin": bob's password alone is not enough.
+    expect(await say(`/login ${BOB_PASSWORD}`, bobChat)).toContain("Wrong username or password");
+    expect(await say("/login bob not-his-password", bobChat)).toContain("Wrong username or password");
+    const loginId = tg.nextIncomingMessageId;
+    expect(await say(`/login bob ${BOB_PASSWORD}`, bobChat)).toContain("AgentMan connected ✅ as bob");
+    expect(tg.deletes).toContainEqual({ chat_id: "77", message_id: loginId });
+    expect((await chatStatus()).telegram.authorizedUsers).toBe(2);
+
+    // A default board bob cannot see (e.g. selected by another account) counts as unselected.
+    await updateChatState(await getRepo(), (state) => {
+      state.selectedBoards["telegram:77"] = boards[0].id;
+    });
+    const listMine = `list my boards ${calls({ toolName: "agentman_list_boards", arguments: {} })}`;
+    const mine = await chat(listMine, bobChat);
+    expect(mine).toContain("bob-board");
+    for (const board of boards) expect(mine).not.toContain(board.name);
+    const prompt = promptFor(listMine);
+    expect(prompt).toContain("Default board of this chat: bob-board");
+    for (const board of boards) expect(prompt).not.toContain(board.name);
+
+    // Another account's cards and boards are out of reach.
+    const foreign = toolResults(
+      await chat(
+        `peek ${calls(
+          { toolName: "agentman_read_card", arguments: { cardId: firstCard.id } },
+          { toolName: "agentman_list_cards", arguments: { board: boards[0].id } },
+          { toolName: "agentman_select_board", arguments: { board: boards[1].id } },
+        )}`,
+        bobChat,
+      ),
+    );
+    expect(foreign.map((r) => [r.toolName, r.isError])).toEqual([
+      ["agentman_read_card", true],
+      ["agentman_list_cards", true],
+      ["agentman_select_board", true],
+    ]);
+    expect(JSON.stringify(foreign)).not.toContain(firstCard.title);
+    expect(await say(`/stop ${firstCard.id}`, bobChat)).toContain("No card matches");
+
+    // His cards land on his board, and he can stop them.
+    const answer = await chat(
+      `start a slow one ${calls({ toolName: "agentman_create_card", arguments: { title: "Bob slow [fake:slow]", start: true } })}`,
+      bobChat,
+    );
+    const id = createdId(toolResults(answer)[0]);
+    const card = await getTask(id);
+    expect([card.boardId, card.userId]).toEqual([bobBoard.id, bob.id]);
+    await waitFor(async () => (await getTask(id)).agentState === "running", RUN_TIMEOUT);
+
+    // The admin sees every account's boards.
+    const all = await chat(`every board ${calls({ toolName: "agentman_list_boards", arguments: {} })}`);
+    for (const name of ["bob-board", ...boards.map((b) => b.name)]) expect(all).toContain(name);
+
+    // Once bob logged out, his card's outcome is no longer relayed to his chat.
+    expect(await say("/logout", bobChat)).toContain("Logged out");
+    const from = tg.sent.length;
+    await (await getAgentManager()).stop(id);
+    await waitFor(async () => !isActive(await getTask(id)), RUN_TIMEOUT);
+    await sleep(500);
+    expect(sentSince(from, 77).filter((text) => text.includes("Run stopped"))).toEqual([]);
+    expect((await chatStatus()).telegram.authorizedUsers).toBe(1);
+  });
+
   it("changing the admin password logs chat users out", async () => {
     expect((await chatStatus()).telegram.authorizedUsers).toBe(1);
-    await setPassword(NEW_PASSWORD);
+    const admin = await (await getRepo()).findUserAuthByLogin("admin");
+    await setUserPassword(admin!.id, NEW_PASSWORD);
     expect(await say("show my boards")).toContain("/login");
-    expect(await say(`/login ${ADMIN_PASSWORD}`)).toContain("Wrong password");
+    expect(await say(`/login ${ADMIN_PASSWORD}`)).toContain("Wrong username or password");
     expect((await chatStatus().catch(() => null))?.telegram.authorizedUsers ?? 0).toBe(0);
 
     // The password change also revoked the API session: log in again for the next requests.

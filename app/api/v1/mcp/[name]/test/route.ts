@@ -18,4 +18,5 @@ export const POST = withApi<Params>(async ({ req, repo, params }) =>
     });
     return json(server);
   }),
+  { admin: true },
 );

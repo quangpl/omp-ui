@@ -21,6 +21,7 @@ function card(title: string, description = ""): Task {
     blockedBy: [],
     createdByTaskId: null,
     schedulerId: null,
+    userId: null,
     pushedAt: null,
     autoRetries: 0,
     retryAt: null,
@@ -43,6 +44,7 @@ function comment(body: string): Comment {
     resolvedAt: null,
     resolvedByRunId: null,
     fromTaskId: null,
+    userId: null,
     createdAt: NOW,
   };
 }

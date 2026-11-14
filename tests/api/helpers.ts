@@ -5,10 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import * as loginRoute from "@/app/api/v1/auth/login/route";
 import * as setupRoute from "@/app/api/v1/auth/setup/route";
 import { killAllOmpProcesses } from "@/lib/agent/rpc";
 import type { AgentManager } from "@/lib/agent/types";
 import type { Repository } from "@/lib/db/types";
+import type { User, UserRole } from "@/lib/types";
 
 // Git must behave the same on every machine: ignore the user's/system git config and identity,
 // and never touch the network (any ssh remote fails immediately).
@@ -91,6 +93,7 @@ const g = globalThis as unknown as {
   __ompUiAgentManager?: Promise<AgentManager>;
   __ompUiAuthSecret?: Promise<string>;
   __ompUiAuthBoot?: Promise<void>;
+  __ompUiDummyHash?: Promise<string>;
   __ompUiLoginFailures?: Map<string, unknown>;
   __ompUiAiStats?: unknown;
   __ompUiAiStatsInFlight?: unknown;
@@ -130,6 +133,7 @@ export async function stopServer(): Promise<void> {
 
   g.__ompUiAuthSecret = undefined;
   g.__ompUiAuthBoot = undefined;
+  g.__ompUiDummyHash = undefined;
   // lib/auth.ts holds this map in a module constant: clear it in place.
   g.__ompUiLoginFailures?.clear();
   g.__ompUiAiStats = undefined;
@@ -258,7 +262,7 @@ export async function api<T = any>(
 
 export const ADMIN_PASSWORD = "correct-horse-battery";
 
-/** Configure the admin password; the returned token becomes the default for call()/api(). */
+/** Create the first admin (username `admin`); the returned token becomes the default for call()/api(). */
 export async function setupAdmin(password = ADMIN_PASSWORD): Promise<string> {
   const res = await api<{ token?: string; error?: string }>(setupRoute, "POST", "/auth/setup", {
     body: { password },
@@ -268,6 +272,33 @@ export async function setupAdmin(password = ADMIN_PASSWORD): Promise<string> {
     throw new Error(`auth setup failed: ${res.status} ${JSON.stringify(res.body)}`);
   }
   defaultToken = res.body.token;
+  return res.body.token;
+}
+
+/** Create a user through POST /users with the default (admin) token; role defaults to "user". */
+export async function createUser(input: {
+  username: string;
+  password: string;
+  role?: UserRole;
+  email?: string | null;
+}): Promise<User> {
+  // Loaded lazily: the users route pulls in board teardown code, and this module's static imports
+  // must not load lib/git.ts before the git environment above is set.
+  const usersRoute = await import("@/app/api/v1/users/route");
+  const res = await api<User & { error?: string }>(usersRoute, "POST", "/users", { body: input });
+  if (res.status !== 201) throw new Error(`user creation failed: ${res.status} ${JSON.stringify(res.body)}`);
+  return res.body;
+}
+
+/** Sign in via POST /auth/login (`username` may be an email) and return the session token. */
+export async function loginAs(username: string, password: string): Promise<string> {
+  const res = await api<{ token?: string; error?: string }>(loginRoute, "POST", "/auth/login", {
+    body: { username, password },
+    token: null,
+  });
+  if (res.status !== 200 || !res.body.token) {
+    throw new Error(`login as ${username} failed: ${res.status} ${JSON.stringify(res.body)}`);
+  }
   return res.body.token;
 }
 

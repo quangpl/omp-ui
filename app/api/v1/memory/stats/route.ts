@@ -96,4 +96,4 @@ export const GET = memoryRoute(async ({ repo }) => {
     ),
   };
   return json(body);
-});
+}, { admin: true });

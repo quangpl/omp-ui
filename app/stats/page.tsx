@@ -7,12 +7,13 @@ import { OptimizeSection } from "@/components/stats/optimize-section";
 import { Overview } from "@/components/stats/overview";
 import { SystemSection } from "@/components/stats/system-section";
 import { SYSTEM_REFRESH_MS, useAiStats, useSystemStats, type SystemState } from "@/components/stats/use-stats";
+import { useCurrentUser } from "@/hooks/use-current-user";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 
 const JUMP_LINKS = [
   { href: "#system-stats", label: "System" },
   { href: "#ai-quota", label: "AI quota" },
-  { href: "#optimize", label: "Optimize" },
+  { href: "#optimize", label: "Optimize", adminOnly: true },
 ] as const;
 
 function formatClock(ms: number): string {
@@ -45,6 +46,9 @@ export default function StatsPage() {
   useDocumentTitle("Stats");
   const ai = useAiStats();
   const system = useSystemStats();
+  // Optimize lists host processes and every user's folders (admin-only API); hidden while loading.
+  const { isAdmin } = useCurrentUser();
+  const jumpLinks = JUMP_LINKS.filter((link) => isAdmin || !("adminOnly" in link));
   return (
     <div className="flex min-h-dvh flex-col">
       <AppHeader title="Stats" />
@@ -64,7 +68,7 @@ export default function StatsPage() {
                 className="scroll-row -mx-4 px-1 py-1 sm:-mx-6 sm:px-3 md:mx-0 md:px-0 @4xl:shrink-0"
               >
                 <div className="flex w-max items-center">
-                  {JUMP_LINKS.map((link) => (
+                  {jumpLinks.map((link) => (
                     <a
                       key={link.href}
                       href={link.href}
@@ -83,7 +87,7 @@ export default function StatsPage() {
           <Overview system={system} ai={ai} />
           <SystemSection system={system} />
           <AiSection ai={ai} />
-          <OptimizeSection />
+          {isAdmin && <OptimizeSection />}
         </div>
       </main>
     </div>

@@ -226,7 +226,8 @@ function slashCommands() {
                 type: 3,
                 name: "value",
                 description: clip(args.replace(/[<>[\]]/g, ""), "value"),
-                required: args.startsWith("<"),
+                // Required when any part is mandatory, e.g. `[username] <password>`.
+                required: args.includes("<"),
               },
             ],
           }

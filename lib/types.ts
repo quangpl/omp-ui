@@ -16,6 +16,60 @@ export const STATUS_LABELS: Record<TaskStatus, string> = {
 /** Lifecycle of the omp agent attached to a task. */
 export type AgentState = "idle" | "queued" | "running" | "error";
 
+export const USER_ROLES = ["admin", "user"] as const;
+/** `admin`: manages users and the shared configuration, sees every user's data. `user`: own data only. */
+export type UserRole = (typeof USER_ROLES)[number];
+
+/** An omp-ui account. Never carries the password hash (see `UserAuthRecord` in lib/db/types.ts). */
+export interface User {
+  id: string;
+  /** Unique, stored lowercase: 2–32 of `a-z 0-9 . _ -`, starting with a letter or digit. */
+  username: string;
+  /** Unique when set, stored lowercase. Null when the account has no email (e.g. the migrated admin). */
+  email: string | null;
+  role: UserRole;
+  /** Inactive accounts cannot sign in; their sessions stop working at once. */
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Body of `POST /api/v1/users`. `role` defaults to "user"; `email` is optional. */
+export interface CreateUserRequest {
+  username: string;
+  email?: string | null;
+  password: string;
+  role?: UserRole;
+}
+
+/** Body of `PATCH /api/v1/users/:id`; omitted fields stay unchanged. */
+export interface UpdateUserRequest {
+  username?: string;
+  email?: string | null;
+  role?: UserRole;
+  isActive?: boolean;
+}
+
+/**
+ * Answer of `DELETE /api/v1/users/:id`. With `?reassignTo=<userId>` the user's boards (with their
+ * cards, comments, runs, schedulers) and credentials move to that user; without it they are deleted.
+ */
+export interface DeleteUserResult {
+  ok: true;
+  /** Boards moved to `reassignedTo`, or deleted when `reassignedTo` is null. */
+  boards: number;
+  credentials: number;
+  reassignedTo: string | null;
+}
+
+/** `GET /api/v1/auth/status`. `user` is the signed-in account (null when not authenticated). */
+export interface AuthStatus {
+  /** At least one user exists (first-run setup done). */
+  configured: boolean;
+  authenticated: boolean;
+  user: User | null;
+}
+
 /** A board is one project. A project has a primary folder plus optional extra folders. */
 export interface Board {
   id: string;
@@ -39,6 +93,11 @@ export interface Board {
   worktrees: boolean;
   /** Pinned projects lead the home dashboard and fill the sidebar; the rest follow under "Other projects". Default false. */
   pinned: boolean;
+  /**
+   * Owning user (users.id). Null only for rows created before users existed, until boot assigns
+   * them to the first admin. Tasks, comments, runs and schedulers inherit it from their board.
+   */
+  userId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -101,6 +160,8 @@ export interface Task {
   openCommentCount: number;
   /** Scheduler whose run created this card; null when a person or an agent created it. */
   schedulerId: string | null;
+  /** Owning user, inherited from the board (see Board.userId). */
+  userId: string | null;
 }
 
 export type ReviewDecision = "approved" | "changes_requested";
@@ -158,6 +219,8 @@ export interface Comment {
    * `author: "user"` (they are feedback the receiving agent must address). Null otherwise.
    */
   fromTaskId: string | null;
+  /** Owning user, inherited from the task's board (see Board.userId). */
+  userId: string | null;
   createdAt: string;
 }
 
@@ -174,6 +237,8 @@ export interface Run {
   error: string | null;
   startedAt: string;
   endedAt: string | null;
+  /** Owning user, inherited from the task's board (see Board.userId). */
+  userId: string | null;
 }
 
 /**
@@ -279,6 +344,8 @@ export interface Scheduler {
   lastTaskId: string | null;
   /** Error of the last run when it failed. */
   lastError: string | null;
+  /** Owning user, inherited from the board (see Board.userId). */
+  userId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -470,7 +537,7 @@ export interface ChatPlatformStatus {
   webhookUrl: string | null;
   /** Last 4 characters of the stored token; null when none. */
   tokenHint: string | null;
-  /** Chat users who unlocked control with the admin password (`/login <password>`). */
+  /** Chat users currently signed in to an omp-ui account (`/login [username] <password>`). */
   authorizedUsers: number;
 }
 

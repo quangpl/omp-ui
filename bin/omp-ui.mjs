@@ -1346,7 +1346,7 @@ function printUrls(cfg, { tunnelUrl } = {}) {
 
 function printNextSteps() {
   console.log(c.bold("Next steps"));
-  console.log(`  1. Open the URL and sign in with your admin password`);
+  console.log(`  1. Open the URL and sign in as admin with your admin password`);
   console.log(`  2. Create a project (folder or Git repo), add cards, move one to ${c.bold("In progress")}`);
   console.log(`  ${c.dim("·")} Phone on the same Wi-Fi: open the Network URL → Share → Add to Home Screen`);
   console.log(`  ${c.dim("·")} Share over the internet: ${c.cyan("omp-ui public")}`);
@@ -1356,7 +1356,7 @@ function printNextSteps() {
 
 function printSecurityReminder() {
   console.log(c.yellow(c.bold("Security")));
-  console.log(c.yellow("  Anyone with this URL reaches your login page — the admin password is the only lock."));
+  console.log(c.yellow("  Anyone with this URL reaches your login page — account passwords are the only lock."));
   console.log(c.yellow("  Agents run shell commands on this machine. Use a strong password (omp-ui passwd)."));
   console.log(c.dim("  Stop sharing: omp-ui public stop\n"));
 }
@@ -1986,12 +1986,12 @@ const COMMANDS = {
   },
 
   passwd: {
-    summary: "Change the admin password",
+    summary: "Change the password of the admin account",
     usage: "omp-ui passwd [password]",
     positionals: true,
     options: {},
     description:
-      "Updates ADMIN_PASSWORD in .env; it is applied at the next boot and signs out every existing session.\nOmit the argument to be prompted (hidden) — or pipe it: echo 'new-pass' | omp-ui passwd",
+      "Updates ADMIN_PASSWORD in .env; it is applied at the next boot to the `admin` account (created if missing) and signs out that account's sessions.\nOmit the argument to be prompted (hidden) — or pipe it: echo 'new-pass' | omp-ui passwd",
     async run(_values, positionals) {
       if (!fs.existsSync(ENV_FILE)) throw new CliError("No .env found.", { hint: "Run: omp-ui init  (or: omp-ui up)" });
       if (positionals.length > 1) throw new CliError("Too many arguments — quote passwords that contain spaces.");
@@ -1999,7 +1999,7 @@ const COMMANDS = {
       if (pw === undefined) pw = isInteractive() ? await askNewPassword("New admin password") : await readStdinLine();
       validatePassword(pw);
       updateEnvFile({ ADMIN_PASSWORD: pw });
-      log.ok("Admin password saved to .env");
+      log.ok("Password of the admin account saved to .env");
       const cfg = loadConfig();
       // Security log for the Logs page (same JSON-line format as lib/server/log-store.ts); best effort.
       try {
@@ -2008,7 +2008,7 @@ const COMMANDS = {
           t: new Date().toISOString(),
           level: "info",
           category: "password",
-          message: "Admin password changed from the CLI (omp-ui passwd); all sessions revoked",
+          message: "Password of the admin account changed from the CLI (omp-ui passwd); its sessions revoked at next boot",
           meta: { origin: "cli" },
         };
         fs.appendFileSync(path.join(cfg.dataDir, "security.log"), `${JSON.stringify(event)}\n`);
@@ -2021,12 +2021,12 @@ const COMMANDS = {
         if (managed.manager === "pm2") await pm2(["restart", PM2_APP]);
         else await systemctl(["restart", SYSTEMD_UNIT]);
         await waitForHealth(cfg, { timeoutMs: 120_000 });
-        log.ok("New password is active — all previous sessions were signed out");
+        log.ok("New password is active — the admin account's previous sessions were signed out");
       } else if (runningPid(statePaths(cfg).pid, SERVER_MARK)) {
         log.info("Restarting to apply it…");
         await stopServer(cfg);
         await startServer(cfg);
-        log.ok("New password is active — all previous sessions were signed out");
+        log.ok("New password is active — the admin account's previous sessions were signed out");
       } else {
         log.hint("Applied at next boot: omp-ui restart  (Docker: omp-ui docker up)");
       }

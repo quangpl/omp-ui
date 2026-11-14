@@ -14,6 +14,8 @@ import type {
   SchedulerRun,
   Task,
   TaskStatus,
+  User,
+  UserRole,
 } from "@/lib/types";
 import type {
   AppendRunEventInput,
@@ -23,11 +25,14 @@ import type {
   CreateSchedulerInput,
   CreateSchedulerRunInput,
   CreateTaskInput,
+  CreateUserInput,
   Repository,
   UpdateBoardInput,
   UpdateRunInput,
   UpdateSchedulerInput,
   UpdateTaskInput,
+  UpdateUserInput,
+  UserAuthRecord,
 } from "@/lib/db/types";
 import {
   POSITION_STEP,
@@ -55,6 +60,19 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
+-- user_id columns below are plain TEXT (no FK): deleting a user never cascades into data, callers move or delete it first.
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  email TEXT UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  token_epoch INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS boards (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -65,13 +83,16 @@ CREATE TABLE IF NOT EXISTS boards (
   worktrees BOOLEAN NOT NULL DEFAULT FALSE,
   pinned BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  user_id TEXT
 );
 -- Migrations for databases created before these columns existed.
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS extra_folders TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS worktrees BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS user_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_boards_created ON boards (created_at);
+CREATE INDEX IF NOT EXISTS idx_boards_user ON boards (user_id);
 
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
@@ -94,7 +115,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   review TEXT,
   scheduler_id TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  user_id TEXT
 );
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS blocked_by TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by_task_id TEXT;
@@ -105,9 +127,11 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS retry_at TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS todos TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS scheduler_id TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS user_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_tasks_board_status_position ON tasks (board_id, status, position);
 CREATE INDEX IF NOT EXISTS idx_tasks_agent_state ON tasks (agent_state);
 CREATE INDEX IF NOT EXISTS idx_tasks_scheduler ON tasks (scheduler_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks (user_id);
 
 CREATE TABLE IF NOT EXISTS comments (
   id TEXT PRIMARY KEY,
@@ -118,9 +142,11 @@ CREATE TABLE IF NOT EXISTS comments (
   resolved_at TEXT,
   resolved_by_run_id TEXT,
   from_task_id TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  user_id TEXT
 );
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS from_task_id TEXT;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS user_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_comments_task ON comments (task_id);
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -131,11 +157,14 @@ CREATE TABLE IF NOT EXISTS runs (
   summary TEXT,
   error TEXT,
   started_at TEXT NOT NULL,
-  ended_at TEXT
+  ended_at TEXT,
+  user_id TEXT
 );
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS user_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_runs_task_started ON runs (task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (status);
 CREATE INDEX IF NOT EXISTS idx_runs_started ON runs (started_at);
+CREATE INDEX IF NOT EXISTS idx_runs_user_started ON runs (user_id, started_at);
 
 CREATE TABLE IF NOT EXISTS run_events (
   seq BIGSERIAL PRIMARY KEY,
@@ -163,9 +192,12 @@ CREATE TABLE IF NOT EXISTS schedulers (
   last_task_id TEXT,
   last_error TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  user_id TEXT
 );
+ALTER TABLE schedulers ADD COLUMN IF NOT EXISTS user_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_schedulers_board ON schedulers (board_id);
+CREATE INDEX IF NOT EXISTS idx_schedulers_user ON schedulers (user_id);
 
 -- task_id has no foreign key: run history outlives the card it created.
 CREATE TABLE IF NOT EXISTS scheduler_runs (
@@ -201,6 +233,7 @@ interface BoardRow {
   pinned: boolean;
   created_at: string;
   updated_at: string;
+  user_id: string | null;
 }
 
 interface TaskRow {
@@ -227,6 +260,7 @@ interface TaskRow {
   updated_at: string;
   comment_count: number;
   open_comment_count: number;
+  user_id: string | null;
 }
 
 interface CommentRow {
@@ -239,6 +273,7 @@ interface CommentRow {
   resolved_by_run_id: string | null;
   from_task_id: string | null;
   created_at: string;
+  user_id: string | null;
 }
 
 interface RunRow {
@@ -250,6 +285,7 @@ interface RunRow {
   error: string | null;
   started_at: string;
   ended_at: string | null;
+  user_id: string | null;
 }
 
 interface RunEventRow {
@@ -279,6 +315,7 @@ interface SchedulerRow {
   last_error: string | null;
   created_at: string;
   updated_at: string;
+  user_id: string | null;
 }
 
 interface SchedulerRunRow {
@@ -290,6 +327,18 @@ interface SchedulerRunRow {
   status: SchedulerRun["status"];
   error: string | null;
   created_at: string;
+}
+
+interface UserRow {
+  id: string;
+  username: string;
+  email: string | null;
+  password_hash: string;
+  role: UserRole;
+  is_active: boolean;
+  token_epoch: number;
+  created_at: string;
+  updated_at: string;
 }
 
 function toBoard(r: BoardRow): Board {
@@ -304,6 +353,7 @@ function toBoard(r: BoardRow): Board {
     pinned: r.pinned,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    userId: r.user_id ?? null,
   };
 }
 
@@ -332,6 +382,7 @@ function toTask(r: TaskRow): Task {
     updatedAt: r.updated_at,
     commentCount: Number(r.comment_count),
     openCommentCount: Number(r.open_comment_count),
+    userId: r.user_id ?? null,
   };
 }
 
@@ -346,6 +397,7 @@ function toComment(r: CommentRow): Comment {
     resolvedByRunId: r.resolved_by_run_id,
     fromTaskId: r.from_task_id,
     createdAt: r.created_at,
+    userId: r.user_id ?? null,
   };
 }
 
@@ -359,6 +411,7 @@ function toRun(r: RunRow): Run {
     error: r.error,
     startedAt: r.started_at,
     endedAt: r.ended_at,
+    userId: r.user_id ?? null,
   };
 }
 
@@ -391,6 +444,7 @@ function toScheduler(r: SchedulerRow): Scheduler {
     lastError: r.last_error,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    userId: r.user_id ?? null,
   };
 }
 
@@ -405,6 +459,22 @@ function toSchedulerRun(r: SchedulerRunRow): SchedulerRun {
     error: r.error,
     createdAt: r.created_at,
   };
+}
+
+function toUser(r: UserRow): User {
+  return {
+    id: r.id,
+    username: r.username,
+    email: r.email,
+    role: r.role,
+    isActive: r.is_active,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function toUserAuth(r: UserRow): UserAuthRecord {
+  return { ...toUser(r), passwordHash: r.password_hash, tokenEpoch: Number(r.token_epoch) };
 }
 
 /** Normalizes the `limit` of `listSchedulerRuns` into 1..1000 (default 100). */
@@ -507,15 +577,86 @@ export class PostgresRepository implements Repository {
     await this.query("DELETE FROM settings WHERE key = $1", [key]);
   }
 
+  // ------------------------------------------------------------------- users
+
+  async listUsers(): Promise<User[]> {
+    const res = await this.query<UserRow>("SELECT * FROM users ORDER BY created_at ASC, id ASC");
+    return res.rows.map(toUser);
+  }
+
+  async getUser(id: string): Promise<User | null> {
+    const res = await this.query<UserRow>("SELECT * FROM users WHERE id = $1", [id]);
+    return res.rows[0] ? toUser(res.rows[0]) : null;
+  }
+
+  async getUserAuth(id: string): Promise<UserAuthRecord | null> {
+    const res = await this.query<UserRow>("SELECT * FROM users WHERE id = $1", [id]);
+    return res.rows[0] ? toUserAuth(res.rows[0]) : null;
+  }
+
+  async findUserAuthByLogin(login: string): Promise<UserAuthRecord | null> {
+    const res = await this.query<UserRow>("SELECT * FROM users WHERE username = $1 OR email = $1 LIMIT 1", [login]);
+    return res.rows[0] ? toUserAuth(res.rows[0]) : null;
+  }
+
+  async createUser(input: CreateUserInput): Promise<User> {
+    const now = nowIso();
+    // UNIQUE constraints on username/email make a taken name fail the insert.
+    const res = await this.query<UserRow>(
+      `INSERT INTO users (id, username, email, password_hash, role, is_active, token_epoch, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $7) RETURNING *`,
+      [newId(), input.username, input.email ?? null, input.passwordHash, input.role, input.isActive ?? true, now],
+    );
+    return toUser(res.rows[0]);
+  }
+
+  async updateUser(id: string, patch: UpdateUserInput): Promise<User | null> {
+    const { sql, params } = buildSet([
+      ["username", patch.username],
+      ["email", patch.email],
+      ["password_hash", patch.passwordHash],
+      ["role", patch.role],
+      ["is_active", patch.isActive],
+      ["token_epoch", patch.tokenEpoch],
+      ["updated_at", nowIso()],
+    ]);
+    const res = await this.query<UserRow>(
+      `UPDATE users SET ${sql} WHERE id = $${params.length + 1} RETURNING *`,
+      [...params, id],
+    );
+    return res.rows[0] ? toUser(res.rows[0]) : null;
+  }
+
+  async deleteUser(id: string): Promise<boolean> {
+    const res = await this.query("DELETE FROM users WHERE id = $1", [id]);
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  async reassignUserData(fromUserId: string | null, toUserId: string): Promise<number> {
+    const owner = fromUserId === null ? "user_id IS NULL" : "user_id = $2";
+    const params = fromUserId === null ? [toUserId] : [toUserId, fromUserId];
+    return this.transaction(async (client) => {
+      const boards = await this.query(`UPDATE boards SET user_id = $1 WHERE ${owner}`, params, client);
+      for (const table of ["tasks", "comments", "runs", "schedulers"]) {
+        await this.query(`UPDATE ${table} SET user_id = $1 WHERE ${owner}`, params, client);
+      }
+      return boards.rowCount ?? 0;
+    });
+  }
+
   // ------------------------------------------------------------------ boards
 
-  async listBoards(): Promise<BoardWithCounts[]> {
+  async listBoards(userId?: string): Promise<BoardWithCounts[]> {
+    // Tasks carry their board's owner, so the stats query filters on the same column.
+    const where = userId === undefined ? "" : "WHERE user_id = $1";
+    const params = userId === undefined ? [] : [userId];
     const [boards, stats] = await Promise.all([
-      this.query<BoardRow>("SELECT * FROM boards ORDER BY created_at DESC"),
+      this.query<BoardRow>(`SELECT * FROM boards ${where} ORDER BY created_at DESC`, params),
       this.query<{ board_id: string; status: TaskStatus; n: number; active: number }>(
         `SELECT board_id, status, COUNT(*)::int AS n,
            SUM(CASE WHEN agent_state IN ('running', 'queued') THEN 1 ELSE 0 END)::int AS active
-         FROM tasks GROUP BY board_id, status`,
+         FROM tasks ${where} GROUP BY board_id, status`,
+        params,
       ),
     ]);
     const byBoard = new Map<string, BoardWithCounts>();
@@ -541,8 +682,8 @@ export class PostgresRepository implements Repository {
   async createBoard(input: CreateBoardInput): Promise<Board> {
     const now = nowIso();
     const res = await this.query<BoardRow>(
-      `INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8) RETURNING *`,
+      `INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, created_at, updated_at, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9) RETURNING *`,
       [
         newId(),
         input.name,
@@ -552,6 +693,7 @@ export class PostgresRepository implements Repository {
         input.autoRun ?? true,
         input.worktrees ?? false,
         now,
+        input.userId ?? null,
       ],
     );
     return toBoard(res.rows[0]);
@@ -587,12 +729,19 @@ export class PostgresRepository implements Repository {
     return res.rows.map(toTask);
   }
 
-  async listTasksByAgentState(states: AgentState[]): Promise<Task[]> {
+  async listTasksByAgentState(states: AgentState[], userId?: string): Promise<Task[]> {
     if (states.length === 0) return [];
-    const res = await this.query<TaskRow>(
-      `${TASK_SELECT} WHERE t.agent_state = ANY($1::text[]) ORDER BY t.updated_at ASC, t.created_at ASC`,
-      [states],
-    );
+    const res =
+      userId === undefined
+        ? await this.query<TaskRow>(
+            `${TASK_SELECT} WHERE t.agent_state = ANY($1::text[]) ORDER BY t.updated_at ASC, t.created_at ASC`,
+            [states],
+          )
+        : await this.query<TaskRow>(
+            `${TASK_SELECT} WHERE t.agent_state = ANY($1::text[]) AND t.user_id = $2
+             ORDER BY t.updated_at ASC, t.created_at ASC`,
+            [states, userId],
+          );
     return res.rows.map(toTask);
   }
 
@@ -617,8 +766,8 @@ export class PostgresRepository implements Repository {
         position = max == null ? POSITION_STEP : Number(max) + POSITION_STEP;
       }
       await this.query(
-        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, blocked_by, created_by_task_id, scheduler_id, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'idle', $7, $8, $9, $10, $10)`,
+        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, blocked_by, created_by_task_id, scheduler_id, created_at, updated_at, user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, 'idle', $7, $8, $9, $10, $10, (SELECT user_id FROM boards WHERE id = $2))`,
         [
           id,
           input.boardId,
@@ -690,8 +839,8 @@ export class PostgresRepository implements Repository {
     const now = nowIso();
     const resolved = input.resolved ?? input.author === "agent";
     const res = await this.query<CommentRow>(
-      `INSERT INTO comments (id, task_id, author, body, resolved, resolved_at, resolved_by_run_id, from_task_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8) RETURNING *`,
+      `INSERT INTO comments (id, task_id, author, body, resolved, resolved_at, resolved_by_run_id, from_task_id, created_at, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, (SELECT user_id FROM tasks WHERE id = $2)) RETURNING *`,
       [
         newId(),
         input.taskId,
@@ -753,10 +902,16 @@ export class PostgresRepository implements Repository {
     return res.rows.map(toRun);
   }
 
-  async listRecentRuns(limit?: number): Promise<Run[]> {
-    const res = await this.query<RunRow>("SELECT * FROM runs ORDER BY started_at DESC, id DESC LIMIT $1", [
-      normalizeRecentRunLimit(limit),
-    ]);
+  async listRecentRuns(limit?: number, userId?: string): Promise<Run[]> {
+    const res =
+      userId === undefined
+        ? await this.query<RunRow>("SELECT * FROM runs ORDER BY started_at DESC, id DESC LIMIT $1", [
+            normalizeRecentRunLimit(limit),
+          ])
+        : await this.query<RunRow>(
+            "SELECT * FROM runs WHERE user_id = $1 ORDER BY started_at DESC, id DESC LIMIT $2",
+            [userId, normalizeRecentRunLimit(limit)],
+          );
     return res.rows.map(toRun);
   }
 
@@ -767,8 +922,8 @@ export class PostgresRepository implements Repository {
 
   async createRun(input: CreateRunInput): Promise<Run> {
     const res = await this.query<RunRow>(
-      `INSERT INTO runs (id, task_id, status, prompt, summary, error, started_at, ended_at)
-       VALUES ($1, $2, 'running', $3, NULL, NULL, $4, NULL) RETURNING *`,
+      `INSERT INTO runs (id, task_id, status, prompt, summary, error, started_at, ended_at, user_id)
+       VALUES ($1, $2, 'running', $3, NULL, NULL, $4, NULL, (SELECT user_id FROM tasks WHERE id = $2)) RETURNING *`,
       [newId(), input.taskId, input.prompt, nowIso()],
     );
     return toRun(res.rows[0]);
@@ -818,14 +973,22 @@ export class PostgresRepository implements Repository {
 
   // -------------------------------------------------------------- schedulers
 
-  async listSchedulers(boardId?: string): Promise<Scheduler[]> {
-    const res =
-      boardId === undefined
-        ? await this.query<SchedulerRow>("SELECT * FROM schedulers ORDER BY created_at DESC, id DESC")
-        : await this.query<SchedulerRow>(
-            "SELECT * FROM schedulers WHERE board_id = $1 ORDER BY created_at DESC, id DESC",
-            [boardId],
-          );
+  async listSchedulers(boardId?: string, userId?: string): Promise<Scheduler[]> {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (boardId !== undefined) {
+      params.push(boardId);
+      conditions.push(`board_id = $${params.length}`);
+    }
+    if (userId !== undefined) {
+      params.push(userId);
+      conditions.push(`user_id = $${params.length}`);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const res = await this.query<SchedulerRow>(
+      `SELECT * FROM schedulers ${where} ORDER BY created_at DESC, id DESC`,
+      params,
+    );
     return res.rows.map(toScheduler);
   }
 
@@ -838,8 +1001,9 @@ export class PostgresRepository implements Repository {
     const now = nowIso();
     const res = await this.query<SchedulerRow>(
       `INSERT INTO schedulers (id, board_id, name, prompt, cron, timezone, enabled, max_runs, run_count,
-         last_run_at, next_run_at, last_status, last_task_id, last_error, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, NULL, $9, NULL, NULL, NULL, $10, $10) RETURNING *`,
+         last_run_at, next_run_at, last_status, last_task_id, last_error, created_at, updated_at, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, NULL, $9, NULL, NULL, NULL, $10, $10,
+         (SELECT user_id FROM boards WHERE id = $2)) RETURNING *`,
       [
         newId(),
         input.boardId,
@@ -857,7 +1021,7 @@ export class PostgresRepository implements Repository {
   }
 
   async updateScheduler(id: string, patch: UpdateSchedulerInput): Promise<Scheduler | null> {
-    const { sql, params } = buildSet([
+    const set = buildSet([
       ["board_id", patch.boardId],
       ["name", patch.name],
       ["prompt", patch.prompt],
@@ -873,6 +1037,13 @@ export class PostgresRepository implements Repository {
       ["last_error", patch.lastError],
       ["updated_at", nowIso()],
     ]);
+    const params = set.params;
+    let sql = set.sql;
+    if (patch.boardId !== undefined) {
+      // Moving to another board moves the scheduler to that board's owner.
+      params.push(patch.boardId);
+      sql += `, user_id = (SELECT user_id FROM boards WHERE id = $${params.length})`;
+    }
     const res = await this.query<SchedulerRow>(
       `UPDATE schedulers SET ${sql} WHERE id = $${params.length + 1} RETURNING *`,
       [...params, id],

@@ -59,10 +59,11 @@ export function memoryPost<T>(pathname: string, body: unknown): Promise<T> {
 
 /**
  * `withApi` for memory routes: when the memory server can't be reached the route answers
- * 503 `MemoryUnavailable` so the UI can render its setup state.
+ * 503 `MemoryUnavailable` so the UI can render its setup state. `options` go to `withApi`.
  */
 export function memoryRoute<P extends Record<string, string | string[]> = Record<string, never>>(
   handler: (ctx: ApiContext<P>) => Promise<Response>,
+  options: { admin?: boolean } = {},
 ) {
   return withApi<P>(async (ctx) => {
     try {
@@ -77,7 +78,7 @@ export function memoryRoute<P extends Record<string, string | string[]> = Record
       };
       return json(body, { status: 503 });
     }
-  });
+  }, options);
 }
 
 // ---------------------------------------------------------------------------------------------

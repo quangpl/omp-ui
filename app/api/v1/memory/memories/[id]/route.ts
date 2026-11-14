@@ -116,30 +116,33 @@ export const GET = memoryRoute<Params>(async ({ req, repo, params }) => {
     related,
   };
   return json(detail);
-});
+}, { admin: true });
 
 /**
  * Forget (permanently delete) a memory, or an observation with `layer=observation&sessionId=…`.
  * 404 when nothing was deleted.
  */
-export const DELETE = memoryRoute<Params>(async ({ req, params }) => {
-  const id = parseId(params.id);
-  const url = new URL(req.url);
-  const layer = url.searchParams.get("layer") ?? "memory";
-  let payload: Record<string, unknown>;
-  if (layer === "memory") {
-    payload = { memoryId: id };
-  } else if (layer === "observation") {
-    const sessionId = parseId(url.searchParams.get("sessionId"), "sessionId");
-    payload = { sessionId, observationIds: [id] };
-  } else {
-    throw new HttpError(400, "layer must be memory or observation");
-  }
-  const result = await memoryPost<{ deleted?: number; success?: boolean }>("/agentmemory/forget", payload);
-  const deleted = typeof result.deleted === "number" ? result.deleted : 0;
-  if (deleted === 0) {
-    throw new HttpError(result.success === false ? 502 : 404, result.success === false ? "Forget failed" : "Memory not found");
-  }
-  const body: MemoryForgetResult = { deleted };
-  return json(body);
-});
+export const DELETE = memoryRoute<Params>(
+  async ({ req, params }) => {
+    const id = parseId(params.id);
+    const url = new URL(req.url);
+    const layer = url.searchParams.get("layer") ?? "memory";
+    let payload: Record<string, unknown>;
+    if (layer === "memory") {
+      payload = { memoryId: id };
+    } else if (layer === "observation") {
+      const sessionId = parseId(url.searchParams.get("sessionId"), "sessionId");
+      payload = { sessionId, observationIds: [id] };
+    } else {
+      throw new HttpError(400, "layer must be memory or observation");
+    }
+    const result = await memoryPost<{ deleted?: number; success?: boolean }>("/agentmemory/forget", payload);
+    const deleted = typeof result.deleted === "number" ? result.deleted : 0;
+    if (deleted === 0) {
+      throw new HttpError(result.success === false ? 502 : 404, result.success === false ? "Forget failed" : "Memory not found");
+    }
+    const body: MemoryForgetResult = { deleted };
+    return json(body);
+  },
+  { admin: true },
+);

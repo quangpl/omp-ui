@@ -1,21 +1,52 @@
 # AgentMan REST API (v1)
 
 Base path: `/api/v1`. JSON in/out. Errors: HTTP 4xx/5xx with `{ "error": "message" }`.
-Designed for the web UI and future mobile clients: a client only needs the **server URL** and the **admin password**.
+Designed for the web UI and future mobile clients: a client only needs the **server URL** and a **username (or email) and password**.
 
 ## Authentication
 
 | Method | Path | Body | Response | Auth |
 | --- | --- | --- | --- | --- |
-| GET | `/auth/status` | – | `{ configured: boolean, authenticated: boolean }` | none |
-| POST | `/auth/setup` | `{ password }` (min 8 chars) | `{ token, expiresAt }` + cookie | none; only while no password is configured (409 otherwise) |
-| POST | `/auth/login` | `{ password }` | `{ token, expiresAt }` + cookie | none; 401 on bad password; rate limited (429) |
+| GET | `/auth/status` | – | `AuthStatus`: `{ configured: boolean, authenticated: boolean, user: User \| null }`. `configured`: at least one account exists; `user`: the signed-in account | none |
+| POST | `/auth/setup` | `{ username?, email?, password }` (`username` default `"admin"`; password min 8 chars) | `TokenResponse` + cookie. Creates the first account, an admin. 400 for an invalid username, email or password | none; only while no account exists (409 otherwise) |
+| POST | `/auth/login` | `{ username?, password }` | `TokenResponse` + cookie. `username` is a username or an email (case-insensitive); omitted or empty → `"admin"` (password-only clients). 401 `{ error: "Invalid username or password" }` (also for a deactivated account); 409 before setup | none; rate limited (429 with `retry-after`) |
 | POST | `/auth/logout` | – | `{ ok: true }`, clears cookie | any |
-| POST | `/auth/password` | `{ current, next }` | `{ token, expiresAt }`; invalidates all older tokens | required |
+| POST | `/auth/password` | `{ current, next }` | `TokenResponse` for this session. Changes **the caller's** password and signs out the caller's other sessions and chat logins; other accounts are untouched. 403 wrong `current`, 400 `next` under 8 chars | required |
+
+`TokenResponse` = `{ token, expiresAt, user: User }`. `User` = `{ id, username, email: string \| null, role: "admin" \| "user", isActive, createdAt, updatedAt }`.
 
 Authenticated requests send **either** the `omp_ui_token` httpOnly cookie (web) **or** `Authorization: Bearer <token>` (mobile/CLI).
-Tokens are HMAC-SHA256 signed, valid 30 days. Changing the password (or `omp-ui passwd`) rotates the signing epoch and revokes every issued token.
-The `ADMIN_PASSWORD` env var, when set, is applied at server boot (overwrites the stored hash).
+Tokens (format `v2`) are HMAC-SHA256 signed, valid 30 days and bound to one account: they stop working when that account's password changes (by itself, an admin or `omp-ui passwd`), or when it is deactivated, changes role or is deleted. Bumping the global epoch (settings key `token_epoch`) revokes every account's tokens at once. Tokens issued before the multi-user upgrade (v1) are rejected, so every client signs in once more.
+
+Upgrades: the old admin password becomes the account `admin`, and every existing project, card and credential is assigned to the first admin at boot. The `ADMIN_PASSWORD` env var, when set, is applied at every boot to the `admin` account: created if missing, made an active admin, and signed out when the password differs from the stored one. `omp-ui passwd` writes `ADMIN_PASSWORD` to `.env`, so it resets the `admin` account only (at the next boot).
+
+### Access control
+
+Data is per user: a regular user (`role: "user"`) sees and changes only their own projects and everything under them (cards, comments, runs and run events, schedulers, artifacts, card and project files, workspaces, git actions), their own [credentials](#credentials), and only those in live events (`/events`), the agent queue (`/queue`) and the dashboard. New projects and credentials belong to their creator. Admins see and change everyone's data. An id the caller cannot see answers 404 exactly like an unknown one.
+
+Admin only (403 `{ error: "Admin only" }` for regular users, recorded as a security event):
+
+- every method: `/users/**`, `/terminal/**`, `/docker/**`, `/logs/**` except `POST /logs/access` (the page-view beacon), `/settings/cleanup`, `/settings/telemetry/test`, `/settings/ai-providers/oauth/**`, `/stats/maintenance`, `/memory/start`, `/memory/connect-omp`, the memory browse routes (`/memory/memories*`, `/memory/sessions*`, `/memory/search`, `/memory/stats`), `/mcp/sync`, `/mcp/:name/test`, `/chat/{telegram,discord}/{connect,disconnect}`.
+- mutations only (GET stays open): `POST /system/restart`, `PATCH /settings`, `PUT /omp-config`, `PATCH /settings/ai-providers`, `POST /settings/ai-providers/test`, `POST /mcp`, `PATCH`/`DELETE /mcp/:name`.
+
+`GET /memory` (status) stays open. For regular users `GET /omp-config` answers `raw: ""` and `version: ""` (the file may hold secrets).
+
+Data directory: for regular users, `/fs/**`, `/git/init`, `/git/repo`, `/git/clone`, the project-files routes and a board's `workdir`/`extraFolders` refuse `DATA_DIR` and anything inside it (symlinks and `..` resolved), and on writes (delete, move, copy) also folders that contain it: 403 `{ error: "This folder is restricted to administrators" }`. Listings leave those folders out.
+
+`/events` and `/terminal/stream` close within one heartbeat when the user's session is revoked, or the user is deactivated, deleted or changes role; the client reconnects with its current token.
+
+## Users
+
+Account management, **admin only**. Usernames are trimmed and lowercased, 2–32 characters of `a-z`, `0-9`, `.`, `_`, `-`, starting with a letter or digit; emails are optional (`null`), trimmed and lowercased, at most 254 characters; passwords 8–1024 characters. Username and email must be unique across accounts (409 `Username already taken` / `Email already in use`). Invalid fields answer 400; an unknown id 404 `User not found`. Every change is a `users` security event.
+
+| Method | Path | Body | Response |
+| --- | --- | --- | --- |
+| GET | `/users` | – | `User[]`, oldest first |
+| POST | `/users` | `CreateUserRequest`: `{ username, email?, password, role? }` (`role` default `"user"`) | `User` (201) |
+| GET | `/users/:id` | – | `User` |
+| PATCH | `/users/:id` | `UpdateUserRequest`: `Partial<{ username, email, role, isActive }>` | `User`. A role change or deactivation signs the user out everywhere (sessions and chat logins). 400 when you demote or deactivate your own account; 409 `At least one active admin is required` when it would leave no active admin |
+| DELETE | `/users/:id?reassignTo=<userId>` | – | `DeleteUserResult`: `{ ok: true, boards, credentials, reassignedTo }`. With `reassignTo` (an active user other than `id`), the user's projects (with everything under them) and credentials move to that user (`board.updated` per project); without it each project is deleted like `DELETE /boards/:id` and their credentials are deleted (MCP entries using them are rewritten). `boards`/`credentials` count what moved or was deleted. 400 deleting yourself, `reassignTo` = `id`, or an unknown or inactive `reassignTo`; 409 deleting the last active admin |
+| PATCH | `/users/:id/password` | `{ password }` | `{ ok: true }`; signs the user out everywhere. For your own account it answers a fresh `TokenResponse` instead, so you stay signed in |
 
 ## System
 
@@ -69,7 +100,7 @@ Backs the **Logs** page. Sources (`LogSource`, `lib/log-types.ts`): `system` (`D
 | GET | `/logs/:source/export?format=json\|ndjson\|txt&<filters>` | Download (`content-disposition: attachment`) of every matching entry (max 50 000), newest first |
 | POST | `/logs/access` | `{ path }` → 204. Records a page view in the access log |
 
-Security events: logins (succeeded, failed, rate-limited), logout, password setup/change (including `omp-ui passwd`), credential changes and unauthorized API requests. Access events: every authenticated API request (method, path without query string, status, duration, client IP) except reads of `/logs`, plus page views. Database events: connection, migrations, failed and slow (≥ 500 ms) queries. Secrets, query strings and request bodies are never logged.
+Security events: logins (succeeded, failed, rate-limited, with the login name), logout, password setup/change (including `omp-ui passwd`), user account changes (create, update, delete, password set; `meta.targetId`, `meta.targetUsername`), credential changes and unauthorized or admin-only API requests. Access events: every authenticated API request (method, path without query string, status, duration, client IP) except reads of `/logs`, plus page views. Events of a signed-in request carry `meta.user` (username) and `meta.userId`. Database events: connection, migrations, failed and slow (≥ 500 ms) queries. Secrets, query strings and request bodies are never logged.
 
 ## OMP config
 
@@ -301,6 +332,8 @@ The stream's unnamed messages are `data: <TerminalStreamEvent JSON>\n\n`:
 
 AgentMan fronts a local [agentmemory](https://github.com/rohitg00/agentmemory) server (`AGENTMEMORY_URL`, default `http://127.0.0.1:3111`) that gives card runs persistent memory (see README).
 
+`GET /memory` is open to every signed-in user; `/memory/start`, `/memory/connect-omp` and the browse routes below are admin only (403 `{ error: "Admin only" }`).
+
 | Method | Path | Response |
 | --- | --- | --- |
 | GET | `/memory?refresh=1` | `MemoryStatus`: `{ enabled: "auto"\|"true"\|"false", installed, installSource: "path"\|"npx"\|null, version, url, viewerUrl, reachable, healthy, starting, error, level, headline, problems: { level, message, fix? }[], embeddings, embeddingsSource: "server"\|"config", llm, stats, omp: { agentDir, connected, mcp, error } }`. `embeddings` is `"bm25"` (keyless) or the embedding provider (`"local"`, `"openai"`, …), read from the running server or else `~/.agentmemory/.env`; `llm` is the summary provider (`"noop"` when keyless, `null` while down); `stats` is `{ memories, sessions, observations, lessons }` or `null`; `level`/`headline`/`problems` come from agentmemory's own status check. `omp.connected`: `agentmemory connect omp` installed its extension in omp's agent dir; `omp.mcp`: with the MCP toolset. `refresh=1` looks for the CLI again |
@@ -326,6 +359,8 @@ The browse routes below proxy the memory server and normalize its records (types
 
 Keys and tokens for MCP servers and connector services (the `/credentials` page). Types are in [`lib/credential-types.ts`](../lib/credential-types.ts); provider templates (fields, validation patterns, MCP launch config, health check) in [`lib/credential-providers.ts`](../lib/credential-providers.ts). Records live in the database settings (`credentials`, plus read/dismissed notification ids in `credential_notifications`). Secret fields are encrypted with AES-256-GCM under `CREDENTIALS_KEY` (any non-empty string, hashed with SHA-256) or else a generated `DATA_DIR/credentials.key`, and are only ever returned masked (`abcd••••wxyz`, or `••••••••` under 12 characters). With a different key, stored secrets cannot be decrypted: those credentials turn `failing` ("Cannot decrypt: the encryption key changed") until their secrets are entered again.
 
+Credentials belong to the user who created them (`CredentialSummary.userId`; credentials from before the multi-user upgrade belong to the first admin). Regular users list, read, change, test and get notifications for their own only; another user's id answers 404 `Credential not found`. Admins see every credential. Background health checks and the MCP environment of every agent use all credentials regardless of owner.
+
 Errors: invalid fields answer `400 { error, fields: CredentialValidationErrors }` (`error` is the first message; `fields` maps field keys, `name` and `expiresAt` to messages); an unknown provider or notification action `400 { error }`; an unknown id `404 { error }`; a conflicting concurrent edit `409 { error }`.
 
 | Method | Path | Body | Response |
@@ -336,11 +371,11 @@ Errors: invalid fields answer `400 { error, fields: CredentialValidationErrors }
 | DELETE | `/credentials/:id` | – | `{ ok: true }` |
 | POST | `/credentials/:id/test` | – | `{ credential: CredentialSummary, result: CredentialTestResult }`: health-checks the saved credential now and stores the outcome |
 | POST | `/credentials/test` | `CredentialInput` plus `id?` | `CredentialTestResult`: tests unsaved form values without storing anything; with `id`, secret fields left empty use that credential's stored values |
-| POST | `/credentials/check-all` | – | `CredentialsResponse` after health-checking every credential (also those with `autoCheck` off) |
+| POST | `/credentials/check-all` | – | `CredentialsResponse` after health-checking every credential the caller can see (also those with `autoCheck` off) |
 | GET | `/credentials/notifications` | – | `CredentialNotificationsResponse`: `{ notifications: CredentialNotification[], unread }`, not dismissed, newest first |
 | POST | `/credentials/notifications` | `{ action: "read"\|"dismiss"\|"read-all"\|"dismiss-all", ids?: string[] }` (`ids` for `read`/`dismiss`) | `CredentialNotificationsResponse` after the change |
 
-- `CredentialSummary` = `{ id, providerId, name, fields, secretsSet, expiresAt, autoCheck, health: "healthy"\|"failing"\|"untested", lastCheckedAt, lastOkAt, lastLatencyMs, lastMessage, failingSince, consecutiveFailures, createdAt, updatedAt }`. `fields` holds non-secret values verbatim and secret ones masked; `secretsSet` lists the secret fields that hold a value.
+- `CredentialSummary` = `{ id, providerId, name, fields, secretsSet, expiresAt, autoCheck, health: "healthy"\|"failing"\|"untested", lastCheckedAt, lastOkAt, lastLatencyMs, lastMessage, failingSince, consecutiveFailures, userId, createdAt, updatedAt }`. `fields` holds non-secret values verbatim and secret ones masked; `secretsSet` lists the secret fields that hold a value; `userId` is the owner's id.
 - `CredentialTestResult` = `{ ok, message, latencyMs, checkedAt }`. Each provider's check is one authenticated request (e.g. `GET {host}/user` for GitHub, an MCP `initialize` call for a custom MCP server) with a 10 s timeout; `message` is short and never contains the secret ("Authenticated as octocat", "401 Unauthorized: Bad credentials", "Timed out after 10 s").
 - Credentials with `autoCheck` are re-checked in the background every 10 minutes (`checkIntervalMs`, `CREDENTIAL_CHECK_INTERVAL_MS`), first about 30 s after the server starts.
 - `CredentialNotification` = `{ id, credentialId, credentialName, providerId, kind: "failing"\|"expired"\|"expiring"\|"untested", severity: "error"\|"warning"\|"info", title, message, createdAt, read }`. Notifications are derived from the credentials on every read: `failing` and `expired` are errors, `expiring` (within 7 days of `expiresAt`) a warning, `untested` (never checked, created over an hour ago) info. `id` is `${credentialId}:${kind}:${since}`, so a new occurrence of a problem (failing again after recovering) is a new, unread notification even if the old one was dismissed.
@@ -401,18 +436,19 @@ Recurring cards (the `/schedulers` page). On every match of its cron expression,
 | GET | `/chat/status` | `ChatStatusResponse`: `{ telegram, discord }`, each a `ChatPlatformStatus` `{ platform, configured, state: "disconnected"\|"connecting"\|"connected"\|"error", error, bot: { id, name, username }\|null, botUrl, mode: "polling"\|"webhook"\|"gateway"\|null, webhookUrl, tokenHint, authorizedUsers }` |
 | POST | `/chat/telegram/connect` | `{ token, webhookUrl? }` → `ChatPlatformStatus`. Checks the token with Telegram (`getMe`), stores it sealed in `AppSettings.telegramBotToken` and starts the bot: long polling, or a webhook at `<webhookUrl>/api/v1/chat/telegram/webhook` when `webhookUrl` (https) is given. 400 with a readable message for a malformed or rejected token |
 | POST | `/chat/discord/connect` | `{ token }` → `ChatPlatformStatus`. Checks the token (`/users/@me`, `/oauth2/applications/@me`), stores it sealed in `AppSettings.discordBotToken`, registers the slash commands and connects to the gateway; the application owner gets a DM. 400 for a rejected token |
-| POST | `/chat/{telegram,discord}/disconnect` | Stops the bot and deletes its token (chat logins are kept) → `ChatPlatformStatus` |
+| POST | `/chat/{telegram,discord}/disconnect` | Stops the bot and deletes its token (chat logins are kept) → `ChatPlatformStatus`. Connect and disconnect are admin only |
 | POST | `/chat/telegram/webhook` | **No auth**: Telegram updates, accepted only with the `X-Telegram-Bot-Api-Secret-Token` set at connect (else 401); 404 when the bot is not connected |
 | POST | `/chat/discord/webhook` | **No auth**: Discord interactions (set it as the application's Interactions Endpoint URL), accepted only with a valid Ed25519 signature (else 401) |
 
 - GET and PATCH `/settings` answer the token fields as `"********"` when set, `""` otherwise; PATCH ignores them.
-- Chat users must send `/login <admin password>` before anything else (5 failed attempts per user, 20 in total, per 10 min); logins are revoked when the admin password changes.
-- The only chat commands are `/login <password>`, `/logout` and `/stop [cardId]` (stops a card's agent; without an id it cancels the assistant's current request). Every other message from a logged-in user, plain text or any other `/command`, goes to the chat assistant: an omp helper (default model from Settings → Agent, omp's default when empty) with AgentMan host tools to list boards and cards, read a card, create cards (optionally starting them), run/stop cards, message a card's agent, move cards and pick the chat's default board. Requests run one at a time per chat; the reply edits a "Working on it…" placeholder. Cards started from chat stream their output into it.
+- Chat users must send `/login [username] <password>` before anything else; `username` is a username or an email, and with one argument it is the password of the `admin` account. The login message is deleted from the chat right away. 5 failed attempts per chat user, 20 in total, per 10 min. A chat login stays valid while its account exists, is active and keeps the same password and role (and the global epoch is unchanged).
+- Each chat acts as its account: a regular user's assistant reaches only their own projects and cards, and run results are relayed only to chat logins whose account owns the card's project or is an admin.
+- The only chat commands are `/login [username] <password>`, `/logout` and `/stop [cardId]` (stops a card's agent; without an id it cancels the assistant's current request). Every other message from a logged-in user, plain text or any other `/command`, goes to the chat assistant: an omp helper (default model from Settings → Agent, omp's default when empty) with AgentMan host tools to list boards and cards, read a card, create cards (optionally starting them), run/stop cards, message a card's agent, move cards and pick the chat's default board. Requests run one at a time per chat; the reply edits a "Working on it…" placeholder. Cards started from chat stream their output into it.
 
 ## Live updates
 
-`GET /events?boardId=<id>` – Server-Sent Events. Each message: `data: <ServerEvent JSON>\n\n`. Omit `boardId` to receive everything; `queue.updated` is sent on every stream. A named `ping` event (`event: ping\ndata:\n\n`, not delivered to `onmessage`) is sent every 20 s so clients can detect a silent connection and reconnect.
+`GET /events?boardId=<id>` – Server-Sent Events. Each message: `data: <ServerEvent JSON>\n\n`. Omit `boardId` to receive everything the caller can see (regular users: events of their own projects only); `queue.updated` is sent on every stream (for regular users, reduced to their own cards). A named `ping` event (`event: ping\ndata:\n\n`, not delivered to `onmessage`) is sent every 20 s so clients can detect a silent connection and reconnect. The stream closes within one heartbeat when the session is revoked or the user is deactivated, deleted or changes role.
 
 Run events of kind `agent` hold a JSON `SubagentSnapshot` (one subagent of an orchestrated run); the latest per `id` is its state. They are written when a subagent appears, changes status or reports, and when the run ends (subagents still working are marked `aborted`). Progress in between is sent only live as `run.agent`.
 
-Types (`Board`, `Task`, `Comment`, `Run`, `RunEvent`, `AppSettings`, `ServerEvent`, `FsBrowseResult`, `GitStatus`, `GitRepoActionResult`, `GitActionResult`, `SharedFiles`, `TaskWorkspace`, `QueueSnapshot`, `ConcurrencyInfo`, `Dashboard`, `OmpConfigSnapshot`, `OmpModel`, `MemoryStatus`, `Scheduler`, `SchedulerRun`, `SchedulerRunView`, `SchedulerLogEntry`) are defined in [`lib/types.ts`](../lib/types.ts); `TaskDiff` and `DiffSummary` in [`lib/diff-types.ts`](../lib/diff-types.ts); `RunningSummary`, `QuickRunSpec`, `QuickComposeSpec`, `DockerJobEvent` and `HubRepository` in [`lib/docker-types.ts`](../lib/docker-types.ts); the `/memory/*` browse shapes in [`lib/memory-types.ts`](../lib/memory-types.ts); the `/credentials/*` shapes in [`lib/credential-types.ts`](../lib/credential-types.ts); the `/mcp/*` shapes in [`lib/mcp-types.ts`](../lib/mcp-types.ts); the `/terminal/execute` events in [`lib/terminal-types.ts`](../lib/terminal-types.ts).
+Types (`User`, `AuthStatus`, `CreateUserRequest`, `UpdateUserRequest`, `DeleteUserResult`, `Board`, `Task`, `Comment`, `Run`, `RunEvent`, `AppSettings`, `ServerEvent`, `FsBrowseResult`, `GitStatus`, `GitRepoActionResult`, `GitActionResult`, `SharedFiles`, `TaskWorkspace`, `QueueSnapshot`, `ConcurrencyInfo`, `Dashboard`, `OmpConfigSnapshot`, `OmpModel`, `MemoryStatus`, `Scheduler`, `SchedulerRun`, `SchedulerRunView`, `SchedulerLogEntry`) are defined in [`lib/types.ts`](../lib/types.ts); `TaskDiff` and `DiffSummary` in [`lib/diff-types.ts`](../lib/diff-types.ts); `RunningSummary`, `QuickRunSpec`, `QuickComposeSpec`, `DockerJobEvent` and `HubRepository` in [`lib/docker-types.ts`](../lib/docker-types.ts); the `/memory/*` browse shapes in [`lib/memory-types.ts`](../lib/memory-types.ts); the `/credentials/*` shapes in [`lib/credential-types.ts`](../lib/credential-types.ts); the `/mcp/*` shapes in [`lib/mcp-types.ts`](../lib/mcp-types.ts); the `/terminal/execute` events in [`lib/terminal-types.ts`](../lib/terminal-types.ts).

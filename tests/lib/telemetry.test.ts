@@ -89,6 +89,7 @@ function run(status: Run["status"], extra: Partial<Run> = {}): Run {
     error: null,
     startedAt: iso(0),
     endedAt: null,
+    userId: null,
     ...extra,
   };
 }

@@ -1,7 +1,20 @@
-import { Loader2Icon } from "lucide-react";
+"use client";
+
+import { createContext, useContext } from "react";
+import { Loader2Icon, LockIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+
+const ReadOnlyContext = createContext(false);
+
+/**
+ * Marks the settings sections inside as managed by an administrator: each shows a note and its
+ * controls are disabled. Renders no element, so the page's `section + section` selectors still match.
+ */
+export function SettingsReadOnly({ value, children }: { value: boolean; children: React.ReactNode }) {
+  return <ReadOnlyContext.Provider value={value}>{children}</ReadOnlyContext.Provider>;
+}
 
 /**
  * One settings group: anchored, titled block with a description, then its body. `id` is the
@@ -25,6 +38,7 @@ export function SettingsSection({
   className?: string;
   children: React.ReactNode;
 }) {
+  const readOnly = useContext(ReadOnlyContext);
   return (
     <section
       id={id}
@@ -43,10 +57,24 @@ export function SettingsSection({
             {title}
           </h2>
           <p className="max-w-[65ch] text-sm text-pretty text-muted-foreground">{description}</p>
+          {readOnly && (
+            <p className="flex items-center gap-1.5 pt-0.5 text-xs font-medium text-muted-foreground">
+              <LockIcon className="size-3.5 shrink-0" aria-hidden="true" />
+              Managed by an administrator
+            </p>
+          )}
         </div>
         {action}
       </header>
-      {children}
+      {readOnly ? (
+        // A disabled fieldset turns off every control inside at once; `space-y-4` keeps the spacing
+        // the section gives its direct children.
+        <fieldset disabled className="min-w-0 space-y-4">
+          {children}
+        </fieldset>
+      ) : (
+        children
+      )}
     </section>
   );
 }

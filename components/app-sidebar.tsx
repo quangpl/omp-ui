@@ -17,6 +17,7 @@ import {
   SearchIcon,
   SettingsIcon,
   UserRoundIcon,
+  UsersIcon,
   XIcon,
 } from "lucide-react";
 import { LogoMark } from "@/components/app-header";
@@ -30,6 +31,7 @@ import { useNewCard } from "@/components/new-card";
 import { QueueButton } from "@/components/queue-panel";
 import { openRestartServer } from "@/components/restart-server";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import {
@@ -58,7 +60,9 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useCurrentUser } from "@/hooks/use-current-user";
 import { GO_SHORTCUTS } from "@/hooks/use-go-hotkeys";
 import { api } from "@/lib/api-client";
 import { isMenuHrefVisible, useVisibleDashboardMenus } from "@/lib/dashboard-menus";
@@ -316,23 +320,41 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
   );
 }
 
+function AdminBadge() {
+  return (
+    <Badge variant="secondary" className="h-4 shrink-0 px-1.5 text-[0.65rem]">
+      Admin
+    </Badge>
+  );
+}
+
 function AccountMenu() {
   const { isMobile } = useSidebar();
+  const { user, loading, isAdmin } = useCurrentUser();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <SidebarMenuButton
           size="lg"
           aria-label="Account menu"
-          tooltip="Account"
+          tooltip={user ? `Signed in as ${user.username}` : "Account"}
           className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground max-md:h-14 max-md:px-3"
         >
           <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-sidebar-accent text-sidebar-foreground/75 ring-1 ring-sidebar-border">
             <UserRoundIcon />
           </span>
           <span className="grid min-w-0 flex-1 leading-tight">
-            <span className="truncate font-medium">admin</span>
-            <span className="truncate text-xs text-sidebar-foreground/60">Signed in</span>
+            {user ? (
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate font-medium">{user.username}</span>
+                {isAdmin && <AdminBadge />}
+              </span>
+            ) : loading ? (
+              <Skeleton className="my-0.5 h-3.5 w-20" />
+            ) : (
+              <span className="truncate font-medium">Account</span>
+            )}
+            <span className="truncate text-xs text-sidebar-foreground/60">{user?.email ?? "Signed in"}</span>
           </span>
           <ChevronsUpDownIcon className="ml-auto text-sidebar-foreground/50" />
         </SidebarMenuButton>
@@ -343,7 +365,14 @@ function AccountMenu() {
         sideOffset={8}
         className="w-(--radix-dropdown-menu-trigger-width) min-w-56"
       >
-        <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Signed in as admin</DropdownMenuLabel>
+        {user && (
+          <DropdownMenuLabel className="flex min-w-0 items-center gap-1.5 text-xs font-normal text-muted-foreground">
+            <span className="truncate">
+              Signed in as <span className="font-medium text-foreground">{user.username}</span>
+            </span>
+            {isAdmin && <AdminBadge />}
+          </DropdownMenuLabel>
+        )}
         <DropdownMenuItem asChild className="min-h-11 gap-2.5 px-2.5 md:min-h-8">
           <Link href="/stats">
             <ChartColumnIcon />
@@ -356,6 +385,14 @@ function AccountMenu() {
             Settings
           </Link>
         </DropdownMenuItem>
+        {isAdmin && (
+          <DropdownMenuItem asChild className="min-h-11 gap-2.5 px-2.5 md:min-h-8">
+            <Link href="/settings#users">
+              <UsersIcon />
+              Users
+            </Link>
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           variant="destructive"
@@ -381,6 +418,8 @@ export function AppSidebar() {
   const openNewCard = useNewCard();
   const visibleMenus = useVisibleDashboardMenus();
   const navTabs = TOP_TABS.filter((tab) => isMenuHrefVisible(tab.href, visibleMenus));
+  // Restarting the server is an admin-only API.
+  const { isAdmin } = useCurrentUser();
 
   useEffect(() => {
     setOpenMobile(false);
@@ -537,9 +576,11 @@ export function AppSidebar() {
           <FooterIconButton label="Keyboard shortcuts" hint="?" onClick={openKeyboardHelp}>
             <KeyboardIcon className="size-5 md:size-4" />
           </FooterIconButton>
-          <FooterIconButton label="Restart server" onClick={openRestartServer}>
-            <RotateCwIcon className="size-5 md:size-4" />
-          </FooterIconButton>
+          {isAdmin && (
+            <FooterIconButton label="Restart server" onClick={openRestartServer}>
+              <RotateCwIcon className="size-5 md:size-4" />
+            </FooterIconButton>
+          )}
         </div>
         <SidebarMenu>
           <SidebarMenuItem>

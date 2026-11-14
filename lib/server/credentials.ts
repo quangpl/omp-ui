@@ -3,6 +3,8 @@
 // with a key from CREDENTIALS_KEY or DATA_DIR/credentials.key and only ever leave this module
 // masked. Health checks run on demand and every CREDENTIAL_CHECK_INTERVAL_MS in the background;
 // notifications are derived from the stored state on read (only read/dismissed ids persist).
+// Each credential belongs to a user: a scoped repository (lib/db/scoped.ts) of role "user" only
+// reaches its own; admins and the system (base repository: health checks, MCP env) reach all.
 //
 // NOTE: lib/server/http.ts imports lib/agent/manager.ts, which imports this module: never use an
 // import from lib/server/http.ts at module evaluation time (e.g. `class … extends HttpError`).
@@ -32,6 +34,7 @@ import {
   type CredentialValidationErrors,
   type CredentialsResponse,
 } from "@/lib/credential-types";
+import { repoActor } from "@/lib/db/scoped";
 import type { Repository } from "@/lib/db/types";
 import { dataDir } from "@/lib/files";
 import { probeCredential } from "@/lib/server/credential-checks";
@@ -65,6 +68,8 @@ type HealthState = Pick<
 interface StoredCredential extends HealthState {
   id: string;
   providerId: CredentialProviderId;
+  /** Owning user; null on records saved before multi-user support. */
+  userId: string | null;
   name: string;
   /** Non-secret field values, plain. */
   fields: Record<string, string>;
@@ -237,10 +242,21 @@ async function loadAll(repo: Repository): Promise<StoredCredential[]> {
   // Corrupt JSON throws: answering an empty list would let the next write wipe every credential.
   const data = JSON.parse(raw) as unknown;
   if (!Array.isArray(data)) return [];
-  return data.filter(
-    (item): item is StoredCredential =>
-      !!item && typeof item === "object" && typeof item.id === "string" && typeof item.providerId === "string",
-  );
+  return data
+    .filter(
+      (item): item is StoredCredential =>
+        !!item && typeof item === "object" && typeof item.id === "string" && typeof item.providerId === "string",
+    )
+    .map((item) => ({ ...item, userId: typeof item.userId === "string" ? item.userId : null }));
+}
+
+type Visibility = (record: StoredCredential) => boolean;
+
+/** Which credentials `repo`'s actor may reach: all for the system (base repository) and admins, else its own. */
+function visibleTo(repo: Repository): Visibility {
+  const actor = repoActor(repo);
+  if (!actor || actor.role === "admin") return () => true;
+  return (record) => record.userId === actor.id;
 }
 
 async function loadNotificationState(repo: Repository): Promise<NotificationState> {
@@ -293,9 +309,10 @@ async function saveNotificationState(
   return next;
 }
 
-function findOrThrow(list: StoredCredential[], id: string): StoredCredential {
+/** Invisible credentials answer the same 404 as unknown ones, so ids of other users never leak. */
+function findOrThrow(list: StoredCredential[], id: string, visible: Visibility): StoredCredential {
   const record = list.find((c) => c.id === id);
-  if (!record) throw new HttpError(404, "Credential not found");
+  if (!record || !visible(record)) throw new HttpError(404, "Credential not found");
   return record;
 }
 
@@ -353,6 +370,7 @@ function toSummary(record: StoredCredential): CredentialSummary {
     id: record.id,
     providerId: record.providerId,
     name: record.name,
+    userId: record.userId,
     fields,
     secretsSet,
     expiresAt: record.expiresAt,
@@ -363,8 +381,9 @@ function toSummary(record: StoredCredential): CredentialSummary {
   };
 }
 
+/** The credentials `repo`'s actor may see, secrets masked, sorted by name. */
 export async function listCredentials(repo: Repository): Promise<CredentialsResponse> {
-  const list = await loadAll(repo);
+  const list = (await loadAll(repo)).filter(visibleTo(repo));
   return {
     credentials: list
       .map(toSummary)
@@ -391,13 +410,13 @@ function toValues(record: StoredCredential): CredentialValues {
   return { summary: toSummary(record), fields: { ...record.fields, ...opened.values }, broken: opened.broken };
 }
 
-/** Decrypted values of one credential, null when the id is unknown (for MCP server configs). */
+/** Decrypted values of one credential (any owner), null when the id is unknown (for MCP server configs). */
 export async function credentialValues(repo: Repository, id: string): Promise<CredentialValues | null> {
   const record = (await loadAll(repo)).find((c) => c.id === id);
   return record ? toValues(record) : null;
 }
 
-/** Decrypted values of every credential, keyed by id (for the MCP agent environment). */
+/** Decrypted values of every credential (any owner), keyed by id (for the MCP agent environment). */
 export async function allCredentialValues(repo: Repository): Promise<Map<string, CredentialValues>> {
   return new Map((await loadAll(repo)).map((record) => [record.id, toValues(record)]));
 }
@@ -468,22 +487,23 @@ export async function checkCredential(
   repo: Repository,
   id: string,
 ): Promise<{ credential: CredentialSummary; result: CredentialTestResult }> {
-  const record = findOrThrow(await loadAll(repo), id);
+  const visible = visibleTo(repo);
+  const record = findOrThrow(await loadAll(repo), id, visible);
   const result = await probeStored(record);
   const stored = await commitResult(repo, record, result);
-  if (!stored) throw new HttpError(404, "Credential not found");
+  if (!stored || !visible(stored)) throw new HttpError(404, "Credential not found");
   return { credential: toSummary(stored), result };
 }
 
 /**
- * Health-check credentials one after another (probes run outside the write lock).
- * `autoCheckOnly`: the background tick skips credentials with autoCheck off.
+ * Health-check the credentials `repo`'s actor may see, one after another (probes run outside the
+ * write lock). `autoCheckOnly`: the background tick skips credentials with autoCheck off.
  */
 export async function checkAllCredentials(
   repo: Repository,
   options: { autoCheckOnly?: boolean } = {},
 ): Promise<CredentialsResponse> {
-  const records = await loadAll(repo);
+  const records = (await loadAll(repo)).filter(visibleTo(repo));
   for (const record of records) {
     if (options.autoCheckOnly && !record.autoCheck) continue;
     try {
@@ -558,7 +578,7 @@ function sameValues(a: Record<string, string>, b: Record<string, string>): boole
   return keys.length === Object.keys(b).length && keys.every((key) => key in b && a[key] === b[key]);
 }
 
-/** `test`: probe before saving, so the credential starts healthy/failing instead of untested. */
+/** `test`: probe before saving, so the credential starts healthy/failing instead of untested. Owned by `repo`'s actor. */
 export async function createCredential(
   repo: Repository,
   input: CredentialInput,
@@ -576,6 +596,7 @@ export async function createCredential(
   const key = encryptionKey();
   const record: StoredCredential = {
     id,
+    userId: repoActor(repo)?.id ?? null,
     providerId: provider.id,
     name,
     fields: plain,
@@ -605,7 +626,8 @@ export async function updateCredential(
   update: CredentialUpdate,
   options: { test?: boolean } = {},
 ): Promise<CredentialSummary> {
-  const current = findOrThrow(await loadAll(repo), id);
+  const visible = visibleTo(repo);
+  const current = findOrThrow(await loadAll(repo), id, visible);
   const provider = requireProvider(current.providerId);
   const opened = openSecrets(current);
   const incoming = trimFields(update.fields);
@@ -653,7 +675,7 @@ export async function updateCredential(
   const key = Object.keys(nextSecrets).length > 0 ? encryptionKey() : null;
 
   const saved = await mutate(repo, (list) => {
-    const record = findOrThrow(list, id);
+    const record = findOrThrow(list, id, visible);
     if (record.updatedAt !== current.updatedAt) {
       throw new HttpError(409, "The credential was changed meanwhile; reload and try again");
     }
@@ -679,9 +701,37 @@ export async function updateCredential(
 }
 
 export async function deleteCredential(repo: Repository, id: string): Promise<void> {
+  const visible = visibleTo(repo);
   // Saving prunes the credential's read/dismissed notification ids.
   await mutate(repo, (list) => {
-    list.splice(list.indexOf(findOrThrow(list, id)), 1);
+    list.splice(list.indexOf(findOrThrow(list, id, visible)), 1);
+  });
+}
+
+/**
+ * Give every credential of `fromUserId` (null: those without an owner) to `toUserId`; answers how
+ * many moved. System-level: ignores `repo`'s actor (user deletion with transfer, legacy claim at boot).
+ */
+export function reassignCredentials(repo: Repository, fromUserId: string | null, toUserId: string): Promise<number> {
+  return mutate(repo, (list) => {
+    let moved = 0;
+    for (const record of list) {
+      if (record.userId !== fromUserId) continue;
+      record.userId = toUserId;
+      moved += 1;
+    }
+    return moved;
+  });
+}
+
+/** Delete every credential of `userId`; answers how many. System-level: ignores `repo`'s actor. */
+export function deleteUserCredentials(repo: Repository, userId: string): Promise<number> {
+  // Saving prunes the deleted credentials' read/dismissed notification ids.
+  return mutate(repo, (list) => {
+    const before = list.length;
+    const kept = list.filter((record) => record.userId !== userId);
+    list.splice(0, list.length, ...kept);
+    return before - kept.length;
   });
 }
 
@@ -697,7 +747,7 @@ export async function testCredentialInput(
   const provider = requireProvider(input.providerId);
   const fields = trimFields(input.fields);
   if (id) {
-    const record = findOrThrow(await loadAll(repo), id);
+    const record = findOrThrow(await loadAll(repo), id, visibleTo(repo));
     if (record.providerId !== provider.id) throw new HttpError(400, "providerId does not match the credential");
     const stored = openSecrets(record).values;
     for (const field of provider.fields) {
@@ -785,11 +835,15 @@ function notificationsResponse(list: StoredCredential[], state: NotificationStat
   return { notifications, unread: notifications.filter((n) => !n.read).length };
 }
 
+/** Notifications of the credentials `repo`'s actor may see (read/dismissed ids are one shared list). */
 export async function getNotifications(repo: Repository): Promise<CredentialNotificationsResponse> {
-  return notificationsResponse(await loadAll(repo), await loadNotificationState(repo));
+  return notificationsResponse((await loadAll(repo)).filter(visibleTo(repo)), await loadNotificationState(repo));
 }
 
-/** `ids` for read/dismiss (unknown ids are ignored); read-all/dismiss-all cover every visible one. */
+/**
+ * `ids` for read/dismiss; read-all/dismiss-all cover every shown one. Only notifications the actor
+ * is shown can change (other ids are ignored), so nobody marks another user's notifications.
+ */
 export async function updateNotifications(
   repo: Repository,
   action: CredentialNotificationAction,
@@ -797,12 +851,15 @@ export async function updateNotifications(
 ): Promise<CredentialNotificationsResponse> {
   return withLock(async () => {
     const list = await loadAll(repo);
+    const own = list.filter(visibleTo(repo));
     const state = await loadNotificationState(repo);
-    const visible = notificationsResponse(list, state).notifications.map((n) => n.id);
-    const targets = action === "read-all" || action === "dismiss-all" ? visible : ids;
+    const shown = notificationsResponse(own, state).notifications.map((n) => n.id);
+    const shownSet = new Set(shown);
+    const targets = action === "read-all" || action === "dismiss-all" ? shown : ids.filter((id) => shownSet.has(id));
     if (action === "read" || action === "read-all") state.read.push(...targets);
     else state.dismissed.push(...targets);
-    return notificationsResponse(list, await saveNotificationState(repo, list, state));
+    // Pruned against every credential, so other users' read/dismissed ids survive.
+    return notificationsResponse(own, await saveNotificationState(repo, list, state));
   });
 }
 

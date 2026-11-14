@@ -1,11 +1,11 @@
 // Persistence for the chat integrations: sealed bot tokens (in AppSettings) and chat state
 // (authorized users, selected boards, Telegram webhook, bot accounts) under `chat_integrations`.
 import { currentTokenEpoch } from "@/lib/auth";
-import type { Repository } from "@/lib/db/types";
+import type { Repository, UserAuthRecord } from "@/lib/db/types";
 import type { ChatBotInfo } from "@/lib/server/chat/types";
 import { openSecret, sealSecret } from "@/lib/server/credentials";
 import { getAppSettings, updateAppSettings } from "@/lib/settings";
-import { CHAT_PLATFORMS, type AppSettings, type ChatPlatform } from "@/lib/types";
+import { CHAT_PLATFORMS, type AppSettings, type ChatPlatform, type User } from "@/lib/types";
 
 const STATE_KEY = "chat_integrations";
 
@@ -15,14 +15,18 @@ export const CHAT_TOKEN_FIELDS = {
   discord: "discordBotToken",
 } as const satisfies Record<ChatPlatform, keyof AppSettings>;
 
-/** A chat user who unlocked control with the admin password. */
+/** A chat user who logged in to an omp-ui account with `/login`. */
 export interface ChatAuthorizedUser {
   platform: ChatPlatform;
   userId: string;
   userName: string;
   /** The chat the user last logged in from; "AgentMan connected" goes there. */
   chatId: string;
-  /** Admin token epoch at login; a password change bumps it and so revokes the login. */
+  /** The omp-ui account (users table id) the chat user acts as. */
+  accountId: string;
+  /** That account's tokenEpoch at login; a password, role or status change bumps it and so revokes the login. */
+  accountEpoch: number;
+  /** Global token epoch at login; "sign out everywhere" bumps it and so revokes every login. */
   epoch: number;
   authorizedAt: string;
 }
@@ -65,16 +69,21 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value ? value : null;
 }
 
+/** Entries without an account (made before multi-user, with the shared admin password) are dropped: log in again. */
 function parseUser(value: unknown): ChatAuthorizedUser | null {
   if (typeof value !== "object" || value === null) return null;
-  const { platform, userId, userName, chatId, epoch, authorizedAt } = value as Unchecked<ChatAuthorizedUser>;
+  const { platform, userId, userName, chatId, accountId, accountEpoch, epoch, authorizedAt } =
+    value as Unchecked<ChatAuthorizedUser>;
   if (!isPlatform(platform) || typeof userId !== "string" || !userId) return null;
   if (typeof chatId !== "string" || typeof epoch !== "number") return null;
+  if (typeof accountId !== "string" || !accountId || typeof accountEpoch !== "number") return null;
   return {
     platform,
     userId,
     userName: typeof userName === "string" ? userName : "",
     chatId,
+    accountId,
+    accountEpoch,
     epoch,
     authorizedAt: typeof authorizedAt === "string" ? authorizedAt : "",
   };
@@ -165,26 +174,67 @@ export function updateChatState<T>(repo: Repository, fn: (state: ChatState) => T
   });
 }
 
-/** Logged-in users whose login is still valid (made under the current admin token epoch). */
-export function activeUsers(state: ChatState, platform: ChatPlatform, epoch: number): ChatAuthorizedUser[] {
-  return state.authorized.filter((u) => u.platform === platform && u.epoch === epoch);
+/** A chat login that is still valid, with the omp-ui account it acts as. */
+export interface ChatLogin {
+  login: ChatAuthorizedUser;
+  account: User;
 }
 
-/** Whether the user logged in with the admin password since it last changed. */
-export async function isAuthorized(repo: Repository, platform: ChatPlatform, userId: string): Promise<boolean> {
+function publicUser(record: UserAuthRecord): User {
+  return {
+    id: record.id,
+    username: record.username,
+    email: record.email,
+    role: record.role,
+    isActive: record.isActive,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
+/**
+ * The login's account while the login is valid: made under the current global epoch (`epoch`), and the
+ * account still exists, is active and has not bumped its own epoch since. Null otherwise.
+ */
+async function loginAccount(repo: Repository, login: ChatAuthorizedUser, epoch: number): Promise<User | null> {
+  if (login.epoch !== epoch) return null;
+  const record = await repo.getUserAuth(login.accountId);
+  if (!record || !record.isActive || record.tokenEpoch !== login.accountEpoch) return null;
+  return publicUser(record);
+}
+
+/** The platform's valid logins (see `loginAccount`). */
+export async function activeLogins(
+  repo: Repository,
+  state: ChatState,
+  platform: ChatPlatform,
+  epoch: number,
+): Promise<ChatLogin[]> {
+  const logins = state.authorized.filter((u) => u.platform === platform);
+  const accounts = await Promise.all(logins.map((login) => loginAccount(repo, login, epoch)));
+  return logins.flatMap((login, index) => {
+    const account = accounts[index];
+    return account ? [{ login, account }] : [];
+  });
+}
+
+/** The omp-ui account the chat user is logged in as; null when they are not (or no longer) logged in. */
+export async function chatAccount(repo: Repository, platform: ChatPlatform, userId: string): Promise<User | null> {
   const [state, epoch] = await Promise.all([loadChatState(repo), currentTokenEpoch()]);
-  return activeUsers(state, platform, epoch).some((u) => u.userId === userId);
+  const login = state.authorized.find((u) => u.platform === platform && u.userId === userId);
+  return login ? loginAccount(repo, login, epoch) : null;
 }
 
-/** Record (or refresh) a login: the user's last chat and the current epoch. */
+/** Record (or refresh) a login: the user's last chat, the account and both current epochs. */
 export async function authorizeUser(
   repo: Repository,
-  user: Omit<ChatAuthorizedUser, "epoch" | "authorizedAt">,
+  user: Omit<ChatAuthorizedUser, "accountEpoch" | "epoch" | "authorizedAt">,
 ): Promise<void> {
-  const epoch = await currentTokenEpoch();
+  const [epoch, account] = await Promise.all([currentTokenEpoch(), repo.getUserAuth(user.accountId)]);
+  if (!account?.isActive) throw new Error("This AgentMan account is no longer available.");
   await updateChatState(repo, (state) => {
     state.authorized = state.authorized.filter((u) => !(u.platform === user.platform && u.userId === user.userId));
-    state.authorized.push({ ...user, epoch, authorizedAt: new Date().toISOString() });
+    state.authorized.push({ ...user, accountEpoch: account.tokenEpoch, epoch, authorizedAt: new Date().toISOString() });
   });
 }
 

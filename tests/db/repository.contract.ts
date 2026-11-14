@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { Repository } from "@/lib/db/types";
-import type { Comment, Run, RunEvent, Task } from "@/lib/types";
+import type { CreateUserInput, Repository } from "@/lib/db/types";
+import type { Board, Comment, Run, RunEvent, Scheduler, Task } from "@/lib/types";
 
 /** One task with a comment, a run and a run event, used by the cascade tests. */
 interface PopulatedTask {
@@ -9,6 +9,15 @@ interface PopulatedTask {
   comment: Comment;
   run: Run;
   event: RunEvent;
+}
+
+/** A board with one row of every owner-carrying kind, used by the ownership tests. */
+interface OwnedBoard {
+  board: Board;
+  task: Task;
+  comment: Comment;
+  run: Run;
+  scheduler: Scheduler;
 }
 
 /**
@@ -40,6 +49,9 @@ export function runRepositoryContract(
 
     const newBoard = (suffix = "") =>
       repo.createBoard({ name: `Board${suffix}`, workdir: `/work/project${suffix}` });
+
+    const newUser = (username: string, input: Partial<CreateUserInput> = {}) =>
+      repo.createUser({ username, passwordHash: `scrypt$hash-${username}`, role: "user", ...input });
 
     const ids = (items: { id: string }[]) => items.map((i) => i.id);
 
@@ -88,6 +100,153 @@ export function runRepositoryContract(
       it("deleting an unknown key is a no-op", async () => {
         await expect(repo.deleteSetting("never-set")).resolves.toBeUndefined();
         expect(await repo.getSetting("never-set")).toBeNull();
+      });
+    });
+
+    // ------------------------------------------------------------------ users
+
+    describe("users", () => {
+      it("creates a user with defaults and keeps the secrets out of User", async () => {
+        const user = await repo.createUser({ username: "alice", passwordHash: "scrypt$alice", role: "admin" });
+
+        expect(user).toMatchObject({ username: "alice", email: null, role: "admin", isActive: true });
+        expect(typeof user.id).toBe("string");
+        expect(user.id.length).toBeGreaterThan(0);
+        expect(user.createdAt).toBe(user.updatedAt);
+        expect(Number.isNaN(Date.parse(user.createdAt))).toBe(false);
+        expect(user).not.toHaveProperty("passwordHash");
+        expect(user).not.toHaveProperty("tokenEpoch");
+
+        const fetched = await repo.getUser(user.id);
+        expect(fetched).toEqual(user);
+        expect(fetched).not.toHaveProperty("passwordHash");
+        expect(fetched).not.toHaveProperty("tokenEpoch");
+        expect(await repo.getUserAuth(user.id)).toEqual({ ...user, passwordHash: "scrypt$alice", tokenEpoch: 0 });
+      });
+
+      it("round-trips an explicit email and isActive", async () => {
+        const user = await newUser("bob", { email: "bob@example.com", isActive: false });
+
+        expect(user).toMatchObject({ username: "bob", email: "bob@example.com", role: "user", isActive: false });
+        expect(await repo.getUser(user.id)).toEqual(user);
+      });
+
+      it("lists users oldest first without secrets", async () => {
+        expect(await repo.listUsers()).toEqual([]);
+
+        const first = await newUser("first");
+        const second = await newUser("second");
+        const third = await newUser("third");
+        // Updating an older user must not change the creation-based order.
+        const touched = await repo.updateUser(first.id, { role: "admin" });
+
+        const users = await repo.listUsers();
+        expect(users).toEqual([touched, second, third]);
+        for (const u of users) {
+          expect(u).not.toHaveProperty("passwordHash");
+          expect(u).not.toHaveProperty("tokenEpoch");
+        }
+      });
+
+      it("finds a user by exact username or email", async () => {
+        const alice = await newUser("alice", { email: "alice@example.com" });
+        const bob = await newUser("bob");
+        const aliceAuth = { ...alice, passwordHash: "scrypt$hash-alice", tokenEpoch: 0 };
+
+        expect(await repo.findUserAuthByLogin("alice")).toEqual(aliceAuth);
+        expect(await repo.findUserAuthByLogin("alice@example.com")).toEqual(aliceAuth);
+        expect(await repo.findUserAuthByLogin("bob")).toEqual({
+          ...bob,
+          passwordHash: "scrypt$hash-bob",
+          tokenEpoch: 0,
+        });
+        expect(await repo.findUserAuthByLogin("nobody")).toBeNull();
+        expect(await repo.findUserAuthByLogin("nobody@example.com")).toBeNull();
+        // Callers normalize logins; drivers compare exactly.
+        expect(await repo.findUserAuthByLogin("ALICE")).toBeNull();
+      });
+
+      it("updates only patched fields and refreshes updatedAt", async () => {
+        const user = await newUser("alice", { email: "alice@example.com" });
+
+        const renamed = await repo.updateUser(user.id, { username: "alice2" });
+        expect(renamed).toEqual({ ...user, username: "alice2", updatedAt: renamed!.updatedAt });
+        expect(renamed!.updatedAt > user.updatedAt).toBe(true);
+        expect(await repo.getUserAuth(user.id)).toMatchObject({ passwordHash: "scrypt$hash-alice", tokenEpoch: 0 });
+
+        const changed = await repo.updateUser(user.id, {
+          email: null,
+          role: "admin",
+          isActive: false,
+          passwordHash: "scrypt$new",
+          tokenEpoch: 3,
+        });
+        expect(changed).toEqual({
+          ...renamed!,
+          email: null,
+          role: "admin",
+          isActive: false,
+          updatedAt: changed!.updatedAt,
+        });
+        expect(changed).not.toHaveProperty("passwordHash");
+        expect(changed!.updatedAt > renamed!.updatedAt).toBe(true);
+        expect(await repo.getUser(user.id)).toEqual(changed);
+        expect(await repo.getUserAuth(user.id)).toEqual({ ...changed!, passwordHash: "scrypt$new", tokenEpoch: 3 });
+
+        expect(await repo.findUserAuthByLogin("alice")).toBeNull();
+        expect(await repo.findUserAuthByLogin("alice@example.com")).toBeNull();
+        expect(await repo.findUserAuthByLogin("alice2")).toMatchObject({ id: user.id, tokenEpoch: 3 });
+      });
+
+      it("returns null / false for unknown ids", async () => {
+        expect(await repo.getUser("no-such-user")).toBeNull();
+        expect(await repo.getUserAuth("no-such-user")).toBeNull();
+        expect(await repo.updateUser("no-such-user", { role: "admin" })).toBeNull();
+        expect(await repo.deleteUser("no-such-user")).toBe(false);
+      });
+
+      it("rejects a username or email that is already taken", async () => {
+        const alice = await newUser("alice", { email: "alice@example.com" });
+        const bob = await newUser("bob");
+
+        await expect(newUser("alice")).rejects.toThrow();
+        await expect(newUser("carol", { email: "alice@example.com" })).rejects.toThrow();
+        await expect(repo.updateUser(bob.id, { username: "alice" })).rejects.toThrow();
+        await expect(repo.updateUser(bob.id, { email: "alice@example.com" })).rejects.toThrow();
+
+        expect(await repo.listUsers()).toEqual([alice, bob]);
+        // Re-saving a user's own username and email is not a conflict.
+        const same = await repo.updateUser(alice.id, { username: "alice", email: "alice@example.com" });
+        expect(same).toMatchObject({ id: alice.id, username: "alice", email: "alice@example.com" });
+      });
+
+      it("allows many users without an email", async () => {
+        const a = await newUser("a");
+        const b = await newUser("b", { email: null });
+        const c = await newUser("c", { email: "c@example.com" });
+
+        const cleared = await repo.updateUser(c.id, { email: null });
+        expect(cleared).toMatchObject({ email: null });
+        expect(await repo.listUsers()).toEqual([a, b, cleared]);
+      });
+
+      it("deletes only the user row", async () => {
+        const keep = await newUser("keep");
+        const drop = await newUser("drop", { email: "drop@example.com" });
+        const board = await repo.createBoard({ name: "Owned", workdir: "/work/owned", userId: drop.id });
+
+        expect(await repo.deleteUser(drop.id)).toBe(true);
+        expect(await repo.getUser(drop.id)).toBeNull();
+        expect(await repo.getUserAuth(drop.id)).toBeNull();
+        expect(await repo.findUserAuthByLogin("drop")).toBeNull();
+        expect(await repo.findUserAuthByLogin("drop@example.com")).toBeNull();
+        expect(await repo.listUsers()).toEqual([keep]);
+        expect(await repo.deleteUser(drop.id)).toBe(false);
+        // Callers move or delete the user's data first; the driver leaves it alone.
+        expect(await repo.getBoard(board.id)).toEqual(board);
+
+        // The freed username and email can be taken again.
+        await expect(newUser("drop", { email: "drop@example.com" })).resolves.toMatchObject({ username: "drop" });
       });
     });
 
@@ -1234,6 +1393,237 @@ export function runRepositoryContract(
         const boards = await repo.listBoards();
         expect(ids(boards)).toEqual([keepBoard.id]);
         expect(boards[0].counts).toEqual({ todo: 1, in_progress: 0, done: 0 });
+      });
+    });
+
+    // -------------------------------------------------------------- ownership
+
+    describe("ownership", () => {
+      /** A board owned by `userId` (omitted when null) with one task, comment, run and scheduler. */
+      async function populateBoard(userId: string | null, name: string): Promise<OwnedBoard> {
+        const board = await repo.createBoard({
+          name,
+          workdir: `/work/${name}`,
+          ...(userId === null ? {} : { userId }),
+        });
+        const task = await repo.createTask({ boardId: board.id, title: `${name} task` });
+        const comment = await repo.addComment({ taskId: task.id, author: "user", body: `${name} comment` });
+        const run = await repo.createRun({ taskId: task.id, prompt: `${name} prompt` });
+        const scheduler = await repo.createScheduler({
+          boardId: board.id,
+          name: `${name} scheduler`,
+          prompt: "p",
+          cron: "@daily",
+          timezone: "UTC",
+        });
+        return { board, task, comment, run, scheduler };
+      }
+
+      /** Current owner of every row of `p`, read back from storage. */
+      async function owners(p: OwnedBoard) {
+        return {
+          board: (await repo.getBoard(p.board.id))?.userId,
+          task: (await repo.getTask(p.task.id))?.userId,
+          comment: (await repo.getComment(p.comment.id))?.userId,
+          run: (await repo.getRun(p.run.id))?.userId,
+          scheduler: (await repo.getScheduler(p.scheduler.id))?.userId,
+        };
+      }
+
+      const ownedBy = (userId: string | null) => ({
+        board: userId,
+        task: userId,
+        comment: userId,
+        run: userId,
+        scheduler: userId,
+      });
+
+      it("stamps the board's owner on its tasks, comments, runs and schedulers", async () => {
+        const alice = await newUser("alice");
+        const owned = await populateBoard(alice.id, "owned");
+
+        expect(owned.board.userId).toBe(alice.id);
+        expect(owned.task.userId).toBe(alice.id);
+        expect(owned.comment.userId).toBe(alice.id);
+        expect(owned.run.userId).toBe(alice.id);
+        expect(owned.scheduler.userId).toBe(alice.id);
+        expect(await repo.getBoard(owned.board.id)).toEqual(owned.board);
+        expect(await repo.getComment(owned.comment.id)).toEqual(owned.comment);
+        expect(await repo.getRun(owned.run.id)).toEqual(owned.run);
+        expect(await repo.getScheduler(owned.scheduler.id)).toEqual(owned.scheduler);
+        expect(await owners(owned)).toEqual(ownedBy(alice.id));
+        expect((await repo.listTasks(owned.board.id)).map((t) => t.userId)).toEqual([alice.id]);
+        expect((await repo.listComments(owned.task.id)).map((c) => c.userId)).toEqual([alice.id]);
+        expect((await repo.listRuns(owned.task.id)).map((r) => r.userId)).toEqual([alice.id]);
+
+        const unowned = await populateBoard(null, "unowned");
+        expect(unowned.board.userId).toBeNull();
+        expect(unowned.task.userId).toBeNull();
+        expect(unowned.comment.userId).toBeNull();
+        expect(unowned.run.userId).toBeNull();
+        expect(unowned.scheduler.userId).toBeNull();
+        expect(await owners(unowned)).toEqual(ownedBy(null));
+      });
+
+      it("lists only the given user's boards, with their counts", async () => {
+        const alice = await newUser("alice");
+        const bob = await newUser("bob");
+        const a1 = await repo.createBoard({ name: "a1", workdir: "/work/a1", userId: alice.id });
+        const b1 = await repo.createBoard({ name: "b1", workdir: "/work/b1", userId: bob.id });
+        const unowned = await newBoard("unowned");
+        const a2 = await repo.createBoard({ name: "a2", workdir: "/work/a2", userId: alice.id });
+
+        await repo.createTask({ boardId: a1.id, title: "todo" });
+        const running = await repo.createTask({ boardId: a1.id, title: "running", status: "in_progress" });
+        await repo.updateTask(running.id, { agentState: "running" });
+        await repo.createTask({ boardId: b1.id, title: "done", status: "done" });
+
+        const aliceBoards = await repo.listBoards(alice.id);
+        expect(ids(aliceBoards)).toEqual([a2.id, a1.id]);
+        expect(aliceBoards[1]).toMatchObject({
+          userId: alice.id,
+          counts: { todo: 1, in_progress: 1, done: 0 },
+          runningCount: 1,
+        });
+        expect(aliceBoards[0]).toMatchObject({ counts: { todo: 0, in_progress: 0, done: 0 }, runningCount: 0 });
+
+        const bobBoards = await repo.listBoards(bob.id);
+        expect(ids(bobBoards)).toEqual([b1.id]);
+        expect(bobBoards[0]).toMatchObject({ userId: bob.id, counts: { todo: 0, in_progress: 0, done: 1 } });
+
+        expect(await repo.listBoards("no-such-user")).toEqual([]);
+        expect(ids(await repo.listBoards())).toEqual([a2.id, unowned.id, b1.id, a1.id]);
+      });
+
+      it("lists tasks by agent state for one owner", async () => {
+        const alice = await newUser("alice");
+        const bob = await newUser("bob");
+        const a = await repo.createBoard({ name: "a", workdir: "/work/a", userId: alice.id });
+        const b = await repo.createBoard({ name: "b", workdir: "/work/b", userId: bob.id });
+        const unowned = await newBoard("unowned");
+
+        const aliceQueued = await repo.createTask({ boardId: a.id, title: "queued" });
+        const aliceIdle = await repo.createTask({ boardId: a.id, title: "idle" });
+        const bobQueued = await repo.createTask({ boardId: b.id, title: "queued" });
+        const unownedQueued = await repo.createTask({ boardId: unowned.id, title: "queued" });
+        for (const t of [aliceQueued, bobQueued, unownedQueued]) await repo.updateTask(t.id, { agentState: "queued" });
+
+        const aliceActive = await repo.listTasksByAgentState(["queued", "running"], alice.id);
+        expect(ids(aliceActive)).toEqual([aliceQueued.id]);
+        expect(aliceActive[0]).toMatchObject({ userId: alice.id, agentState: "queued" });
+        expect(ids(await repo.listTasksByAgentState(["idle"], alice.id))).toEqual([aliceIdle.id]);
+        expect(ids(await repo.listTasksByAgentState(["queued"], bob.id))).toEqual([bobQueued.id]);
+        expect(await repo.listTasksByAgentState(["queued"], "no-such-user")).toEqual([]);
+        expect(ids(await repo.listTasksByAgentState(["queued"])).sort()).toEqual(
+          [aliceQueued.id, bobQueued.id, unownedQueued.id].sort(),
+        );
+      });
+
+      it("lists recent runs for one owner, newest first and limited", async () => {
+        const alice = await newUser("alice");
+        const bob = await newUser("bob");
+        const a = await repo.createBoard({ name: "a", workdir: "/work/a", userId: alice.id });
+        const b = await repo.createBoard({ name: "b", workdir: "/work/b", userId: bob.id });
+        const aliceTask = await repo.createTask({ boardId: a.id, title: "a" });
+        const bobTask = await repo.createTask({ boardId: b.id, title: "b" });
+
+        const r1 = await repo.createRun({ taskId: aliceTask.id, prompt: "1" });
+        const r2 = await repo.createRun({ taskId: bobTask.id, prompt: "2" });
+        const r3 = await repo.createRun({ taskId: aliceTask.id, prompt: "3" });
+        // Bob's newest run must not take a slot of Alice's limit.
+        const r4 = await repo.createRun({ taskId: bobTask.id, prompt: "4" });
+
+        expect(ids(await repo.listRecentRuns(undefined, alice.id))).toEqual([r3.id, r1.id]);
+        expect(ids(await repo.listRecentRuns(1, alice.id))).toEqual([r3.id]);
+        expect(ids(await repo.listRecentRuns(undefined, bob.id))).toEqual([r4.id, r2.id]);
+        expect(await repo.listRecentRuns(undefined, "no-such-user")).toEqual([]);
+        expect(ids(await repo.listRecentRuns())).toEqual([r4.id, r3.id, r2.id, r1.id]);
+      });
+
+      it("lists schedulers for one owner, optionally per board", async () => {
+        const alice = await newUser("alice");
+        const bob = await newUser("bob");
+        const a1 = await populateBoard(alice.id, "a1");
+        const b1 = await populateBoard(bob.id, "b1");
+        const a2 = await populateBoard(alice.id, "a2");
+        const unowned = await populateBoard(null, "unowned");
+
+        expect(await repo.listSchedulers(undefined, alice.id)).toEqual([a2.scheduler, a1.scheduler]);
+        expect(await repo.listSchedulers(a1.board.id, alice.id)).toEqual([a1.scheduler]);
+        expect(await repo.listSchedulers(b1.board.id, alice.id)).toEqual([]);
+        expect(await repo.listSchedulers(undefined, bob.id)).toEqual([b1.scheduler]);
+        expect(await repo.listSchedulers(undefined, "no-such-user")).toEqual([]);
+        expect(ids(await repo.listSchedulers())).toEqual([
+          unowned.scheduler.id,
+          a2.scheduler.id,
+          b1.scheduler.id,
+          a1.scheduler.id,
+        ]);
+      });
+
+      it("re-stamps a scheduler's owner when it moves to another board", async () => {
+        const alice = await newUser("alice");
+        const bob = await newUser("bob");
+        const a = await populateBoard(alice.id, "a");
+        const b = await populateBoard(bob.id, "b");
+        const unowned = await newBoard("unowned");
+
+        const renamed = await repo.updateScheduler(a.scheduler.id, { name: "renamed" });
+        expect(renamed).toMatchObject({ boardId: a.board.id, userId: alice.id });
+
+        const moved = await repo.updateScheduler(a.scheduler.id, { boardId: b.board.id });
+        expect(moved).toMatchObject({ boardId: b.board.id, userId: bob.id, name: "renamed" });
+        expect(await repo.getScheduler(a.scheduler.id)).toEqual(moved);
+        expect(await repo.listSchedulers(undefined, alice.id)).toEqual([]);
+        expect(ids(await repo.listSchedulers(undefined, bob.id))).toEqual([b.scheduler.id, a.scheduler.id]);
+
+        const orphaned = await repo.updateScheduler(a.scheduler.id, { boardId: unowned.id });
+        expect(orphaned).toMatchObject({ boardId: unowned.id, userId: null });
+        expect(await repo.getScheduler(a.scheduler.id)).toEqual(orphaned);
+      });
+
+      it("reassigns a user's boards and every row under them", async () => {
+        const alice = await newUser("alice");
+        const bob = await newUser("bob");
+        const carol = await newUser("carol");
+        const a1 = await populateBoard(alice.id, "a1");
+        const a2 = await populateBoard(alice.id, "a2");
+        const b1 = await populateBoard(bob.id, "b1");
+        const unowned = await populateBoard(null, "unowned");
+        const event = await repo.appendRunEvent({ runId: a1.run.id, taskId: a1.task.id, kind: "text", text: "hi" });
+
+        expect(await repo.reassignUserData(alice.id, carol.id)).toBe(2);
+
+        expect(await owners(a1)).toEqual(ownedBy(carol.id));
+        expect(await owners(a2)).toEqual(ownedBy(carol.id));
+        expect(await owners(b1)).toEqual(ownedBy(bob.id));
+        expect(await owners(unowned)).toEqual(ownedBy(null));
+        expect(await repo.listBoards(alice.id)).toEqual([]);
+        expect(ids(await repo.listBoards(carol.id))).toEqual([a2.board.id, a1.board.id]);
+        expect(await repo.listRunEvents(a1.run.id)).toEqual([event]);
+        // Rows created after the move inherit the new owner from the board.
+        expect((await repo.createTask({ boardId: a1.board.id, title: "later" })).userId).toBe(carol.id);
+
+        expect(await repo.reassignUserData(alice.id, carol.id)).toBe(0);
+        expect(await repo.reassignUserData("no-such-user", carol.id)).toBe(0);
+        expect(await owners(b1)).toEqual(ownedBy(bob.id));
+      });
+
+      it("reassigning from null claims only unowned rows", async () => {
+        const alice = await newUser("alice");
+        const admin = await newUser("admin", { role: "admin" });
+        const owned = await populateBoard(alice.id, "owned");
+        const legacy1 = await populateBoard(null, "legacy1");
+        const legacy2 = await populateBoard(null, "legacy2");
+
+        expect(await repo.reassignUserData(null, admin.id)).toBe(2);
+
+        expect(await owners(legacy1)).toEqual(ownedBy(admin.id));
+        expect(await owners(legacy2)).toEqual(ownedBy(admin.id));
+        expect(await owners(owned)).toEqual(ownedBy(alice.id));
+        expect(ids(await repo.listBoards(admin.id))).toEqual([legacy2.board.id, legacy1.board.id]);
+
+        expect(await repo.reassignUserData(null, admin.id)).toBe(0);
       });
     });
   });
