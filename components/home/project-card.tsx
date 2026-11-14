@@ -344,12 +344,12 @@ function ProjectGrid({ boards, offset, ...actions }: CardActions & { boards: Das
 }
 
 /**
- * The dashboard's projects: only pinned ones; the rest wait behind a collapsed "Other projects"
- * toggle (a filter searches both, so unpinned matches show without opening it).
+ * The dashboard's projects: pinned ones first, then the rest under an "Other projects" toggle that
+ * starts expanded so every project shows by default (a filter searches both).
  */
 export function ProjectsSection({ boards, ...actions }: CardActions & { boards: DashboardBoard[] }) {
   const [filter, setFilter] = useState("");
-  const [showOthers, setShowOthers] = useState(false);
+  const [showOthers, setShowOthers] = useState(true);
   const query = filter.trim().toLowerCase();
   const matching = query
     ? boards.filter((b) => [b.name, b.workdir, ...b.extraFolders].some((text) => text.toLowerCase().includes(query)))
@@ -407,9 +407,9 @@ export function ProjectsSection({ boards, ...actions }: CardActions & { boards: 
                 <span className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
                   <PinIcon className="size-5" aria-hidden="true" />
                 </span>
-                <p className="text-sm font-medium">Pin projects to keep them here</p>
+                <p className="text-sm font-medium">Pin projects to keep them on top</p>
                 <p className="max-w-xs text-xs text-pretty text-muted-foreground">
-                  Only pinned projects show on the dashboard. Pin one from its ⋯ menu under Other projects.
+                  Pinned projects lead the dashboard and the sidebar. Pin one from its ⋯ menu under Other projects.
                 </p>
               </div>
             )
