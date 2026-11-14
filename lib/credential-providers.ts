@@ -8,6 +8,7 @@ import {
   type CredentialProviderId,
   type CredentialValidationErrors,
 } from "@/lib/credential-types";
+import type { McpServerConfig } from "@/lib/mcp-types";
 
 const MAX_NAME_LENGTH = 80;
 
@@ -779,43 +780,61 @@ export function maskSecret(value: string): string {
 }
 
 /**
+ * The provider's `mcpServers` entry. Non-secret values from `fields` (or their defaults) are
+ * inlined; a required one left empty becomes a `${ENV_VAR}` placeholder. Each secret field gets
+ * `secretValue(field)` (a placeholder, or the real value for a live probe); null leaves it out.
+ * Null when the provider has no MCP server.
+ */
+export function mcpServerConfig(
+  provider: CredentialProvider,
+  fields: Record<string, string>,
+  secretValue: (field: CredentialField) => string | null,
+): McpServerConfig | null {
+  const { mcp } = provider;
+  if (!mcp) return null;
+  const valueOf = (field: CredentialField) => fields[field.key]?.trim() || field.defaultValue || "";
+
+  if (mcp.transport === "stdio") {
+    const env: Record<string, string> = {};
+    for (const field of provider.fields) {
+      if (!field.envVar) continue;
+      if (field.kind === "secret") {
+        const secret = secretValue(field);
+        if (secret !== null) env[field.envVar] = secret;
+        continue;
+      }
+      const value = valueOf(field);
+      if (value) env[field.envVar] = value;
+      else if (field.required) env[field.envVar] = `\${${field.envVar}}`;
+    }
+    const server: McpServerConfig = { type: "stdio", command: mcp.command ?? "", args: [...(mcp.args ?? [])] };
+    if (Object.keys(env).length > 0) server.env = env;
+    return server;
+  }
+  const urlField = provider.fields.find((field) => field.key === "url" && field.kind === "url");
+  const url = mcp.url ?? (urlField ? valueOf(urlField) || urlField.placeholder || "" : "");
+  const server: McpServerConfig = { type: "http", url };
+  const secretField = provider.fields.find((field) => field.kind === "secret" && field.envVar);
+  const token = secretField ? secretValue(secretField) : null;
+  if (token !== null) {
+    const headerField = provider.fields.find((field) => field.key === "headerName");
+    const headerName = (headerField && valueOf(headerField)) || "Authorization";
+    server.headers = { [headerName]: headerName.toLowerCase() === "authorization" ? `Bearer ${token}` : token };
+  }
+  return server;
+}
+
+/**
  * `mcpServers` JSON for the provider's MCP server. Secrets are never inlined: they appear as
  * `${ENV_VAR}` placeholders, which MCP clients such as Claude Code expand from the environment.
  * Non-secret values from `fields` (or their defaults) are inlined.
  */
 export function mcpConfigSnippet(provider: CredentialProvider, fields: Record<string, string> = {}): string | null {
-  const { mcp } = provider;
-  if (!mcp) return null;
-  const valueOf = (field: CredentialField) => fields[field.key]?.trim() || field.defaultValue || "";
-  const placeholder = (envVar: string) => `\${${envVar}}`;
-
-  let server: Record<string, unknown>;
-  if (mcp.transport === "stdio") {
-    const env: Record<string, string> = {};
-    for (const field of provider.fields) {
-      if (!field.envVar) continue;
-      const value = valueOf(field);
-      if (field.kind === "secret") {
-        if (field.required || value) env[field.envVar] = placeholder(field.envVar);
-      } else if (value) {
-        env[field.envVar] = value;
-      } else if (field.required) {
-        env[field.envVar] = placeholder(field.envVar);
-      }
-    }
-    server = { command: mcp.command, args: mcp.args ?? [] };
-    if (Object.keys(env).length > 0) server.env = env;
-  } else {
-    const urlField = provider.fields.find((field) => field.key === "url" && field.kind === "url");
-    const url = mcp.url ?? (urlField ? valueOf(urlField) || urlField.placeholder || "" : "");
-    server = { type: "http", url };
-    const secret = provider.fields.find((field) => field.kind === "secret" && field.envVar);
-    if (secret?.envVar && (secret.required || valueOf(secret))) {
-      const headerField = provider.fields.find((field) => field.key === "headerName");
-      const headerName = (headerField && valueOf(headerField)) || "Authorization";
-      const token = placeholder(secret.envVar);
-      server.headers = { [headerName]: headerName.toLowerCase() === "authorization" ? `Bearer ${token}` : token };
-    }
-  }
+  const config = mcpServerConfig(provider, fields, (field) =>
+    field.envVar && (field.required || fields[field.key]?.trim() || field.defaultValue) ? `\${${field.envVar}}` : null,
+  );
+  if (!config) return null;
+  // Other MCP clients default to stdio: the snippet names only the http transport.
+  const server = config.type === "stdio" ? { command: config.command, args: config.args, env: config.env } : config;
   return JSON.stringify({ mcpServers: { [provider.id]: server } }, null, 2);
 }

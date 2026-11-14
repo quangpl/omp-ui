@@ -46,10 +46,21 @@ import { dataDir, ensureFilesFolder } from "@/lib/files";
 import { extractQuestion } from "@/lib/question";
 import { isQuotaError, QUOTA_RETRY_STEPS_MS } from "@/lib/quota";
 import { startSchedulerService } from "@/lib/scheduler";
+import {
+  QUALITY_GATE_PREFIX,
+  releaseGate,
+  SDLC_PHASE_INFO,
+  sdlcChange,
+  sdlcProgress,
+  type SdlcViolation,
+} from "@/lib/sdlc";
 import { agentmemoryEnabled, memoryProjectName, tagMemorySession } from "@/lib/server/agentmemory";
+import { loadAiProviderEnv } from "@/lib/server/ai-providers";
 import { createCheckpoints } from "@/lib/server/checkpoints";
 import { startChatIntegrations } from "@/lib/server/chat/service";
 import { startCredentialHealthChecks } from "@/lib/server/credentials";
+import { startMcpSync } from "@/lib/server/mcp";
+import { mcpAgentEnv } from "@/lib/server/mcp-env";
 import { startTelemetryExporter } from "@/lib/server/telemetry";
 import { getAppSettings } from "@/lib/settings";
 import { parseTodoPhases, stampTodos } from "@/lib/todos";
@@ -145,6 +156,8 @@ interface ActiveRun {
   advisor: Omit<AdvisorScope, "signal" | "onActivity"> | null;
   /** This run addresses advisor feedback: its own questions go to the user, not back to the agent. */
   advisorFollowUp: boolean;
+  /** This run addresses a release-gate comment (QUALITY_GATE_PREFIX): missing the gate again ships the card anyway. */
+  qualityGateFollowUp: boolean;
   /** JSON of the omp todo list this run last stored on the card; repeated `todo` views write nothing. */
   todos: string | null;
   /** When this run was launched (ISO); bounds which `startedAt` todo stamps count as this run's work. */
@@ -161,6 +174,8 @@ interface ActiveRun {
   loop: LoopDetector | null;
   /** Loops detected so far: the first steers the agent, the second fails the run. */
   loopStrikes: number;
+  /** SDLC violations (`phase:requires`) already steered back to the agent: each is steered once per run. */
+  sdlcNudges: Set<string>;
   /** Serializes startup, frame handling and teardown so persistence stays ordered. */
   chain: Promise<void>;
 }
@@ -243,6 +258,7 @@ class OmpAgentManager implements AgentManager {
         drafting: state === "queued" && this.preparing.has(taskId),
         planNote: this.planNotes.get(taskId) ?? null,
         createdByTaskId: task.createdByTaskId ?? null,
+        sdlc: sdlcProgress(task.todos),
       };
     };
     const isEntry = (e: QueueEntry | null): e is QueueEntry => e !== null;
@@ -854,6 +870,7 @@ class OmpAgentManager implements AgentManager {
       hostCalls: new Map(),
       advisor: null,
       advisorFollowUp: false,
+      qualityGateFollowUp: false,
       todos: null,
       launchedAt: new Date(now).toISOString(),
       stampedTodos: null,
@@ -862,6 +879,7 @@ class OmpAgentManager implements AgentManager {
       sessionUsage: { costUsd: 0, tokens: 0 },
       loop: settings.loopDetection ? new LoopDetector() : null,
       loopStrikes: 0,
+      sdlcNudges: new Set(),
       chain: Promise.resolve(),
     };
     this.active.set(taskId, run);
@@ -1036,6 +1054,7 @@ class OmpAgentManager implements AgentManager {
     for (const c of feedback) run.feedbackIds.add(c.id);
     run.advisor = { task, board, workdir, extraFolders, settings };
     run.advisorFollowUp = feedback.some((c) => c.body.startsWith(ADVISOR_FEEDBACK_PREFIX));
+    run.qualityGateFollowUp = feedback.some((c) => c.body.startsWith(QUALITY_GATE_PREFIX));
     publish({ type: "run.updated", run: created, boardId: run.boardId });
     if (run.finished) return;
 
@@ -1123,7 +1142,7 @@ class OmpAgentManager implements AgentManager {
       command: settings.ompPath,
       args,
       cwd: workdir,
-      env: childEnv({ AGENTMEMORY_PROJECT_NAME: memoryProject }),
+      env: childEnv({ ...(await mcpAgentEnv()), AGENTMEMORY_PROJECT_NAME: memoryProject }),
       autoConfirm: settings.approvalMode === "yolo",
     });
     run.proc = proc;
@@ -1664,15 +1683,34 @@ class OmpAgentManager implements AgentManager {
         run.restartAfter = true;
       }
       const question = triage ? (triage.userQuestion ?? (triage.followUp && !followUp ? asked : null)) : asked;
+      // The release gate (SDLC Testing phase) sends the card back once; missing it again ships it with a
+      // warning. A question for the user wins: resuming the agent would drop it unanswered.
+      const latestTodos = run.stampedTodos?.list ?? (await repo.getTask(run.taskId))?.todos ?? [];
+      const gate = releaseGate(sdlcProgress(latestTodos));
+      const gateFollowUp = gate !== null && !run.qualityGateFollowUp && question === null;
+      if (gateFollowUp) {
+        const feedback = await repo.addComment({
+          taskId: run.taskId,
+          author: "user",
+          body:
+            `${QUALITY_GATE_PREFIX}${gate}. Finish the Testing phase before the card ships: ` +
+            `${SDLC_PHASE_INFO.testing.gate}. Then complete the remaining SDLC phases and report.`,
+        });
+        publish({ type: "comment.added", comment: feedback, boardId: run.boardId });
+        run.restartAfter = true;
+      } else if (gate && !followUp) {
+        await this.event(run, "status", `⚠ Shipped without passing the release gate: ${gate}`);
+      }
+      const sentBack = followUp !== null || gateFollowUp;
 
       if (run.runId && run.feedbackIds.size > 0) {
         const resolved = await repo.resolveComments([...run.feedbackIds], run.runId);
         for (const c of resolved) publish({ type: "comment.updated", comment: c, boardId: run.boardId });
       }
 
-      // A card the advisor sends back to work stays In progress.
+      // A card the advisor or the release gate sends back to work stays In progress.
       const task = await repo.updateTask(run.taskId, {
-        ...(followUp ? {} : { status: "done" as const, position: await this.topPosition(run.boardId, "done", run.taskId) }),
+        ...(sentBack ? {} : { status: "done" as const, position: await this.topPosition(run.boardId, "done", run.taskId) }),
         agentState: "idle",
         agentError: null,
         question,
@@ -1761,8 +1799,53 @@ class OmpAgentManager implements AgentManager {
       run.stampedTodos = { list: todos, at: now };
       const task = await this.repo.updateTask(run.taskId, { todos });
       if (task) publish({ type: "task.updated", task });
+      await this.trackSdlc(run, previous, todos);
     } catch (err) {
       console.error(`[agent] failed to store the todo list of task ${run.taskId}:`, err);
+    }
+  }
+
+  /**
+   * Logs the SDLC progress of a stored todo update (phase entered, quality gates passed) and, for
+   * a list named after SDLC phases, each new phase-order violation; each violation is steered back
+   * into the live session once per run, like the loop detector's nudge. Never throws: the todo list
+   * is already stored.
+   */
+  private async trackSdlc(run: ActiveRun, previous: readonly TodoPhase[], todos: readonly TodoPhase[]): Promise<void> {
+    try {
+      const after = sdlcProgress(todos);
+      const change = sdlcChange(sdlcProgress(previous), after);
+      for (const id of change.completed) {
+        await this.event(run, "status", `✓ Quality gate passed: ${SDLC_PHASE_INFO[id].label} complete`);
+      }
+      if (change.entered) {
+        const info = SDLC_PHASE_INFO[change.entered];
+        await this.event(run, "status", `▸ SDLC phase ${info.step}/7: ${info.label}`);
+      }
+      // Free-form (legacy) lists are only classified for display, never enforced.
+      if (!after?.canonical) return;
+      for (const violation of change.violations) {
+        await this.event(run, "status", `⚠ Quality gate: ${violation.message}`);
+        const key = `${violation.phase}:${violation.requires}`;
+        if (run.finished || run.sdlcNudges.has(key)) continue;
+        run.sdlcNudges.add(key);
+        try {
+          // Steered like the loop detector's nudge (see onLoop); its own id keeps the response apart from the run's prompt.
+          await run.proc?.send(
+            {
+              id: `sdlc-${run.runId}-${run.sdlcNudges.size}`,
+              type: "prompt",
+              message: sdlcSteerMessage(violation),
+              streamingBehavior: "steer",
+            },
+            { timeoutMs: run.proc.commandTimeoutMs },
+          );
+        } catch (err) {
+          console.error(`[agent] failed to steer an SDLC quality gate for task ${run.taskId}:`, err);
+        }
+      }
+    } catch (err) {
+      console.error(`[agent] failed to track the SDLC progress of task ${run.taskId}:`, err);
     }
   }
 
@@ -2032,6 +2115,16 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/** Steer prompt for an SDLC phase-order violation: finish the required phase (its exit criteria) first. */
+function sdlcSteerMessage(violation: SdlcViolation): string {
+  const required = SDLC_PHASE_INFO[violation.requires];
+  return (
+    `Quality gate (SDLC): ${violation.message}. Finish the ${required.label} phase first ` +
+    `(exit criteria: ${required.gate}), then continue with ${SDLC_PHASE_INFO[violation.phase].label}. ` +
+    "Keep your todo phases in SDLC order: Planning, Feasibility, Design, Implementation, Testing, Deployment, Maintenance."
+  );
+}
+
 interface RetryPlan {
   /** Retries used once this one starts (1-based). */
   attempt: number;
@@ -2145,9 +2238,12 @@ async function createAgentManager(): Promise<AgentManager> {
   const manager = new OmpAgentManager(repo);
   // Before recovery, which may start queued runs: their traces must see the runs start.
   startTelemetryExporter(() => getAppSettings(repo));
+  // Before recovery too: queued runs it starts spawn omp, which needs the saved provider keys.
+  await loadAiProviderEnv(repo);
   await manager.recover();
   startCleanupScheduler(repo, manager);
   startCredentialHealthChecks(repo);
+  startMcpSync(repo);
   startSchedulerService(repo, manager);
   startChatIntegrations(repo, manager);
   return manager;

@@ -377,6 +377,31 @@ export async function listCredentials(repo: Repository): Promise<CredentialsResp
   };
 }
 
+/** A credential with its values in the clear. Server-only: never send `fields` to a client. */
+export interface CredentialValues {
+  summary: CredentialSummary;
+  /** Plain fields and decrypted secrets (secrets that cannot be decrypted are left out). */
+  fields: Record<string, string>;
+  /** Some secret could not be decrypted (the encryption key changed). */
+  broken: boolean;
+}
+
+function toValues(record: StoredCredential): CredentialValues {
+  const opened = openSecrets(record);
+  return { summary: toSummary(record), fields: { ...record.fields, ...opened.values }, broken: opened.broken };
+}
+
+/** Decrypted values of one credential, null when the id is unknown (for MCP server configs). */
+export async function credentialValues(repo: Repository, id: string): Promise<CredentialValues | null> {
+  const record = (await loadAll(repo)).find((c) => c.id === id);
+  return record ? toValues(record) : null;
+}
+
+/** Decrypted values of every credential, keyed by id (for the MCP agent environment). */
+export async function allCredentialValues(repo: Repository): Promise<Map<string, CredentialValues>> {
+  return new Map((await loadAll(repo)).map((record) => [record.id, toValues(record)]));
+}
+
 // ---------------------------------------------------------------------------------------------
 // Health checks
 

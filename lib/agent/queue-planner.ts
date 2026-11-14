@@ -6,6 +6,7 @@ import { readModelRoles } from "@/lib/agent/model-select";
 import { existingFolders, extractJsonObject, isDirectory, runOmpHelper } from "@/lib/agent/omp-helper";
 import { clip } from "@/lib/card-draft";
 import { childEnv } from "@/lib/child-env";
+import { mcpAgentEnv } from "@/lib/server/mcp-env";
 import type { AppSettings, Board } from "@/lib/types";
 
 /** The planner is cancelled after this long. */
@@ -54,7 +55,7 @@ export interface PlanQueueOptions {
 export async function planQueue(options: PlanQueueOptions): Promise<QueuePlan> {
   const { board, queued, running, settings, signal } = options;
   const workdir = board.workdir;
-  const env = childEnv();
+  const env = childEnv(await mcpAgentEnv());
   const [found, extras, roles] = await Promise.all([
     isDirectory(workdir),
     existingFolders(board.extraFolders ?? [], workdir),

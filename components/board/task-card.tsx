@@ -22,7 +22,7 @@ import { useBoardTasks, useQueueDrafting, useQueuePosition } from "@/hooks/use-b
 import { isQuotaError } from "@/lib/quota";
 import { questionPreview } from "@/lib/question";
 import { formatDateTime } from "@/components/board/format";
-import { TaskProgressIcon, TodoEta } from "@/components/board/task-progress";
+import { SdlcTrack, TaskProgressIcon, TodoEta } from "@/components/board/task-progress";
 import { todoProgress } from "@/lib/todos";
 import { cn } from "@/lib/utils";
 import type { AgentState, Task } from "@/lib/types";
@@ -390,6 +390,7 @@ export const TaskCard = memo(function TaskCard({
               agentError={task.agentError}
               drafting={drafting}
             />
+            <SdlcTrack task={task} />
             {waitingFor.length > 0 && (
               <Tooltip>
                 <TooltipTrigger asChild>

@@ -1,10 +1,12 @@
-// Health checks for /credentials: one cheap, read-only, authenticated request per provider that
-// never spends credits or mutates data. Server only: the AWS signer uses node:crypto, Postgres pg.
+// Health checks for /credentials and Settings → AI Providers: one cheap, read-only, authenticated
+// request per provider that never spends credits or mutates data. Server only: the AWS signer uses
+// node:crypto, Postgres pg.
 import { createHash, createHmac } from "node:crypto";
 import { STATUS_CODES } from "node:http";
 
 import pg from "pg";
 
+import { completeMethod, type AiAuthMethod, type AiProviderDefinition } from "@/lib/ai-providers";
 import type { CredentialProvider } from "@/lib/credential-types";
 
 export interface CredentialProbeResult {
@@ -143,6 +145,102 @@ async function runProbe(
   }
 }
 
+/**
+ * Check that `values` (env var → value) authenticate against an AI provider, using the first
+ * complete auth method. Never throws, scrubs every secret value from the message like
+ * `probeCredential`. Returns null when the complete method cannot be checked over HTTP (an AWS
+ * profile lives in the server's ~/.aws config): the caller falls back to omp's model listing.
+ */
+export async function probeAiProvider(
+  provider: AiProviderDefinition,
+  values: Record<string, string>,
+  options: CredentialProbeOptions = {},
+): Promise<CredentialProbeResult | null> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  let secrets: string[] = [];
+  let result: CredentialProbeResult | null;
+  try {
+    secrets = aiSecretValues(provider, values);
+    const trimmed: Record<string, string> = {};
+    for (const field of provider.fields) trimmed[field.envVar] = value(values, field.envVar);
+    const method = completeMethod(provider, trimmed);
+    if (!method) {
+      result = fail(incompleteMessage(provider, trimmed));
+    } else {
+      const ctx: ProbeContext = {
+        fetchImpl: options.fetchImpl ?? fetch,
+        signal: AbortSignal.timeout(timeoutMs),
+        timeoutMs,
+      };
+      result = await runAiProbe(provider, method, trimmed, ctx);
+    }
+  } catch (err) {
+    result = fail(describeError(err, timeoutMs));
+  }
+  return result && { ok: result.ok, message: clean(result.message, secrets) };
+}
+
+/** "Incomplete: <first method> needs <missing fields>"; an `anyOf` group reads "A or B". */
+function incompleteMessage(provider: AiProviderDefinition, values: Record<string, string>): string {
+  const method = provider.methods[0];
+  if (!method) return "Incomplete: no sign-in method";
+  const label = (envVar: string) => provider.fields.find((f) => f.envVar === envVar)?.label ?? envVar;
+  const missing = method.required.filter((envVar) => !values[envVar]).map(label);
+  if (method.anyOf && !method.anyOf.some((envVar) => values[envVar])) missing.push(method.anyOf.map(label).join(" or "));
+  return `Incomplete: ${method.label} needs ${missing.join(", ")}`;
+}
+
+async function runAiProbe(
+  provider: AiProviderDefinition,
+  method: AiAuthMethod,
+  values: Record<string, string>,
+  ctx: ProbeContext,
+): Promise<CredentialProbeResult | null> {
+  const env = (envVar: string) =>
+    need(value(values, envVar), provider.fields.find((f) => f.envVar === envVar)?.label ?? envVar);
+  const id = provider.id;
+  switch (id) {
+    case "anthropic":
+      return method.id === "oauth"
+        ? probeAnthropicOAuth(ctx, env("ANTHROPIC_OAUTH_TOKEN"))
+        : probeAnthropic(ctx, env("ANTHROPIC_API_KEY"));
+    case "openai":
+      return probeOpenAi(ctx, env("OPENAI_API_KEY"));
+    case "google":
+      return probeGemini(ctx, env("GEMINI_API_KEY"));
+    case "azure":
+      return probeAzureOpenAi(ctx, values);
+    case "amazon-bedrock": {
+      if (method.id === "profile") return null;
+      const auth: BedrockAuth =
+        method.id === "bedrock-api-key"
+          ? { token: env("AWS_BEARER_TOKEN_BEDROCK") }
+          : {
+              accessKeyId: env("AWS_ACCESS_KEY_ID"),
+              secretAccessKey: env("AWS_SECRET_ACCESS_KEY"),
+              sessionToken: value(values, "AWS_SESSION_TOKEN"),
+            };
+      return probeBedrock(ctx, auth, value(values, "AWS_REGION"));
+    }
+    case "openrouter":
+      return probeOpenRouter(ctx, env("OPENROUTER_API_KEY"));
+    case "groq":
+      return probeBearerModels(ctx, "https://api.groq.com/openai/v1/models", env("GROQ_API_KEY"));
+    case "xai":
+      return probeBearerModels(ctx, "https://api.x.ai/v1/models", env("XAI_API_KEY"));
+    case "mistral":
+      return probeBearerModels(ctx, "https://api.mistral.ai/v1/models", env("MISTRAL_API_KEY"));
+    case "deepseek":
+      return probeBearerModels(ctx, "https://api.deepseek.com/models", env("DEEPSEEK_API_KEY"));
+    case "cerebras":
+      return probeBearerModels(ctx, "https://api.cerebras.ai/v1/models", env("CEREBRAS_API_KEY"));
+    default: {
+      const unknown: never = id;
+      return fail(`No health check for ${String(unknown)}`);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Providers
 
@@ -158,6 +256,15 @@ async function probeOpenAi(ctx: ProbeContext, key: string): Promise<CredentialPr
   const res = await request(ctx, "https://api.openai.com/v1/models", { headers: bearer(key) });
   if (!res.ok) return httpFailure(res);
   return pass(`API key accepted${modelCount(get(res.body, "data"))}`);
+}
+
+/** A Claude subscription token (`claude setup-token`) is a Bearer token behind the OAuth beta header. */
+async function probeAnthropicOAuth(ctx: ProbeContext, token: string): Promise<CredentialProbeResult> {
+  const res = await request(ctx, "https://api.anthropic.com/v1/models", {
+    headers: { ...bearer(token), "anthropic-version": "2023-06-01", "anthropic-beta": "oauth-2025-04-20" },
+  });
+  if (!res.ok) return httpFailure(res);
+  return pass(`OAuth token accepted${modelCount(get(res.body, "data"))}`);
 }
 
 async function probeGemini(ctx: ProbeContext, key: string): Promise<CredentialProbeResult> {
@@ -179,6 +286,63 @@ async function probeOpenRouter(ctx: ProbeContext, key: string): Promise<Credenti
   if (label) parts.push(`"${label}"`);
   if (usage !== undefined) parts.push(`$${usage.toFixed(2)} used${limit !== undefined ? ` of $${limit.toFixed(2)}` : ""}`);
   return pass(`API key accepted${parts.length ? ` (${parts.join(", ")})` : ""}`);
+}
+
+/** OpenAI-compatible `GET /models` with a Bearer key (Groq, xAI, Mistral, DeepSeek, Cerebras). */
+async function probeBearerModels(ctx: ProbeContext, url: string, key: string): Promise<CredentialProbeResult> {
+  const res = await request(ctx, url, { headers: bearer(key) });
+  if (!res.ok) return httpFailure(res);
+  return pass(`API key accepted${modelCount(get(res.body, "data"))}`);
+}
+
+async function probeAzureOpenAi(ctx: ProbeContext, values: Record<string, string>): Promise<CredentialProbeResult> {
+  const key = need(value(values, "AZURE_OPENAI_API_KEY"), "API key");
+  const baseUrl = value(values, "AZURE_OPENAI_BASE_URL");
+  const resource = value(values, "AZURE_OPENAI_RESOURCE_NAME");
+  let origin: string;
+  if (baseUrl) {
+    origin = parseHttpUrl(baseUrl).origin;
+  } else {
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(resource)) return fail(`Invalid resource name "${resource}"`);
+    origin = `https://${resource}.openai.azure.com`;
+  }
+  const apiVersion = value(values, "AZURE_OPENAI_API_VERSION") || "2024-10-21";
+  const res = await request(ctx, `${origin}/openai/models?api-version=${encodeURIComponent(apiVersion)}`, {
+    headers: { "api-key": key },
+  });
+  if (!res.ok) return httpFailure(res);
+  return pass(`API key accepted${modelCount(get(res.body, "data"))}`);
+}
+
+type BedrockAuth = { token: string } | { accessKeyId: string; secretAccessKey: string; sessionToken: string };
+
+/** `ListFoundationModels`, signed with access keys or sent with a Bedrock API key (Bearer). */
+async function probeBedrock(ctx: ProbeContext, auth: BedrockAuth, regionInput: string): Promise<CredentialProbeResult> {
+  const region = regionInput || "us-east-1";
+  if (!/^[a-z]{2}(-[a-z]+)+-\d+$/.test(region)) return fail(`Invalid region "${region}"`);
+  const host = `bedrock.${region}.amazonaws.com${region.startsWith("cn-") ? ".cn" : ""}`;
+  const path = "/foundation-models";
+  const headers =
+    "token" in auth
+      ? bearer(auth.token)
+      : signAwsV4({
+          method: "GET",
+          host,
+          path,
+          region,
+          service: "bedrock",
+          headers: {},
+          body: "",
+          accessKeyId: auth.accessKeyId,
+          secretAccessKey: auth.secretAccessKey,
+          sessionToken: auth.sessionToken || undefined,
+          date: new Date(),
+        });
+  const res = await request(ctx, `https://${host}${path}`, { headers });
+  if (!res.ok) return httpFailure(res);
+  const models = get(res.body, "modelSummaries");
+  const count = Array.isArray(models) && models.length ? ` (${plural(models.length, "Bedrock model")})` : "";
+  return pass(`${"token" in auth ? "Bedrock API key" : "AWS credentials"} accepted${count}`);
 }
 
 async function probeHuggingFace(ctx: ProbeContext, key: string): Promise<CredentialProbeResult> {
@@ -755,4 +919,16 @@ function clean(message: string, secrets: readonly string[]): string {
   out = out.replace(/\s+/g, " ").trim();
   if (out.length > MAX_MESSAGE_LENGTH) out = `${out.slice(0, MAX_MESSAGE_LENGTH - 1)}…`;
   return out || "Check failed";
+}
+
+/** Every secret AI provider value (raw and trimmed), longest first like `secretValues`. */
+function aiSecretValues(provider: AiProviderDefinition, values: Record<string, string>): string[] {
+  const out = new Set<string>();
+  for (const field of provider.fields) {
+    const raw = values[field.envVar];
+    if (!field.secret || typeof raw !== "string") continue;
+    if (raw) out.add(raw);
+    if (raw.trim()) out.add(raw.trim());
+  }
+  return [...out].sort((a, b) => b.length - a.length);
 }

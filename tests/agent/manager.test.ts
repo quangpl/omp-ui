@@ -903,6 +903,101 @@ describe("AgentManager feedback", () => {
   });
 });
 
+describe("AgentManager SDLC quality gates", () => {
+  it("logs SDLC phases and passed gates of a list that follows the process, and ships the card", async () => {
+    const task = await createTask("Follow the process", "[fake:sdlc_flow]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    const done = await waitDone(task.id);
+    await waitIdleManager(manager);
+
+    expect(done.status).toBe("done");
+    const runs = await repo.listRuns(task.id);
+    expect(runs).toHaveLength(1);
+    const texts = (await runEvents(runs[0]!.id)).map((e) => e.text);
+    for (const line of [
+      "▸ SDLC phase 1/7: Planning",
+      "▸ SDLC phase 3/7: Design",
+      "▸ SDLC phase 4/7: Implementation",
+      "▸ SDLC phase 5/7: Testing",
+      "▸ SDLC phase 6/7: Deployment",
+      "✓ Quality gate passed: Planning complete",
+      "✓ Quality gate passed: Design complete",
+      "✓ Quality gate passed: Implementation complete",
+      "✓ Quality gate passed: Testing complete",
+      "✓ Quality gate passed: Deployment complete",
+    ]) {
+      expect(texts).toContain(line);
+    }
+    expect(texts.filter((t) => t.startsWith("⚠"))).toEqual([]);
+    expect(readLog().filter((e) => e.kind === "steer")).toEqual([]);
+    expect((await repo.listComments(task.id)).filter((c) => c.author === "user")).toEqual([]);
+  });
+
+  it("sends a card whose Testing phase is not complete back once, then ships it with a warning", async () => {
+    const task = await createTask("Ship untested", "[fake:sdlc_gate]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    const done = await waitDone(task.id);
+    await waitIdleManager(manager);
+
+    expect(done.status).toBe("done");
+    const runs = await repo.listRuns(task.id);
+    expect(runs).toHaveLength(2);
+    const gate = (await repo.listComments(task.id)).filter((c) => c.author === "user");
+    expect(gate).toHaveLength(1);
+    expect(gate[0]!.body.startsWith("**Quality gate:** Testing is not complete")).toBe(true);
+    // The second run addressed it as feedback.
+    expect(gate[0]).toMatchObject({ resolved: true, resolvedByRunId: runs[0]!.id });
+    expect(commands("prompt")[1]?.command?.message).toContain("Testing is not complete");
+
+    // listRuns is newest first: the first run sent the card back, the second shipped it.
+    const shippedPrefix = "⚠ Shipped without passing the release gate: Testing is not complete";
+    const [second, first] = await Promise.all(runs.map(async (r) => (await runEvents(r.id)).map((e) => e.text)));
+    expect(first!.some((t) => t.startsWith(shippedPrefix))).toBe(false);
+    expect(second!.filter((t) => t.startsWith(shippedPrefix))).toHaveLength(1);
+  });
+
+  it("steers an agent that starts Deployment before Testing is complete back into the process", async () => {
+    const task = await createTask("Skip the tests", "[fake:sdlc_skip]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    const pid = await waitPromptReceived();
+    const steer = await waitFor(
+      () => readLog().find((e) => e.kind === "steer" && e.pid === pid),
+      "the quality-gate steer",
+    );
+    expect(steer.message).toContain("Quality gate (SDLC): Deployment started before Testing was complete");
+    expect(steer).toMatchObject({ via: "prompt", streamingBehavior: "steer" });
+
+    // Testing is still pending when it succeeds: the release gate sends it back once before it ships.
+    await waitDone(task.id);
+    await waitIdleManager(manager);
+    const runs = await repo.listRuns(task.id);
+    const first = runs.at(-1)!;
+    expect((await runEvents(first.id)).map((e) => e.text)).toContain(
+      "⚠ Quality gate: Deployment started before Testing was complete",
+    );
+    // Each violation is steered once.
+    expect(readLog().filter((e) => e.kind === "steer" && e.message?.startsWith("Quality gate (SDLC)"))).toHaveLength(1);
+  });
+
+  it("reports a running card's SDLC progress in the queue snapshot", async () => {
+    const task = await createTask("Hold in implementation", "[fake:sdlc_hold]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    const entry = await waitFor(async () => {
+      const running = (await manager.queueSnapshot()).running.find((e) => e.taskId === task.id);
+      return running?.sdlc ? running : null;
+    }, "the SDLC progress in the queue snapshot");
+    expect(entry.sdlc).toMatchObject({ current: "implementation", canonical: true, violations: [] });
+
+    const stopped = await manager.stop(task.id);
+    expect(stopped).toMatchObject({ status: "in_progress", agentState: "idle" });
+    expect(readLog().filter((e) => e.kind === "steer")).toEqual([]);
+  });
+});
+
 describe("AgentManager scheduling and project folders", () => {
   it("queues a second task until the first finishes when maxConcurrentAgents is 1", async () => {
     await updateAppSettings(repo, { maxConcurrentAgents: 1 });

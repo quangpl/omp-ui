@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { buildPrompt, buildSteerMessage } from "@/lib/agent/prompt";
-import type { Board, Comment, Task } from "@/lib/types";
+import { SDLC_PHASE_INFO } from "@/lib/sdlc";
+import type { Board, Comment, Task, TodoPhase } from "@/lib/types";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 
@@ -246,5 +247,56 @@ describe("buildPrompt run context", () => {
     expect(buildPrompt(task, board, [], false, { ...context, browser: "headless" })).toContain(
       "Screenshots are saved to /data/files/tasks/t1/screenshots",
     );
+  });
+});
+
+describe("buildPrompt SDLC workflow", () => {
+  const LABELS = ["Planning", "Feasibility", "Design", "Implementation", "Testing", "Deployment", "Maintenance"];
+  const STAFFING = "Staff each SDLC phase";
+  const MAINTENANCE = "add a Maintenance phase to the todo list";
+
+  function phase(name: string, status: "pending" | "in_progress" | "completed"): TodoPhase {
+    return { name, tasks: [{ content: `${name} work`, status }] };
+  }
+
+  it("names all seven phases in order with the Testing gate in every prompt", () => {
+    const prompt = buildPrompt(task, board, [], false);
+    expect(prompt).toContain(`in this order: ${LABELS.join(", ")}.`);
+    expect(prompt).toContain(SDLC_PHASE_INFO.testing.gate);
+    expect(prompt).toContain("Testing must pass before Deployment.");
+    expect(buildPrompt(task, board, [], true)).toContain(LABELS.join(", "));
+    expect(buildPrompt(task, board, [comment("Fix it")], true)).toContain(LABELS.join(", "));
+  });
+
+  it("adds role staffing only to orchestrated runs", () => {
+    const big = { ...task, description: "Update all components to the new design system." };
+    expect(buildPrompt(big, board, [], false)).toContain(STAFFING);
+    expect(buildPrompt(big, board, [], true)).toContain(STAFFING);
+    expect(buildPrompt(task, board, [], false)).not.toContain(STAFFING);
+    expect(buildPrompt(task, board, [comment("Fix it")], true)).not.toContain(STAFFING);
+  });
+
+  it("treats feedback on delivered work as Maintenance and otherwise continues the current phase", () => {
+    const done = ["Planning", "Implementation", "Testing"].map((n) => phase(n, "completed"));
+    const delivered = buildPrompt({ ...task, todos: done }, board, [comment("Tweak the color")], true);
+    expect(delivered).toContain(MAINTENANCE);
+
+    const open = [phase("Planning", "completed"), phase("Implementation", "in_progress"), phase("Testing", "pending")];
+    const ongoing = buildPrompt({ ...task, todos: open }, board, [comment("Tweak the color")], true);
+    expect(ongoing).not.toContain(MAINTENANCE);
+    expect(ongoing).toContain("Continue in the current SDLC phase");
+
+    expect(buildPrompt(task, board, [], true)).toContain("Continue from the SDLC phase your todo list shows.");
+  });
+
+  it("adds no magic keyword to small tasks", () => {
+    for (const prompt of [
+      buildPrompt(task, board, [], false),
+      buildPrompt(task, board, [], true),
+      buildPrompt(task, board, [comment("Fix it")], true),
+    ]) {
+      expect(prompt).not.toMatch(KEYWORD);
+      expect(prompt).not.toMatch(/\b(?:ultrathink|chillax|workflowz|jevify)\b/);
+    }
   });
 });

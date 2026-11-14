@@ -14,6 +14,7 @@ import path from "node:path";
 import { childEnv } from "@/lib/child-env";
 import { dataDir } from "@/lib/files";
 import { HttpError } from "@/lib/server/http";
+import { mcpAgentEnv } from "@/lib/server/mcp-env";
 import {
   TERMINAL_MAX_BLOCKS,
   TERMINAL_MAX_COMMAND_LENGTH,
@@ -243,7 +244,10 @@ export class TerminalSession {
   }
 
   /** Start `command` in `cwd` (default: the session cwd) and return its running block. */
-  execute(command: string, cwd?: string): TerminalBlock {
+  async execute(command: string, cwd?: string): Promise<TerminalBlock> {
+    // Users run omp here too: the MCP secrets resolve the `${OMPUI_MCP_…}` placeholders in mcp.json.
+    // Awaited first, so the checks and registration below stay in one tick.
+    const mcpEnv = await mcpAgentEnv();
     if (!command.trim()) throw new HttpError(400, "command is required");
     if (command.length > TERMINAL_MAX_COMMAND_LENGTH) {
       throw new HttpError(400, `command is longer than ${TERMINAL_MAX_COMMAND_LENGTH} characters`);
@@ -287,7 +291,14 @@ export class TerminalSession {
         {
           cwd: dir,
           // PWD keeps the directory as given (symlinks unresolved), so `pwd` reports it the same way.
-          env: childEnv({ TERM: "xterm-256color", COLUMNS: "120", PAGER: "cat", GIT_PAGER: "cat", PWD: dir }),
+          env: childEnv({
+            ...mcpEnv,
+            TERM: "xterm-256color",
+            COLUMNS: "120",
+            PAGER: "cat",
+            GIT_PAGER: "cat",
+            PWD: dir,
+          }),
           // Straight to the log file: no pipe ties the command to this server process.
           stdio: ["ignore", logFd, logFd],
           // Own process group (setsid): `kill(-pid)` reaches the shell and everything it started, and

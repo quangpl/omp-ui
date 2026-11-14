@@ -11,7 +11,7 @@
 //                         streamingBehavior starts a prompt).
 //   FAKE_OMP_SCENARIO     Default prompt behaviour: success | question | error | quota | crash | slow |
 //                         confirm | stream | orchestrate | board_tools | todos | todos_done | todos_steer |
-//                         todos_feedback | loop | spend.
+//                         todos_feedback | loop | spend | sdlc_flow | sdlc_gate | sdlc_skip | sdlc_hold.
 //                         "error" ends the run with an assistant error (a plain model failure); "quota"
 //                         ends it with a quota / usage-limit error (429), as a provider out of quota does.
 //                         "todos" reports two `todo` tool results (the agent's todo list), then succeeds.
@@ -20,6 +20,15 @@
 //                         an item for the feedback appended (in_progress), then with that item completed,
 //                         then succeeds. "todos_feedback" does the same without waiting for a steer (the
 //                         feedback came with the prompt, as in a resumed run).
+//                         The sdlc_* scenarios report todo lists whose phases carry SDLC names (canonical):
+//                         "sdlc_flow" works through Planning → Design → Implementation → Testing → Deployment
+//                         (one item each, in_progress then completed, one `todo` update per step,
+//                         FAKE_OMP_STEP_MS apart), then succeeds. "sdlc_gate" reports Planning and
+//                         Implementation completed and Testing ["Run the tests" pending], then succeeds.
+//                         "sdlc_skip" reports that list plus Deployment in_progress, then succeeds on a
+//                         steer (or after 1.5 s without one). "sdlc_hold" reports Planning and Design
+//                         completed, Implementation in_progress and Testing pending, then sends nothing
+//                         until a steer or abort, like "slow".
 //                         "loop" repeats the same `read` call (same args, same result) every ~30 ms,
 //                         40 times, then succeeds; it stops early if the run is aborted meanwhile.
 //                         "question" succeeds with a summary that ends in a question for the user.
@@ -32,7 +41,7 @@
 //                         "slow" acknowledges the prompt, then sends nothing until a steer or abort.
 //   FAKE_OMP_COST_PER_MESSAGE  USD each assistant message adds to `get_session_stats` (default 0);
 //                         `tokens.total` grows by 1000 per assistant message, `contextUsage.tokens` too.
-//   FAKE_OMP_STEP_MS      Delay between orchestrate steps (default 80).
+//   FAKE_OMP_STEP_MS      Delay between orchestrate and sdlc_flow steps (default 80).
 //                         "board_tools" calls the host tools listed in the prompt as
 //                         `<calls>[{"toolName", "arguments"}]</calls>` one after another (`"$created"`
 //                         in arguments becomes the id of the card the last board_create_card made),
@@ -46,6 +55,14 @@
 //                         queue planner"); default {"order":[],"cards":[]}; "fail" exits 1 without an answer.
 //   FAKE_OMP_SKILLS       JSON array of {name, description} that `omp skill list --json` reports as
 //                         {"skills": [...]} (default []). Logged as a "skill" entry, not "argv".
+//   `omp models --json`   Prints {"models": [...]}: each provider's chat models only when its key is
+//                         in the environment (see FAKE_MODELS: 2 openai models iff OPENAI_API_KEY,
+//                         1 groq model iff GROQ_API_KEY). Logged as a "models" entry with the names
+//                         (never values) of the provider env vars it saw, not "argv".
+//   FAKE_OMP_USAGE        JSON array `omp usage --json` reports as {"reports": [...]} (default []).
+//                         Logged as a "usage" entry, not "argv".
+//   FAKE_OMP_STATS        JSON object `omp stats --json` prints (default {}). Logged as a "stats"
+//                         entry, not "argv".
 //   FAKE_OMP_DRAFT        Reply text of the card writer (an RPC prompt starting with "You are the card
 //                         writer"; see cardWriter), used verbatim instead of the card it writes.
 //
@@ -91,6 +108,37 @@ if (argv[0] === "skill") {
   const skills = JSON.parse(process.env.FAKE_OMP_SKILLS || "[]");
   process.stdout.write(`${JSON.stringify({ skills }, null, 2)}\n`, () => process.exit(0));
   await new Promise(() => undefined);
+}
+
+/** Chat models `omp models --json` lists per provider env var, like omp after a provider signs in. */
+const FAKE_MODELS = {
+  OPENAI_API_KEY: [
+    { provider: "openai", kind: "chat", selector: "openai/gpt-fake", name: "GPT Fake", thinking: [] },
+    { provider: "openai", kind: "chat", selector: "openai/gpt-fake-mini", name: "GPT Fake Mini", thinking: [] },
+  ],
+  GROQ_API_KEY: [{ provider: "groq", kind: "chat", selector: "groq/llama-fake", name: "Llama Fake", thinking: [] }],
+};
+
+/** Print `data` as JSON and exit 0 once stdout is flushed. */
+async function printJson(data) {
+  process.stdout.write(`${JSON.stringify(data, null, 2)}\n`, () => process.exit(0));
+  await new Promise(() => undefined);
+}
+
+if (argv[0] === "models") {
+  const envVars = Object.keys(FAKE_MODELS).filter((key) => process.env[key]);
+  log("models", { argv, envVars });
+  await printJson({ models: envVars.flatMap((key) => FAKE_MODELS[key]) });
+}
+
+if (argv[0] === "usage") {
+  log("usage", { argv });
+  await printJson({ reports: JSON.parse(process.env.FAKE_OMP_USAGE || "[]") });
+}
+
+if (argv[0] === "stats") {
+  log("stats", { argv });
+  await printJson(JSON.parse(process.env.FAKE_OMP_STATS || "{}"));
 }
 
 // Helper replies (advisor and queue planner prompts on a helper worker): one assistant message
@@ -589,6 +637,77 @@ async function feedbackTodos(current, waitForSteer) {
   completeSuccessfully("Fake summary: addressed the feedback.");
 }
 
+/** sdlc_flow: one [phase, item] per SDLC phase it works through, in order. */
+const SDLC_FLOW_PHASES = [
+  ["Planning", "Scope the change"],
+  ["Design", "Decide the API shape"],
+  ["Implementation", "Write the code"],
+  ["Testing", "Run the tests"],
+  ["Deployment", "Update the docs"],
+];
+
+/** The sdlc_flow list with item `active` in `status`: earlier items completed, later ones pending. */
+function sdlcFlowPhases(active, status) {
+  return SDLC_FLOW_PHASES.map(([name, content], i) => ({
+    name,
+    tasks: [{ content, status: i < active ? "completed" : i === active ? status : "pending" }],
+  }));
+}
+
+/** sdlc_flow: every item in_progress, then completed, one update per step; stops if the run is aborted meanwhile. */
+async function sdlcFlow(current) {
+  const stepMs = Number(process.env.FAKE_OMP_STEP_MS) || STREAM_DELAY_MS;
+  let update = 0;
+  for (let i = 0; i < SDLC_FLOW_PHASES.length; i++) {
+    for (const status of ["in_progress", "completed"]) {
+      if (run !== current) return;
+      update += 1;
+      emitTodo(`todo-${update}`, update === 1 ? "init" : "update", sdlcFlowPhases(i, status));
+      await new Promise((resolve) => setTimeout(resolve, stepMs));
+    }
+  }
+  if (run !== current) return;
+  completeSuccessfully("Fake summary: worked through every SDLC phase.");
+}
+
+/** sdlc_gate: implemented, but the Testing item never ran. */
+const SDLC_GATE_PHASES = [
+  { name: "Planning", tasks: [{ content: "Scope the change", status: "completed" }] },
+  { name: "Implementation", tasks: [{ content: "Write the code", status: "completed" }] },
+  { name: "Testing", tasks: [{ content: "Run the tests", status: "pending" }] },
+];
+
+/** sdlc_skip: Deployment started while Testing is still pending. */
+const SDLC_SKIP_PHASES = [
+  ...SDLC_GATE_PHASES,
+  { name: "Deployment", tasks: [{ content: "Update the docs", status: "in_progress" }] },
+];
+
+/** sdlc_hold: in the middle of Implementation. */
+const SDLC_HOLD_PHASES = [
+  { name: "Planning", tasks: [{ content: "Scope the change", status: "completed" }] },
+  { name: "Design", tasks: [{ content: "Decide the API shape", status: "completed" }] },
+  { name: "Implementation", tasks: [{ content: "Write the code", status: "in_progress" }] },
+  { name: "Testing", tasks: [{ content: "Run the tests", status: "pending" }] },
+];
+
+/** How long sdlc_skip waits for the host's quality-gate steer before it succeeds anyway. */
+const SDLC_SKIP_WAIT_MS = 1_500;
+
+/** sdlc_skip: succeeds once steered (or after SDLC_SKIP_WAIT_MS); stops if the run is aborted meanwhile. */
+async function sdlcSkip(current) {
+  emitTodo("todo-1", "init", SDLC_SKIP_PHASES);
+  if (!current.steers.length) {
+    const { promise, resolve } = Promise.withResolvers();
+    current.onSteer = resolve;
+    const timer = setTimeout(resolve, SDLC_SKIP_WAIT_MS);
+    await promise;
+    clearTimeout(timer);
+  }
+  if (run !== current) return;
+  completeSuccessfully("Fake summary: shipped the change.");
+}
+
 const LOOP_REPEATS = 40;
 const LOOP_DELAY_MS = 30;
 
@@ -677,6 +796,20 @@ async function startPrompt(command) {
     case "todos_feedback":
       await feedbackTodos(run, scenario === "todos_steer");
       break;
+    case "sdlc_flow":
+      await sdlcFlow(run);
+      break;
+    case "sdlc_gate":
+      emitTodo("todo-1", "init", SDLC_GATE_PHASES);
+      completeSuccessfully("Fake summary: implemented the change.");
+      break;
+    case "sdlc_skip":
+      await sdlcSkip(run);
+      break;
+    case "sdlc_hold":
+      emitTodo("todo-1", "init", SDLC_HOLD_PHASES);
+      // Completes on steer, or ends aborted on abort, like "slow".
+      break;
     case "loop":
       await loopCalls(run);
       break;
@@ -715,7 +848,7 @@ function steer(message, details = {}) {
   if (!run) return;
   run.steers.push(message);
   run.onSteer?.();
-  if (run.scenario === "slow") {
+  if (run.scenario === "slow" || run.scenario === "sdlc_hold") {
     const current = run;
     setImmediate(() => {
       if (run === current) {

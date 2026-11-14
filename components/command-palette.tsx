@@ -21,6 +21,7 @@ import {
   PanelRight,
   Play,
   Plus,
+  Plug,
   RadarIcon,
   Search,
   Settings,
@@ -547,6 +548,15 @@ export function CommandPalette() {
         keys: ["G", "K"],
         icon: <KeyRound className="size-4" />,
         run: go("/credentials"),
+      },
+      {
+        id: "go:mcp",
+        group: "Go to",
+        label: "MCP servers",
+        hint: "Connect tools to every agent",
+        keys: ["G", "I"],
+        icon: <Plug className="size-4" />,
+        run: go("/mcp"),
       },
       {
         id: "go:settings",

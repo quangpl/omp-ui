@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ControlRoom } from "@/components/visualize/control-room";
 import { FactoryFloor, FLOOR_GRID } from "@/components/visualize/factory-floor";
+import { SdlcPipeline } from "@/components/visualize/sdlc-pipeline";
 import { useLiveAgents } from "@/components/visualize/use-live-agents";
 import { WorkerAvatar } from "@/components/visualize/worker-avatar";
 import { Worksites } from "@/components/visualize/worksites";
@@ -31,7 +32,7 @@ const CLOCK_TICK_MS = 30_000;
 
 const BLOCK = "rounded-[3px]";
 
-/** Placeholder shaped like the control room, the factory floor and the worksites. */
+/** Placeholder shaped like the control room, the SDLC pipeline, the factory floor and the worksites. */
 function LoadingSkeleton() {
   return (
     <div className="grid gap-10 md:gap-16" aria-busy="true" aria-label="Loading">
@@ -52,6 +53,11 @@ function LoadingSkeleton() {
           </div>
         </div>
         <Skeleton className={cn(BLOCK, "h-80 w-full lg:col-span-5")} />
+      </div>
+      <div className="flex flex-col gap-2 rounded-[3px] border p-2 md:flex-row">
+        {Array.from({ length: 9 }, (_, i) => (
+          <Skeleton key={i} className={cn(BLOCK, "h-14 md:h-40 md:flex-1")} />
+        ))}
       </div>
       <div className={cn(FLOOR_GRID, "rounded-[3px] border p-2")}>
         <Skeleton className={cn(BLOCK, "col-span-2 h-36 xl:col-span-1 xl:col-start-1 xl:row-start-1")} />
@@ -189,6 +195,7 @@ export default function VisualizePage() {
                 </p>
               )}
               <ControlRoom dashboard={dashboard} live={live} now={now} />
+              <SdlcPipeline dashboard={dashboard} live={live} now={now} />
               <FactoryFloor dashboard={dashboard} live={live} now={now} />
               <Worksites dashboard={dashboard} now={now} />
             </div>
