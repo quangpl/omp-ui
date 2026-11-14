@@ -4,7 +4,7 @@ import { requireBoard } from "@/lib/server/validate";
 
 export const dynamic = "force-dynamic";
 
-/** Text of one project file for the Files tab: `?path=<id>` → `{ path, content, size, mtimeMs }`. */
+/** Text of one project file for the editor (Review tab, Files page): `?path=<id>` → `{ path, content, size, mtimeMs }`. */
 export const GET = withApi<{ id: string }>(async ({ req, repo, params }) => {
   const board = await requireBoard(repo, params.id);
   const id = new URL(req.url).searchParams.get("path") ?? "";

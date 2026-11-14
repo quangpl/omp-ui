@@ -1,9 +1,24 @@
-import type { DbDriver, UpdateBoardInput } from "@/lib/db/types";
+import type { DbDriver, Repository, UpdateBoardInput } from "@/lib/db/types";
 import { logEvent } from "@/lib/server/log-store";
-import { TASK_STATUSES, type Task, type TaskStatus } from "@/lib/types";
+import { TASK_STATUSES, type Task, type TaskReview, type TaskStatus } from "@/lib/types";
 
 /** Gap between consecutive card positions; new cards go to `max + POSITION_STEP`. */
 export const POSITION_STEP = 1024;
+
+/** Position that puts a card at the top of a column: `POSITION_STEP` above its current top card. */
+export async function topPosition(
+  repo: Pick<Repository, "listTasks">,
+  boardId: string,
+  status: TaskStatus,
+  excludeId: string,
+): Promise<number> {
+  const tasks = await repo.listTasks(boardId);
+  let min = Number.POSITIVE_INFINITY;
+  for (const t of tasks) {
+    if (t.status === status && t.id !== excludeId && t.position < min) min = t.position;
+  }
+  return Number.isFinite(min) ? min - POSITION_STEP : 0;
+}
 
 export const DEFAULT_EVENT_LIMIT = 500;
 export const MAX_EVENT_LIMIT = 2000;
@@ -97,6 +112,31 @@ export function parseFolderList(value: unknown): string[] {
     }
   }
   return Array.isArray(list) ? list.filter((v): v is string => typeof v === "string") : [];
+}
+
+/**
+ * A stored task review: a JSON object string (SQL drivers) or an object (MongoDB). Anything
+ * missing, malformed or with an unknown decision yields null.
+ */
+export function parseTaskReview(value: unknown): TaskReview | null {
+  let raw = value;
+  if (typeof value === "string") {
+    try {
+      raw = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (r.decision !== "approved" && r.decision !== "changes_requested") return null;
+  if (typeof r.at !== "string") return null;
+  return {
+    decision: r.decision,
+    hash: typeof r.hash === "string" ? r.hash : null,
+    note: typeof r.note === "string" ? r.note : null,
+    at: r.at,
+  };
 }
 
 export function emptyStatusCounts(): Record<TaskStatus, number> {

@@ -1,27 +1,16 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Check,
-  ChevronRight,
-  ChevronsDownUp,
-  ChevronsUpDown,
-  Columns2,
-  Copy,
-  FileDiff,
-  FolderGit2,
-  FolderX,
-  RefreshCw,
-  Rows2,
-  SquareTerminal,
-  TextWrap,
-  TriangleAlert,
-} from "lucide-react";
+/**
+ * The diff toolkit of the card's Review tab: loading the task diff and its summary, the view
+ * preferences, one file's diff body (unified or side by side) and the small pieces around it.
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, Copy, RefreshCw, SquareTerminal, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessage } from "@/components/board/format";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Kbd } from "@/components/ui/kbd";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api } from "@/lib/api-client";
@@ -33,20 +22,15 @@ import {
   type RepoDiff,
   type TaskDiff,
 } from "@/lib/diff-types";
-import { isTypingTarget } from "@/lib/hotkeys";
 import type { AgentState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** Re-read the diff this often while the card's agent works and the tab is shown. */
 const POLL_MS = 15_000;
-/** Files with more diff lines than this start collapsed. */
-const LARGE_FILE_LINES = 600;
 /** Summary requests per diff while the summary agent writes (each waits on the server). */
 const SUMMARY_ATTEMPTS = 8;
 const SUMMARY_RETRY_MS = 2000;
 const PREFS_KEY = "omp-ui:diff-view";
-/** Below the sticky tab bar of the card panel (TabsList + padding + border). */
-const STICKY_TOP = "top-[53px] md:top-[45px]";
 
 export interface TaskDiffState {
   diff: TaskDiff | null;
@@ -94,12 +78,8 @@ export function useTaskDiff(taskId: string, agentState: AgentState | undefined, 
   return { diff, error, loading, refresh };
 }
 
-interface ViewPrefs {
-  split: boolean;
-  wrap: boolean;
-}
-
-interface Entry {
+export interface DiffEntry {
+  /** `${repo.folder}\0${file.path}`: unique across the diff's repos. */
   key: string;
   repo: RepoDiff;
   file: DiffFile;
@@ -107,303 +87,45 @@ interface Entry {
   lines: number;
 }
 
-/** The Changes tab: summary, stats, file list and the diff of every changed file. */
-export function CodeChanges({
-  taskId,
-  active,
-  visible,
-  state,
-}: {
-  taskId: string;
-  /** The card's agent is queued or running (the summary waits until it finishes). */
-  active: boolean;
-  /** The tab is shown: keys work, the summary is fetched. */
-  visible: boolean;
-  state: TaskDiffState;
-}) {
-  const { diff, error, loading, refresh } = state;
-  const rootRef = useRef<HTMLDivElement>(null);
-  // Nothing heavy renders until the tab is first opened.
-  const [seen, setSeen] = useState(visible);
-  useEffect(() => {
-    if (visible) setSeen(true);
-  }, [visible]);
+/** Every changed file of `diff`, repo by repo, in the diff's order. */
+export function diffEntries(diff: TaskDiff | null): DiffEntry[] {
+  return (diff?.repos ?? []).flatMap((repo) =>
+    repo.files.map((file) => ({
+      key: `${repo.folder}\0${file.path}`,
+      repo,
+      file,
+      lines: file.patch ? file.patch.split("\n").length : 0,
+    })),
+  );
+}
 
-  const [prefs, setPrefs] = useState<ViewPrefs>({ split: false, wrap: false });
+export interface DiffViewPrefs {
+  split: boolean;
+  wrap: boolean;
+}
+
+/** How diffs are shown, kept in localStorage "omp-ui:diff-view"; defaults to side by side, no wrap. */
+export function useDiffViewPrefs(): [DiffViewPrefs, (patch: Partial<DiffViewPrefs>) => void] {
+  const [prefs, setPrefs] = useState<DiffViewPrefs>({ split: true, wrap: false });
   useEffect(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") as Partial<ViewPrefs>;
-      setPrefs({ split: saved.split === true, wrap: saved.wrap === true });
+      const saved = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") as Partial<DiffViewPrefs>;
+      setPrefs({ split: saved.split !== false, wrap: saved.wrap === true });
     } catch {
       // Defaults.
     }
   }, []);
-  const updatePrefs = (patch: Partial<ViewPrefs>) => {
+  const updatePrefs = useCallback((patch: Partial<DiffViewPrefs>) => {
     setPrefs((prev) => {
       const next = { ...prev, ...patch };
       localStorage.setItem(PREFS_KEY, JSON.stringify(next));
       return next;
     });
-  };
-
-  const entries = useMemo<Entry[]>(
-    () =>
-      (diff?.repos ?? []).flatMap((repo) =>
-        repo.files.map((file) => ({
-          key: `${repo.folder}\0${file.path}`,
-          repo,
-          file,
-          lines: file.patch ? file.patch.split("\n").length : 0,
-        })),
-      ),
-    [diff],
-  );
-  // Files the user opened or closed; the rest follow the default (large files start collapsed).
-  const [overrides, setOverrides] = useState<Record<string, boolean>>({});
-  const isOpen = (entry: Entry) => overrides[entry.key] ?? entry.lines <= LARGE_FILE_LINES;
-  const allOpen = entries.length > 0 && entries.every(isOpen);
-  const setAll = (open: boolean) => setOverrides(Object.fromEntries(entries.map((e) => [e.key, open])));
-  const toggle = useCallback(
-    (key: string, open: boolean) => setOverrides((prev) => ({ ...prev, [key]: open })),
-    [],
-  );
-
-  const [activeKey, setActiveKey] = useState<string | null>(null);
-  const [listOpen, setListOpen] = useState(false);
-  const sectionRefs = useRef(new Map<string, HTMLElement>());
-  const register = useCallback((key: string, node: HTMLElement | null) => {
-    if (node) sectionRefs.current.set(key, node);
-    else sectionRefs.current.delete(key);
   }, []);
-
-  const goTo = (key: string) => {
-    toggle(key, true);
-    setActiveKey(key);
-    requestAnimationFrame(() => {
-      const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      sectionRefs.current.get(key)?.scrollIntoView({ block: "start", behavior: reduced ? "auto" : "smooth" });
-    });
-  };
-
-  // Alt+↓ / Alt+↑: next / previous file (J/K and [/] belong to the panel).
-  const stepRef = useRef<(delta: 1 | -1) => void>(() => undefined);
-  stepRef.current = (delta) => {
-    if (entries.length === 0) return;
-    const index = entries.findIndex((e) => e.key === activeKey);
-    const next = index === -1 ? (delta === 1 ? 0 : entries.length - 1) : (index + delta + entries.length) % entries.length;
-    goTo(entries[next].key);
-  };
-  useEffect(() => {
-    if (!visible) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing || !event.altKey) return;
-      if (event.ctrlKey || event.metaKey || event.shiftKey) return;
-      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-      const panel = rootRef.current?.closest("[role='dialog']");
-      const target = event.target;
-      if (!(target instanceof HTMLElement) || !(target === document.body || panel?.contains(target))) return;
-      if (isTypingTarget(target)) return;
-      event.preventDefault();
-      stepRef.current(event.key === "ArrowDown" ? 1 : -1);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [visible]);
-
-  const summary = useDiffSummary(taskId, diff, visible && !active);
-
-  if (!seen) return null;
-  if (!diff) {
-    return error ? (
-      <StateMessage
-        icon={TriangleAlert}
-        tone="error"
-        title="Couldn't load the changes"
-        detail={error}
-        action={<RefreshButton onClick={refresh} loading={loading} label="Try again" />}
-      />
-    ) : (
-      <ChangesSkeleton />
-    );
-  }
-
-  const gitRepos = diff.repos.filter((repo) => repo.isRepo);
-  if (gitRepos.length === 0) {
-    const missing = diff.repos.find((repo) => repo.error);
-    return (
-      <StateMessage
-        icon={FolderX}
-        title="Not a git repository"
-        detail={
-          missing?.error ??
-          `${diff.repos.map((repo) => `${repo.name}/`).join(", ")} ${diff.repos.length === 1 ? "is" : "are"} not tracked by git, so changes can't be shown.`
-        }
-        action={<RefreshButton onClick={refresh} loading={loading} />}
-      />
-    );
-  }
-  const repoErrors = diff.repos.filter((repo) => repo.error);
-  if (diff.stats.files === 0) {
-    return (
-      <div ref={rootRef}>
-        <RepoErrors repos={repoErrors} className="px-4 pt-3" />
-        <StateMessage
-          icon={FileDiff}
-          title="No code changes yet"
-          detail={
-            active
-              ? "The agent is working; changed files appear here."
-              : `Files the agent changes in ${gitRepos.map((repo) => `${repo.name}/`).join(", ")} appear here for review.`
-          }
-          action={<RefreshButton onClick={refresh} loading={loading} />}
-        />
-      </div>
-    );
-  }
-
-  const multi = diff.repos.length > 1;
-  const truncatedRepos = diff.repos.filter((repo) => repo.truncated);
-  return (
-    <div ref={rootRef} className="@container flex flex-col gap-3 px-4 py-3">
-      <SummaryBar diff={diff} summary={summary} active={active} />
-
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground tabular-nums">
-            {diff.stats.files} {diff.stats.files === 1 ? "file" : "files"}
-          </span>
-          <Counts additions={diff.stats.additions} deletions={diff.stats.deletions} />
-          {!multi && <BaseNote repo={gitRepos[0]} />}
-        </p>
-        <div className="ml-auto flex items-center gap-0.5">
-          <ToolButton
-            label={allOpen ? "Collapse all files" : "Expand all files"}
-            onClick={() => setAll(!allOpen)}
-          >
-            {allOpen ? <ChevronsDownUp /> : <ChevronsUpDown />}
-          </ToolButton>
-          <ToolButton
-            label={prefs.split ? "Unified view" : "Split view"}
-            pressed={prefs.split}
-            className="max-md:hidden"
-            onClick={() => updatePrefs({ split: !prefs.split })}
-          >
-            {prefs.split ? <Rows2 /> : <Columns2 />}
-          </ToolButton>
-          <ToolButton label="Wrap long lines" pressed={prefs.wrap} onClick={() => updatePrefs({ wrap: !prefs.wrap })}>
-            <TextWrap />
-          </ToolButton>
-          <ToolButton label="Refresh changes" onClick={refresh}>
-            <RefreshCw className={cn(loading && "animate-spin motion-reduce:animate-none")} />
-          </ToolButton>
-        </div>
-      </div>
-
-      {error && (
-        <p role="status" className="flex items-center gap-1.5 text-xs text-destructive">
-          <TriangleAlert className="size-3.5" />
-          Couldn't refresh: {error}
-        </p>
-      )}
-      <RepoErrors repos={repoErrors} />
-      {truncatedRepos.length > 0 && <TruncatedNotice repos={truncatedRepos} />}
-
-      <div className="grid gap-3 @3xl:grid-cols-[15rem_minmax(0,1fr)]">
-        <nav
-          aria-label="Changed files"
-          className="min-w-0 @3xl:sticky @3xl:top-14 @3xl:max-h-[calc(100dvh-7rem)] @3xl:self-start @3xl:overflow-y-auto"
-        >
-          <button
-            type="button"
-            className="flex min-h-11 w-full items-center gap-1.5 rounded-md text-left text-xs font-medium text-muted-foreground hover:text-foreground md:min-h-8 @3xl:hidden"
-            aria-expanded={listOpen}
-            onClick={() => setListOpen((open) => !open)}
-          >
-            <ChevronRight
-              className={cn("size-3.5 transition-transform motion-reduce:transition-none", listOpen && "rotate-90")}
-            />
-            Files
-            <span className="tabular-nums">{entries.length}</span>
-          </button>
-          <div className={cn(!listOpen && "hidden @3xl:block")}>
-            {diff.repos.map((repo) => (
-              <div key={repo.folder} className="flex flex-col">
-                {multi && (
-                  <p className="flex items-center gap-1 truncate px-1.5 pt-2 pb-1 text-xs font-medium text-muted-foreground">
-                    <FolderGit2 className="size-3.5 shrink-0" />
-                    {repo.name}/
-                  </p>
-                )}
-                {!repo.isRepo && <p className="px-1.5 pb-1 text-xs text-muted-foreground">Not a git repository</p>}
-                <ul className="flex flex-col">
-                  {entries
-                    .filter((entry) => entry.repo === repo)
-                    .map((entry) => (
-                      <li key={entry.key}>
-                        <button
-                          type="button"
-                          title={entry.file.path}
-                          aria-current={entry.key === activeKey ? "true" : undefined}
-                          onClick={() => goTo(entry.key)}
-                          className={cn(
-                            "flex min-h-11 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-xs hover:bg-accent md:min-h-7",
-                            entry.key === activeKey && "bg-accent",
-                          )}
-                        >
-                          <StatusLetter file={entry.file} />
-                          <PathLabel path={entry.file.path} className="min-w-0 flex-1" />
-                          <Counts additions={entry.file.additions} deletions={entry.file.deletions} compact />
-                        </button>
-                      </li>
-                    ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        </nav>
-
-        <div className="flex min-w-0 flex-col gap-3">
-          {diff.repos.map((repo) =>
-            repo.files.length === 0 ? null : (
-              <div key={repo.folder} className="flex flex-col gap-2">
-                {multi && (
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
-                    <span className="flex items-center gap-1 font-medium text-foreground">
-                      <FolderGit2 className="size-3.5" />
-                      {repo.name}/
-                    </span>
-                    <BaseNote repo={repo} />
-                  </div>
-                )}
-                {entries
-                  .filter((entry) => entry.repo === repo)
-                  .map((entry) => (
-                    <FileDiffView
-                      key={entry.key}
-                      entryKey={entry.key}
-                      file={entry.file}
-                      lines={entry.lines}
-                      open={isOpen(entry)}
-                      current={entry.key === activeKey}
-                      split={prefs.split}
-                      wrap={prefs.wrap}
-                      onToggle={toggle}
-                      register={register}
-                    />
-                  ))}
-              </div>
-            ),
-          )}
-          <p className="hidden text-xs text-muted-foreground md:block">
-            <Kbd>Alt</Kbd> <Kbd>↓</Kbd> / <Kbd>↑</Kbd> next / previous file
-          </p>
-        </div>
-      </div>
-    </div>
-  );
+  return [prefs, updatePrefs];
 }
 
-interface SummaryState {
+export interface DiffSummaryState {
   summary: DiffSummary | null;
   error: string | null;
   regenerate: () => void;
@@ -413,7 +135,7 @@ interface SummaryState {
  * The summary of `diff`, fetched while `enabled` (tab shown, agent idle). The server answers the
  * fallback with `pending` while its summary agent writes; ask again until it is done.
  */
-function useDiffSummary(taskId: string, diff: TaskDiff | null, enabled: boolean): SummaryState {
+export function useDiffSummary(taskId: string, diff: TaskDiff | null, enabled: boolean): DiffSummaryState {
   const [summary, setSummary] = useState<DiffSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -467,7 +189,7 @@ function useDiffSummary(taskId: string, diff: TaskDiff | null, enabled: boolean)
   return { summary, error, regenerate };
 }
 
-function SummaryBar({ diff, summary, active }: { diff: TaskDiff; summary: SummaryState; active: boolean }) {
+export function SummaryBar({ diff, summary, active }: { diff: TaskDiff; summary: DiffSummaryState; active: boolean }) {
   const current = summary.summary?.hash === diff.hash ? summary.summary : null;
   const pending = !active && !summary.error && (current?.pending ?? true);
   const text = !active && current ? current.text : fallbackSummary(diff);
@@ -516,7 +238,7 @@ function SummaryBar({ diff, summary, active }: { diff: TaskDiff; summary: Summar
 }
 
 /** "vs origin/main · 2 commits" or "uncommitted, vs HEAD". */
-function BaseNote({ repo }: { repo: RepoDiff }) {
+export function BaseNote({ repo }: { repo: RepoDiff }) {
   if (!repo.baseRef) return <span>uncommitted changes{repo.branch ? ` on ${repo.branch}` : ""}</span>;
   return (
     <span className="truncate" title={repo.branch ? `${repo.branch} compared with ${repo.baseRef}` : undefined}>
@@ -526,7 +248,7 @@ function BaseNote({ repo }: { repo: RepoDiff }) {
   );
 }
 
-function RepoErrors({ repos, className }: { repos: RepoDiff[]; className?: string }) {
+export function RepoErrors({ repos, className }: { repos: RepoDiff[]; className?: string }) {
   if (repos.length === 0) return null;
   return (
     <div className={cn("flex flex-col gap-2", className)}>
@@ -541,7 +263,7 @@ function RepoErrors({ repos, className }: { repos: RepoDiff[]; className?: strin
   );
 }
 
-function TruncatedNotice({ repos }: { repos: RepoDiff[] }) {
+export function TruncatedNotice({ repos }: { repos: RepoDiff[] }) {
   return (
     <Alert>
       <SquareTerminal />
@@ -567,7 +289,7 @@ function CommandLine({ command }: { command: string }) {
   );
 }
 
-function CopyButton({ text, label, className }: { text: string; label: string; className?: string }) {
+export function CopyButton({ text, label, className }: { text: string; label: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -594,7 +316,7 @@ function CopyButton({ text, label, className }: { text: string; label: string; c
   );
 }
 
-function ToolButton({
+export function ToolButton({
   label,
   pressed,
   className,
@@ -626,7 +348,7 @@ function ToolButton({
   );
 }
 
-function RefreshButton({ onClick, loading, label = "Refresh" }: { onClick: () => void; loading: boolean; label?: string }) {
+export function RefreshButton({ onClick, loading, label = "Refresh" }: { onClick: () => void; loading: boolean; label?: string }) {
   return (
     <Button variant="outline" size="sm" className="max-md:h-11" disabled={loading} onClick={onClick}>
       <RefreshCw className={cn(loading && "animate-spin motion-reduce:animate-none")} />
@@ -635,7 +357,7 @@ function RefreshButton({ onClick, loading, label = "Refresh" }: { onClick: () =>
   );
 }
 
-function StateMessage({
+export function StateMessage({
   icon: Icon,
   title,
   detail,
@@ -644,21 +366,21 @@ function StateMessage({
 }: {
   icon: React.ComponentType<{ className?: string }>;
   title: string;
-  detail: string;
-  action: React.ReactNode;
+  detail?: string;
+  action?: React.ReactNode;
   tone?: "error";
 }) {
   return (
     <div className="flex flex-col items-center gap-2 px-6 py-10 text-center">
       <Icon className={cn("size-5", tone === "error" ? "text-destructive" : "text-muted-foreground")} />
       <p className="text-sm font-medium">{title}</p>
-      <p className="max-w-sm text-xs text-pretty break-words text-muted-foreground">{detail}</p>
-      <div className="mt-1">{action}</div>
+      {detail && <p className="max-w-sm text-xs text-pretty break-words text-muted-foreground">{detail}</p>}
+      {action && <div className="mt-1">{action}</div>}
     </div>
   );
 }
 
-function ChangesSkeleton() {
+export function ChangesSkeleton() {
   return (
     <div className="flex flex-col gap-3 px-4 py-3" aria-busy="true" aria-label="Loading changes">
       <Skeleton className="h-14 w-full" />
@@ -680,7 +402,7 @@ const STATUS: Record<DiffFileStatus, { label: string; className: string }> = {
   R: { label: "Renamed", className: "text-primary" },
 };
 
-function StatusLetter({ file }: { file: DiffFile }) {
+export function StatusLetter({ file }: { file: DiffFile }) {
   const { label, className } = STATUS[file.status];
   const full = file.untracked ? `${label} (not committed or staged yet)` : label;
   return (
@@ -694,7 +416,7 @@ function StatusLetter({ file }: { file: DiffFile }) {
   );
 }
 
-function Counts({ additions, deletions, compact }: { additions: number; deletions: number; compact?: boolean }) {
+export function Counts({ additions, deletions, compact }: { additions: number; deletions: number; compact?: boolean }) {
   return (
     <span className={cn("inline-flex shrink-0 gap-1.5 font-mono tabular-nums", compact ? "text-[11px]" : "text-xs")}>
       <span className="text-success">+{additions}</span>
@@ -704,7 +426,7 @@ function Counts({ additions, deletions, compact }: { additions: number; deletion
 }
 
 /** "lib/server/" muted, "git-diff.ts" emphasised; the start is cut first when narrow. */
-function PathLabel({ path, className }: { path: string; className?: string }) {
+export function PathLabel({ path, className }: { path: string; className?: string }) {
   const slash = path.lastIndexOf("/");
   return (
     <span className={cn("flex min-w-0 font-mono", className)}>
@@ -786,79 +508,11 @@ const LINE_TONE: Record<DiffLine["kind"], { row: string; gutter: string; sign: s
   note: { row: "text-muted-foreground italic", gutter: "", sign: "" },
 };
 
-const FileDiffView = memo(function FileDiffView({
-  entryKey,
-  file,
-  lines,
-  open,
-  current,
-  split,
-  wrap,
-  onToggle,
-  register,
-}: {
-  entryKey: string;
-  file: DiffFile;
-  lines: number;
-  open: boolean;
-  current: boolean;
-  split: boolean;
-  wrap: boolean;
-  onToggle: (key: string, open: boolean) => void;
-  register: (key: string, node: HTMLElement | null) => void;
-}) {
-  const bodyId = `diff-${entryKey.replace(/[^A-Za-z0-9_-]/g, "_")}`;
-  return (
-    <section
-      ref={(node) => register(entryKey, node)}
-      aria-label={file.path}
-      className={cn("scroll-mt-14 rounded-lg border", current && "ring-1 ring-ring/50")}
-    >
-      <div
-        className={cn(
-          "sticky z-[5] flex items-center gap-1.5 rounded-t-lg border-b bg-card py-1 pr-1 pl-1.5",
-          STICKY_TOP,
-          !open && "rounded-b-lg border-b-0",
-        )}
-      >
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls={bodyId}
-          onClick={() => onToggle(entryKey, !open)}
-          className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 text-left text-xs md:min-h-7"
-        >
-          <ChevronRight
-            className={cn(
-              "size-3.5 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none",
-              open && "rotate-90",
-            )}
-          />
-          <StatusLetter file={file} />
-          {file.oldPath && (
-            <>
-              <PathLabel path={file.oldPath} className="max-w-[40%] text-muted-foreground" />
-              <span className="shrink-0 text-muted-foreground">→</span>
-            </>
-          )}
-          <PathLabel path={file.path} className="min-w-0" />
-          {!open && lines > LARGE_FILE_LINES && (
-            <span className="shrink-0 text-muted-foreground">· {lines} lines</span>
-          )}
-        </button>
-        <Counts additions={file.additions} deletions={file.deletions} />
-        <CopyButton text={file.path} label="Copy path" />
-      </div>
-      {open && (
-        <div id={bodyId}>
-          <FileBody file={file} split={split} wrap={wrap} />
-        </div>
-      )}
-    </section>
-  );
-});
-
-function FileBody({ file, split, wrap }: { file: DiffFile; split: boolean; wrap: boolean }) {
+/**
+ * One file's diff body: hunks table (unified or side by side), or the binary / too-large /
+ * mode-only note. No header, no outer frame and no sticky offsets: the caller frames it.
+ */
+export function FileDiffBody({ file, split, wrap }: { file: DiffFile; split: boolean; wrap: boolean }) {
   const parsed = useMemo(() => (file.patch ? parsePatch(file.patch) : []), [file.patch]);
   const rows = useMemo(() => (split ? pairLines(parsed) : null), [parsed, split]);
   if (file.binary) return <BodyNote>Binary file — not shown.</BodyNote>;
@@ -882,7 +536,7 @@ function FileBody({ file, split, wrap }: { file: DiffFile; split: boolean; wrap:
   const textClass = wrap || split ? "whitespace-pre-wrap break-all" : "whitespace-pre";
   return (
     <>
-      <div className={cn("rounded-b-lg font-mono text-xs leading-5", !wrap && !split && "overflow-x-auto")} style={style}>
+      <div className={cn("font-mono text-xs leading-5", !wrap && !split && "overflow-x-auto")} style={style}>
         {rows ? (
           <div role="table" aria-label="Side-by-side diff" className="w-full">
             {rows.map((row, index) =>
@@ -950,5 +604,5 @@ function SplitCell({ line, textClass, side }: { line: DiffLine | null; textClass
 }
 
 function BodyNote({ children }: { children: React.ReactNode }) {
-  return <p className="rounded-b-lg px-3 py-2 text-xs text-muted-foreground">{children}</p>;
+  return <p className="px-3 py-2 text-xs text-muted-foreground">{children}</p>;
 }

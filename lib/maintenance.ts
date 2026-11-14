@@ -728,7 +728,7 @@ const TARGETS: Target[] = [
   {
     id: "diff-cache",
     label: "Old change summaries",
-    description: "Changes-tab summaries unused for 7 days; regenerated on demand.",
+    description: "Review-tab summaries unused for 7 days; regenerated on demand.",
     risk: "safe",
     async scan() {
       const dir = path.join(dataDir(), "runtime", "diff-summaries");

@@ -25,6 +25,7 @@ function card(title: string, description = ""): Task {
     autoRetries: 0,
     retryAt: null,
     todos: [],
+    review: null,
     createdAt: NOW,
     updatedAt: NOW,
     commentCount: 0,

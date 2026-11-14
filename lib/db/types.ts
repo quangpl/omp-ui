@@ -61,6 +61,7 @@ export type UpdateTaskInput = Partial<
     | "autoRetries"
     | "retryAt"
     | "todos"
+    | "review"
   >
 >;
 

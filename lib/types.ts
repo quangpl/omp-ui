@@ -91,6 +91,8 @@ export interface Task {
    * and kept after the run ends. [] when the agent never kept one.
    */
   todos: TodoPhase[];
+  /** Latest code review decision; null until the card is reviewed. Never cleared by runs: compare `hash` with the diff. */
+  review: TaskReview | null;
   createdAt: string;
   updatedAt: string;
   /** Derived: total comments. */
@@ -99,6 +101,25 @@ export interface Task {
   openCommentCount: number;
   /** Scheduler whose run created this card; null when a person or an agent created it. */
   schedulerId: string | null;
+}
+
+export type ReviewDecision = "approved" | "changes_requested";
+
+/** A reviewer's decision on a card's changes (`POST /tasks/:id/review`). */
+export interface TaskReview {
+  decision: ReviewDecision;
+  /** `TaskDiff.hash` of the changes the reviewer saw; null when unknown. A different current hash = stale review. */
+  hash: string | null;
+  /** Reviewer's note (required for changes_requested; optional for approved); null when none. */
+  note: string | null;
+  /** ISO time of the decision. */
+  at: string;
+}
+
+/** `POST /tasks/:id/review` response: the updated card and, for request_changes, the posted feedback comment. */
+export interface TaskReviewResult {
+  task: Task;
+  comment: Comment | null;
 }
 
 export type TodoItemStatus = "pending" | "in_progress" | "completed" | "abandoned";
@@ -613,7 +634,7 @@ export interface ProjectFileHit {
 }
 
 /**
- * A project file's text from GET /boards/:id/project-files/content (Files tab editor).
+ * A project file's text from GET /boards/:id/project-files/content (Review tab / Files page editor).
  * `path` is the same id as `ProjectFileHit.insert`: relative to the board workdir, or absolute inside an extra folder.
  */
 export interface ProjectFileContent {

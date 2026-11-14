@@ -119,23 +119,27 @@ test("card lifecycle: edit, feedback, agent run to Done, log, reopen by comment"
   const detail = page.getByRole("dialog", { name: title });
   await expect(detail.getByLabel("Card title", { exact: true })).toHaveValue(title);
 
-  // The description starts collapsed; edit it and it persists, collapsed again, across a reload of the deep link.
+  // The description starts collapsed and rendered; edit it and it persists, collapsed again, across a reload of the deep link.
   const descriptionToggle = detail.getByRole("button", { name: "Description", exact: true });
   await expect(descriptionToggle).toHaveAttribute("aria-expanded", "false");
   await expect(detail.getByLabel("Description", { exact: true })).toHaveCount(0);
-  await descriptionToggle.click();
+  await detail.getByRole("button", { name: "Edit description", exact: true }).click();
   const description = detail.getByLabel("Description", { exact: true });
+  await expect(description).toBeFocused();
   await description.fill("Expose GET /health\nReturn 200 with { ok: true }");
   await detail.getByRole("button", { name: "Save", exact: true }).click();
   await expect(detail.getByRole("button", { name: "Save", exact: true })).toBeHidden();
+  // Saving leaves the editor for the rendered text.
+  await expect(detail.getByLabel("Description", { exact: true })).toHaveCount(0);
   await page.reload();
   const reloaded = page.getByRole("dialog", { name: title });
   await expect(reloaded.getByRole("button", { name: "Description", exact: true })).toHaveAttribute(
     "aria-expanded",
     "false",
   );
-  // The collapsed preview shows the saved text and opens the editor focused.
-  await reloaded.getByRole("button", { name: /^Expose GET \/health/ }).click();
+  await expect(reloaded.getByText("Expose GET /health")).toBeVisible();
+  await expect(reloaded.getByLabel("Description", { exact: true })).toHaveCount(0);
+  await reloaded.getByRole("button", { name: "Edit description", exact: true }).click();
   await expect(reloaded.getByLabel("Description", { exact: true })).toBeFocused();
   await expect(reloaded.getByLabel("Description", { exact: true })).toHaveValue(
     "Expose GET /health\nReturn 200 with { ok: true }",

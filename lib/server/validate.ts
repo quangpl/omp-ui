@@ -49,6 +49,32 @@ export function parseCommentBody(value: unknown): string {
   return text(value, "body", 1, 10000);
 }
 
+/** Review action posted to `POST /tasks/:id/review`. */
+export type ReviewAction = "approve" | "request_changes";
+
+export function parseReviewDecision(value: unknown): ReviewAction {
+  if (value !== "approve" && value !== "request_changes") {
+    throw new HttpError(400, "decision must be one of: approve, request_changes");
+  }
+  return value;
+}
+
+/** Reviewer's note, trimmed (≤10000 characters). Required to request changes; empty or absent → null otherwise. */
+export function parseReviewNote(value: unknown, required: boolean): string | null {
+  if (value === undefined || value === null) {
+    if (required) throw new HttpError(400, "note is required");
+    return null;
+  }
+  const note = text(value, "note", required ? 1 : 0, 10000);
+  return note || null;
+}
+
+/** `TaskDiff.hash` the reviewer saw (≤128 characters); empty or absent → null. */
+export function parseReviewHash(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  return text(value, "hash", 0, 128) || null;
+}
+
 /** Users can only clear a card's question (dismiss); the agent sets it when a run ends. */
 export function parseQuestionClear(value: unknown): null {
   if (value !== null) throw new HttpError(400, "question can only be cleared (set it to null)");

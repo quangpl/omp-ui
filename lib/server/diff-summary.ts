@@ -1,4 +1,4 @@
-// The one/two-sentence summary on top of the Changes tab. A quick read-only omp helper run
+// The one/two-sentence summary on top of the Review tab. A quick read-only omp helper run
 // (pooled `omp --mode rpc`, the fast `smol` role when configured) writes it from the diffstat and a truncated
 // patch; results are cached by the diff's hash in memory and under DATA_DIR/runtime, so reopening
 // a card is instant. Until the summary agent answers (or when it can't), a deterministic line

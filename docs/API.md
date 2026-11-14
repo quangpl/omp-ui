@@ -116,8 +116,8 @@ A board is one project. `workdir` is the main folder (omp runs there); `extraFol
 | POST | `/boards/:id/files?name=<file>` | raw file bytes | `SharedFiles` (201); replaces a file of the same name; max 100 MB |
 | GET | `/boards/:id/files/<name>` | – | the file, served like `/tasks/:id/files/<name>` (`?download=1` forces a download) |
 | DELETE | `/boards/:id/files/<name>` | – | `SharedFiles` |
-| GET | `/boards/:id/project-files?q=<query>&limit=<n>` | – | `{ files: ProjectFileHit[] }` for the composer's `@` mentions and the Files tab tree: fuzzy matches over the project folders' files and directories (git-tracked plus untracked, gitignored excluded; non-git folders are walked). Empty `q` lists the workdir's top level; `q` ending in `/` lists that directory's children (an absolute `q` inside an extra folder lists there). Workdir hits insert a relative path, extra-folder hits an absolute one. `limit` defaults to 30 (1–1000) |
-| GET | `/boards/:id/project-files/content?path=<id>` | – | `ProjectFileContent` `{ path, content, size, mtimeMs }` of one project file for the Files tab editor. `path` is a `ProjectFileHit.insert` (relative to the workdir, or absolute inside an extra folder). 403 outside the project folders (symlinks included) or inside `.git`, 404 missing or not a regular file, 413 over 2 MB, 415 binary |
+| GET | `/boards/:id/project-files?q=<query>&limit=<n>` | – | `{ files: ProjectFileHit[] }` for the composer's `@` mentions and the Files tree (card Review tab, Files page): fuzzy matches over the project folders' files and directories (git-tracked plus untracked, gitignored excluded; non-git folders are walked). Empty `q` lists the workdir's top level; `q` ending in `/` lists that directory's children (an absolute `q` inside an extra folder lists there). Workdir hits insert a relative path, extra-folder hits an absolute one. `limit` defaults to 30 (1–1000) |
+| GET | `/boards/:id/project-files/content?path=<id>` | – | `ProjectFileContent` `{ path, content, size, mtimeMs }` of one project file for the file editor (card Review tab, Files page). `path` is a `ProjectFileHit.insert` (relative to the workdir, or absolute inside an extra folder). 403 outside the project folders (symlinks included) or inside `.git`, 404 missing or not a regular file, 413 over 2 MB, 415 binary |
 | PUT | `/boards/:id/project-files/content` | `{ path, content, baseMtimeMs }` | `ProjectFileContent` after atomically overwriting an existing file (mode kept). 409 when its `mtimeMs` on disk is no longer `baseMtimeMs`; same path rules and limits as GET; never creates files |
 | POST | `/boards/:id/project-files/ops` | `FileOp`: `{ op: "create-file"\|"create-dir", path }`, `{ op: "rename"\|"copy", from, to }` or `{ op: "delete", path }` | `FileOpResult` `{ path, kind }` (directories end with `/`). Files tree actions; paths as in `ProjectFileHit.insert`. Missing parents of a new path are created; `rename` moves (also between the project's folders); `copy` and `delete` are recursive (delete is permanent). 409 when the target exists, 404 missing source, 400 bad op or a folder moved/copied into itself, 403 outside the project folders (symlinks included), inside `.git`, or on a project folder itself. Listings reflect the change right away |
 | GET | `/boards/:id/git` | – | `GitStatus[]`, one per project folder (`workdir` first, then `extraFolders`) |
@@ -172,6 +172,7 @@ Git never prompts: commands run without a terminal (`GIT_TERMINAL_PROMPT=0`, SSH
 | GET | `/tasks/:id/diff` | – | `TaskDiff`: the card's code changes. See [Code changes](#code-changes) |
 | GET | `/tasks/:id/diff/summary` | – | `DiffSummary`: a one- or two-sentence summary of the changes. See [Code changes](#code-changes) |
 | POST | `/tasks/:id/diff/summary` | – | `DiffSummary`, written again (drops the cached one) |
+| POST | `/tasks/:id/review` | `{ decision: "approve"\|"request_changes", note?, hash? }` | `{ task: Task, comment: Comment \| null }` – code review decision. See [Code review](#code-review) |
 
 ### Card writer
 
@@ -187,6 +188,17 @@ Cards from free text are written by a read-only `omp --mode rpc` agent (steered 
 `GET /tasks/:id/diff` → `TaskDiff`: `{ taskId, repos, stats: { files, additions, deletions }, truncated, hash, generatedAt }`. One `RepoDiff` per folder the card works in (its worktree, else the project folder): `{ folder, name, isRepo, branch, baseRef, commitsAhead, files, truncated, command, error }`. `baseRef` is the ref committed changes are compared against (e.g. `origin/main`; `null` = uncommitted changes only), `commitsAhead` the commits on HEAD not on it, `command` a shell command that shows the full diff, `error` a plain-language git failure (`null` when fine). Each `DiffFile` is `{ path, oldPath, status: "A"|"M"|"D"|"R", additions, deletions, binary, untracked, patch, truncated }`; `patch` holds the unified diff hunks without the file header. Caps: 400 KB of patch text in total and 160 KB per file; untracked files over 256 KB and binary files are listed without content (`patch: null`, `truncated` or `binary` set). `hash` is a content hash of the changes.
 
 `GET /tasks/:id/diff/summary` → `DiffSummary`: `{ text, source: "model"|"fallback", pending, error, hash }`. A helper agent writes the summary; it is cached by `hash` (`DATA_DIR/runtime/diff-summaries/<hash>.json`). The request waits up to 15 s for it; until then (or when the agent fails, with the reason in `error`) `text` is the deterministic file-count line (`source: "fallback"`). While `pending` is true, ask again for the agent's text. `POST` the same path to write it again.
+
+### Code review
+
+`Task.review` is the card's latest review decision, `TaskReview | null` (`null` until reviewed): `{ decision: "approved"|"changes_requested", hash, note, at }`. `hash` is the `TaskDiff.hash` the reviewer saw (`null` when unknown); runs never clear the review, so a current diff `hash` that differs from it means the review is stale. `note` is the reviewer's note (`null` when none); `at` the ISO time of the decision.
+
+`POST /tasks/:id/review` with `{ decision, note?, hash? }` (`decision`: `"approve"` or `"request_changes"`, 400 otherwise; `note`: trimmed, at most 10,000 characters; `hash`: at most 128 characters, empty/absent = `null`):
+
+- `approve`: 409 `The agent is still working; stop it or wait before approving` while the card's agent is queued or running. Stores `{ decision: "approved", hash, note, at }` (a blank or absent `note` is `null`) and moves the card to **Done** unless it is already there (the same agent rules as a PATCH `status` change). Answers `{ task, comment: null }`.
+- `request_changes`: `note` is required (400 when absent or blank). Stores `{ decision: "changes_requested", hash, note, at }`, then posts a `user` comment `**Changes requested**\n\n<note>` exactly like `POST /tasks/:id/comments` (`comment.added` is published and the feedback steers the live run, or reopens and resumes the agent). Answers `{ task, comment }` (200; `task` re-read after the agent hook).
+
+Either way `task.updated` is published with the final card.
 
 ## Agent queue
 

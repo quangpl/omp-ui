@@ -134,8 +134,8 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
       { label: "Previous tab", keys: ["["] },
       { label: "Send feedback / save text", keys: ["Mod+↵"] },
       { label: "Close panel (or leave the field)", keys: ["Esc"] },
-      { label: "Next / previous changed file (Changes tab)", keys: ["Alt+↓", "Alt+↑"] },
-      { label: "Open file / save it (Files tab)", keys: ["Mod+P", "Mod+S"] },
+      { label: "Next / previous changed file (Review tab)", keys: ["Alt+↓", "Alt+↑"] },
+      { label: "Open file / save it (Review tab)", keys: ["Mod+P", "Mod+S"] },
     ],
   },
   {

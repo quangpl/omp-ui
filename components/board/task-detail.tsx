@@ -9,11 +9,12 @@ import {
   ChevronRight,
   CircleHelp,
   Ellipsis,
+  Eye,
   FileDiff,
-  FolderOpen,
   LoaderCircle,
   MessageSquare,
   Paperclip,
+  Pencil,
   Rocket,
   Terminal,
   Trash2,
@@ -74,7 +75,8 @@ import { TaskProgressIcon, TodoListSection } from "@/components/board/task-progr
 import { CommentThread } from "@/components/board/comment-thread";
 import { DETAIL_HEADING_CLASS, DetailSection } from "@/components/board/detail-section";
 import { errorMessage, formatDateTime, formatRelative } from "@/components/board/format";
-import { CodeChanges, useTaskDiff } from "@/components/board/code-changes";
+import { useTaskDiff } from "@/components/board/code-changes";
+import { CodeReview } from "@/components/board/code-review";
 import { quickActionForKey, quickActionsFor, type QuickActionId } from "@/components/board/quick-actions";
 import { ShipActions, canShip, shipLabels, shipTask, useTaskGitStatus } from "@/components/board/ship-actions";
 import { AgentStateBadge } from "@/components/board/task-card";
@@ -85,7 +87,6 @@ import { isQuotaError } from "@/lib/quota";
 import { todoProgress } from "@/lib/todos";
 import { SDLC_PHASE_INFO, sdlcProgress } from "@/lib/sdlc";
 import { FilesPanel } from "@/components/files-panel";
-import { FilesWorkspace } from "@/components/board/files-workspace";
 import type { FileSource } from "@/lib/file-source";
 
 export interface TaskDetailProps {
@@ -115,7 +116,7 @@ export interface TaskDetailProps {
   onGitChanged: () => void;
 }
 
-/** Card whose Files tab holds unsaved edits, and the edited file's name. */
+/** Card whose Review tab holds unsaved edits, and the edited file's name. */
 interface DirtyFile {
   taskId: string;
   name: string;
@@ -134,14 +135,13 @@ interface DiscardPrompt {
 /**
  * Card details: a right-hand sheet on desktop, a near full-height drawer on phones.
  *
- * Unsaved Files-tab edits are guarded: closing the panel asks first, and so does any switch or close
+ * Unsaved Review-tab edits are guarded: closing the panel asks first, and so does any switch or close
  * from outside it (J / K, card links, browser Back): the edited card stays shown meanwhile and Keep
  * editing restores its URL. Forced closes (card deleted or missing) drop the edits.
  */
 export function TaskDetail(props: TaskDetailProps) {
   const { taskId, isMobile, onClose, onOpenTask } = props;
-  // Changes widens the desktop sheet so diffs and their file list fit side by side; Files takes
-  // nearly the whole screen for the tree, the editor and the chat.
+  // The Review tab takes nearly the whole screen for the file list, the diff or editor and the chat.
   const [width, setWidth] = useState<DetailWidth>("normal");
   // Keep rendering the last card while the panel animates closed.
   const [shownId, setShownId] = useState(taskId);
@@ -255,11 +255,7 @@ export function TaskDetail(props: TaskDetailProps) {
         <SheetContent
           className={cn(
             "w-full gap-0 p-0 outline-none data-[side=right]:sm:max-w-xl",
-            width === "full"
-              ? "data-[side=right]:md:max-w-[min(96vw,90rem)]"
-              : width === "wide"
-                ? "data-[side=right]:lg:max-w-5xl"
-                : "data-[side=right]:xl:max-w-2xl",
+            width === "full" ? "data-[side=right]:md:max-w-[min(96vw,90rem)]" : "data-[side=right]:xl:max-w-2xl",
           )}
           onOpenAutoFocus={focusPanel}
           onEscapeKeyDown={keepOpenWhileEditing}
@@ -286,7 +282,7 @@ function focusPanel(event: Event) {
 /**
  * Esc inside a text field leaves the field (fields revert their own edits) instead of closing the panel.
  * Radix sees Escape before the field does: with autocomplete suggestions or a word completion showing,
- * Escape only hides them (the field's handler) and the field keeps focus. The Files tab's CodeMirror
+ * Escape only hides them (the field's handler) and the field keeps focus. The Review tab's CodeMirror
  * editor (a contentEditable inside `.cm-editor`) counts as a text field.
  */
 function keepOpenWhileEditing(event: KeyboardEvent) {
@@ -338,11 +334,11 @@ interface DetailState {
 }
 
 /** Panel tabs in order; ] / [ step through them. */
-const DETAIL_TABS = ["activity", "log", "changes", "files"] as const;
+const DETAIL_TABS = ["activity", "log", "review"] as const;
 type DetailTab = (typeof DETAIL_TABS)[number];
 
-/** Desktop sheet width: normal, wide (Changes) or nearly full screen (Files). */
-type DetailWidth = "normal" | "wide" | "full";
+/** Desktop sheet width: normal, or nearly full screen (Review). */
+type DetailWidth = "normal" | "full";
 
 /** Keys that scroll a focused scroll container. */
 const SCROLL_KEYS: Record<string, true> = {
@@ -374,18 +370,18 @@ function TaskDetailBody({
 }: TaskDetailProps & {
   taskId: string;
   onWidthChange: (width: DetailWidth) => void;
-  /** The Files tab's unsaved edits (null: none). */
+  /** The Review tab's unsaved edits (null: none). */
   onDirtyChange: (dirty: DirtyFile | null) => void;
 }) {
   const [detail, setDetail] = useState<DetailState | null>(null);
   const [tab, setTab] = useState<DetailTab>("activity");
-  // The Files tab mounts on first open (it lists and reads project files), then stays mounted.
-  const [filesOpened, setFilesOpened] = useState(false);
-  if (tab === "files" && !filesOpened) setFilesOpened(true);
+  // The Review tab mounts on first open (it lists and reads project files), then stays mounted.
+  const [reviewOpened, setReviewOpened] = useState(false);
+  if (tab === "review" && !reviewOpened) setReviewOpened(true);
   const tabsRef = useRef<HTMLDivElement>(null);
   const tabBarRef = useRef<HTMLDivElement>(null);
   const detailsRef = useRef<HTMLDivElement>(null);
-  const filesRef = useRef<HTMLDivElement>(null);
+  const reviewRef = useRef<HTMLDivElement>(null);
   const fileSource = useMemo<FileSource>(
     () => ({ kind: "board", boardId: board.id, workdir: board.workdir, extraFolders: board.extraFolders }),
     [board.id, board.workdir, board.extraFolders],
@@ -501,36 +497,34 @@ function TaskDetailBody({
   const diffState = useTaskDiff(
     taskId,
     task?.agentState,
-    tab === "changes" && (task?.agentState === "running" || task?.agentState === "queued"),
+    tab === "review" && (task?.agentState === "running" || task?.agentState === "queued"),
   );
-  useEffect(
-    () => onWidthChange(tab === "files" ? "full" : tab === "changes" ? "wide" : "normal"),
-    [tab, onWidthChange],
-  );
-  // Desktop Files tab: the workspace fills exactly the scroll area below the sticky tab bar, scrolled
-  // so the bar is at the top (toolbar, editor and chat composer all in view). Re-fits on resizes
-  // (window, the sheet widening, the details above reflowing) until the user scrolls the panel away.
+  useEffect(() => onWidthChange(tab === "review" ? "full" : "normal"), [tab, onWidthChange]);
+  // Desktop Review tab: the review fills exactly the scroll area below the sticky tab bar, scrolled
+  // so the bar is at the top (review bar, file list, diff or editor and chat composer all in view).
+  // Re-fits on resizes (window, the sheet widening, the details above reflowing) until the user
+  // scrolls the panel away.
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     const tabs = tabsRef.current;
     const bar = tabBarRef.current;
     const details = detailsRef.current;
-    const files = filesRef.current;
-    if (tab !== "files" || isMobile || !scroll || !tabs || !bar || !details || !files) return;
+    const review = reviewRef.current;
+    if (tab !== "review" || isMobile || !scroll || !tabs || !bar || !details || !review) return;
     // Decided from user input, not scrollTop: scroll anchoring, clamping while layout settles and
-    // scrollIntoView/focus inside the workspace all move scrollTop without the user scrolling away.
+    // scrollIntoView/focus inside the review all move scrollTop without the user scrolling away.
     let userScrolled = false;
     const fit = () => {
-      files.style.height = `${scroll.clientHeight - bar.offsetHeight}px`;
+      review.style.height = `${scroll.clientHeight - bar.offsetHeight}px`;
       if (userScrolled) return;
       // The Tabs root never sticks, so its top is the bar's static position (the bar's own rect
       // reads as aligned whenever it is stuck).
       const scrollerTop = scroll.getBoundingClientRect().top + scroll.clientTop;
       scroll.scrollTop = tabs.getBoundingClientRect().top - scrollerTop + scroll.scrollTop;
     };
-    // Wheel/touch inside the workspace scrolls the editor, tree or chat, not the panel.
+    // Wheel/touch inside the review scrolls the diff, editor, list or chat, not the panel.
     const onPointerScroll = (event: Event) => {
-      if (!(event.target instanceof Node) || !files.contains(event.target)) userScrolled = true;
+      if (!(event.target instanceof Node) || !review.contains(event.target)) userScrolled = true;
     };
     // Scrollbar drags land on the scroll container itself.
     const onPointerDown = (event: PointerEvent) => {
@@ -560,7 +554,7 @@ function TaskDetailBody({
       scroll.removeEventListener("pointerdown", onPointerDown);
       scroll.removeEventListener("keydown", onKeyDown);
       scroll.style.overflowAnchor = "";
-      files.style.height = "";
+      review.style.height = "";
     };
   }, [tab, isMobile]);
   const drafting = useQueueDrafting(taskId) && task?.agentState === "queued";
@@ -975,16 +969,12 @@ function TaskDetailBody({
                     runs.length > 0 && <TabCount>{runs.length}</TabCount>
                   )}
                 </TabsTrigger>
-                <TabsTrigger value="changes" className={TAB_TRIGGER_CLASS}>
+                <TabsTrigger value="review" className={TAB_TRIGGER_CLASS}>
                   <FileDiff />
-                  Changes
+                  Review
                   {diffState.diff && diffState.diff.stats.files > 0 && (
                     <TabCount>{diffState.diff.stats.files}</TabCount>
                   )}
-                </TabsTrigger>
-                <TabsTrigger value="files" className={TAB_TRIGGER_CLASS}>
-                  <FolderOpen />
-                  Files
                 </TabsTrigger>
                 <span className="ml-auto hidden items-center gap-1 pr-1 text-[11px] text-muted-foreground lg:flex" aria-hidden>
                   <Kbd>[</Kbd>
@@ -1016,20 +1006,26 @@ function TaskDetailBody({
               <ThreadSkeleton />
             )}
           </TabsContent>
-          <TabsContent value="changes" forceMount className="min-w-0 data-[state=inactive]:hidden">
-            <CodeChanges taskId={task.id} active={active} visible={tab === "changes"} state={diffState} />
-          </TabsContent>
           {/* Stays mounted once opened so the open file and its unsaved edits survive tab switches.
               Desktop: sized by the fit effect; sticky inside a parent of its own height, so it never
               moves, but CodeMirror stops scrolling ancestors at a sticky element (typing scrolls the
               editor only). */}
-          <TabsContent value="files" forceMount className="min-w-0 data-[state=inactive]:hidden">
-            {filesOpened && (
-              <div ref={filesRef} className={isMobile ? undefined : "sticky top-0 h-[calc(100dvh-7rem)] min-h-96"}>
-                <FilesWorkspace
+          <TabsContent value="review" forceMount className="min-w-0 data-[state=inactive]:hidden">
+            {reviewOpened && (
+              <div ref={reviewRef} className={isMobile ? undefined : "sticky top-0 h-[calc(100dvh-7rem)] min-h-96"}>
+                <CodeReview
+                  task={task}
+                  board={board}
                   source={fileSource}
+                  diffState={diffState}
+                  active={active}
+                  visible={tab === "review"}
                   isMobile={isMobile}
                   onDirtyChange={(name) => onDirtyChange(name ? { taskId, name } : null)}
+                  onReviewed={(result) => {
+                    upsertTask(result.task);
+                    if (result.comment) applyCommentResponse(result.comment, Number.NEGATIVE_INFINITY);
+                  }}
                   chat={(openFile) =>
                     detail ? (
                       <CommentThread
@@ -1275,6 +1271,9 @@ function TitleEditor({ task, onSave }: { task: Task; onSave: (title: string) => 
   );
 }
 
+/** Height (px) of the collapsed description: about a heading and a line of rendered text. */
+const DESCRIPTION_PREVIEW_PX = 64;
+
 function DescriptionEditor({
   task,
   onSave,
@@ -1288,14 +1287,22 @@ function DescriptionEditor({
   const [saving, setSaving] = useState(false);
   // Collapsed by default so the activity below stays in view; the body remounts per card.
   const [expanded, setExpanded] = useState(false);
-  const focusOnExpandRef = useRef(false);
+  // The description reads as rendered markdown; Edit swaps in the textarea.
+  const [editing, setEditing] = useState(false);
+  // Whether the rendered text is taller than the collapsed preview (no "Show more" otherwise).
+  const [overflows, setOverflows] = useState(false);
+  const focusOnEditRef = useRef(false);
+  const renderedRef = useRef<HTMLDivElement>(null);
   const dirty = draft !== base;
+  const open = expanded || editing;
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   const fieldId = `description-${task.id}`;
+  const bodyId = `${fieldId}-body`;
   // "/" skills and shortcuts, "@" project files, "skill://" skill names, like the new-card composer.
   const slash = useComposerAutocomplete(fieldRef, draft, setDraft, { boardId: task.boardId });
-  // The textarea can't open links, so files linked in the saved description get preview chips.
+  // Linked files of the saved description stay one click away while the text is collapsed.
   const linked = useMemo(() => extractAttachments(base), [base]);
+  const hasText = draft.trim() !== "";
 
   useEffect(() => {
     if (task.description === base) return;
@@ -1305,14 +1312,31 @@ function DescriptionEditor({
   }, [task.description]);
 
   useEffect(() => {
-    if (!expanded || !focusOnExpandRef.current) return;
-    focusOnExpandRef.current = false;
+    if (!editing || !focusOnEditRef.current) return;
+    focusOnEditRef.current = false;
     fieldRef.current?.focus();
-  }, [expanded]);
+  }, [editing]);
 
-  const expandAndEdit = () => {
-    focusOnExpandRef.current = true;
-    setExpanded(true);
+  // Re-measured on every reflow (panel width, images loading, edits) while the rendered text shows.
+  useLayoutEffect(() => {
+    const rendered = renderedRef.current;
+    if (!rendered) return;
+    const measure = () => setOverflows(rendered.offsetHeight > DESCRIPTION_PREVIEW_PX);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(rendered);
+    return () => observer.disconnect();
+  }, [editing, hasText]);
+
+  const startEditing = () => {
+    focusOnEditRef.current = true;
+    setEditing(true);
+  };
+
+  const toggle = () => {
+    setExpanded(!open);
+    // Collapsing leaves the editor; an unsaved draft stays (rendered, with Save / Cancel).
+    if (open) setEditing(false);
   };
 
   const save = async () => {
@@ -1321,72 +1345,116 @@ function DescriptionEditor({
     if (await onSave(value)) {
       setBase(value);
       setDraft(value);
+      setEditing(false);
     }
     setSaving(false);
   };
 
+  const cancel = () => {
+    setDraft(base);
+    setEditing(false);
+  };
+
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <button
-        type="button"
-        aria-expanded={expanded}
-        aria-controls={expanded ? fieldId : undefined}
-        onClick={() => setExpanded((open) => !open)}
-        className={cn(
-          DETAIL_HEADING_CLASS,
-          "-mx-1 min-h-9 self-start rounded-md px-1 pressable hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none max-md:min-h-11",
-        )}
-      >
-        <AlignLeft aria-hidden />
-        Description
-        <ChevronRight aria-hidden className={cn("transition-transform", expanded && "rotate-90")} />
-      </button>
-      {expanded ? (
-        <>
-          {/* `relative` anchors the word ghost on the textarea. */}
-          <div className="relative">
-            <Textarea
-              id={fieldId}
-              ref={fieldRef}
-              aria-label="Description"
-              value={draft}
-              placeholder="Add more detail for the agent: context, acceptance criteria, files to look at…"
-              className="max-h-[50dvh] min-h-24 resize-none leading-relaxed"
-              aria-autocomplete="list"
-              aria-expanded={slash.open}
-              data-suggesting={slash.suggesting || undefined}
-              onChange={(event) => setDraft(event.target.value)}
-              onSelect={slash.onSelect}
-              onKeyDown={(event) => {
-                if (slash.onKeyDown(event)) return;
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && dirty) {
-                  event.preventDefault();
-                  void save();
-                } else if (event.key === "Escape" && dirty) {
-                  event.preventDefault();
-                  setDraft(base);
-                }
-              }}
-            />
-            {slash.ghost}
-          </div>
-          {slash.suggestion}
-          {slash.menu}
-        </>
-      ) : (
-        // The preview shows the draft so unsaved edits stay visible while collapsed.
+      <div className="flex min-h-9 items-center justify-between gap-2 max-md:min-h-11">
         <button
           type="button"
-          onClick={expandAndEdit}
-          title="Edit description"
+          aria-expanded={open}
+          aria-controls={bodyId}
+          onClick={toggle}
           className={cn(
-            "line-clamp-2 rounded-md text-left text-sm leading-relaxed break-words whitespace-pre-line pressable hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-            draft.trim() ? "text-muted-foreground" : "text-muted-foreground/70 italic",
+            DETAIL_HEADING_CLASS,
+            "-mx-1 min-h-9 self-start rounded-md px-1 pressable hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none max-md:min-h-11",
           )}
         >
-          {draft.trim() || "No description. Add detail for the agent…"}
+          <AlignLeft aria-hidden />
+          Description
+          <ChevronRight aria-hidden className={cn("transition-transform", open && "rotate-90")} />
         </button>
-      )}
+        {editing ? (
+          <Button variant="ghost" size="sm" className="h-11 md:h-8" onClick={() => setEditing(false)}>
+            <Eye aria-hidden />
+            Preview
+          </Button>
+        ) : (
+          <Button variant="ghost" size="sm" className="h-11 md:h-8" aria-label="Edit description" onClick={startEditing}>
+            <Pencil aria-hidden />
+            Edit
+          </Button>
+        )}
+      </div>
+      <div id={bodyId} className="min-w-0">
+        {editing ? (
+          <>
+            {/* `relative` anchors the word ghost on the textarea. */}
+            <div className="relative">
+              <Textarea
+                id={fieldId}
+                ref={fieldRef}
+                aria-label="Description"
+                value={draft}
+                placeholder="Add more detail for the agent: context, acceptance criteria, files to look at…"
+                className="max-h-[50dvh] min-h-24 resize-none leading-relaxed"
+                aria-autocomplete="list"
+                aria-expanded={slash.open}
+                data-suggesting={slash.suggesting || undefined}
+                onChange={(event) => setDraft(event.target.value)}
+                onSelect={slash.onSelect}
+                onKeyDown={(event) => {
+                  if (slash.onKeyDown(event)) return;
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && dirty) {
+                    event.preventDefault();
+                    void save();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    // Esc reverts unsaved edits first, then leaves the editor.
+                    if (dirty) setDraft(base);
+                    else setEditing(false);
+                  }
+                }}
+              />
+              {slash.ghost}
+            </div>
+            {slash.suggestion}
+            {slash.menu}
+          </>
+        ) : hasText ? (
+          // Shows the draft so unsaved edits stay visible while not editing.
+          <div className="flex min-w-0 flex-col items-start gap-1">
+            <div
+              className={cn(
+                "w-full min-w-0 overflow-hidden",
+                !expanded && overflows && "[mask-image:linear-gradient(to_bottom,black_45%,transparent)]",
+              )}
+              style={expanded ? undefined : { maxHeight: DESCRIPTION_PREVIEW_PX }}
+            >
+              <div ref={renderedRef}>
+                <RichText text={draft} className="text-sm leading-relaxed text-muted-foreground" />
+              </div>
+            </div>
+            {overflows && (
+              <button
+                type="button"
+                aria-expanded={expanded}
+                aria-controls={bodyId}
+                onClick={() => setExpanded(!expanded)}
+                className="-mx-1 min-h-8 rounded-md px-1 text-xs font-medium text-primary pressable hover:underline focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none max-md:min-h-11"
+              >
+                {expanded ? "Show less" : "Show more"}
+              </button>
+            )}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={startEditing}
+            className="rounded-md text-left text-sm leading-relaxed text-muted-foreground/70 italic pressable hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none max-md:min-h-11"
+          >
+            No description. Add detail for the agent…
+          </button>
+        )}
+      </div>
       {linked.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs text-muted-foreground">Linked files</span>
@@ -1415,7 +1483,7 @@ function DescriptionEditor({
       )}
       {dirty && (
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" className="h-11 pressable max-md:flex-1 md:h-8" disabled={saving} onClick={() => setDraft(base)}>
+          <Button variant="ghost" className="h-11 pressable max-md:flex-1 md:h-8" disabled={saving} onClick={cancel}>
             Cancel
           </Button>
           <Button className="h-11 pressable max-md:flex-1 md:h-8" disabled={saving} onClick={() => void save()}>
