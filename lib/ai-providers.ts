@@ -1,10 +1,13 @@
 // AI model providers for Settings → AI Providers: which environment variables omp reads for each
-// provider, how they combine into auth methods, and the API shapes of
-// `/api/v1/settings/ai-providers`. Shared by the client and the server: no Node imports.
+// provider, how they combine into auth methods, the OAuth sign-ins omp offers for it
+// (`omp login <id>`), and the API shapes of `/api/v1/settings/ai-providers`. Shared by the client
+// and the server: no Node imports.
 //
 // Values saved in Settings are sealed with the credentials key (lib/server/credentials.ts
 // `sealSecret`) and applied over the server's own environment for every omp child process
-// (lib/child-env.ts), so a saved key works for the next agent without a restart.
+// (lib/child-env.ts), so a saved key works for the next agent without a restart. OAuth sign-ins
+// (lib/server/ai-oauth.ts) run `omp login` on the server: omp stores and refreshes those tokens in
+// its own credential store, never in Settings.
 
 /** omp provider ids (`omp models --json` / `omp usage --json`), in display order. */
 export const AI_PROVIDER_IDS = [
@@ -53,6 +56,14 @@ export interface AiAuthMethod {
   optional?: string[];
 }
 
+/** An OAuth sign-in omp offers (`omp login <id>`): the browser authorizes, omp keeps the tokens. */
+export interface AiOAuthLogin {
+  /** `omp login` provider id. */
+  id: string;
+  label: string;
+  description: string;
+}
+
 export interface AiProviderDefinition {
   id: AiProviderId;
   name: string;
@@ -67,6 +78,8 @@ export interface AiProviderDefinition {
   fields: AiProviderField[];
   /** In order of preference: the Test button probes the first complete one. */
   methods: AiAuthMethod[];
+  /** OAuth sign-ins through omp that give access to this provider's models. */
+  oauthLogins?: AiOAuthLogin[];
   /** omp provider ids whose models belong to this provider (defaults to `[id]`). */
   modelProviders?: string[];
   /** What the Test button calls, e.g. "GET https://api.openai.com/v1/models". */
@@ -127,11 +140,14 @@ export const AI_PROVIDERS: readonly AiProviderDefinition[] = [
       {
         id: "oauth",
         kind: "oauth",
-        label: "OAuth (Claude Code)",
-        description: "Claude subscription token from `claude setup-token`, or `omp login` on the server.",
+        label: "OAuth token",
+        description: "Long-lived Claude Pro/Max token from `claude setup-token`.",
         required: ["ANTHROPIC_OAUTH_TOKEN"],
       },
       apiKeyMethod("ANTHROPIC_API_KEY", "Pay-as-you-go key from the Anthropic Console."),
+    ],
+    oauthLogins: [
+      { id: "anthropic", label: "Claude Pro/Max", description: "Use your Claude subscription instead of an API key." },
     ],
     healthCheck: "GET https://api.anthropic.com/v1/models",
   },
@@ -148,6 +164,19 @@ export const AI_PROVIDERS: readonly AiProviderDefinition[] = [
     pattern: "^sk-",
     patternHint: "Starts with sk-",
     modelsUrl: "https://api.openai.com/v1/models",
+    oauthLogins: [
+      {
+        id: "openai-codex",
+        label: "ChatGPT Plus/Pro",
+        description: "Codex models with your ChatGPT subscription.",
+      },
+      {
+        id: "openai-codex-device",
+        label: "ChatGPT Plus/Pro (device code)",
+        description: "The same subscription, confirmed with a one-time code on any device.",
+      },
+    ],
+    modelProviders: ["openai", "openai-codex"],
   }),
   {
     id: "google",
@@ -159,6 +188,20 @@ export const AI_PROVIDERS: readonly AiProviderDefinition[] = [
     keyUrl: "https://aistudio.google.com/apikey",
     fields: [{ envVar: "GEMINI_API_KEY", label: "API key", secret: true, placeholder: "AIza…", pattern: "^AIza", patternHint: "Starts with AIza" }],
     methods: [apiKeyMethod("GEMINI_API_KEY", "Key from Google AI Studio.")],
+    oauthLogins: [
+      {
+        id: "google-gemini-cli",
+        label: "Google account (Gemini CLI)",
+        description: "Gemini through Google Cloud Code Assist, like the Gemini CLI.",
+      },
+      {
+        id: "google-antigravity",
+        label: "Google Antigravity",
+        description:
+          "Gemini, Claude and GPT-OSS through Antigravity. At your own risk: Google may suspend accounts that sign in from third-party tools.",
+      },
+    ],
+    modelProviders: ["google", "google-gemini-cli", "google-antigravity"],
     healthCheck: "GET https://generativelanguage.googleapis.com/v1beta/models (x-goog-api-key header)",
   },
   {
@@ -293,6 +336,9 @@ export const AI_PROVIDERS: readonly AiProviderDefinition[] = [
     pattern: "^sk-or-",
     patternHint: "Starts with sk-or-",
     modelsUrl: "https://openrouter.ai/api/v1/key",
+    oauthLogins: [
+      { id: "openrouter", label: "OpenRouter account", description: "Sign in instead of pasting a key; omp stores the key it issues." },
+    ],
   }),
   bearerKeyProvider({
     id: "groq",
@@ -364,7 +410,23 @@ export const AI_PROVIDERS: readonly AiProviderDefinition[] = [
   }),
 ];
 
+/** omp OAuth sign-ins for providers outside the catalog (Settings → "Also available through omp"). */
+export const AI_OTHER_OAUTH_LOGINS: readonly AiOAuthLogin[] = [
+  { id: "github-copilot", label: "GitHub Copilot", description: "Models from your Copilot plan, on github.com or GitHub Enterprise." },
+  { id: "cursor", label: "Cursor", description: "Claude, GPT and other models from your Cursor subscription." },
+  { id: "kimi-code", label: "Kimi Code", description: "Kimi models from your Kimi coding plan." },
+  { id: "gitlab-duo", label: "GitLab Duo", description: "Models from your GitLab Duo seat." },
+  { id: "devin", label: "Devin", description: "Models from your Devin account." },
+];
+
 const PROVIDERS_BY_ID = new Map<string, AiProviderDefinition>(AI_PROVIDERS.map((provider) => [provider.id, provider]));
+
+const OAUTH_LOGINS_BY_ID = new Map<string, AiOAuthLogin>(
+  [...AI_PROVIDERS.flatMap((provider) => provider.oauthLogins ?? []), ...AI_OTHER_OAUTH_LOGINS].map((login) => [
+    login.id,
+    login,
+  ]),
+);
 
 export function getAiProvider(id: string): AiProviderDefinition | undefined {
   return PROVIDERS_BY_ID.get(id);
@@ -372,6 +434,11 @@ export function getAiProvider(id: string): AiProviderDefinition | undefined {
 
 export function isAiProviderId(value: unknown): value is AiProviderId {
   return typeof value === "string" && PROVIDERS_BY_ID.has(value);
+}
+
+/** A sign-in the UI offers; the only ids the server passes to `omp login`. */
+export function getAiOAuthLogin(id: string): AiOAuthLogin | undefined {
+  return OAUTH_LOGINS_BY_ID.get(id);
 }
 
 /** omp provider ids whose models count for `provider`. */
@@ -464,7 +531,7 @@ export interface AiProviderState {
   lastTest: AiProviderTestResult | null;
 }
 
-/** A provider outside the catalog that omp is signed in to or lists models for (e.g. openai-codex). */
+/** A provider outside the catalog that omp is signed in to or lists models for (e.g. github-copilot). */
 export interface AiOtherProvider {
   id: string;
   models: AiProviderModel[];
@@ -501,4 +568,42 @@ export interface AiProviderTestResponse {
   result: AiProviderTestResult;
   /** The provider after the test (its `lastTest` updates when the effective values were tested). */
   provider: AiProviderState;
+}
+
+// ---------------------------------------------------------------------------------------------
+// OAuth sign-in (`/api/v1/settings/ai-providers/oauth`)
+
+/** running: `omp login` waits for the browser or for `prompt`; the rest are final. */
+export type AiOAuthStatus = "running" | "succeeded" | "failed" | "cancelled";
+
+/** One `omp login <loginId>` run on the server, as the UI polls it. */
+export interface AiOAuthSession {
+  id: string;
+  loginId: string;
+  label: string;
+  status: AiOAuthStatus;
+  /** The https page to authorize at (or to enter `userCode` on); null until omp prints it. */
+  url: string | null;
+  /** Device-code flows: the code to enter at `url`. */
+  userCode: string | null;
+  /** The question omp waits on (a pasted redirect URL or code, a domain, a confirmation), or null. */
+  prompt: string | null;
+  /** omp's other messages (instructions, progress), in order; URLs and answers are not repeated. */
+  output: string[];
+  /** The account omp signed in as, once succeeded (when omp reports one). */
+  account: string | null;
+  /** Why it failed. */
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+/** POST /oauth body. */
+export interface AiOAuthStartInput {
+  loginId: string;
+}
+
+/** POST /oauth/{id} body: one answer to `prompt`. */
+export interface AiOAuthInput {
+  input: string;
 }

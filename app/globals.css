@@ -865,8 +865,7 @@
   .animate-worker-think,
   .animate-worker-spin,
   .animate-worker-help,
-  .animate-lamp,
-  .animate-cycle-flow {
+  .animate-lamp {
     animation: none;
   }
   .animate-floor-in,
@@ -876,21 +875,4 @@
     animation-duration: 0.01ms;
     animation-delay: 0ms;
   }
-}
-
-/* ── Visualize: the SDLC cycle ring ──────────────────────────────── */
-
-/* Drift the flow dashes one pattern period clockwise; pair with pathLength="100" and a 5-unit dasharray (sdlc-cycle-ring.tsx). */
-@keyframes cycle-flow {
-  from {
-    stroke-dashoffset: 0;
-  }
-  to {
-    stroke-dashoffset: -5;
-  }
-}
-
-/* Continuous clockwise flow along the SDLC cycle track; linear so the loop has no visible seam. */
-@utility animate-cycle-flow {
-  animation: cycle-flow 2.5s linear infinite;
 }

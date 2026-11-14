@@ -276,7 +276,8 @@ function sourceLabel(
       : "from the server environment";
   }
   if (signIn) return `signed in through omp${signIn.account ? ` (${signIn.account})` : ""}`;
-  return "from the server environment";
+  // No complete method: omp uses its own stored credentials (e.g. a key `omp login` issued).
+  return Object.keys(values).length > 0 ? "from the server environment" : "from omp's credential store";
 }
 
 /**

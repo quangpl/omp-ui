@@ -138,3 +138,38 @@ export interface McpServerUpdate {
   /** Switch to another saved credential of the same provider. */
   credentialId?: string;
 }
+
+/** The public MCP server directory the /mcp page browses (read from its sitemaps). */
+export const MCP_DIRECTORY_ORIGIN = "https://mcpservers.org";
+
+/** One server listed on mcpservers.org. */
+export interface McpDirectoryEntry {
+  /** Path of its page under the origin: `/servers/github-mcp-server`, `/servers/modelcontextprotocol/fetch`. */
+  path: string;
+  /** Readable name derived from the page slug ("GitHub MCP Server" from `github-mcp-server`). */
+  name: string;
+  /** Publisher for `/servers/<owner>/<repo>` pages, else null. */
+  owner: string | null;
+  /** Listed in the site's featured (priority) sitemap. */
+  featured: boolean;
+  /** The page on mcpservers.org (name, description, install steps). */
+  url: string;
+  /** Sitemap `lastmod`, else null. */
+  updatedAt: string | null;
+}
+
+/** GET /mcp/directory: one page of the directory, filtered by `q` and `featured`. */
+export interface McpDirectoryResponse {
+  entries: McpDirectoryEntry[];
+  /** Entries matching the filter (all pages). */
+  total: number;
+  /** Every server in the directory, and how many of them are featured. */
+  size: number;
+  featured: number;
+  offset: number;
+  limit: number;
+  /** When the list was last read from mcpservers.org. */
+  fetchedAt: string;
+  /** Why the latest refresh failed; the list is then the previous one. Null when fresh. */
+  refreshError: string | null;
+}

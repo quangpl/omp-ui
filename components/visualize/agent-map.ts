@@ -1,7 +1,7 @@
 // Data model of the Visualize page: the shared systems agents use (one factory department each),
 // which system each tool call touches, who stands in which room of the floor, who stands at which
 // SDLC station, and the agent-to-agent links (delegation, dependencies, board contacts). Pure: no React.
-import { SDLC_PHASES, type SdlcPhaseId, type SdlcProgress, type SdlcViolation } from "@/lib/sdlc";
+import { SDLC_PHASE_INFO, SDLC_PHASES, type SdlcPhaseId, type SdlcProgress, type SdlcViolation } from "@/lib/sdlc";
 import type { Dashboard, QueueEntry, QueueSnapshot, SubagentSnapshot } from "@/lib/types";
 import type { Activity } from "./activity";
 import { type AgentRole, roleOf } from "./roles";
@@ -237,6 +237,8 @@ export interface SdlcPipeline {
   stations: Record<SdlcPhaseId, PipelineStation>;
   /** Cards waiting in line, not started yet (before Planning). */
   backlog: number;
+  /** Phases the pipeline draws, in SDLC order: the required ones, plus when-needed phases that some running card includes (non-skipped) or that someone works in. */
+  visible: SdlcPhaseId[];
 }
 
 /**
@@ -245,7 +247,8 @@ export interface SdlcPipeline {
  * subagent (running/pending) stands at its role's phase (ROLE_PHASE: scouts plan, builders
  * implement, reviewers test, …), or at its lead's station when the role has none (helpers).
  * Violations of running cards raise `alerts` on the phase that started too early and `breaches`
- * on every gate they crossed; `backlog` counts the queued cards.
+ * on every gate they crossed; `backlog` counts the queued cards; `visible` lists the phases to
+ * draw: the required ones plus when-needed phases some running card includes or executes.
  */
 export function sdlcPipeline(queue: QueueSnapshot, live: Record<string, LiveAgent>): SdlcPipeline {
   const stations = Object.fromEntries(
@@ -276,7 +279,13 @@ export function sdlcPipeline(queue: QueueSnapshot, live: Record<string, LiveAgen
     });
   }
   for (const { station, worker } of subagents) stations[station].workers.push(worker);
-  return { stations, backlog: queue.queued.length };
+  const visible = SDLC_PHASES.filter(
+    (id) =>
+      SDLC_PHASE_INFO[id].required ||
+      stations[id].workers.length > 0 ||
+      queue.running.some((entry) => entry.sdlc?.phases.some((phase) => phase.id === id && phase.status !== "skipped")),
+  );
+  return { stations, backlog: queue.queued.length, visible };
 }
 
 const CONTACT_TOOLS: Record<string, "message" | "wait" | "inspect"> = {

@@ -1,6 +1,6 @@
 "use client";
 
-import { type ComponentType, type CSSProperties, useMemo } from "react";
+import { type ComponentType, useMemo } from "react";
 import Link from "next/link";
 import {
   CheckIcon,
@@ -26,7 +26,7 @@ import { ROLE_INFO, roleOf, subagentName } from "@/components/visualize/roles";
 import { CycleRing, type RingSegment, ringAngle, ringPoint } from "@/components/visualize/sdlc-cycle-ring";
 import type { LiveAgent } from "@/components/visualize/use-live-agents";
 import { RoleTag, WorkerAvatar, WorkerOutline } from "@/components/visualize/worker-avatar";
-import { SDLC_PHASE_INFO, SDLC_PHASES, type SdlcPhaseId, type SdlcPhaseStatus, type SdlcProgress } from "@/lib/sdlc";
+import { SDLC_PHASE_INFO, type SdlcPhaseId, type SdlcPhaseStatus, type SdlcProgress } from "@/lib/sdlc";
 import type { ContextUsage, Dashboard, QueueEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -40,9 +40,6 @@ const MAX_RING_CARDS = 2;
 const MAX_RING_CREW = 4;
 /** The gate that leaves this phase is the release gate: nothing ships before Testing passes. */
 const RELEASE_FROM: SdlcPhaseId = "testing";
-const PHASE_COUNT = SDLC_PHASES.length;
-/** Mount stagger between neighbouring nodes on the ring. */
-const STAGGER_MS = 60;
 
 type TooltipSide = "top" | "right" | "bottom" | "left";
 type CrewMember = Extract<PipelineWorker, { kind: "subagent" }>;
@@ -61,31 +58,23 @@ const DOT: Record<SdlcPhaseStatus, string> = {
   skipped: "bg-muted-foreground/15",
 };
 
-/** The phase after `phase`; Maintenance wraps around to Planning, closing the cycle. */
-function nextPhase(phase: SdlcPhaseId): SdlcPhaseId {
-  return SDLC_PHASES[(SDLC_PHASES.indexOf(phase) + 1) % PHASE_COUNT];
-}
-
 /** Tooltip side pointing away from the ring's center at slot `index`, so tips never cover the hub. */
-function outwardSide(index: number): TooltipSide {
-  const radians = (ringAngle(index, PHASE_COUNT) * Math.PI) / 180;
+function outwardSide(index: number, count: number): TooltipSide {
+  const radians = (ringAngle(index, count) * Math.PI) / 180;
   const x = Math.sin(radians);
   const y = -Math.cos(radians);
   if (Math.abs(y) >= Math.abs(x)) return y < 0 ? "top" : "bottom";
   return x > 0 ? "right" : "left";
 }
 
-/** Entry stagger for the `index`-th element drawn on the ring. */
-function stagger(index: number): CSSProperties {
-  return { animationDelay: `${index * STAGGER_MS}ms` };
-}
-
-/** One dot per SDLC phase, in order: done, active (ringed while current), to do, skipped. */
+/** One dot per phase in the card's plan (skipped phases omitted), in order: done, active (ringed while current), to do. Nothing while no phase is included. */
 function PhaseTrack({ sdlc }: { sdlc: SdlcProgress }) {
-  const summary = sdlc.phases.map((phase) => `${SDLC_PHASE_INFO[phase.id].label}: ${STATUS_LABEL[phase.status]}`);
+  const phases = sdlc.phases.filter((phase) => phase.status !== "skipped");
+  if (phases.length === 0) return null;
+  const summary = phases.map((phase) => `${SDLC_PHASE_INFO[phase.id].label}: ${STATUS_LABEL[phase.status]}`);
   return (
     <span role="img" aria-label={`Phases. ${summary.join(", ")}`} title={summary.join("\n")} className="flex items-center gap-1">
-      {sdlc.phases.map((phase) => (
+      {phases.map((phase) => (
         <span
           key={phase.id}
           className={cn(
@@ -103,11 +92,11 @@ function PhaseTrack({ sdlc }: { sdlc: SdlcProgress }) {
 function progressSentence(entry: QueueEntry): string {
   const { sdlc } = entry;
   const info = SDLC_PHASE_INFO[sdlcStation(sdlc)];
-  if (!sdlc) return `${info.label} (phase ${info.step} of 7), no plan yet`;
+  if (!sdlc) return `${info.label}, no plan yet`;
   const phase = sdlc.phases.find((p) => p.id === info.id);
   const items = sdlc.current === null ? "every phase done" : `${phase?.done ?? 0} of ${phase?.total ?? 0} items done`;
   const violations = sdlc.violations.map((violation) => violation.message).join("; ");
-  return `${info.label} (phase ${info.step} of 7), ${items}, ${sdlc.completed} of ${sdlc.included} phases done${violations ? `. Quality gate: ${violations}` : ""}`;
+  return `${info.label}, ${items}, ${sdlc.completed} of ${sdlc.included} phases done${violations ? `. Quality gate: ${violations}` : ""}`;
 }
 
 /**
@@ -294,12 +283,21 @@ function AlertLine({ phase, alerts, className }: { phase: SdlcPhaseId; alerts: n
 function StackStation({
   phase,
   station,
+  step,
+  count,
+  done,
   live,
   contexts,
   now,
 }: {
   phase: SdlcPhaseId;
   station: PipelineStation;
+  /** 1-based position among the phases drawn. */
+  step: number;
+  /** How many phases are drawn. */
+  count: number;
+  /** Every running card that includes this phase has finished it. */
+  done: boolean;
   live: Record<string, LiveAgent>;
   contexts: ReadonlyMap<string, ContextUsage | null>;
   now: number;
@@ -315,15 +313,14 @@ function StackStation({
       aria-labelledby={`sdlc-stack-${phase}`}
       className={cn(
         "flex min-w-0 flex-col rounded-[3px] border bg-card transition-colors duration-500 motion-reduce:transition-none",
-        occupied && "border-signal",
-        station.alerts > 0 && "border-destructive/50",
+        station.alerts > 0 ? "border-destructive/50" : occupied ? "border-signal" : done && "border-success/50",
       )}
     >
       <header className="flex items-start gap-2 px-3 pt-2.5" title={info.description}>
-        <StepNumber step={info.step} occupied={occupied} />
+        <StepNumber step={step} occupied={occupied} />
         <div className="min-w-0 flex-1">
           <h3 id={`sdlc-stack-${phase}`} className="truncate text-sm leading-tight font-semibold tracking-tight">
-            <span className="sr-only">Phase {info.step} of 7: </span>
+            <span className="sr-only">Phase {step} of {count}: </span>
             {info.label}
           </h3>
           <p className="truncate font-mono text-[10px] text-muted-foreground">{info.required ? "Always" : "When needed"}</p>
@@ -359,6 +356,11 @@ function StackStation({
             </ul>
           )}
         </div>
+      ) : done ? (
+        <p className="flex min-h-12 flex-1 items-center justify-center gap-2 p-2 font-mono text-xs text-success">
+          <CheckIcon className="size-4" aria-hidden />
+          Done
+        </p>
       ) : (
         <p className="flex min-h-12 flex-1 items-center justify-center gap-2 p-2 font-mono text-xs text-muted-foreground/70">
           <WorkerOutline className="size-6 text-muted-foreground/40" />
@@ -373,12 +375,21 @@ function StackStation({
 function RingStation({
   phase,
   station,
+  step,
+  count,
+  done,
   live,
   contexts,
   now,
 }: {
   phase: SdlcPhaseId;
   station: PipelineStation;
+  /** 1-based position among the phases drawn. */
+  step: number;
+  /** How many phases are drawn. */
+  count: number;
+  /** Every running card that includes this phase has finished it. */
+  done: boolean;
   live: Record<string, LiveAgent>;
   contexts: ReadonlyMap<string, ContextUsage | null>;
   now: number;
@@ -392,18 +403,16 @@ function RingStation({
   return (
     <section
       aria-labelledby={`sdlc-ring-${phase}`}
-      style={stagger(info.step - 1)}
       className={cn(
-        "flex w-40 min-w-0 animate-page-in flex-col rounded-[3px] border bg-card shadow-xs transition-colors duration-500 motion-reduce:animate-none motion-reduce:transition-none @min-[60rem]:w-44",
-        occupied && "border-signal",
-        station.alerts > 0 && "border-destructive/50",
+        "flex w-40 min-w-0 flex-col rounded-[3px] border bg-card shadow-xs transition-colors duration-500 motion-reduce:transition-none @min-[60rem]:w-44",
+        station.alerts > 0 ? "border-destructive/50" : occupied ? "border-signal" : done && "border-success/50",
       )}
     >
       <header className="flex items-center gap-1.5 px-2 pt-2" title={info.description}>
-        <StepNumber step={info.step} occupied={occupied} compact />
+        <StepNumber step={step} occupied={occupied} compact />
         <div className="min-w-0 flex-1">
           <h3 id={`sdlc-ring-${phase}`} className="truncate text-xs leading-tight font-semibold tracking-tight">
-            <span className="sr-only">Phase {info.step} of 7: </span>
+            <span className="sr-only">Phase {step} of {count}: </span>
             {info.label}
           </h3>
           <p className="truncate font-mono text-[10px] leading-tight text-muted-foreground">
@@ -447,6 +456,11 @@ function RingStation({
             </ul>
           )}
         </div>
+      ) : done ? (
+        <p className="flex items-center gap-1.5 px-2 pt-1 pb-2 font-mono text-[11px] text-success">
+          <CheckIcon className="size-3.5" aria-hidden />
+          Done
+        </p>
       ) : (
         <p className="flex items-center gap-1.5 px-2 pt-1 pb-2 font-mono text-[11px] text-muted-foreground/70">
           <WorkerOutline className="size-5 text-muted-foreground/40" />
@@ -458,18 +472,19 @@ function RingStation({
 }
 
 /**
- * Quality-gate checkpoint leaving `from` for the next phase. Hover or focus it for the exit
+ * Quality-gate checkpoint leaving `from` for the next visible phase `to` (null closes the cycle:
+ * what passes the last gate ships to Delivered). Hover or focus it for the exit
  * criteria; it turns red while a running card crossed it before the phase it skipped was done.
  */
-function GateShield({ from, breaches, side }: { from: SdlcPhaseId; breaches: GateBreach[]; side: TooltipSide }) {
+function GateShield({ from, to, breaches, side }: { from: SdlcPhaseId; to: SdlcPhaseId | null; breaches: GateBreach[]; side: TooltipSide }) {
   const info = SDLC_PHASE_INFO[from];
-  const next = SDLC_PHASE_INFO[nextPhase(from)];
+  const next = to ? SDLC_PHASE_INFO[to].label : "Delivered";
   const release = from === RELEASE_FROM;
   const alert = breaches.length > 0;
   const name = release ? "Release gate" : `${info.label} gate`;
   const Icon = alert ? ShieldAlertIcon : ShieldCheckIcon;
   const crossed = breaches.map((breach) => `${breach.entry.title}: ${breach.violation.message}`);
-  const label = `${name}: leave ${info.label} for ${next.label} only when ${info.gate}.${alert ? ` ${plural(breaches.length, "card")} crossed it early. ${crossed.join(". ")}` : ""}`;
+  const label = `${name}: leave ${info.label} for ${next} only when ${info.gate}.${alert ? ` ${plural(breaches.length, "card")} crossed it early. ${crossed.join(". ")}` : ""}`;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -501,7 +516,7 @@ function GateShield({ from, breaches, side }: { from: SdlcPhaseId; breaches: Gat
       <TooltipContent side={side} className="max-w-72">
         <div className="space-y-1 text-left">
           <p className="font-medium">
-            {name}: {info.label} → {next.label}
+            {name}: {info.label} → {next}
           </p>
           <p className="opacity-80">Exit criteria: {info.gate}.</p>
           {release && <p className="opacity-80">A card ships only once Testing has passed.</p>}
@@ -535,7 +550,7 @@ function FeedbackMarker() {
 }
 
 /** Stacked layout: the gate between two stations on a vertical flow line. */
-function StackGate({ from, breaches }: { from: SdlcPhaseId; breaches: GateBreach[] }) {
+function StackGate({ from, to, breaches }: { from: SdlcPhaseId; to: SdlcPhaseId | null; breaches: GateBreach[] }) {
   const alert = breaches.length > 0;
   return (
     <div className="relative flex items-center justify-center py-1.5">
@@ -546,7 +561,7 @@ function StackGate({ from, breaches }: { from: SdlcPhaseId; breaches: GateBreach
           alert ? "bg-destructive/50" : from === RELEASE_FROM ? "bg-foreground/30" : "bg-border",
         )}
       />
-      <GateShield from={from} breaches={breaches} side="bottom" />
+      <GateShield from={from} to={to} breaches={breaches} side="bottom" />
     </div>
   );
 }
@@ -640,10 +655,7 @@ function CycleHub({
   flagged: number;
 }) {
   return (
-    <div
-      className="absolute top-1/2 left-1/2 flex w-[44%] -translate-x-1/2 -translate-y-1/2 animate-page-in flex-col items-center gap-3 text-center motion-reduce:animate-none"
-      style={stagger(PHASE_COUNT)}
-    >
+    <div className="absolute top-1/2 left-1/2 flex w-[44%] -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-3 text-center">
       <div className="grid w-full grid-cols-2 gap-4">
         <HubTally icon={InboxIcon} label="Backlog" count={backlog} hint="In line, before Planning" />
         <HubTally icon={PackageCheckIcon} label="Delivered" count={delivered} hint="Recently done" />
@@ -659,9 +671,9 @@ function CycleHub({
   );
 }
 
-/** What the dots, shields and flow mean. */
-function PipelineLegend() {
-  const statuses: SdlcPhaseStatus[] = ["done", "active", "pending", "skipped"];
+/** What the dots and shields mean; the feedback row only while Maintenance is on the board. */
+function PipelineLegend({ feedback }: { feedback: boolean }) {
+  const statuses: SdlcPhaseStatus[] = ["done", "active", "pending"];
   return (
     <ul className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-xs text-muted-foreground">
       {statuses.map((status) => (
@@ -678,31 +690,28 @@ function PipelineLegend() {
         <ShieldAlertIcon className="size-3.5" aria-hidden />
         crossed before the earlier phase was done
       </li>
-      <li className="flex items-center gap-1.5">
-        <RotateCcwIcon className="size-3.5" aria-hidden />
-        feedback: Maintenance feeds the next Planning round
-      </li>
-      <li className="hidden items-center gap-1.5 @min-[56rem]:flex">
-        <span aria-hidden className="relative h-px w-4 bg-border">
-          <span className="absolute top-1/2 left-1/2 size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-signal" />
-        </span>
-        cards flow clockwise through the cycle
-      </li>
+      {feedback && (
+        <li className="flex items-center gap-1.5">
+          <RotateCcwIcon className="size-3.5" aria-hidden />
+          feedback: Maintenance feeds the next Planning round
+        </li>
+      )}
     </ul>
   );
 }
 
 /**
- * The software lifecycle as a continuous cycle: the seven SDLC phases with a quality gate between
- * each consecutive pair (the gate leaving Testing is the release gate) and a Feedback marker on the
- * Maintenance → Planning edge, since what Maintenance learns feeds the next Planning round. Every
- * running card's agent stands at the phase it is executing with its progress through all phases;
- * busy subagents stand at the phase their role works in. Sized from the section (an `@container`):
- * - from 56rem, the phases sit clockwise from 12 o'clock on a ring (CycleRing, with flow dots while
- *   cards run), gates on the arcs between them, and a hub in the middle tallies Backlog, Delivered
- *   and what is in flight;
- * - below, the phases stack top to bottom between the Backlog and Delivered end caps, gates on the
- *   flow line between them, and a dashed rail plus a loop-back row turn Maintenance back to Planning.
+ * The software lifecycle as a continuous cycle: the visible SDLC phases — the required ones plus
+ * when-needed phases some running card includes or executes (`sdlcPipeline().visible`) — with a
+ * quality gate between each consecutive pair (the gate leaving Testing is the release gate) and a
+ * Feedback marker on the Maintenance → Planning edge while Maintenance is drawn. Every running
+ * card's agent stands at the phase it is executing with its progress through its included phases;
+ * busy subagents stand at the phase their role works in. Phases every card finished are
+ * highlighted as done. Sized from the section (an `@container`):
+ * - from 56rem, the phases sit clockwise from 12 o'clock on a ring (CycleRing), gates on the arcs
+ *   between them, and a hub in the middle tallies Backlog, Delivered and what is in flight;
+ * - below, the visible phases stack top to bottom between the Backlog and Delivered end caps, gates
+ *   on the flow line between them; while Maintenance is drawn, a loop-back row turns it back to Planning.
  */
 export function SdlcPipeline({
   dashboard,
@@ -719,20 +728,34 @@ export function SdlcPipeline({
     () => new Map(dashboard.live.map((agent) => [agent.taskId, agent.context])),
     [dashboard.live],
   );
+  const phases = pipeline.visible;
+  const count = phases.length;
+  /** Visible phases nobody works in that every running card including them has finished: highlighted as done. */
+  const donePhases = useMemo(() => {
+    return new Set(
+      pipeline.visible.filter((phase) => {
+        if (pipeline.stations[phase].workers.length > 0) return false;
+        const statuses = queue.running
+          .map((entry) => entry.sdlc?.phases.find((p) => p.id === phase)?.status ?? "skipped")
+          .filter((status) => status !== "skipped");
+        return statuses.length > 0 && statuses.every((status) => status === "done");
+      }),
+    );
+  }, [pipeline, queue.running]);
   const segments = useMemo<RingSegment[]>(
     () =>
-      SDLC_PHASES.map((phase) => ({
+      pipeline.visible.map((phase) => ({
         id: phase,
         occupied: pipeline.stations[phase].workers.length > 0,
         alert: pipeline.stations[phase].breaches.length > 0,
+        done: donePhases.has(phase),
       })),
-    [pipeline],
+    [pipeline, donePhases],
   );
-  const subagents = SDLC_PHASES.reduce(
+  const subagents = phases.reduce(
     (sum, phase) => sum + pipeline.stations[phase].workers.filter((worker) => worker.kind === "subagent").length,
     0,
   );
-  const flowing = queue.running.length > 0;
   const flagged = queue.running.filter((entry) => (entry.sdlc?.violations.length ?? 0) > 0).length;
   const delivered = dashboard.finished.length;
 
@@ -754,7 +777,7 @@ export function SdlcPipeline({
       >
         {/* Wide: the cycle as a ring. */}
         <div className="relative mx-auto hidden aspect-square w-full max-w-[46rem] @min-[56rem]:block">
-          <CycleRing segments={segments} flowing={flowing} />
+          <CycleRing segments={segments} />
           <CycleHub
             backlog={pipeline.backlog}
             delivered={delivered}
@@ -763,65 +786,71 @@ export function SdlcPipeline({
             flagged={flagged}
           />
           <ol aria-label="Phases" className="pointer-events-none absolute inset-0">
-            {SDLC_PHASES.map((phase, i) => {
-              const last = i === PHASE_COUNT - 1;
-              return (
-                <li key={phase}>
-                  <div
-                    className="pointer-events-auto absolute z-10 -translate-x-1/2 -translate-y-1/2 focus-within:z-20 hover:z-20"
-                    style={ringPoint(i, PHASE_COUNT)}
-                  >
-                    <RingStation
-                      phase={phase}
-                      station={pipeline.stations[phase]}
-                      live={live}
-                      contexts={contexts}
-                      now={now}
+            {phases.map((phase, i) => (
+              <li key={phase}>
+                <div
+                  className="pointer-events-auto absolute z-10 -translate-x-1/2 -translate-y-1/2 focus-within:z-20 hover:z-20"
+                  style={ringPoint(i, count)}
+                >
+                  <RingStation
+                    phase={phase}
+                    station={pipeline.stations[phase]}
+                    step={i + 1}
+                    count={count}
+                    done={donePhases.has(phase)}
+                    live={live}
+                    contexts={contexts}
+                    now={now}
+                  />
+                </div>
+                <div
+                  className="pointer-events-auto absolute z-10 -translate-x-1/2 -translate-y-1/2"
+                  // Gates sit slightly outside the track so tall occupied stations never cover them.
+                  style={ringPoint(i + 0.5, count, 47)}
+                >
+                  {phase === "maintenance" ? (
+                    <FeedbackMarker />
+                  ) : (
+                    <GateShield
+                      from={phase}
+                      to={i + 1 < count ? phases[i + 1] : null}
+                      breaches={pipeline.stations[phase].breaches}
+                      side={outwardSide(i + 0.5, count)}
                     />
-                  </div>
-                  <div
-                    className="pointer-events-auto absolute z-10 -translate-x-1/2 -translate-y-1/2 animate-page-in motion-reduce:animate-none"
-                    // Gates sit slightly outside the track so tall occupied stations never cover them.
-                    style={{ ...ringPoint(i + 0.5, PHASE_COUNT, 47), ...stagger(i + 1) }}
-                  >
-                    {last ? (
-                      <FeedbackMarker />
-                    ) : (
-                      <GateShield
-                        from={phase}
-                        breaches={pipeline.stations[phase].breaches}
-                        side={outwardSide(i + 0.5)}
-                      />
-                    )}
-                  </div>
-                </li>
-              );
-            })}
+                  )}
+                </div>
+              </li>
+            ))}
           </ol>
         </div>
 
-        {/* Narrow: the cycle stacked, with a rail looping Maintenance back to Planning. */}
+        {/* Narrow: the cycle stacked; while Maintenance is drawn, a dashed rail loops it back to Planning. */}
         <div className="flex flex-col @min-[56rem]:hidden">
           <EndCap icon={InboxIcon} label="Backlog" count={pipeline.backlog} hint="In line, before Planning" />
           <Connector />
           <ol aria-label="Phases" className="relative flex flex-col pl-5">
-            <span
-              aria-hidden
-              className="absolute top-4 bottom-4 left-1.5 w-3.5 rounded-l-[3px] border-y border-l border-dashed border-muted-foreground/40"
-            />
-            {SDLC_PHASES.map((phase, i) => (
+            {phases.includes("maintenance") && (
+              <span
+                aria-hidden
+                className="absolute top-4 bottom-4 left-1.5 w-3.5 rounded-l-[3px] border-y border-l border-dashed border-muted-foreground/40"
+              />
+            )}
+            {phases.map((phase, i) => (
               <li key={phase} className="flex flex-col">
                 <StackStation
                   phase={phase}
                   station={pipeline.stations[phase]}
+                  step={i + 1}
+                  count={count}
+                  done={donePhases.has(phase)}
                   live={live}
                   contexts={contexts}
                   now={now}
                 />
-                {i < PHASE_COUNT - 1 ? (
-                  <StackGate from={phase} breaches={pipeline.stations[phase].breaches} />
-                ) : (
+                {phase === "maintenance" ? (
                   <StackLoopBack />
+                ) : (
+                  <StackGate from={phase} to={i + 1 < count ? phases[i + 1] : null} breaches={pipeline.stations[phase].breaches} />
                 )}
               </li>
             ))}
@@ -830,7 +859,7 @@ export function SdlcPipeline({
           <EndCap icon={PackageCheckIcon} label="Delivered" count={delivered} hint="Recently done" />
         </div>
       </div>
-      <PipelineLegend />
+      <PipelineLegend feedback={phases.includes("maintenance")} />
     </section>
   );
 }
