@@ -5,7 +5,19 @@ import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { ADMIN_PASSWORD, api, call, freshEnv, readOmpLog, setupAdmin, teardown, tempDir, waitFor } from "./helpers";
+import {
+  ADMIN_PASSWORD,
+  api,
+  call,
+  createUser,
+  freshEnv,
+  loginAs,
+  readOmpLog,
+  setupAdmin,
+  teardown,
+  tempDir,
+  waitFor,
+} from "./helpers";
 
 import * as boardsRoute from "@/app/api/v1/boards/route";
 import * as connectRoute from "@/app/api/v1/chat/discord/connect/route";
@@ -23,6 +35,10 @@ const APP_ID = "app1";
 const OWNER_ID = "owner1";
 const USER = { id: "user1", username: "alice" };
 const DM_CHANNEL = "dm-user1";
+/** A second Discord user, signing in to a regular (non-admin) AgentMan account. */
+const BOB = { id: "user2", username: "bob" };
+const BOB_DM = "dm-user2";
+const BOB_PASSWORD = "bobs-own-password";
 const GUILD_CHANNEL = "guild-chan";
 const WAIT_MS = 5000;
 /** Answers come from the chat assistant, a helper omp process (the fake omp) started on demand. */
@@ -250,9 +266,9 @@ async function settings(): Promise<AppSettings> {
 let dmMessageSeq = 0;
 
 /** A user's direct message (no guild_id) arriving over the gateway; returns its message id. */
-function sendDm(content: string): string {
+function sendDm(content: string, { channel = DM_CHANNEL, author = USER } = {}): string {
   const id = `in-dm-${++dmMessageSeq}`;
-  gateway().dispatch("MESSAGE_CREATE", { id, channel_id: DM_CHANNEL, content, author: USER });
+  gateway().dispatch("MESSAGE_CREATE", { id, channel_id: channel, content, author });
   return id;
 }
 
@@ -429,6 +445,53 @@ describe("Discord chat integration", () => {
     expect(await assistantAnswer(DM_CHANNEL, index)).toBe("⏹ Cancelled.");
     expect(await messageAt(DM_CHANNEL, index + 1)).toBe("⏹ Cancelled the current request.");
     expect(messagesTo(DM_CHANNEL)).toHaveLength(index + 2);
+  });
+
+  it("logs in by username via the slash command; a regular account only sees its own boards", async () => {
+    const bob = await createUser({ username: "bob", password: BOB_PASSWORD });
+    const created = await api<Board>(boardsRoute, "POST", "/boards", {
+      body: { name: "bob-board", workdir: tempDir("bob-project"), autoRun: false },
+      token: await loginAs("bob", BOB_PASSWORD),
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const bobBoard = created.body;
+    expect(bobBoard.userId).toBe(bob.id);
+
+    gateway().dispatch("INTERACTION_CREATE", {
+      id: "int-login",
+      application_id: APP_ID,
+      type: 2,
+      token: "itok-login",
+      channel_id: BOB_DM,
+      user: BOB,
+      data: { name: "login", options: [{ type: 3, name: "value", value: `bob ${BOB_PASSWORD}` }] },
+    });
+    const loginPath = `/webhooks/${APP_ID}/itok-login/messages/@original`;
+    const login = await waitFor(() => requests.find((r) => r.method === "PATCH" && r.path === loginPath), WAIT_MS);
+    expect(bodyField(login.body, "content")).toContain("AgentMan connected ✅ as bob");
+    expect((await chatStatus()).authorizedUsers).toBe(2);
+
+    sendDm(`mine? ${toolCalls({ toolName: "agentman_list_boards", arguments: {} })}`, { channel: BOB_DM, author: BOB });
+    const listed = await assistantAnswer(BOB_DM, 0);
+    expect(listed).toContain("bob-board");
+    expect(listed).not.toContain(board.name);
+    expect(listed).not.toContain(board.id);
+
+    const index = messagesTo(BOB_DM).length;
+    sendDm(
+      `note it ${toolCalls(
+        { toolName: "agentman_create_card", arguments: { title: "Bob card" } },
+        { toolName: "agentman_list_cards", arguments: { board: board.id } },
+      )}`,
+      { channel: BOB_DM, author: BOB },
+    );
+    const answer = await assistantAnswer(BOB_DM, index);
+    const repo = await getRepo();
+    expect((await repo.listTasks(bobBoard.id)).map((t) => [t.title, t.userId])).toEqual([["Bob card", bob.id]]);
+    // The admin's board stays out of reach: unchanged, and naming it finds nothing.
+    expect((await repo.listTasks(board.id)).map((t) => t.title)).toEqual(["Discord card"]);
+    expect(answer).toContain(`No board matches \\"${board.id}\\"`);
+    expect(answer).not.toContain("Discord card");
   });
 
   it("serves the Interactions Endpoint URL with Ed25519 signature checks", async () => {

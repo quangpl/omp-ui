@@ -6,7 +6,7 @@ import { SCHEDULED_CLEANUP_IDS, type ScheduledCleanupId } from "@/lib/types";
 export const dynamic = "force-dynamic";
 
 /** The scheduled cleanup: schedule, targets, last outcome and next run (CleanupStatus). */
-export const GET = withApi(async ({ repo }) => json(await getCleanupStatus(repo)));
+export const GET = withApi(async ({ repo }) => json(await getCleanupStatus(repo)), { admin: true });
 
 /** Clean up now: `{ ids? }` (default: the saved targets); answers the updated CleanupStatus. */
 export const POST = withApi(async ({ req, repo, manager }) => {
@@ -22,4 +22,4 @@ export const POST = withApi(async ({ req, repo, manager }) => {
   const status = await runCleanup(repo, manager, "manual", ids);
   if (!status) throw new HttpError(409, "A cleanup is already running");
   return json(status);
-});
+}, { admin: true });

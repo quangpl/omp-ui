@@ -150,4 +150,4 @@ export const GET = memoryRoute(async ({ req }) => {
   );
   const body: MemorySearchResponse = { mode: search.mode ?? "compact", items, lessons };
   return json(body);
-});
+}, { admin: true });

@@ -16,4 +16,4 @@ export const POST = withApi(async ({ req, repo }) => {
     login: session.loginId,
   });
   return json(session, { status: 201 });
-});
+}, { admin: true });

@@ -32,4 +32,5 @@ export const PATCH = withApi(async ({ req, repo }) =>
       return json(response);
     }),
   ),
+  { admin: true },
 );

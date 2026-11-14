@@ -6,7 +6,7 @@
 // - store.ts persists sealed tokens and chat state.
 import type { AgentManager } from "@/lib/agent/types";
 import type { Repository } from "@/lib/db/types";
-import type { ChatConnectionState, ChatPlatform } from "@/lib/types";
+import type { ChatConnectionState, ChatPlatform, User } from "@/lib/types";
 
 /** Bot account behind a validated token. */
 export interface ChatBotInfo {
@@ -96,8 +96,16 @@ export interface TelegramAdapterOptions extends ChatAdapterOptions {
   webhook: { url: string; secret: string } | null;
 }
 
-/** Server handles commands and the relay use. */
+/** Server handles commands and the relay use. The bots serve every account, so `repo` is the base (unscoped) one. */
 export interface ChatEnv {
   repo: Repository;
   manager: AgentManager;
+}
+
+/**
+ * What commands and the assistant run with for one message: `repo` scoped to the sender's omp-ui
+ * account (lib/db/scoped.ts), so a regular user only sees and changes their own boards and cards.
+ */
+export interface ChatUserEnv extends ChatEnv {
+  user: User;
 }

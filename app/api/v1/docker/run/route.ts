@@ -7,4 +7,4 @@ export const dynamic = "force-dynamic";
 export const POST = withApi(async ({ req }) => {
   const { args } = buildRunArgs(await readJson(req));
   return jobResponse((send) => runContainer(args, send));
-});
+}, { admin: true });

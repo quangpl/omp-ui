@@ -48,4 +48,4 @@ export const GET = memoryRoute(async ({ req }) => {
     nextCursor,
   };
   return json(result);
-});
+}, { admin: true });

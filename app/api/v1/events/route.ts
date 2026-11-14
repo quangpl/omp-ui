@@ -1,3 +1,5 @@
+import { getRequestToken, verifyToken } from "@/lib/auth";
+import type { Repository } from "@/lib/db/types";
 import { subscribe } from "@/lib/events";
 import { withApi } from "@/lib/server/http";
 import type { ServerEvent } from "@/lib/types";
@@ -50,8 +52,90 @@ function eventBoardId(event: ServerEvent): string | null {
   }
 }
 
-/** Server-Sent Events. `?boardId=` limits the stream to one board; omit it for everything. */
-export const GET = withApi(({ req }) => {
+/**
+ * Visibility filter of one non-admin stream: the event as the user may see it, or null to drop it.
+ * Events of boards the user does not own are dropped and `queue.updated` keeps only their task ids.
+ * Ownership comes from the event's own `userId` when it carries the row, else from `repo` (scoped
+ * to the user: foreign boards/tasks read as null), cached for the life of the stream.
+ */
+function visibilityFilter(repo: Repository, userId: string): (event: ServerEvent) => Promise<ServerEvent | null> {
+  const boards = new Map<string, boolean>();
+  const tasks = new Map<string, boolean>();
+
+  const boardVisible = async (id: string): Promise<boolean> => {
+    const cached = boards.get(id);
+    if (cached !== undefined) return cached;
+    const visible = (await repo.getBoard(id)) !== null;
+    boards.set(id, visible);
+    return visible;
+  };
+  const taskVisible = async (id: string): Promise<boolean> => {
+    const cached = tasks.get(id);
+    if (cached !== undefined) return cached;
+    const visible = (await repo.getTask(id)) !== null;
+    tasks.set(id, visible);
+    return visible;
+  };
+  const keepIf = (event: ServerEvent, visible: boolean) => (visible ? event : null);
+
+  return async (event) => {
+    switch (event.type) {
+      case "board.updated": {
+        const visible = event.board.userId === userId;
+        const before = boards.get(event.board.id);
+        boards.set(event.board.id, visible);
+        // The board changed hands: its cards' cached visibility is stale.
+        if (before !== undefined && before !== visible) tasks.clear();
+        return keepIf(event, visible);
+      }
+      case "board.deleted": {
+        const visible = await boardVisible(event.boardId);
+        boards.delete(event.boardId);
+        // Its cards are gone too; dropping every entry is simpler than tracking each card's board.
+        tasks.clear();
+        return keepIf(event, visible);
+      }
+      case "task.updated": {
+        const visible = event.task.userId === userId;
+        tasks.set(event.task.id, visible);
+        return keepIf(event, visible);
+      }
+      case "task.deleted": {
+        const visible = tasks.get(event.taskId) ?? (await boardVisible(event.boardId));
+        tasks.delete(event.taskId);
+        return keepIf(event, visible);
+      }
+      case "scheduler.updated":
+        return keepIf(event, event.scheduler.userId === userId);
+      case "comment.added":
+      case "comment.updated":
+        return keepIf(event, event.comment.userId === userId);
+      case "run.updated":
+        return keepIf(event, event.run.userId === userId);
+      case "queue.updated": {
+        // Always forwarded (possibly empty) so the client clears entries that left the queue.
+        const own = async (ids: string[]) => {
+          const visible = await Promise.all(ids.map(taskVisible));
+          return ids.filter((_, i) => visible[i]);
+        };
+        const [running, queued, drafting] = await Promise.all([
+          own(event.running),
+          own(event.queued),
+          own(event.drafting),
+        ]);
+        return { ...event, running, queued, drafting };
+      }
+      default:
+        return keepIf(event, await boardVisible(event.boardId));
+    }
+  };
+}
+
+/**
+ * Server-Sent Events. `?boardId=` limits the stream to one board; omit it for everything.
+ * Admins get every event; other users only those of their own boards (see visibilityFilter).
+ */
+export const GET = withApi(({ req, repo, user }) => {
   const boardId = new URL(req.url).searchParams.get("boardId") || null;
   const encoder = new TextEncoder();
   let cleanup = () => {};
@@ -67,14 +151,57 @@ export const GET = withApi(({ req }) => {
           cleanup();
         }
       };
+      const filter = user.role === "admin" ? null : visibilityFilter(repo, user.id);
+      /** Serializes the async visibility checks so events reach the client in publish order. */
+      let chain = Promise.resolve();
       const unsubscribe = subscribe((event) => {
         if (boardId) {
           const eventBoard = eventBoardId(event);
           if (eventBoard !== null && eventBoard !== boardId) return;
         }
-        send(`data: ${JSON.stringify(event)}\n\n`);
+        if (!filter) {
+          send(`data: ${JSON.stringify(event)}\n\n`);
+          return;
+        }
+        chain = chain.then(async () => {
+          if (closed) return;
+          try {
+            const visible = await filter(event);
+            if (visible) send(`data: ${JSON.stringify(visible)}\n\n`);
+          } catch (err) {
+            // A skipped event would leave the client stale; closing makes it reconnect and refetch.
+            console.error(
+              `[events] could not check the visibility of a ${event.type} event; closing the stream:`,
+              err,
+            );
+            cleanup();
+          }
+        });
       });
-      const ping = setInterval(() => send(PING_FRAME), PING_INTERVAL_MS);
+      /** Set while a re-verification runs, so a slow check never overlaps the next heartbeat. */
+      let verifying = false;
+      /**
+       * Re-verifies the session each heartbeat: a revoked token, a deactivated/deleted user or a
+       * changed role closes the stream (the client reconnects, re-authenticated or rejected), so the
+       * visibility filter decided at open never outlives the role it was decided for.
+       */
+      const reverify = async () => {
+        if (verifying || closed) return;
+        verifying = true;
+        try {
+          const current = await verifyToken(getRequestToken(req) ?? "");
+          if (!current || current.id !== user.id || current.role !== user.role) cleanup();
+        } catch (err) {
+          console.error("[events] could not re-verify the stream's session; closing the stream:", err);
+          cleanup();
+        } finally {
+          verifying = false;
+        }
+      };
+      const ping = setInterval(() => {
+        send(PING_FRAME);
+        void reverify();
+      }, PING_INTERVAL_MS);
       const onAbort = () => cleanup();
 
       cleanup = () => {

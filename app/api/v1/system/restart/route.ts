@@ -13,4 +13,4 @@ export const POST = withApi(({ manager }) => {
   const interrupted = manager.stats().running.length;
   const mode = startRestart();
   return json({ ok: true, mode, interrupted }, { status: 202 });
-});
+}, { admin: true });

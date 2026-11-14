@@ -8,4 +8,4 @@ export const dynamic = "force-dynamic";
 export const POST = withApi(async ({ repo }) => {
   const { ompPath } = await getAppSettings(repo);
   return json(await connectOmp(ompPath));
-});
+}, { admin: true });

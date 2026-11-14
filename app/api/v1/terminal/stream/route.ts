@@ -1,3 +1,4 @@
+import { getRequestToken, verifyToken } from "@/lib/auth";
 import { withApi } from "@/lib/server/http";
 import { getTerminalSession } from "@/lib/server/terminal";
 import { TERMINAL_PING_INTERVAL_MS, type TerminalStreamEvent } from "@/lib/terminal-types";
@@ -31,7 +32,7 @@ function openStreams(): Set<() => void> {
  * Attach to the terminal session (SSE): a `snapshot` first, then live `block`/`output` events.
  * Every (re)connect starts with a fresh snapshot, so a client never needs to refetch.
  */
-export const GET = withApi(({ req }) => {
+export const GET = withApi(({ req, user }) => {
   const session = getTerminalSession();
   const encoder = new TextEncoder();
   let cleanup = () => {};
@@ -53,7 +54,29 @@ export const GET = withApi(({ req }) => {
       // Same tick: the snapshot covers exactly the output sent before, live events everything after.
       sendEvent({ type: "snapshot", snapshot: session.snapshot() });
       const unsubscribe = session.subscribe(sendEvent);
-      const ping = setInterval(() => send(PING_FRAME), TERMINAL_PING_INTERVAL_MS);
+      /** Set while a re-verification runs, so a slow check never overlaps the next heartbeat. */
+      let verifying = false;
+      /**
+       * Re-verifies the session each heartbeat: a revoked token, a deactivated/deleted user or a
+       * demotion closes the stream, so terminal output stops reaching anyone no longer allowed it.
+       */
+      const reverify = async () => {
+        if (verifying || closed) return;
+        verifying = true;
+        try {
+          const current = await verifyToken(getRequestToken(req) ?? "");
+          if (!current || current.id !== user.id || current.role !== user.role) cleanup();
+        } catch (err) {
+          console.error("[terminal] could not re-verify the stream's session; closing the stream:", err);
+          cleanup();
+        } finally {
+          verifying = false;
+        }
+      };
+      const ping = setInterval(() => {
+        send(PING_FRAME);
+        void reverify();
+      }, TERMINAL_PING_INTERVAL_MS);
       const onAbort = () => cleanup();
 
       cleanup = () => {
@@ -88,4 +111,4 @@ export const GET = withApi(({ req }) => {
       connection: "close",
     },
   });
-});
+}, { admin: true });

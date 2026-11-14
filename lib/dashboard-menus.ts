@@ -1,12 +1,23 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
+import { useCurrentUser } from "@/hooks/use-current-user";
 import { api } from "@/lib/api-client";
 import { DASHBOARD_MENU_IDS, type DashboardMenuId } from "@/lib/types";
 
 // Which optional navigation sections show (Settings → Menu `visibleDashboardMenus`), shared by the
 // sidebar, the phone tabs and the home "Go to" strip. Loaded once per page load; the Settings page
-// publishes saves so every menu updates without a reload.
+// publishes saves so every menu updates without a reload. Admin-only pages are hidden from regular
+// users on top of that.
+
+/** Pages backed by admin-only APIs (terminal, docker, logs, agent memory): their links show to admins only. */
+export const ADMIN_ONLY_HREFS: readonly string[] = ["/containers", "/terminal", "/logs", "/memory"];
+
+/** What the navigation may show: the chosen optional sections, and whether admin-only pages count. */
+export interface MenuVisibility {
+  ids: readonly DashboardMenuId[];
+  isAdmin: boolean;
+}
 
 let visible: readonly DashboardMenuId[] = DASHBOARD_MENU_IDS;
 let requested = false;
@@ -42,17 +53,26 @@ function subscribe(listener: () => void) {
   };
 }
 
-/** The visible optional sections; every section until the settings load. */
-export function useVisibleDashboardMenus(): readonly DashboardMenuId[] {
-  return useSyncExternalStore(
+/**
+ * The visible optional sections (every section until the settings load) and the admin flag (false
+ * until the account is known, so regular users never see admin-only links flash in).
+ */
+export function useVisibleDashboardMenus(): MenuVisibility {
+  const ids = useSyncExternalStore(
     subscribe,
     () => visible,
     () => DASHBOARD_MENU_IDS,
   );
+  const { isAdmin } = useCurrentUser();
+  return useMemo(() => ({ ids, isAdmin }), [ids, isAdmin]);
 }
 
-/** Whether a navigation link to `href` shows: sections outside DASHBOARD_MENU_IDS always do. */
-export function isMenuHrefVisible(href: string, ids: readonly DashboardMenuId[]): boolean {
+/**
+ * Whether a navigation link to `href` shows: admin-only pages need an admin; sections outside
+ * DASHBOARD_MENU_IDS always show otherwise.
+ */
+export function isMenuHrefVisible(href: string, { ids, isAdmin }: MenuVisibility): boolean {
+  if (!isAdmin && ADMIN_ONLY_HREFS.includes(href)) return false;
   const id = DASHBOARD_MENU_IDS.find((menu) => `/${menu}` === href);
   return id === undefined || ids.includes(id);
 }

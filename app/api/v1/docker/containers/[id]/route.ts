@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 type Params = { id: string };
 
 /** `docker inspect` of one container. */
-export const GET = withApi<Params>(async ({ params }) => json(await inspectContainer(parseContainerRef(params.id))));
+export const GET = withApi<Params>(async ({ params }) => json(await inspectContainer(parseContainerRef(params.id))), { admin: true });
 
 /** `{ action: "start" | "stop" | "restart" | "pause" | "unpause" | "kill" }` */
 export const POST = withApi<Params>(async ({ req, params }) => {
@@ -24,11 +24,11 @@ export const POST = withApi<Params>(async ({ req, params }) => {
   }
   await containerAction(ref, action as ContainerAction);
   return json({ ok: true });
-});
+}, { admin: true });
 
 /** Force-remove; `?volumes=1` also removes its anonymous volumes. */
 export const DELETE = withApi<Params>(async ({ req, params }) => {
   const ref = parseContainerRef(params.id);
   await removeContainer(ref, new URL(req.url).searchParams.get("volumes") === "1");
   return json({ ok: true });
-});
+}, { admin: true });

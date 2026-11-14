@@ -8,4 +8,4 @@ export const GET = withApi(async ({ req }) => {
   const repo = new URL(req.url).searchParams.get("repo")?.trim();
   if (!repo) throw new HttpError(400, "repo is required");
   return json(await imageTags(repo));
-});
+}, { admin: true });

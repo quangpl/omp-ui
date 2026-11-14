@@ -1,16 +1,23 @@
-// Server-only (Node runtime). Admin password + signed bearer/cookie tokens.
+// Server-only (Node runtime). User accounts (scrypt password hashes) + signed bearer/cookie tokens.
 import { createHmac, randomBytes, scrypt, timingSafeEqual, type ScryptOptions } from "node:crypto";
 import { getRepo } from "@/lib/db";
+import type { Repository, UserAuthRecord } from "@/lib/db/types";
+import { reassignCredentials } from "@/lib/server/credentials";
+import type { User } from "@/lib/types";
 
 /** Cookie carrying the session token for the web UI. middleware.ts duplicates this literal. */
 export const SESSION_COOKIE = "omp_ui_token";
 export const MIN_PASSWORD_LENGTH = 8;
+/** Username of the setup admin, the account ADMIN_PASSWORD manages and the login default for password-only clients. */
+export const DEFAULT_ADMIN_USERNAME = "admin";
 
-const PASSWORD_KEY = "admin_password_hash";
+/** Pre-users single admin password; migrated into the `admin` account by ensureAuthBoot. */
+const LEGACY_PASSWORD_KEY = "admin_password_hash";
 const SECRET_KEY = "auth_secret";
 const EPOCH_KEY = "token_epoch";
 
-const TOKEN_VERSION = "v1";
+/** v2 tokens carry the user id; bumping the version rejects every v1 (pre-users) token. */
+const TOKEN_VERSION = "v2";
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const SCRYPT_N = 16384;
@@ -22,17 +29,41 @@ const RATE_LIMIT_MAX_FAILURES = 10;
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 
 interface TokenPayload {
-  exp: number;
+  /** User id. */
+  uid: string;
+  /** The user's tokenEpoch at issue time. */
+  uep: number;
+  /** Global token epoch at issue time. */
   epoch: number;
   iat: number;
+  exp: number;
 }
 
 // Process-wide state survives dev HMR module reloads.
 const g = globalThis as unknown as {
   __ompUiAuthSecret?: Promise<string>;
   __ompUiAuthBoot?: Promise<void>;
+  __ompUiDummyHash?: Promise<string>;
   __ompUiLoginFailures?: Map<string, { count: number; resetAt: number }>;
 };
+
+/** Usernames and emails are stored trimmed and lowercase; logins are matched the same way. */
+export function normalizeLogin(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+/** The client-safe view of an auth record (no hash, no epoch). */
+function publicUser(record: UserAuthRecord): User {
+  return {
+    id: record.id,
+    username: record.username,
+    email: record.email,
+    role: record.role,
+    isActive: record.isActive,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Password hashing
@@ -48,7 +79,7 @@ function scryptAsync(
   return promise;
 }
 
-async function hashPassword(password: string): Promise<string> {
+export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16);
   const hash = await scryptAsync(password, salt, SCRYPT_KEYLEN, {
     N: SCRYPT_N,
@@ -83,30 +114,99 @@ async function verifyHash(password: string, stored: string): Promise<boolean> {
   return timingSafeEqual(actual, expected);
 }
 
-/** True once an admin password has been stored. */
-export async function isConfigured(): Promise<boolean> {
-  const repo = await getRepo();
-  return Boolean(await repo.getSetting(PASSWORD_KEY));
+/** Hash checked for unknown logins so a miss costs the same scrypt work as a wrong password. */
+function dummyHash(): Promise<string> {
+  g.__ompUiDummyHash ??= hashPassword(randomBytes(16).toString("hex")).catch((err: unknown) => {
+    g.__ompUiDummyHash = undefined;
+    throw err;
+  });
+  return g.__ompUiDummyHash;
 }
 
-/** Store a new admin password and revoke every previously issued token. */
-export async function setPassword(password: string): Promise<void> {
+function assertPassword(password: string): void {
   if (typeof password !== "string" || password.length === 0) {
     throw new Error("Password must not be empty");
   }
-  const repo = await getRepo();
-  await repo.setSetting(PASSWORD_KEY, await hashPassword(password));
-  const epoch = await currentTokenEpoch();
-  await repo.setSetting(EPOCH_KEY, String(epoch + 1));
 }
 
-/** Constant-time check against the stored hash. False when no password is configured. */
-export async function verifyPassword(password: string): Promise<boolean> {
+/** True once at least one user exists (first-run setup done). */
+export async function isConfigured(): Promise<boolean> {
+  const repo = await getRepo();
+  return (await repo.listUsers()).length > 0;
+}
+
+/**
+ * The active user whose username or email is `login` and whose password matches; null otherwise.
+ * Unknown logins still pay one scrypt verify, so response time does not reveal which accounts exist.
+ */
+export async function authenticate(login: string, password: string): Promise<User | null> {
+  if (typeof login !== "string" || typeof password !== "string") return null;
+  const normalized = normalizeLogin(login);
+  const repo = await getRepo();
+  const record = normalized ? await repo.findUserAuthByLogin(normalized) : null;
+  if (!record) {
+    await verifyHash(password, await dummyHash());
+    return null;
+  }
+  const ok = await verifyHash(password, record.passwordHash);
+  return ok && record.isActive ? publicUser(record) : null;
+}
+
+/** Constant-time check of a user's password. False for unknown users. */
+export async function verifyUserPassword(userId: string, password: string): Promise<boolean> {
   if (typeof password !== "string") return false;
   const repo = await getRepo();
-  const stored = await repo.getSetting(PASSWORD_KEY);
-  if (!stored) return false;
-  return verifyHash(password, stored);
+  const record = await repo.getUserAuth(userId);
+  if (!record) return false;
+  return verifyHash(password, record.passwordHash);
+}
+
+/** Store a new password for the user and revoke every token and chat login issued to them. */
+export async function setUserPassword(userId: string, password: string): Promise<void> {
+  assertPassword(password);
+  const repo = await getRepo();
+  const record = await repo.getUserAuth(userId);
+  if (!record) throw new Error("User not found");
+  const passwordHash = await hashPassword(password);
+  await repo.updateUser(userId, { passwordHash, tokenEpoch: record.tokenEpoch + 1 });
+}
+
+/** Revoke every token and chat login issued to the user (no-op for unknown users). */
+export async function revokeUserSessions(userId: string): Promise<void> {
+  const repo = await getRepo();
+  const record = await repo.getUserAuth(userId);
+  if (!record) return;
+  await repo.updateUser(userId, { tokenEpoch: record.tokenEpoch + 1 });
+}
+
+/** Give rows without an owner (pre-users data) and unowned credentials to `adminId`. */
+async function adoptOrphanData(repo: Repository, adminId: string): Promise<void> {
+  await repo.reassignUserData(null, adminId);
+  await reassignCredentials(repo, null, adminId);
+}
+
+/**
+ * First-run setup: create the first admin (username defaults to "admin") and hand it any data
+ * without an owner. Callers validate the fields and check `isConfigured()` first; throws when a
+ * user already exists.
+ */
+export async function createFirstAdmin(input: {
+  username?: string;
+  email?: string | null;
+  password: string;
+}): Promise<User> {
+  assertPassword(input.password);
+  const repo = await getRepo();
+  if ((await repo.listUsers()).length > 0) throw new Error("A user already exists");
+  const email = input.email ? normalizeLogin(input.email) : null;
+  const user = await repo.createUser({
+    username: normalizeLogin(input.username ?? DEFAULT_ADMIN_USERNAME),
+    email: email || null,
+    passwordHash: await hashPassword(input.password),
+    role: "admin",
+  });
+  await adoptOrphanData(repo, user.id);
+  return user;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,8 +230,9 @@ function getSecret(): Promise<string> {
 }
 
 /**
- * Session token epoch, bumped by every password change (which revokes issued tokens and chat logins).
- * Read from the DB every time so `omp-ui passwd` in another process revokes tokens immediately.
+ * Global session token epoch: bumping it revokes every user's tokens and chat logins at once (each
+ * user also has a tokenEpoch for their own sessions). Read from the DB every time so a change made
+ * by another process takes effect immediately.
  */
 export async function currentTokenEpoch(): Promise<number> {
   const repo = await getRepo();
@@ -144,33 +245,46 @@ function sign(data: string, secret: string): Buffer {
   return createHmac("sha256", secret).update(data).digest();
 }
 
-export async function issueToken(): Promise<{ token: string; expiresAt: string }> {
-  const [secret, epoch] = await Promise.all([getSecret(), currentTokenEpoch()]);
+/** Sign a session token for the user, bound to their current tokenEpoch and the global epoch. */
+export async function issueToken(userId: string): Promise<{ token: string; expiresAt: string }> {
+  const repo = await getRepo();
+  const [secret, epoch, record] = await Promise.all([getSecret(), currentTokenEpoch(), repo.getUserAuth(userId)]);
+  if (!record) throw new Error("User not found");
   const iat = Date.now();
   const exp = iat + TOKEN_TTL_MS;
-  const payload: TokenPayload = { exp, epoch, iat };
+  const payload: TokenPayload = { uid: record.id, uep: record.tokenEpoch, epoch, iat, exp };
   const body = `${TOKEN_VERSION}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}`;
   const token = `${body}.${sign(body, secret).toString("base64url")}`;
   return { token, expiresAt: new Date(exp).toISOString() };
 }
 
-export async function verifyToken(token: string): Promise<boolean> {
-  if (typeof token !== "string") return false;
+/**
+ * The token's user, or null unless the signature is valid, the token is unexpired, the user exists
+ * and is active, and both the user's and the global epoch still match.
+ */
+export async function verifyToken(token: string): Promise<User | null> {
+  if (typeof token !== "string") return null;
   const parts = token.split(".");
-  if (parts.length !== 3 || parts[0] !== TOKEN_VERSION) return false;
+  if (parts.length !== 3 || parts[0] !== TOKEN_VERSION) return null;
   const secret = await getSecret();
   const expected = sign(`${parts[0]}.${parts[1]}`, secret);
   const actual = Buffer.from(parts[2], "base64url");
-  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return false;
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null;
   let payload: TokenPayload;
   try {
     payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as TokenPayload;
   } catch {
-    return false;
+    return null;
   }
-  if (typeof payload?.exp !== "number" || payload.exp <= Date.now()) return false;
-  if (typeof payload.epoch !== "number") return false;
-  return payload.epoch === (await currentTokenEpoch());
+  if (typeof payload?.exp !== "number" || payload.exp <= Date.now()) return null;
+  if (typeof payload.uid !== "string" || typeof payload.uep !== "number" || typeof payload.epoch !== "number") {
+    return null;
+  }
+  const repo = await getRepo();
+  const [record, epoch] = await Promise.all([repo.getUserAuth(payload.uid), currentTokenEpoch()]);
+  if (!record || !record.isActive) return null;
+  if (payload.uep !== record.tokenEpoch || payload.epoch !== epoch) return null;
+  return publicUser(record);
 }
 
 function readCookie(header: string | null, name: string): string | null {
@@ -199,9 +313,14 @@ export function getRequestToken(req: Request): string | null {
   return readCookie(req.headers.get("cookie"), SESSION_COOKIE) || null;
 }
 
-export async function isAuthenticated(req: Request): Promise<boolean> {
+/** The signed-in user of a request (bearer or cookie token), or null. */
+export async function getRequestUser(req: Request): Promise<User | null> {
   const token = getRequestToken(req);
-  return token ? verifyToken(token) : false;
+  return token ? verifyToken(token) : null;
+}
+
+export async function isAuthenticated(req: Request): Promise<boolean> {
+  return (await getRequestUser(req)) !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,13 +355,56 @@ export function clearSessionCookie(req: Request): string {
 // ---------------------------------------------------------------------------
 // Boot
 
-/** Once per process: apply ADMIN_PASSWORD from the environment if it differs from the stored one. */
+/**
+ * Once per process:
+ * 1. migrate the pre-users admin password (setting `admin_password_hash`) into the `admin` account;
+ * 2. apply ADMIN_PASSWORD from the environment to the `admin` account (created if missing, made an
+ *    active admin; a changed password revokes that account's sessions) — the `omp-ui passwd` recovery path;
+ * 3. hand data without an owner (pre-users rows and credentials) to the oldest active admin.
+ */
 export function ensureAuthBoot(): Promise<void> {
   g.__ompUiAuthBoot ??= (async () => {
-    const envPassword = process.env.ADMIN_PASSWORD;
-    if (envPassword && !(await verifyPassword(envPassword))) {
-      await setPassword(envPassword);
+    const repo = await getRepo();
+
+    const legacyHash = await repo.getSetting(LEGACY_PASSWORD_KEY);
+    if (legacyHash) {
+      if ((await repo.listUsers()).length === 0) {
+        await repo.createUser({
+          username: DEFAULT_ADMIN_USERNAME,
+          email: null,
+          passwordHash: legacyHash,
+          role: "admin",
+        });
+      }
+      await repo.deleteSetting(LEGACY_PASSWORD_KEY);
     }
+
+    const envPassword = process.env.ADMIN_PASSWORD;
+    if (envPassword) {
+      const admin = await repo.findUserAuthByLogin(DEFAULT_ADMIN_USERNAME);
+      if (!admin) {
+        await repo.createUser({
+          username: DEFAULT_ADMIN_USERNAME,
+          email: null,
+          passwordHash: await hashPassword(envPassword),
+          role: "admin",
+        });
+      } else {
+        const passwordChanged = !(await verifyHash(envPassword, admin.passwordHash));
+        if (passwordChanged || admin.role !== "admin" || !admin.isActive) {
+          await repo.updateUser(admin.id, {
+            role: "admin",
+            isActive: true,
+            ...(passwordChanged
+              ? { passwordHash: await hashPassword(envPassword), tokenEpoch: admin.tokenEpoch + 1 }
+              : {}),
+          });
+        }
+      }
+    }
+
+    const firstAdmin = (await repo.listUsers()).find((user) => user.role === "admin" && user.isActive);
+    if (firstAdmin) await adoptOrphanData(repo, firstAdmin.id);
   })().catch((err: unknown) => {
     g.__ompUiAuthBoot = undefined;
     throw err;

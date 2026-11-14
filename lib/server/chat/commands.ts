@@ -1,21 +1,27 @@
 // Chat messages, identical on every platform. Only three commands: `/login`, `/logout`, `/stop`;
 // everything else an authorized user writes goes to the chat assistant (assistant.ts), which
 // controls AgentMan in natural language. Adapters hand every received message to `handleChatMessage`.
-import { verifyPassword } from "@/lib/auth";
+import { DEFAULT_ADMIN_USERNAME, authenticate } from "@/lib/auth";
+import { scopeRepo } from "@/lib/db/scoped";
 import { cancelChatAssistant, forgetChatConversation, resolveCard, runChatAssistant } from "./assistant";
-import { unwatchCard } from "./relay";
+import { recheckChatAccess, unwatchCard } from "./relay";
 import { getChatAdapter } from "./service";
-import { authorizeUser, isAuthorized, revokeUser } from "./store";
-import type { ChatEnv, IncomingChatMessage } from "./types";
+import { authorizeUser, chatAccount, revokeUser } from "./store";
+import type { ChatEnv, ChatUserEnv, IncomingChatMessage } from "./types";
 
 /** The commands the bots understand; Discord registers its slash commands from this list. */
 export const CHAT_COMMANDS: readonly { name: string; args: string; description: string }[] = [
-  { name: "login", args: "<password>", description: "Connect this chat with the AgentMan admin password" },
+  {
+    name: "login",
+    args: "[username] <password>",
+    description: "Connect this chat with your AgentMan account (username or email; default: admin)",
+  },
   { name: "logout", args: "", description: "Disconnect this chat from AgentMan" },
   { name: "stop", args: "[cardId]", description: "Stop a card's agent, or cancel the current request" },
 ];
 
-const LOGIN_HINT = "🔒 Send /login <admin password> first (only the AgentMan admin can control it).";
+const LOGIN_USAGE = "/login <username> <password>";
+const LOGIN_HINT = `🔒 Send ${LOGIN_USAGE} first (your AgentMan account controls what you can see and do).`;
 const EXAMPLES = [
   "show my boards",
   "create a card on omp-ui to fix the login page and start it",
@@ -27,7 +33,7 @@ const LOGIN_MAX_FAILURES = 5;
 const LOGIN_MAX_GLOBAL_FAILURES = 20;
 const LOGIN_GLOBAL_KEY = "*";
 
-// Failed `/login` timestamps, survives dev HMR. Two buckets, both checked before verifyPassword:
+// Failed `/login` timestamps, survives dev HMR. Two buckets, both checked before authenticate:
 // per `${platform}:${userId}` (LOGIN_MAX_FAILURES) and LOGIN_GLOBAL_KEY shared by every chat user
 // on every platform (LOGIN_MAX_GLOBAL_FAILURES), so many accounts cannot multiply the guesses.
 // A success clears only the user's own bucket.
@@ -54,28 +60,31 @@ async function dispatch(env: ChatEnv, msg: IncomingChatMessage): Promise<void> {
     await login(env, msg, parsed.arg);
     return;
   }
-  const authorized = await isAuthorized(env.repo, msg.platform, msg.userId);
+  const account = await chatAccount(env.repo, msg.platform, msg.userId);
   if (parsed && (parsed.name === "start" || parsed.name === "help")) {
-    await msg.reply(introText(authorized));
+    await msg.reply(introText(account !== null));
     return;
   }
-  if (!authorized) {
+  if (!account) {
     await msg.reply(LOGIN_HINT);
     return;
   }
   if (parsed?.name === "logout") {
     cancelChatAssistant(msg.platform, msg.chatId);
-    forgetChatConversation(msg.platform, msg.chatId);
+    forgetChatConversation(msg.platform, msg.chatId, account.id);
     await revokeUser(env.repo, msg.platform, msg.userId);
-    await msg.reply("Logged out. Send /login <admin password> to connect again.", { ephemeral: true });
+    recheckChatAccess(msg.platform, msg.userId);
+    await msg.reply(`Logged out. Send ${LOGIN_USAGE} to connect again.`, { ephemeral: true });
     return;
   }
+  // Everything below acts as the logged-in account: a regular user only reaches their own boards and cards.
+  const scoped: ChatUserEnv = { repo: scopeRepo(env.repo, account), manager: env.manager, user: account };
   if (parsed?.name === "stop") {
-    await stop(env, msg, parsed.arg);
+    await stop(scoped, msg, parsed.arg);
     return;
   }
   // Not awaited: /stop and /logout must never wait behind a running request.
-  runChatAssistant(env, msg);
+  runChatAssistant(scoped, msg);
 }
 
 /** `/name@bot rest` → `{ name, arg }` (name lowercased, arg trimmed); null for non-command text. */
@@ -95,7 +104,7 @@ function introText(authorized: boolean): string {
     "Commands:",
     ...CHAT_COMMANDS.map((c) => `${c.args ? `/${c.name} ${c.args}` : `/${c.name}`} — ${c.description}`),
   ];
-  if (!authorized) lines.push("", "Send /login <admin password> first.");
+  if (!authorized) lines.push("", `Send ${LOGIN_USAGE} first.`);
   return lines.join("\n");
 }
 
@@ -117,13 +126,20 @@ async function stop(env: ChatEnv, msg: IncomingChatMessage, arg: string): Promis
   await msg.reply(`⏹ Stopped "${task.title}"`);
 }
 
-async function login(env: ChatEnv, msg: IncomingChatMessage, password: string): Promise<void> {
+/**
+ * `/login <password>` signs in as the `admin` account (the single-password form of older versions);
+ * `/login <username or email> <password>` as any account (the password may contain spaces).
+ */
+async function login(env: ChatEnv, msg: IncomingChatMessage, arg: string): Promise<void> {
   // The password must not linger in the chat, whatever the outcome.
   if (msg.messageId) await getChatAdapter(msg.platform)?.deleteMessage(msg.chatId, msg.messageId);
-  if (!password) {
-    await msg.reply("Usage: /login <admin password>", { ephemeral: true });
+  if (!arg) {
+    await msg.reply(`Usage: ${LOGIN_USAGE}`, { ephemeral: true });
     return;
   }
+  const space = arg.search(/\s/);
+  const username = space < 0 ? DEFAULT_ADMIN_USERNAME : arg.slice(0, space);
+  const password = space < 0 ? arg : arg.slice(space).trim();
   const key = `${msg.platform}:${msg.userId}`;
   const now = Date.now();
   const buckets = [
@@ -152,8 +168,9 @@ async function login(env: ChatEnv, msg: IncomingChatMessage, password: string): 
     : "\n⚠️ This is not a private chat: send /login in a direct message to the bot so nobody sees your password.";
   // Counted as a failure before checking, so concurrent guesses cannot all slip under the limit.
   for (const bucket of buckets) bucket.failures.push(now);
-  if (!(await verifyPassword(password))) {
-    await msg.reply(`Wrong password.${warning}`, { ephemeral: true });
+  const user = await authenticate(username, password);
+  if (!user) {
+    await msg.reply(`Wrong username or password.${warning}`, { ephemeral: true });
     return;
   }
   loginFailures.delete(key);
@@ -165,8 +182,11 @@ async function login(env: ChatEnv, msg: IncomingChatMessage, password: string): 
     userId: msg.userId,
     userName: msg.userName,
     chatId: msg.chatId,
+    accountId: user.id,
   });
-  await msg.reply(`AgentMan connected ✅ — just tell me what you want, e.g. "show my boards".${warning}`, {
-    ephemeral: true,
-  });
+  recheckChatAccess(msg.platform, msg.userId);
+  await msg.reply(
+    `AgentMan connected ✅ as ${user.username} — just tell me what you want, e.g. "show my boards".${warning}`,
+    { ephemeral: true },
+  );
 }

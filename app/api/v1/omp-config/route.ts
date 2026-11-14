@@ -4,10 +4,14 @@ import { getAppSettings } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
-/** omp's user config.yml: path, raw text, the structured form's values, omp's defaults and the field schema. */
-export const GET = withApi(async ({ repo }) => {
+/**
+ * omp's user config.yml: path, raw text, the structured form's values, omp's defaults and the field schema.
+ * Non-admins get no raw text (it may hold the secrets `secretsSet` only names) and no version (a hash of it).
+ */
+export const GET = withApi(async ({ repo, user }) => {
   const { ompPath } = await getAppSettings(repo);
-  return json(await getOmpConfig(ompPath));
+  const snapshot = await getOmpConfig(ompPath);
+  return json(user.role === "admin" ? snapshot : { ...snapshot, raw: "", version: "" });
 });
 
 /** `{ values }` (null unsets a key) or `{ raw }` (whole file); optional `version` guards against overwriting newer edits. */
@@ -23,4 +27,4 @@ export const PUT = withApi(async ({ req, repo }) => {
     throw new HttpError(400, "values must be an object of setting keys");
   }
   return json(await updateOmpConfigValues(ompPath, values as Record<string, unknown>, body.version));
-});
+}, { admin: true });

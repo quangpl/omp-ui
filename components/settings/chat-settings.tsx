@@ -53,7 +53,10 @@ const EXAMPLES = [
 
 /** The only chat commands, identical on Telegram and Discord (lib/server/chat/commands.ts). */
 const COMMANDS: { usage: string; description: string }[] = [
-  { usage: "/login <password>", description: "Unlock control with the admin password" },
+  {
+    usage: "/login <username> <password>",
+    description: "Sign this chat in as your omp-ui account (a password alone signs in as admin)",
+  },
   { usage: "/logout", description: "Lock this chat again" },
   { usage: "/stop [cardId]", description: "Stop a card's agent; without an id, cancel the current request" },
 ];
@@ -127,7 +130,7 @@ const PLATFORMS: Record<
       </>,
       <>Copy the token it gives you (or its whole reply), paste it here and click Connect.</>,
       <>
-        Open your bot and send <code className={CODE}>/login &lt;admin password&gt;</code>; it answers
+        Open your bot and send <code className={CODE}>/login &lt;username&gt; &lt;password&gt;</code>; it answers
         &ldquo;AgentMan connected&rdquo;. Then just tell it what you want.
       </>,
     ],
@@ -152,7 +155,7 @@ const PLATFORMS: Record<
       <>Paste the token here and click Connect; the bot sends you a DM.</>,
       <>
         Use &ldquo;Add to server&rdquo; or DM the bot, then send{" "}
-        <code className={CODE}>/login &lt;admin password&gt;</code> and tell it what you want.
+        <code className={CODE}>/login &lt;username&gt; &lt;password&gt;</code> and tell it what you want.
       </>,
     ],
   },
@@ -411,10 +414,10 @@ function ChatPlatformPanel({
 }
 
 /**
- * Settings → Chat integrations: connect a Telegram and/or Discord bot by pasting its token. The
- * admin then controls AgentMan in natural language (an omp assistant with AgentMan tools manages
- * boards and cards; started cards stream their output) after `/login <admin password>`. Status is
- * re-read every 5 s while mounted.
+ * Settings → Chat integrations: connect a Telegram and/or Discord bot by pasting its token. After
+ * `/login <username> <password>` a chat controls AgentMan in natural language as that omp-ui account
+ * (an omp assistant with AgentMan tools manages its boards and cards; started cards stream their
+ * output). Status is re-read every 5 s while mounted.
  */
 export function ChatSettingsSection() {
   const [status, setStatus] = useState<ChatStatusResponse | null>(null);
@@ -528,8 +531,9 @@ export function ChatSettingsSection() {
             ))}
           </ul>
           <p className="text-xs text-pretty text-muted-foreground">
-            Card ids may be shortened to a unique prefix. Everything works the same on Telegram and Discord. Only
-            someone who knows the admin password can control AgentMan. Changing the password logs every chat out.
+            Card ids may be shortened to a unique prefix. Everything works the same on Telegram and Discord. Each
+            chat acts as the account it signed in with: regular users only see their own projects, admins see
+            everything. Changing that account&rsquo;s password or deactivating it logs its chats out.
           </p>
         </SettingsGroup>
       </SettingsPanel>

@@ -11,4 +11,4 @@ export const dynamic = "force-dynamic";
 export const POST = withApi(async ({ req }) => {
   const plan = parseQuickRun(await readJson(req));
   return jobResponse((send) => quickRun(plan, send));
-});
+}, { admin: true });
