@@ -152,10 +152,11 @@ export default function HomePage() {
             ) : (
               <EntranceContext.Provider value={entering}>
                 {/*
-                  One grid, three shapes (container widths, so the sidebar's share is accounted for):
-                  - narrow: a single column ordered by urgency — needs you, live agents, quick actions,
-                    projects, stats, activity (unfinished steps first, finished ones last);
-                  - medium: quick actions move up under the greeting, stats and activity pair up;
+                  One grid, three shapes (container widths, so the sidebar's share is accounted for).
+                  Every shape opens with the greeting, then the projects list across the full width.
+                  - narrow: then a single column ordered by urgency — needs you, live agents, quick actions,
+                    stats, activity (unfinished steps first, finished ones last);
+                  - medium: quick actions move up under the projects, stats and activity pair up;
                   - wide: an asymmetric 2:1 split, the work column beside a side rail (live agents, stats, activity).
                   The column wrappers are `display: contents` until wide, so `order` reaches every section.
                 */}
@@ -167,6 +168,15 @@ export default function HomePage() {
                   )}
                   <div className="col-span-full min-w-0">
                     <Overview dashboard={dashboard} now={now} />
+                  </div>
+                  <div className="col-span-full min-w-0">
+                    <ProjectsSection
+                      boards={dashboard.boards}
+                      now={now}
+                      onEdit={(b) => setForm({ open: true, board: b })}
+                      onDelete={setDeleting}
+                      onTogglePin={(b) => void togglePin(b)}
+                    />
                   </div>
                   <div className="order-4 col-span-full min-w-0 @xl/home:order-none">
                     <QuickActions onCreateProject={openCreate} />
@@ -180,15 +190,6 @@ export default function HomePage() {
                         total={dashboard.needsYouTotal}
                         boards={dashboard.boards}
                         now={now}
-                      />
-                    </div>
-                    <div className="order-5 col-span-full min-w-0">
-                      <ProjectsSection
-                        boards={dashboard.boards}
-                        now={now}
-                        onEdit={(b) => setForm({ open: true, board: b })}
-                        onDelete={setDeleting}
-                        onTogglePin={(b) => void togglePin(b)}
                       />
                     </div>
                     {setupComplete && steps && <div className="order-8 col-span-full min-w-0">{steps}</div>}
