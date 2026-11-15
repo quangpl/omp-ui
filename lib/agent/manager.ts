@@ -12,7 +12,15 @@ import {
   type QuestionTriage,
 } from "@/lib/agent/advisor";
 import { BOARD_TOOLS, BOARD_TOOL_NAMES, runBoardTool, type BoardToolHost } from "@/lib/agent/board-tools";
-import { CONCURRENCY_SAMPLE_MS, readLoadHold, resolveConcurrency } from "@/lib/agent/concurrency";
+import {
+  AgentMemoryModel,
+  CONCURRENCY_SAMPLE_MS,
+  committedMemoryBytes,
+  readLoadHold,
+  readMachineResources,
+  resolveConcurrency,
+  subagentConcurrency,
+} from "@/lib/agent/concurrency";
 import { currentResourcePressure, startResourceGuard } from "@/lib/agent/resource-guard";
 import { LoopDetector, loopSteerMessage, type LoopDetection } from "@/lib/agent/loop-detector";
 import { chooseModel, readModelRoles } from "@/lib/agent/model-select";
@@ -23,11 +31,15 @@ import { OmpRpcProcess, describeExit, type RpcExitInfo, type RpcFrame } from "@/
 import {
   evaluateBudget,
   evaluateRunGuards,
+  evaluateWrapUp,
   guardsEnabled,
   guardTickMs,
   sessionUsage,
   totalUsage,
+  wrapUpSteerMessage,
+  type RunGuardState,
   type RunUsage,
+  type WrapUpHit,
 } from "@/lib/agent/run-guards";
 import {
   describeTaskCall,
@@ -129,6 +141,24 @@ const RETRY_MAX_MS = 10 * 60_000;
 const RESOURCE_SAMPLE_MS = 5_000;
 /** A run's first resource sample waits until its process has run this long (see sampleResources). */
 const FIRST_SAMPLE_MIN_MS = 1_000;
+/**
+ * A run not sampled yet (sampling failed, or Windows where it is unavailable) still counts as
+ * growing to the learned memory per agent this long after its spawn; later its memory is taken
+ * as fully grown, i.e. already missing from the free figure.
+ */
+const MEMORY_WARMUP_MS = 90_000;
+/**
+ * Only a run that lived this long teaches the learned memory per agent: a quota/auth wave failing
+ * many cards within seconds would otherwise pull the estimate down to its floor.
+ */
+const MEMORY_LEARN_MIN_MS = 120_000;
+/**
+ * Boot seeding learns only from cards whose stored resources show at least this much CPU: a proxy
+ * for a run that did work (a run crashing at start uses a few CPU seconds).
+ */
+const MEMORY_LEARN_MIN_CPU_SECONDS = 30;
+/** Suffix of the error of a run whose node was lost (rescheduleLost): not the agent's failure. */
+const RESCHEDULED_SUFFIX = "; rescheduled";
 
 type DeltaKind = "text" | "thinking";
 
@@ -207,6 +237,8 @@ interface ActiveRun {
   loop: LoopDetector | null;
   /** Loops detected so far: the first steers the agent, the second fails the run. */
   loopStrikes: number;
+  /** The wrap-up nudge (settings `wrapUpNudge`) was sent: it is sent at most once per run. */
+  wrapUpSent: boolean;
   /** SDLC violations (`phase:requires`) already steered back to the agent: each is steered once per run. */
   sdlcNudges: Set<string>;
   /** When the run's omp process was spawned (ms epoch); 0 before. The first CPU rate counts from here. */
@@ -272,8 +304,15 @@ class OmpAgentManager implements AgentManager, RunControl {
   private holding = false;
   /** Cluster mode: this machine's own agent limit, as of the latest resolveLimit(). */
   private localLimit = 0;
+  /** Cluster mode: this machine's resource or load guard holds new local runs, as of the latest resolveLimit(). */
+  private localHeld = false;
   /** Last reportLocalRuns() payload (deduplicates). */
   private lastLocalReport = "";
+  /**
+   * Learns the memory one agent needs from the peak RSS of finished runs, local and remote alike
+   * (auto limit): it is a property of the workload (omp and its builds/tests), not of the node.
+   */
+  private readonly memoryModel = new AgentMemoryModel();
 
   constructor(private readonly repo: Repository) {}
 
@@ -353,19 +392,36 @@ class OmpAgentManager implements AgentManager, RunControl {
    */
   private resolveLimit(settings: AppSettings): ConcurrencyInfo {
     const cluster = clusterActive();
+    const localRuns = this.localRuns();
+    const perAgentBytes = this.memoryModel.estimate();
+    const now = Date.now();
     const local = resolveConcurrency(
       settings.maxConcurrentAgents,
-      cluster ? this.localRuns().length : this.active.size,
+      cluster ? localRuns.length : this.active.size,
       undefined,
       readLoadHold(settings),
       currentResourcePressure(),
       // A hold launches nothing, not even into lent slots. Cluster placement counts its own free local slots.
       cluster ? 0 : this.lent,
+      // Local runs not at their expected size yet will still take memory the free figure counts.
+      {
+        perAgentBytes,
+        committedBytes: committedMemoryBytes(
+          perAgentBytes,
+          // Unsampled: fully committed while warming up, then taken as fully grown.
+          localRuns.map(
+            (run) =>
+              run.resources?.memoryBytes ??
+              (run.spawnedAt === 0 || now - run.spawnedAt < MEMORY_WARMUP_MS ? null : perAgentBytes),
+          ),
+        ),
+      },
     );
     if (!cluster) return local;
     this.localLimit = local.limit;
     const capacity = clusterCapacity(local.limit, settings.clusterRunLocal);
     const held = local.boundBy === "resources" || local.boundBy === "load";
+    this.localHeld = held;
     if (held && capacity.info.remoteSlots > 0) {
       return {
         ...local,
@@ -630,6 +686,8 @@ class OmpAgentManager implements AgentManager, RunControl {
    */
   async recover(): Promise<void> {
     const settings = await getAppSettings(this.repo);
+    // Before queued runs start: the automatic limit sizes them by the learned memory per agent.
+    await this.seedMemoryModel();
     // Oldest first (listTasksByAgentState orders by updatedAt).
     for (const task of await this.repo.listTasksByAgentState(["running", "queued", "error"])) {
       try {
@@ -638,6 +696,29 @@ class OmpAgentManager implements AgentManager, RunControl {
         console.error(`[agent] could not resume task ${task.id} after the restart:`, err);
         await this.recordTaskError(task.id, err);
       }
+    }
+  }
+
+  /**
+   * Boot: learn the memory per agent from the peaks the latest finished runs stored on their
+   * cards (the newest AgentMemoryModel.WINDOW, recorded oldest first), local and remote alike.
+   * Only runs that did work count (MEMORY_LEARN_MIN_CPU_SECONDS). Best effort: a failed read
+   * leaves the default estimate.
+   */
+  private async seedMemoryModel(): Promise<void> {
+    try {
+      // Oldest first (listTasksByAgentState orders by updatedAt).
+      const peaks = (await this.repo.listTasksByAgentState(["idle", "error"]))
+        .map((task) => task.resources)
+        .filter(
+          (resources): resources is AgentResources =>
+            !!resources && resources.cpuSeconds >= MEMORY_LEARN_MIN_CPU_SECONDS,
+        )
+        .map((resources) => resources.peakMemoryBytes)
+        .slice(-AgentMemoryModel.WINDOW);
+      for (const peak of peaks) this.memoryModel.record(peak);
+    } catch (err) {
+      console.error("[agent] could not read the memory of past runs:", err);
     }
   }
 
@@ -960,16 +1041,37 @@ class OmpAgentManager implements AgentManager, RunControl {
             return task !== null && (await this.pendingBlockers(task)).length > 0;
           }),
         );
-        // Cluster mode: a card goes back to the node of its last run when that node has room.
+        // Cluster mode: among equally good replicas, a card prefers the node of its last run.
         const lastNodes = cluster ? await Promise.all(candidates.map((taskId) => this.lastRunNode(taskId))) : [];
         for (const [index, taskId] of candidates.entries()) {
           if (this.active.size - this.lent >= this.limit) break;
           if (blocked[index]) continue;
           // Checked after the reads: the card may have been stopped and queued anew meanwhile.
           if (this.isHeld(taskId)) continue;
+          // Cluster mode: place the card before it leaves the queue. No placement means no node can
+          // safely take a card now, or the pump's count is ahead of the nodes' (e.g. a remote run's
+          // transport still closing), so the rest stay queued too (the sampler and refreshQueue re-pump,
+          // and the primary re-pumps when a node frees a slot).
+          let placement: RunPlacement | null = null;
+          if (cluster) {
+            placement = placeRun({
+              taskId,
+              localFree: this.localLimit - this.localRuns().length,
+              localLimit: this.localLimit,
+              runLocal: settings.clusterRunLocal,
+              localHeld: this.localHeld,
+              // True only when the room comes from a slot lent by board_wait_for_cards; otherwise
+              // placeRun never puts a card on a node without a free slot.
+              overflow: this.active.size >= this.limit,
+              preferNodeId: lastNodes[index] ?? null,
+            });
+            if (!placement) break;
+          }
           if (this.removeFromQueue(taskId)) {
             this.leftQueue(taskId);
-            this.launch(taskId, settings, lastNodes[index] ?? null);
+            this.launch(taskId, settings, placement);
+          } else if (placement) {
+            cancelPlacement(placement);
           }
         }
       } while (this.pumpAgain);
@@ -998,17 +1100,9 @@ class OmpAgentManager implements AgentManager, RunControl {
     return lastRunId ? ((await this.repo.getRun(lastRunId))?.nodeId ?? null) : null;
   }
 
-  private launch(taskId: string, settings: AppSettings, preferNodeId: string | null): void {
+  /** Starts a queued card; `placement` is the node pump() reserved for it (null in standalone mode). */
+  private launch(taskId: string, settings: AppSettings, placement: RunPlacement | null): void {
     const now = Date.now();
-    const placement = clusterActive()
-      ? placeRun({
-          taskId,
-          localFree: this.localLimit - this.localRuns().length,
-          localLimit: this.localLimit,
-          runLocal: settings.clusterRunLocal,
-          preferNodeId,
-        })
-      : null;
     const run: ActiveRun = {
       taskId,
       boardId: "",
@@ -1042,6 +1136,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       sessionUsage: { costUsd: 0, tokens: 0 },
       loop: settings.loopDetection ? new LoopDetector() : null,
       loopStrikes: 0,
+      wrapUpSent: false,
       sdlcNudges: new Set(),
       spawnedAt: 0,
       resources: null,
@@ -1125,6 +1220,7 @@ class OmpAgentManager implements AgentManager, RunControl {
    * Supervisor tick. Settings are read on every tick, so toggling a guard applies to runs already
    * working; with every guard off nothing else happens. A tripped run fails from its own chain;
    * release() closes its process (stdin end, then SIGTERM/SIGKILL), which also ends a stalled one.
+   * A run that trips nothing may get the wrap-up nudge (checkWrapUp).
    */
   private async superviseRuns(): Promise<void> {
     let settings: AppSettings;
@@ -1141,13 +1237,15 @@ class OmpAgentManager implements AgentManager, RunControl {
       const waitingOnHost = run.hostCalls.size > 0;
       // A board-tool wait sends no frames: the stall clock restarts once it ends.
       if (waitingOnHost) run.lastActivityAt = now;
-      const launchedAt = Date.parse(run.launchedAt);
-      const hit = evaluateRunGuards(
-        { launchedAt, lastActivityAt: run.lastActivityAt, waitingOnHost, ...this.runUsage(run) },
-        settings,
-        now,
-      );
+      const state: RunGuardState = {
+        launchedAt: Date.parse(run.launchedAt),
+        lastActivityAt: run.lastActivityAt,
+        waitingOnHost,
+        ...this.runUsage(run),
+      };
+      const hit = evaluateRunGuards(state, settings, now);
       if (hit) this.enqueue(run, () => this.fail(run, hit.message, { retry: hit.retry }));
+      else this.checkWrapUp(run, state, settings, now);
     }
   }
 
@@ -1155,10 +1253,57 @@ class OmpAgentManager implements AgentManager, RunControl {
   private async checkBudget(run: ActiveRun): Promise<void> {
     try {
       const settings = await getAppSettings(this.repo);
-      const hit = run.finished ? null : evaluateBudget(this.runUsage(run), settings);
-      if (hit) this.enqueue(run, () => this.fail(run, hit.message, { retry: hit.retry }));
+      if (run.finished) return;
+      const usage = this.runUsage(run);
+      const hit = evaluateBudget(usage, settings);
+      if (hit) {
+        this.enqueue(run, () => this.fail(run, hit.message, { retry: hit.retry }));
+        return;
+      }
+      if (!run.promptSent) return;
+      const state: RunGuardState = {
+        launchedAt: Date.parse(run.launchedAt),
+        lastActivityAt: run.lastActivityAt,
+        waitingOnHost: run.hostCalls.size > 0,
+        ...usage,
+      };
+      this.checkWrapUp(run, state, settings, Date.now());
     } catch (err) {
       console.error(`[agent] budget check failed for task ${run.taskId}:`, err);
+    }
+  }
+
+  /**
+   * Wrap-up nudge (settings `wrapUpNudge`): once a run has used `wrapUpPercent` % of its run time
+   * limit or run budget, the agent is asked once to finish up and summarize before the hard guard
+   * stops it (Hermes' iteration-budget warning).
+   */
+  private checkWrapUp(run: ActiveRun, state: RunGuardState, settings: AppSettings, now: number): void {
+    if (run.wrapUpSent) return;
+    const hit = evaluateWrapUp(state, settings, now);
+    if (!hit) return;
+    run.wrapUpSent = true;
+    this.enqueue(run, () => this.wrapUp(run, hit));
+  }
+
+  /** Inside the run's chain: record the wrap-up nudge and steer it to the agent. */
+  private async wrapUp(run: ActiveRun, hit: WrapUpHit): Promise<void> {
+    if (run.finished) return;
+    const limit = hit.guard === "time" ? "run time limit" : "run budget";
+    await this.event(
+      run,
+      "status",
+      `Wrap-up nudge: ${Math.round(hit.percent)}% of the ${limit} used (${hit.detail}); asked the agent to finish up`,
+    );
+    try {
+      // Steered like the loop detector's nudge (see onLoop); its own id keeps the response apart from the run's prompt.
+      await run.proc?.send(
+        { id: `wrapup-${run.runId}`, type: "prompt", message: wrapUpSteerMessage(hit), streamingBehavior: "steer" },
+        { timeoutMs: run.proc.commandTimeoutMs },
+      );
+    } catch (err) {
+      // The hard guard still stops a run that does not wrap up.
+      console.error(`[agent] failed to steer the wrap-up nudge for task ${run.taskId}:`, err);
     }
   }
 
@@ -1233,10 +1378,17 @@ class OmpAgentManager implements AgentManager, RunControl {
     this.resourceSampler = undefined;
   }
 
-  /** Store the run's latest resource sample on the task once it ends (skipped before the first sample). */
+  /**
+   * Store the run's latest resource sample on the task once it ends (skipped before the first
+   * sample); the peak of a run that lived MEMORY_LEARN_MIN_MS (local or remote) also teaches the
+   * learned memory per agent.
+   */
   private async persistResources(run: ActiveRun): Promise<void> {
     const resources = run.resources;
     if (!resources) return;
+    if (run.spawnedAt > 0 && Date.now() - run.spawnedAt >= MEMORY_LEARN_MIN_MS) {
+      this.memoryModel.record(resources.peakMemoryBytes);
+    }
     try {
       const task = await this.repo.updateTask(run.taskId, { resources });
       if (task) publish({ type: "task.updated", task });
@@ -1262,13 +1414,24 @@ class OmpAgentManager implements AgentManager, RunControl {
     // Independent startup reads and folder setup run in parallel. Dedicated workspace: the
     // card's own worktrees stand in for the project folders.
     const sessionFile = task.sessionFile;
-    const [workspace, taskFiles, boardFiles, comments, foundSession] = await Promise.all([
+    // An automatic retry after a failed run: the prompt tells the agent what went wrong.
+    const retriedRunId = task.autoRetries > 0 ? task.lastRunId : null;
+    const [workspace, taskFiles, boardFiles, comments, foundSession, retriedRun] = await Promise.all([
       board.worktrees ? ensureWorkspace(board, task) : null,
       ensureFilesFolder("tasks", task.id),
       ensureFilesFolder("boards", board.id),
       repo.listComments(task.id),
       sessionFile ? stat(sessionFile).then(() => sessionFile, () => null) : null,
+      retriedRunId ? repo.getRun(retriedRunId) : null,
     ]);
+    // Only the agent's own failures: a quota error or a lost node is not something it can fix.
+    const previousFailure =
+      retriedRun?.status === "failed" &&
+      retriedRun.error &&
+      !isQuotaError(retriedRun.error) &&
+      !retriedRun.error.endsWith(RESCHEDULED_SUFFIX)
+        ? { message: retriedRun.error, attempt: task.autoRetries }
+        : undefined;
     let workdir = board.workdir;
     let projectExtras = board.extraFolders ?? [];
     let workspaceBranch: string | null = null;
@@ -1312,6 +1475,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       workspaceBranch,
       browser: settings.browser,
       senders,
+      previousFailure,
     });
     const created = await repo.createRun({
       taskId: task.id,
@@ -1338,10 +1502,21 @@ class OmpAgentManager implements AgentManager, RunControl {
 
     // Roles are read per run: the user may reconfigure omp, and project `.omp` configs differ.
     const autoSelect = !board.model?.trim() && settings.autoModel;
+    const remote = placement && !placement.local ? placement : null;
+    // A local run's subagents share this machine: their cap is the run's fair share of it, as of
+    // now. A remote node's machine is not sampled here, so its runs get the ceiling.
+    const subagents =
+      settings.subagentLimits && !remote
+        ? subagentConcurrency({
+            ceiling: settings.subagentMaxConcurrency,
+            ...readMachineResources(),
+            runningAgents: this.localRuns().length,
+          })
+        : null;
     const [workdirFound, roles, configFile, memoryProject] = await Promise.all([
       isDirectory(workdir),
       autoSelect ? readModelRoles(settings.ompPath, workdir, childEnv()) : null,
-      writeRunConfig(task.id, settings, taskFiles),
+      writeRunConfig(task.id, runConfigOverlay(settings, taskFiles, subagents)),
       // Cards in worktrees remember under the board's project, like omp sessions in its folder.
       memoryProjectName(board.workdir),
     ]);
@@ -1357,7 +1532,6 @@ class OmpAgentManager implements AgentManager, RunControl {
       roles,
     });
     if (run.finished) return;
-    const remote = placement && !placement.local ? placement : null;
     const { model, thinking } = choice;
     const args = [
       "--mode",
@@ -1396,7 +1570,9 @@ class OmpAgentManager implements AgentManager, RunControl {
         .join(" "),
     );
     if (run.finished) return;
-    for (const note of workspaceNotes) await this.event(run, "status", note);
+    for (const note of [...runConfigNotes(settings, subagents), ...workspaceNotes]) {
+      await this.event(run, "status", note);
+    }
     for (const folder of missingFolders) {
       await this.event(run, "status", `Skipped missing folder ${folder}`);
     }
@@ -1756,7 +1932,7 @@ class OmpAgentManager implements AgentManager, RunControl {
    */
   private async rescheduleLost(run: ActiveRun, reason: string): Promise<void> {
     run.finished = true;
-    const message = `${reason}; rescheduled`;
+    const message = `${reason}${RESCHEDULED_SUFFIX}`;
     try {
       if (run.runId) {
         const updated = await this.repo.updateRun(run.runId, { status: "failed", error: message, endedAt: nowIso() });
@@ -2543,11 +2719,30 @@ function formatDelay(ms: number): string {
   return m % 60 === 0 ? `${h} h` : `${h} h ${m % 60} min`;
 }
 
-/** Per-run omp config overlay (`--config`): browser control for this card. JSON is valid YAML. */
-async function writeRunConfig(taskId: string, settings: AppSettings, taskFiles: string): Promise<string> {
-  const dir = path.join(dataDir(), "runtime");
-  await mkdir(dir, { recursive: true });
-  const file = path.join(dir, `omp-config-${taskId}.yml`);
+/** The settings the per-run omp config overlay depends on. */
+export type RunConfigSettings = Pick<
+  AppSettings,
+  | "browser"
+  | "subagentLimits"
+  | "subagentMaxConcurrency"
+  | "subagentMaxDepth"
+  | "subagentTimeoutMinutes"
+  | "contextCompaction"
+  | "contextCompactPercent"
+>;
+
+/**
+ * The per-run omp config overlay (`--config`): browser control for this card and, when on, the
+ * subagent limits of omp's `task` tool (Hermes-style delegation caps: subagents at once, nesting
+ * depth, runtime of each) and context compaction once the context fills a share of the model's
+ * window. `subagents` is the run's subagent cap (lib/agent/concurrency.ts subagentConcurrency);
+ * null uses the ceiling `subagentMaxConcurrency` (a remote node's machine is not sampled here).
+ */
+export function runConfigOverlay(
+  settings: RunConfigSettings,
+  taskFiles: string,
+  subagents: number | null,
+): Record<string, unknown> {
   const browser =
     settings.browser === "off"
       ? { enabled: false }
@@ -2557,7 +2752,38 @@ async function writeRunConfig(taskId: string, settings: AppSettings, taskFiles: 
           relay: settings.browser === "relay",
           screenshotDir: path.join(taskFiles, "screenshots"),
         };
-  await writeFile(file, `${JSON.stringify({ browser }, null, 2)}\n`);
+  const overlay: Record<string, unknown> = { browser };
+  if (settings.subagentLimits) {
+    overlay.task = {
+      maxConcurrency: subagents ?? settings.subagentMaxConcurrency,
+      maxRecursionDepth: settings.subagentMaxDepth,
+      // 0 = no limit: no runtime is set here.
+      ...(settings.subagentTimeoutMinutes > 0 ? { maxRuntimeMs: settings.subagentTimeoutMinutes * 60_000 } : {}),
+    };
+  }
+  if (settings.contextCompaction) overlay.compaction = { thresholdPercent: settings.contextCompactPercent };
+  return overlay;
+}
+
+/** Status lines for the run's log: the orchestration limits its config overlay applies. */
+function runConfigNotes(settings: RunConfigSettings, subagents: number | null): string[] {
+  const notes: string[] = [];
+  if (settings.subagentLimits) {
+    const minutes = settings.subagentTimeoutMinutes;
+    notes.push(
+      `Subagents: up to ${subagents ?? settings.subagentMaxConcurrency} at once, depth ${settings.subagentMaxDepth}${minutes > 0 ? `, ${minutes} min each` : ""}`,
+    );
+  }
+  if (settings.contextCompaction) notes.push(`Context compaction at ${settings.contextCompactPercent} %`);
+  return notes;
+}
+
+/** Write the card's per-run omp config overlay (runConfigOverlay); JSON is valid YAML. */
+async function writeRunConfig(taskId: string, overlay: Record<string, unknown>): Promise<string> {
+  const dir = path.join(dataDir(), "runtime");
+  await mkdir(dir, { recursive: true });
+  const file = path.join(dir, `omp-config-${taskId}.yml`);
+  await writeFile(file, `${JSON.stringify(overlay, null, 2)}\n`);
   return file;
 }
 

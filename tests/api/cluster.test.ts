@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -15,7 +18,15 @@ import * as tokenRoute from "@/app/api/v1/cluster/token/route";
 import * as settingsRoute from "@/app/api/v1/settings/route";
 import { updateNodeState } from "@/lib/cluster/node";
 import { CLUSTER_PROTOCOL_VERSION } from "@/lib/cluster/types";
-import type { AppSettings, ClusterInfo, ClusterJoinInfo, ClusterStatus } from "@/lib/types";
+import type { Repository } from "@/lib/db/types";
+import { getAppSettings } from "@/lib/settings";
+import {
+  DEFAULT_SETTINGS,
+  type AppSettings,
+  type ClusterInfo,
+  type ClusterJoinInfo,
+  type ClusterStatus,
+} from "@/lib/types";
 
 // The cluster channel really listens while the server is primary: a random high port keeps
 // parallel suites (and a cluster running on this machine) out of the way.
@@ -104,7 +115,53 @@ describe("/cluster", () => {
     // A new join id per run (the server joins again), and the run waits until the node has joined.
     expect(res.body).toContain('echo "OMP_UI_CLUSTER_JOIN_ID=$join_id"');
     expect(res.body).toContain("/api/v1/cluster/info");
-    expect(res.body).toContain('if [ "$role" = replica ]; then return 0; fi');
+  });
+
+  it("lets the join script succeed only once the node is a replica connected to the primary", async () => {
+    const res = await api<string>(joinRoute, "GET", "/cluster/join", { token: null });
+    expect(res.status).toBe(200);
+    // Without its last line the script only sets variables and defines functions (and `set -eu`).
+    const library = res.body.replace(/\nmain "\$@"\n$/, "\n");
+    expect(library).not.toBe(res.body);
+    const dir = mkdtempSync(path.join(tmpdir(), "omp-ui-join-"));
+    try {
+      const file = path.join(dir, "join.sh");
+      writeFileSync(file, library);
+      // The node's info route is canned, sleeping is skipped and the timeout is immediate; the
+      // status is captured with `|| rc=$?` because sourcing turned `set -e` on. The node's log is
+      // $NODE_LOG_FILE when given (background mode from its first line), otherwise there is none.
+      const harness = [
+        '. "$1"',
+        'local_info() { printf "%s" "$NODE_INFO_JSON"; }',
+        "sleep() { :; }",
+        "READY_TIMEOUT=0",
+        'if [ -n "${NODE_LOG_FILE:-}" ]; then LOG_FILE=$NODE_LOG_FILE; LOG_START=1; else unset LOG_START LOG_SINCE; fi',
+        "rc=0",
+        'wait_ready "" || rc=$?',
+        'echo "$rc"',
+      ].join("\n");
+      const shells = ["sh", ...(hasCommand("dash") ? ["dash"] : [])];
+      const waitReady = (shell: string, info: object, logFile = ""): string =>
+        execFileSync(shell, ["-c", harness, shell, file], {
+          env: { ...process.env, NODE_INFO_JSON: JSON.stringify(info), NODE_LOG_FILE: logFile },
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        }).trim();
+      // A re-run whose join failed: the replica logs it, then reconnects to its old primary.
+      const failedLog = path.join(dir, "node.log");
+      writeFileSync(
+        failedLog,
+        "[cluster] Could not join the cluster at http://x: boom; this node keeps running as a replica meanwhile and retries\n",
+      );
+      for (const shell of shells) {
+        expect(waitReady(shell, { role: "replica", connection: "connected" }), shell).toBe("0");
+        expect(waitReady(shell, { role: "replica", connection: "connecting" }), shell).toBe("1");
+        expect(waitReady(shell, { role: "primary", connection: null }), shell).toBe("1");
+        expect(waitReady(shell, { role: "replica", connection: "connected" }, failedLog), shell).toBe("3");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("refuses to build the join script for a request whose own host is not a plain host[:port]", async () => {
@@ -120,6 +177,7 @@ describe("/cluster", () => {
     expect(res.body).toMatchObject({
       protocol: CLUSTER_PROTOCOL_VERSION,
       role: "standalone",
+      connection: null,
       port: CLUSTER_PORT,
       platform: process.platform,
       arch: process.arch,
@@ -191,11 +249,29 @@ describe("/cluster", () => {
       { clusterFailoverSeconds: 10.5 },
       { clusterFailoverSeconds: "20" },
       { clusterRunLocal: "yes" },
+      { clusterAutoHeal: "yes" },
+      { clusterHealIntervalSeconds: 4 },
+      { clusterHealIntervalSeconds: 601 },
+      { clusterHealTimeoutSeconds: 1.5 },
+      { clusterHealTimeoutSeconds: "10" },
+      { clusterHealFailures: 0 },
+      { clusterHealFailures: 21 },
+      { clusterHealOfflineSeconds: 9 },
+      { clusterHealMaxRestarts: 0 },
+      { clusterHealMaxRestarts: null },
     ]) {
       const res = await api(settingsRoute, "PATCH", "/settings", { body });
       expect(res.status, JSON.stringify(body)).toBe(400);
     }
     expect((await api<AppSettings>(settingsRoute, "GET", "/settings")).body).toEqual(before);
+    const invalidHeal = await api<{ error: string }>(settingsRoute, "PATCH", "/settings", {
+      body: { clusterHealFailures: 0 },
+    });
+    expect(invalidHeal.body.error).toBe("clusterHealFailures must be an integer between 1 and 20");
+    const invalidSwitch = await api<{ error: string }>(settingsRoute, "PATCH", "/settings", {
+      body: { clusterAutoHeal: 1 },
+    });
+    expect(invalidSwitch.body.error).toBe("clusterAutoHeal must be a boolean");
 
     const res = await api<AppSettings>(settingsRoute, "PATCH", "/settings", {
       body: { clusterFailoverSeconds: 45, clusterRunLocal: false },
@@ -203,6 +279,58 @@ describe("/cluster", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({ clusterFailoverSeconds: 45, clusterRunLocal: false });
     expect((await status()).runLocal).toBe(false);
+
+    const heal = {
+      clusterAutoHeal: false,
+      clusterHealIntervalSeconds: 30,
+      clusterHealTimeoutSeconds: 5,
+      clusterHealFailures: 4,
+      clusterHealOfflineSeconds: 120,
+      clusterHealMaxRestarts: 2,
+    };
+    const healed = await api<AppSettings>(settingsRoute, "PATCH", "/settings", { body: heal });
+    expect(healed.status, JSON.stringify(healed.body)).toBe(200);
+    expect(healed.body).toMatchObject(heal);
+    expect((await api<AppSettings>(settingsRoute, "GET", "/settings")).body).toMatchObject(heal);
+  });
+
+  it("takes the auto-healing defaults from the environment until Settings saves them", async () => {
+    const keys = ["OMP_UI_CLUSTER_AUTO_HEAL", "OMP_UI_CLUSTER_HEAL_FAILURES", "OMP_UI_CLUSTER_HEAL_OFFLINE_SEC"];
+    const saved = keys.map((key) => process.env[key]);
+    process.env.OMP_UI_CLUSTER_AUTO_HEAL = "false";
+    process.env.OMP_UI_CLUSTER_HEAL_FAILURES = "5";
+    // Clamped into CLUSTER_HEAL_LIMITS (10–3600).
+    process.env.OMP_UI_CLUSTER_HEAL_OFFLINE_SEC = "2";
+    try {
+      /** A database without stored settings (a fresh install), or with `stored` saved. */
+      const repo = (stored: string | null) => ({ getSetting: async () => stored }) as unknown as Repository;
+      expect(await getAppSettings(repo(null))).toMatchObject({
+        clusterAutoHeal: false,
+        clusterHealFailures: 5,
+        clusterHealOfflineSeconds: 10,
+        clusterHealIntervalSeconds: DEFAULT_SETTINGS.clusterHealIntervalSeconds,
+      });
+      // Settings saved before auto-healing existed keep the env defaults; saved values win.
+      expect(await getAppSettings(repo(JSON.stringify({ clusterRunLocal: true })))).toMatchObject({
+        clusterAutoHeal: false,
+        clusterHealFailures: 5,
+      });
+      expect(
+        await getAppSettings(repo(JSON.stringify({ clusterAutoHeal: true, clusterHealFailures: 2 }))),
+      ).toMatchObject({ clusterAutoHeal: true, clusterHealFailures: 2 });
+
+      process.env.OMP_UI_CLUSTER_AUTO_HEAL = "maybe";
+      process.env.OMP_UI_CLUSTER_HEAL_FAILURES = "lots";
+      expect(await getAppSettings(repo(null))).toMatchObject({
+        clusterAutoHeal: DEFAULT_SETTINGS.clusterAutoHeal,
+        clusterHealFailures: DEFAULT_SETTINGS.clusterHealFailures,
+      });
+    } finally {
+      keys.forEach((key, i) => {
+        if (saved[i] === undefined) delete process.env[key];
+        else process.env[key] = saved[i];
+      });
+    }
   });
 
   it("disable returns to standalone", async () => {

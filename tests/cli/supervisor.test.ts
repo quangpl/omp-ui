@@ -1,6 +1,7 @@
 // bin/supervisor.mjs end to end against a tiny fake server (no app build needed): health-probe
 // failures force a restart, a server ignoring SIGTERM is SIGKILLed, OMP_UI_HEALTH_FAILURES=0 never
-// restarts, and SIGTERM to the supervisor lets the server shut down gracefully (persist its state).
+// restarts, SIGTERM to the supervisor lets the server shut down gracefully (persist its state), and
+// a restarted server learns why from OMP_UI_RESTART_REASON.
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -19,6 +20,7 @@ const STOP_TIMEOUT_MS = 1_000;
 //   flaky    — answers once, then 500 {"ok":false,"error":"db down"}
 //   stubborn — answers once, then hangs every probe and ignores SIGTERM (only SIGKILL stops it)
 // On SIGTERM a well-behaved instance "drains" for 200 ms, writes $FAKE_DIR/sigterm-<pid>, exits 0.
+// Every instance writes its OMP_UI_RESTART_REASON (JSON, null when unset) to $FAKE_DIR/reason-<pid>.
 const FAKE_SERVER = `
 import fs from "node:fs";
 import http from "node:http";
@@ -29,6 +31,7 @@ const mode = process.env.FAKE_MODE ?? "healthy";
 const pidsFile = path.join(dir, "pids");
 fs.appendFileSync(pidsFile, process.pid + "\\n");
 const first = fs.readFileSync(pidsFile, "utf8").trim().split("\\n").length === 1;
+fs.writeFileSync(path.join(dir, "reason-" + process.pid), JSON.stringify(process.env.OMP_UI_RESTART_REASON ?? null));
 const sick = first && mode !== "healthy";
 let answered = 0;
 
@@ -149,6 +152,15 @@ function marker(r: Run, pid: number): string | null {
   }
 }
 
+/** The OMP_UI_RESTART_REASON instance `pid` started with (null: unset); undefined before it wrote it. */
+function restartReason(r: Run, pid: number): string | null | undefined {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(r.dir, `reason-${pid}`), "utf8")) as string | null;
+  } catch {
+    return undefined;
+  }
+}
+
 afterEach(async () => {
   const r = run;
   run = null;
@@ -256,6 +268,26 @@ describe.skipIf(process.platform === "win32")("bin/supervisor.mjs", () => {
       expect(marker(r, pid)).toBe("flushed\n");
       expect(isAlive(pid)).toBe(false);
       expect(fakePids(r)).toEqual([pid]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.runIf(IS_LINUX)(
+    "tells the restarted server why it was restarted (OMP_UI_RESTART_REASON), the first one nothing",
+    async () => {
+      // A stale value in the supervisor's own environment must not reach the first server.
+      const r = await startSupervisor("healthy", { OMP_UI_RESTART_REASON: "stale" });
+      await waitUntil(() => r.output().includes("server is healthy ("), 8_000, 50);
+      const [first] = fakePids(r);
+      expect(restartReason(r, first)).toBeNull();
+
+      process.kill(first, "SIGKILL");
+      await waitUntil(() => fakePids(r).length >= 2 && count(r.output(), "server is healthy (") >= 2, 8_000, 50);
+
+      const [, second] = fakePids(r);
+      expect(r.output()).toContain("server exited unexpectedly (signal SIGKILL");
+      expect(restartReason(r, second)).toMatch(/^crashed \(signal SIGKILL, up \d+ s\)$/);
+      expect(isAlive(second)).toBe(true);
     },
     TEST_TIMEOUT,
   );

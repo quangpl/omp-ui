@@ -58,7 +58,11 @@ import { useCurrentUser } from "@/hooks/use-current-user";
 import { api } from "@/lib/api-client";
 import {
   CLUSTER_FAILOVER_LIMITS,
+  CLUSTER_HEAL_LIMITS,
+  type AppSettings,
+  type ClusterHealNumberKey,
   type ClusterJoinInfo,
+  type ClusterNodeHealth,
   type ClusterNodeStatus,
   type ClusterStatus,
   type ClusterTestResult,
@@ -71,6 +75,7 @@ const HTTP_URL = /^https?:\/\/\S+$/i;
 const MASK = "••••••••••••••••";
 const SUCCESS_BADGE = "bg-success/15 text-success";
 const WARNING_BADGE = "bg-amber-500/15 text-amber-700 dark:text-amber-400";
+const DANGER_BADGE = "bg-destructive/10 text-destructive";
 
 const CONNECTION_BADGE: Record<NonNullable<ClusterStatus["connection"]>["state"], { label: string; className: string }> = {
   connected: { label: "Connected", className: SUCCESS_BADGE },
@@ -84,11 +89,23 @@ function errorText(err: unknown, fallback: string): string {
 
 /** Why `raw` is not an acceptable failover delay (CLUSTER_FAILOVER_LIMITS, whole seconds), or null. */
 function failoverError(raw: string): string | null {
-  const { min, max } = CLUSTER_FAILOVER_LIMITS;
+  return wholeNumberError(raw, CLUSTER_FAILOVER_LIMITS, true);
+}
+
+/** Why `raw` is not a whole number from `min` to `max` (of seconds when `seconds`), or null. */
+function wholeNumberError(raw: string, { min, max }: { min: number; max: number }, seconds: boolean): string | null {
   const n = Number(raw);
   return raw.trim() !== "" && Number.isInteger(n) && n >= min && n <= max
     ? null
-    : `Enter a whole number of seconds from ${min} to ${max}.`;
+    : `Enter a whole number${seconds ? " of seconds" : ""} from ${min} to ${max}.`;
+}
+
+/** `iso` as a local time of day with seconds, for compact labels. */
+function formatTimeOfDay(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -248,16 +265,48 @@ function NodeFigure({ label, children }: { label: string; children: React.ReactN
   );
 }
 
+/**
+ * The auto-healing badge of a replica row: failing checks, the planned restart of an offline node,
+ * a restart in progress, or paused auto-restart; null when there is nothing to flag.
+ * `failuresLimit`: clusterHealFailures when loaded.
+ */
+function healthBadge(
+  health: ClusterNodeHealth,
+  failuresLimit: number | null,
+): { label: string; className: string; icon: React.ReactNode } | null {
+  switch (health.state) {
+    case "failing":
+      return {
+        label: failuresLimit === null ? `Failing ${health.failures}` : `Failing ${health.failures}/${failuresLimit}`,
+        className: WARNING_BADGE,
+        icon: <TriangleAlertIcon />,
+      };
+    case "offline":
+      return health.nextAttemptAt
+        ? { label: `Restart at ${formatTimeOfDay(health.nextAttemptAt)}`, className: WARNING_BADGE, icon: <RotateCcwIcon /> }
+        : null;
+    case "restarting":
+      return { label: "Restarting", className: WARNING_BADGE, icon: <Loader2Icon className="animate-spin" /> };
+    case "paused":
+      return { label: "Auto-restart paused", className: DANGER_BADGE, icon: <TriangleAlertIcon /> };
+    default:
+      return null;
+  }
+}
+
 function NodeItem({
   node,
   home,
   now,
+  healFailures,
   onRemove,
 }: {
   node: ClusterNodeStatus;
   /** The cluster's home primary (failback target). */
   home: boolean;
   now: number;
+  /** clusterHealFailures for the "Failing k/N" badge; null when not loaded. */
+  healFailures: number | null;
   /** Offered for other replicas on a primary, to admins; omitted otherwise. */
   onRemove?: () => void;
 }) {
@@ -265,6 +314,7 @@ function NodeItem({
   const running = node.runningTaskIds.length;
   const usedMemory = res ? res.totalMemoryBytes - res.freeMemoryBytes : 0;
   const link = node.httpUrl && !node.self;
+  const health = node.role === "replica" && node.health ? healthBadge(node.health, healFailures) : null;
   return (
     <li className="space-y-3 py-4 first:pt-0 last:pb-0">
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
@@ -297,10 +347,16 @@ function NodeItem({
             <TooltipContent>Gets control back after a failover</TooltipContent>
           </Tooltip>
         )}
-        <Badge className={node.online ? SUCCESS_BADGE : "bg-destructive/10 text-destructive"}>
+        <Badge className={node.online ? SUCCESS_BADGE : DANGER_BADGE}>
           <span aria-hidden className={cn("size-1.5 rounded-full", node.online ? "bg-success" : "bg-destructive")} />
           {node.online ? "Online" : "Offline"}
         </Badge>
+        {health && (
+          <Badge className={health.className} title={node.health?.problem ?? undefined}>
+            {health.icon}
+            {health.label}
+          </Badge>
+        )}
         {onRemove && (
           <Button
             type="button"
@@ -379,8 +435,19 @@ function NodeItem({
   );
 }
 
-/** Every node of the cluster; `canRemove` offers removing replicas (primary, admins). */
-function NodesGroup({ status, canRemove }: { status: ClusterStatus; canRemove: boolean }) {
+/**
+ * Every node of the cluster; `canRemove` offers removing replicas (primary, admins).
+ * `healFailures`: clusterHealFailures for the replicas' health badges (primary), null when unknown.
+ */
+function NodesGroup({
+  status,
+  canRemove,
+  healFailures = null,
+}: {
+  status: ClusterStatus;
+  canRemove: boolean;
+  healFailures?: number | null;
+}) {
   const now = useNow();
   const [removing, setRemoving] = useState<ClusterNodeStatus | null>(null);
 
@@ -405,6 +472,7 @@ function NodesGroup({ status, canRemove }: { status: ClusterStatus; canRemove: b
             node={node}
             home={node.nodeId === status.preferredPrimaryId}
             now={now}
+            healFailures={healFailures}
             onRemove={canRemove && node.role === "replica" && !node.self ? () => setRemoving(node) : undefined}
           />
         ))}
@@ -791,7 +859,7 @@ function SchedulingGroup({ status }: { status: ClusterStatus }) {
         <SettingsToggle
           htmlFor="cluster-run-local"
           title="Run cards on this machine too"
-          description="Off: this server only coordinates and every card runs on a node."
+          description="On: it takes cards only when no node has a free slot. Off: this server only coordinates and every card runs on a node."
         >
           <Switch
             id="cluster-run-local"
@@ -841,8 +909,222 @@ function SchedulingGroup({ status }: { status: ClusterStatus }) {
   );
 }
 
+/** The Auto-healing group's settings, as last loaded or saved. */
+type HealSettings = Pick<AppSettings, "clusterAutoHeal" | ClusterHealNumberKey>;
+
+interface HealField {
+  key: ClusterHealNumberKey;
+  id: string;
+  label: string;
+  /** Whole seconds (error text). */
+  seconds: boolean;
+  /** Capitalized name for toasts: "<noun> saved". */
+  noun: string;
+  hint: string;
+}
+
+const HEAL_FIELDS: readonly HealField[] = [
+  {
+    key: "clusterHealIntervalSeconds",
+    id: "cluster-heal-interval",
+    label: "Check every (seconds)",
+    seconds: true,
+    noun: "Health check interval",
+    hint: "How often the primary health-checks each online node",
+  },
+  {
+    key: "clusterHealTimeoutSeconds",
+    id: "cluster-heal-timeout",
+    label: "Check timeout (seconds)",
+    seconds: true,
+    noun: "Check timeout",
+    hint: "How long a node has to answer one check before it counts as failed",
+  },
+  {
+    key: "clusterHealFailures",
+    id: "cluster-heal-failures",
+    label: "Failed checks before a restart",
+    seconds: false,
+    noun: "Failed checks before a restart",
+    hint: "Failed checks in a row after which the primary restarts the node",
+  },
+  {
+    key: "clusterHealOfflineSeconds",
+    id: "cluster-heal-offline",
+    label: "Offline grace period (seconds)",
+    seconds: true,
+    noun: "Offline grace period",
+    hint: "How long an offline node may take to come back before the primary tries to restart it",
+  },
+  {
+    key: "clusterHealMaxRestarts",
+    id: "cluster-heal-max-restarts",
+    label: "Restart attempts before pausing",
+    seconds: false,
+    noun: "Restart attempts before pausing",
+    hint: "Restarts in a row that did not help before auto-restart pauses for that node, until it stays healthy for 10 minutes",
+  },
+];
+
+/** One auto-healing number (CLUSTER_HEAL_LIMITS), saved when the field is left or Enter is pressed. */
+function HealNumberField({
+  field,
+  saved,
+  disabled,
+  onSaved,
+}: {
+  field: HealField;
+  /** The stored value; null until loaded. */
+  saved: number | null;
+  disabled: boolean;
+  onSaved: (settings: AppSettings) => void;
+}) {
+  /** What the user typed; null shows the saved value. */
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const limits = CLUSTER_HEAL_LIMITS[field.key];
+  const invalid = draft === null ? null : wholeNumberError(draft, limits, field.seconds);
+
+  async function save() {
+    if (saving || draft === null || invalid || saved === null) return;
+    if (Number(draft) === saved) {
+      setDraft(null);
+      return;
+    }
+    setSaving(true);
+    try {
+      const patch: Partial<AppSettings> = {};
+      patch[field.key] = Number(draft);
+      onSaved(await api.settings.update(patch));
+      setDraft(null);
+      toast.success(`${field.noun} saved`);
+    } catch (err) {
+      toast.error(errorText(err, `Could not save the ${field.noun.toLowerCase()}.`));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form
+      noValidate
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+    >
+      <SettingsField
+        label={field.label}
+        htmlFor={field.id}
+        hint={`${field.hint} (${limits.min}–${limits.max}).`}
+        error={invalid}
+      >
+        <div className="flex items-center gap-2">
+          <Input
+            id={field.id}
+            type="number"
+            inputMode="numeric"
+            min={limits.min}
+            max={limits.max}
+            step={1}
+            value={draft ?? (saved === null ? "" : String(saved))}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => void save()}
+            disabled={disabled || saved === null || saving}
+            aria-invalid={invalid ? true : undefined}
+            aria-describedby={invalid ? `${field.id}-error` : undefined}
+            className={cn(FIELD, "w-32 font-mono tabular-nums")}
+          />
+          {saving && <Loader2Icon className="size-4 animate-spin text-muted-foreground" aria-label="Saving" />}
+        </div>
+      </SettingsField>
+    </form>
+  );
+}
+
+/**
+ * Auto-healing: clusterAutoHeal and the CLUSTER_HEAL_LIMITS numbers (disabled while it is off).
+ * `onFailuresChange` receives clusterHealFailures whenever it is loaded or saved (nodes list badges).
+ */
+function AutoHealGroup({ onFailuresChange }: { onFailuresChange: (failures: number) => void }) {
+  const [heal, setHeal] = useState<HealSettings | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  /** The switch value being saved; null when none is in flight. */
+  const [pendingAutoHeal, setPendingAutoHeal] = useState<boolean | null>(null);
+
+  const apply = useCallback(
+    (settings: AppSettings) => {
+      setHeal({
+        clusterAutoHeal: settings.clusterAutoHeal,
+        clusterHealIntervalSeconds: settings.clusterHealIntervalSeconds,
+        clusterHealTimeoutSeconds: settings.clusterHealTimeoutSeconds,
+        clusterHealFailures: settings.clusterHealFailures,
+        clusterHealOfflineSeconds: settings.clusterHealOfflineSeconds,
+        clusterHealMaxRestarts: settings.clusterHealMaxRestarts,
+      });
+      onFailuresChange(settings.clusterHealFailures);
+    },
+    [onFailuresChange],
+  );
+
+  useEffect(() => {
+    api.settings
+      .get()
+      .then(apply)
+      .catch((err) => setLoadError(errorText(err, "Could not load the auto-healing settings.")));
+  }, [apply]);
+
+  async function saveAutoHeal(checked: boolean) {
+    setPendingAutoHeal(checked);
+    try {
+      apply(await api.settings.update({ clusterAutoHeal: checked }));
+      await refreshClusterStatus();
+      toast.success(checked ? "Auto-healing is on" : "Auto-healing is off");
+    } catch (err) {
+      toast.error(errorText(err, "Could not save the setting."));
+    } finally {
+      setPendingAutoHeal(null);
+    }
+  }
+
+  const enabled = pendingAutoHeal ?? heal?.clusterAutoHeal ?? false;
+  return (
+    <SettingsGroup title="Auto-healing">
+      <SettingsRows>
+        <SettingsToggle
+          htmlFor="cluster-auto-heal"
+          title="Restart unhealthy nodes automatically"
+          description={
+            loadError ??
+            "The primary health-checks every node and asks one to restart when it keeps failing its checks or stays offline; the node's bin/supervisor.mjs starts it again."
+          }
+        >
+          <Switch
+            id="cluster-auto-heal"
+            checked={enabled}
+            disabled={heal === null || pendingAutoHeal !== null}
+            onCheckedChange={(checked) => void saveAutoHeal(checked)}
+          />
+        </SettingsToggle>
+      </SettingsRows>
+      <div className="grid gap-5 sm:grid-cols-2">
+        {HEAL_FIELDS.map((field) => (
+          <HealNumberField
+            key={field.key}
+            field={field}
+            saved={heal ? heal[field.key] : null}
+            disabled={!enabled}
+            onSaved={apply}
+          />
+        ))}
+      </div>
+    </SettingsGroup>
+  );
+}
+
 function PrimaryPanel({ status, isAdmin }: { status: ClusterStatus; isAdmin: boolean }) {
   const [disabling, setDisabling] = useState(false);
+  const [healFailures, setHealFailures] = useState<number | null>(null);
 
   async function disable(): Promise<boolean> {
     try {
@@ -870,7 +1152,8 @@ function PrimaryPanel({ status, isAdmin }: { status: ClusterStatus; isAdmin: boo
       </SettingsGroup>
       {isAdmin && <AddMachineGroup />}
       <SchedulingGroup status={status} />
-      <NodesGroup status={status} canRemove={isAdmin} />
+      <AutoHealGroup onFailuresChange={setHealFailures} />
+      <NodesGroup status={status} canRemove={isAdmin} healFailures={healFailures} />
       <ConfirmDialog
         open={disabling}
         onOpenChange={setDisabling}

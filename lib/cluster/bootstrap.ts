@@ -732,25 +732,49 @@ alive() {
   return 0
 }
 
-# wait_ready <pid>: 0 once the node's info route says it is a replica; 1 after $READY_TIMEOUT s;
-# 2 when process <pid> (the supervisor; may be empty) exits first; 3 when the node logged that it
-# could not join (background mode, from line $LOG_START of the log; the reason is in $JOIN_ERROR).
+# node_log: what the node logged since this run started it: background mode from line $LOG_START
+# of $LOG_FILE, service mode the unit's journal since $LOG_SINCE; nothing in the foreground (the
+# node's output is on the terminal already).
+node_log() {
+  if [ -n "\${LOG_START:-}" ]; then
+    tail -n +"$LOG_START" "$LOG_FILE" 2>/dev/null || true
+  elif [ -n "\${LOG_SINCE:-}" ]; then
+    journalctl --user -u "$UNIT" --since "@$LOG_SINCE" -o cat --no-pager 2>/dev/null || true
+  fi
+}
+
+# wait_ready <pid>: 0 once the node's info route says it is a replica connected to the primary (a
+# replica alone is not enough: one the primary does not welcome keeps reconnecting); 1 after
+# $READY_TIMEOUT s; 2 when process <pid> (the supervisor; may be empty) exits first; 3 when the
+# node logged that it could not join (see node_log; the reason is in $JOIN_ERROR), checked before
+# the ready test and after reading the info: a replica that cannot join this cluster keeps running
+# and reconnects to its old primary, and it logs the error before it can connect. Every 15 s it
+# shows the node's role and link state ($NODE_STATE, kept for not_ready) and its latest [cluster]
+# log line when that is new.
 wait_ready() {
   watch_pid=$1
   started=$(date +%s)
   next_report=15
+  last_shown=""
+  NODE_STATE=""
   while :; do
-    role=$(json_value "$(local_info)" role)
-    if [ "$role" = replica ]; then return 0; fi
+    info=$(local_info)
+    JOIN_ERROR=$(node_log | grep -m 1 'Could not join the cluster' | sed 's/^.*Could not join/Could not join/' || true)
+    if [ -n "$JOIN_ERROR" ]; then return 3; fi
+    role=$(json_value "$info" role)
+    connection=$(json_value "$info" connection)
+    if [ "$role" = replica ] && [ "$connection" = connected ]; then return 0; fi
+    NODE_STATE="$role\${connection:+, $connection}"
     if [ -n "$watch_pid" ] && ! alive "$watch_pid"; then return 2; fi
-    if [ -n "\${LOG_START:-}" ]; then
-      JOIN_ERROR=$(tail -n +"$LOG_START" "$LOG_FILE" 2>/dev/null | grep -m 1 'Could not join the cluster' | sed 's/^.*Could not join/Could not join/' || true)
-      if [ -n "$JOIN_ERROR" ]; then return 3; fi
-    fi
     elapsed=$(($(date +%s) - started))
     if [ "$elapsed" -ge "$READY_TIMEOUT" ]; then return 1; fi
     if [ "$elapsed" -ge "$next_report" ]; then
-      detail "waiting for the node to join the cluster ($elapsed s, node: \${role:-not answering yet})"
+      detail "waiting for the node to join the cluster ($elapsed s, node: \${NODE_STATE:-not answering yet})"
+      last=$(node_log | grep -F '[cluster] ' | tail -n 1 || true)
+      if [ -n "$last" ] && [ "$last" != "$last_shown" ]; then
+        detail "  last: $last"
+        last_shown=$last
+      fi
       next_report=$((next_report + 15))
     fi
     sleep 2
@@ -803,7 +827,7 @@ not_ready() {
   elif [ "$1" = 2 ]; then
     printf '  %s✗ the node stopped before it joined the cluster%s\\n' "$RED" "$RESET" >&2
   else
-    printf '  %s✗ the node did not join the cluster within %s s%s\\n' "$RED" "$READY_TIMEOUT" "$RESET" >&2
+    printf '  %s✗ the node did not join the cluster within %s s%s%s\\n' "$RED" "$READY_TIMEOUT" "\${NODE_STATE:+ (node: $NODE_STATE)}" "$RESET" >&2
   fi
   case "$MODE" in
     service)
@@ -856,6 +880,8 @@ RestartSec=5
 WantedBy=default.target
 EOF
       systemctl --user daemon-reload >>"$JOIN_LOG" 2>&1
+      # The journal from here on is this run's node (node_log).
+      LOG_SINCE=$(date +%s)
       systemctl --user enable --now "$UNIT" </dev/null >>"$JOIN_LOG" 2>&1 ||
         die "systemctl --user enable --now $UNIT failed (see $JOIN_LOG)"
       ok "started the $UNIT service"

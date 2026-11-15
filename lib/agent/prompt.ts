@@ -13,7 +13,17 @@ export interface RunContext {
   browser: BrowserMode;
   /** Titles of the cards whose agents sent feedback, by card id. */
   senders: Record<string, string>;
+  /**
+   * Set by the manager for an automatic retry after a failed run: the failure message and the
+   * 1-based automatic retry number.
+   */
+  previousFailure?: { message: string; attempt: number };
 }
+
+/** Automatic retry number from which the prompt asks for a different approach (Hermes' failure-streak nudge). */
+export const FAILURE_STREAK_NUDGE = 3;
+/** Longest failure message quoted in the prompt. */
+const FAILURE_MESSAGE_MAX = 500;
 
 const SUMMARY_INSTRUCTION =
   "Finish with a short, scannable summary for the user (it is shown on the card): lead with the result, then how you verified it and anything left for the user to decide, in a few plain sentences or at most 5 bullets (about 120 words before the Report). Say what changed and why at the level a reviewer needs; skip step-by-step narration, file-by-file tours, tool output, restating the task, and details the diff already shows.";
@@ -128,12 +138,15 @@ export function buildPrompt(
   const folders = projectFolders(board);
   const where = folders ? "this project (any of the folders above)" : `this repository (${board.workdir})`;
 
+  const failure = previousFailureNote(context);
+
   if (isResume && feedback.length > 0) {
     return [
       "New feedback on this task:",
       "",
       numberedFeedback(feedback, senders),
       "",
+      ...(failure ? [failure, ""] : []),
       ...(folders ? [folders, ""] : []),
       `Address all of the feedback above in ${where}. Make the changes and verify them.`,
       SDLC_INSTRUCTION,
@@ -153,6 +166,7 @@ export function buildPrompt(
       "",
       taskSection(task),
       "",
+      ...(failure ? [failure, ""] : []),
       ...(folders ? [folders, ""] : []),
       `Check the current state of ${where}, finish any remaining work, and verify it.`,
       SDLC_INSTRUCTION,
@@ -177,6 +191,9 @@ export function buildPrompt(
   }
   if (context) {
     lines.push("", "## Workspace and collaboration", "", ...collaborationLines(task, context));
+  }
+  if (failure) {
+    lines.push("", "## Previous attempt", "", failure);
   }
   lines.push(
     "",
@@ -275,6 +292,27 @@ const MAGIC_KEYWORDS =
 /** Breaks each magic keyword with a zero-width space so the text reads the same but omp ignores it. */
 function defuseMagicKeywords(text: string): string {
   return text.replace(MAGIC_KEYWORDS, (word) => `${word.slice(0, 5)}\u200b${word.slice(5)}`);
+}
+
+/**
+ * The paragraph telling an automatic retry why the previous run failed, or null on a normal run.
+ * The error text is untrusted: one-lined, clipped, and its magic keywords defused.
+ */
+function previousFailureNote(context: RunContext | undefined): string | null {
+  const failure = context?.previousFailure;
+  if (!failure) return null;
+  const oneLine = failure.message.replace(/\s+/g, " ").trim().replace(/\.+$/, "");
+  const clipped = oneLine.length > FAILURE_MESSAGE_MAX ? `${oneLine.slice(0, FAILURE_MESSAGE_MAX - 1)}…` : oneLine;
+  const parts = [
+    clipped ? `The previous run failed: ${defuseMagicKeywords(clipped)}.` : "The previous run failed.",
+    "Before continuing, find out why it failed, and do not repeat the step that failed.",
+  ];
+  if (failure.attempt >= FAILURE_STREAK_NUDGE) {
+    parts.push(
+      `This is automatic retry ${failure.attempt} and the same approach has failed repeatedly: step back and take a different approach (smaller steps, another tool or method) instead of retrying it as is.`,
+    );
+  }
+  return parts.join(" ");
 }
 
 function collaborationLines(task: Task, context: RunContext): string[] {

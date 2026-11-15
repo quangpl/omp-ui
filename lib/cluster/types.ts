@@ -139,6 +139,18 @@ export interface RegisterMsg extends WireMessage {
   knownTerm: number;
   knownPrimary: PeerAddress | null;
   runs: RemoteRunState[];
+  /**
+   * This server process: when it started and why bin/supervisor.mjs (re)started it
+   * (OMP_UI_RESTART_REASON, null on a first start or without the supervisor). Absent from older
+   * nodes. The primary posts a notice when a node comes back with a new `at`.
+   */
+  boot?: BootInfo;
+}
+
+/** When a server process started and why (see RegisterMsg.boot). */
+export interface BootInfo {
+  at: string;
+  reason: string | null;
 }
 
 /** primary → replica, reply to register. */
@@ -165,6 +177,9 @@ export interface RedirectMsg extends WireMessage {
   primary: PeerAddress | null;
 }
 
+/** A guard holding new runs on a node: its resource guard (`memory`, `cpu`) or the settings' load guard (`load`). */
+export type NodeHold = "memory" | "cpu" | "load";
+
 /** replica → primary every NODE_STATUS_MS. */
 export interface NodeStatusMsg extends WireMessage {
   t: "node.status";
@@ -174,6 +189,11 @@ export interface NodeStatusMsg extends WireMessage {
   replSeq: number;
   /** Process-tree totals and stdin progress of each run the node hosts. */
   runs: Record<string, { memoryBytes: number; cpuSeconds: number; inSeq: number }>;
+  /**
+   * Guards holding new runs on the node now (empty: none); `slots` is capped at its running runs
+   * meanwhile. Absent from older nodes: the primary then checks their reported memory use itself.
+   */
+  holding?: NodeHold[];
 }
 
 /** primary → replicas on every membership change. */
@@ -252,6 +272,60 @@ export interface TestReplyMsg extends WireMessage {
   role: ClusterRole;
   term: number;
   version: string;
+}
+
+// --- Auto-healing (primary → replica; docs/CLUSTER.md "Auto-healing") ---------------------------
+
+/** A replica whose last node.status is older than this fails its health check (3 missed reports). */
+export const HEAL_STATUS_STALE_MS = 3 * NODE_STATUS_MS;
+/** A node healthy this long after a restart gets its restart count reset (and a pause lifted). */
+export const HEAL_STABLE_MS = 10 * 60_000;
+/** Longest wait between two restart attempts of one node. */
+export const HEAL_BACKOFF_MAX_MS = 15 * 60_000;
+/** Env var bin/supervisor.mjs sets on the server it (re)starts: why (unset on the first start). */
+export const RESTART_REASON_ENV = "OMP_UI_RESTART_REASON";
+
+/** primary → replica (member channel): health check; the node answers `heal.status` (same rid). */
+export interface HealCheckMsg extends WireMessage {
+  t: "heal.check";
+}
+export interface HealStatusMsg extends WireMessage {
+  t: "heal.status";
+  /** False when one of the node's own checks failed (`problem` says which). */
+  ok: boolean;
+  problem: string | null;
+  /** When this server process started. */
+  bootedAt: string;
+  /** Runs under bin/supervisor.mjs (OMP_UI_SUPERVISED=1), so a restart brings it back. */
+  supervised: boolean;
+}
+
+/**
+ * primary → replica: restart your server process. Sent on the member channel while the node is
+ * online, on a fresh `probe` channel while it is offline. The node answers `heal.ack` (same rid)
+ * and, when `outcome` is "restarting", exits with RESTART_EXIT_CODE so bin/supervisor.mjs starts
+ * it again. It obeys only as a replica, only the primary it follows (probe channel: the hello's
+ * nodeId) at `term` >= its own term, and only when supervised.
+ */
+export interface HealRestartMsg extends WireMessage {
+  t: "heal.restart";
+  /** Why, for the node's log and notice. */
+  reason: string;
+  /** The sender's primary term. */
+  term: number;
+  /**
+   * The process meant: its BootInfo.at as the node last reported it (register / heal.status), so
+   * no clocks are compared across machines. A process that booted at another time (it already
+   * restarted) answers "already"; null = whichever process runs.
+   */
+  bootedAt: string | null;
+}
+export interface HealAckMsg extends WireMessage {
+  t: "heal.ack";
+  /** restarting: exits now; already: this process is not the one `bootedAt` names; refused: see `error`. */
+  outcome: "restarting" | "already" | "refused";
+  error: string | null;
+  bootedAt: string;
 }
 
 // --- Remote runs (primary ↔ replica) ------------------------------------------------------------

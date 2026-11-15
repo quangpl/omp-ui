@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildPrompt, buildSteerMessage } from "@/lib/agent/prompt";
+import { buildPrompt, buildSteerMessage, FAILURE_STREAK_NUDGE } from "@/lib/agent/prompt";
 import { SDLC_PHASE_INFO } from "@/lib/sdlc";
 import type { Board, Comment, Task, TodoPhase } from "@/lib/types";
 
@@ -334,5 +334,62 @@ describe("buildPrompt cleanup policy", () => {
     const prompt = buildPrompt({ ...task, id: "AB_9" }, board, [], false);
     expect(prompt).toContain("docker compose -p task-ab_9");
     expect(prompt).toContain("--label agentman.task=AB_9");
+  });
+});
+
+describe("buildPrompt after a failed run", () => {
+  const context = {
+    taskFiles: "/data/files/tasks/t1",
+    boardFiles: "/data/files/boards/b1",
+    workspaceBranch: null,
+    browser: "off" as const,
+    senders: {},
+  };
+  const failed = (message: string, attempt = 1) => ({ ...context, previousFailure: { message, attempt } });
+  const NOTE =
+    "The previous run failed: npm test exited with code 1. Before continuing, find out why it failed, and do not repeat the step that failed.";
+
+  it("adds the failure note to every prompt shape and leaves the rest byte-identical", () => {
+    const error = "npm test exited\n   with code 1.";
+
+    const first = buildPrompt(task, board, [], false, failed(error));
+    const firstBase = buildPrompt(task, board, [], false, context);
+    expect(first).toBe(firstBase.replace("\n\n## Instructions\n", `\n\n## Previous attempt\n\n${NOTE}\n\n## Instructions\n`));
+
+    const resume = buildPrompt(task, board, [], true, failed(error));
+    const resumeBase = buildPrompt(task, board, [], true, context);
+    expect(resume).toBe(resumeBase.replace("\n\nCheck the current state", `\n\n${NOTE}\n\nCheck the current state`));
+    expect(resume.indexOf(NOTE)).toBeGreaterThan(resume.indexOf("# Task: Add a cart page"));
+
+    const feedback = [comment("Rename the button")];
+    const withFeedback = buildPrompt(task, board, feedback, true, failed(error));
+    const withFeedbackBase = buildPrompt(task, board, feedback, true, context);
+    expect(withFeedback).toBe(
+      withFeedbackBase.replace("\n\nAddress all of the feedback", `\n\n${NOTE}\n\nAddress all of the feedback`),
+    );
+  });
+
+  it("asks for a different approach only from the failure-streak retry on", () => {
+    const STREAK = "the same approach has failed repeatedly";
+    expect(FAILURE_STREAK_NUDGE).toBe(3);
+    for (const resume of [false, true]) {
+      expect(buildPrompt(task, board, [], resume, failed("boom", 2))).not.toContain(STREAK);
+      const prompt = buildPrompt(task, board, [], resume, failed("boom", 3));
+      expect(prompt).toContain(`This is automatic retry 3 and ${STREAK}: step back and take a different approach`);
+      expect(buildPrompt(task, board, [], resume, failed("boom", 5))).toContain("automatic retry 5");
+    }
+  });
+
+  it("defuses magic keywords in the error text", () => {
+    const prompt = buildPrompt(task, board, [], false, failed("agent said: orchestrate the rest"));
+    expect(prompt).not.toMatch(KEYWORD);
+    expect(prompt.replaceAll("\u200b", "")).toContain("The previous run failed: agent said: orchestrate the rest.");
+  });
+
+  it("clips a long error to 500 characters", () => {
+    const prompt = buildPrompt(task, board, [], true, failed(`${"x".repeat(600)} TAILMARK`));
+    expect(prompt).toContain(`The previous run failed: ${"x".repeat(499)}….`);
+    expect(prompt).not.toContain("x".repeat(500));
+    expect(prompt).not.toContain("TAILMARK");
   });
 });

@@ -5,7 +5,10 @@
 import os from "node:os";
 import { readMachineResources } from "@/lib/agent/concurrency";
 import { getAgentManager } from "@/lib/agent/manager";
+import { currentResourcePressure, DEFAULT_RESOURCE_GUARD_CONFIG } from "@/lib/agent/resource-guard";
 import type { RpcTransport } from "@/lib/agent/rpc";
+import { dialPeer } from "@/lib/cluster/dial";
+import { HealMonitor, healConfigFrom, type HealHost } from "@/lib/cluster/heal";
 import {
   clusterHttpUrl,
   clusterNotice,
@@ -16,7 +19,13 @@ import {
   updateNodeState,
 } from "@/lib/cluster/node";
 import { primaryOmpBinary, type OmpBinaryInfo } from "@/lib/cluster/omp-runtime";
-import { choosePlacement, computeCapacity, type PlacementCandidate } from "@/lib/cluster/placement";
+import {
+  choosePlacement,
+  computeCapacity,
+  memoryUsedShare,
+  replicaAvailable,
+  type PlacementCandidate,
+} from "@/lib/cluster/placement";
 import type { ClusterChannel } from "@/lib/cluster/protocol";
 import {
   RemoteRunTransport,
@@ -28,10 +37,17 @@ import { startReplicationTo, type ReplicationHandle } from "@/lib/cluster/replic
 import { SyncEndpoint } from "@/lib/cluster/sync";
 import {
   FAILBACK_STABLE_MS,
+  HEAL_STATUS_STALE_MS,
+  type BootInfo,
   type HandoverAckMsg,
   type HandoverMsg,
+  type HealAckMsg,
+  type HealCheckMsg,
+  type HealRestartMsg,
+  type HealStatusMsg,
   type MemberInfo,
   type MembersMsg,
+  type NodeHold,
   type NodePaths,
   type NodeState,
   type NodeStatusMsg,
@@ -57,6 +73,8 @@ const HANDOVER_TIMEOUT_MS = 60_000;
 const SELF_REFRESH_MS = 60_000;
 /** Longest node name accepted from a registration. */
 const MAX_NAME_LENGTH = 200;
+/** Longest `boot.at` / `boot.reason` accepted from a registration. */
+const MAX_BOOT_FIELD_LENGTH = 500;
 
 const UNKNOWN_OMP: NodeOmpInfo = { ready: false, version: null, source: null, reason: "Not connected yet" };
 
@@ -91,6 +109,16 @@ interface Member {
   replAt: string | null;
   /** Placements handed to the manager that have not opened a run yet. */
   reserved: number;
+  /** BootInfo.at of the node's server process as it last registered (null: unknown or an older node). */
+  bootedAt: string | null;
+  /** Last node.status or registration (ms epoch), for the health check. */
+  lastStatusAt: number;
+  /** When the member went offline (ms epoch); null while online. */
+  offlineSince: number | null;
+  /** Its latest registration carried `boot`, so it answers heal.check/heal.restart (assumed for members from node.json). */
+  healCapable: boolean;
+  /** Guards holding new runs on it, from its last node.status; null until one carries them (older nodes never do). */
+  holding: NodeHold[] | null;
 }
 
 /** What node.json keeps of a member (MemberInfo plus when it was last seen). */
@@ -110,6 +138,8 @@ interface PrimaryState {
   runLocal: boolean;
   selfOmp: NodeOmpInfo;
   timer: NodeJS.Timeout | null;
+  /** Auto-healing of the members while this primary is active. */
+  heal: HealMonitor | null;
 }
 
 const g = globalThis as unknown as { __ompUiClusterPrimary?: PrimaryState };
@@ -124,6 +154,7 @@ function state(): PrimaryState {
     runLocal: true,
     selfOmp: UNKNOWN_OMP,
     timer: null,
+    heal: null,
   });
 }
 
@@ -137,10 +168,14 @@ export async function startPrimary(): Promise<void> {
   s.startedAt = new Date().toISOString();
   const self = readNodeState();
   for (const info of self.members as StoredMember[]) {
-    if (info.nodeId !== self.nodeId && !s.members.has(info.nodeId)) s.members.set(info.nodeId, storedMember(info));
+    if (info.nodeId !== self.nodeId && !s.members.has(info.nodeId)) {
+      s.members.set(info.nodeId, storedMember(info, Date.parse(s.startedAt)));
+    }
   }
   s.timer = setInterval(() => void refreshSelf(), SELF_REFRESH_MS);
   s.timer.unref();
+  s.heal = new HealMonitor(healHost());
+  s.heal.start();
   await refreshSelf();
   membershipChanged();
 }
@@ -151,6 +186,8 @@ export async function stopPrimary(reason: string): Promise<void> {
   if (!s.active) return;
   s.active = false;
   clearInterval(s.timer ?? undefined);
+  s.heal?.stop();
+  s.heal = null;
   s.timer = null;
   for (const run of [...s.runs.values()]) run.lost(`The cluster primary stopped: ${reason}`);
   for (const member of s.members.values()) closeSession(member, reason);
@@ -187,6 +224,7 @@ export async function forgetNode(nodeId: string): Promise<void> {
   const member = s.members.get(nodeId);
   if (!member) return;
   s.members.delete(nodeId);
+  s.heal?.forget(nodeId);
   for (const run of runsOn(nodeId)) run.lost(`Node ${member.name} was removed from the cluster`);
   const channel = member.session?.channel;
   if (channel) {
@@ -208,7 +246,7 @@ export function broadcastToken(token: string): void {
 
 async function register(channel: ClusterChannel, raw: WireMessage): Promise<void> {
   const msg = parseRegister(raw);
-  const self = readNodeState();
+  let self = readNodeState();
   if (!msg || msg.nodeId !== channel.peer.nodeId || msg.nodeId === self.nodeId) {
     channel.close("invalid registration");
     return;
@@ -217,9 +255,23 @@ async function register(channel: ClusterChannel, raw: WireMessage): Promise<void
     fenced(channel, raw, msg, msg.knownPrimary);
     return;
   }
+  if (msg.knownTerm > self.term && msg.knownPrimary?.nodeId === self.nodeId) {
+    // The node follows this primary at a newer term than ours (it joined, or re-joined, with a term
+    // kept from an earlier era, e.g. as an interim primary): move past that term, or the node
+    // rejects our welcome as a stale primary's and never connects. Strictly above it, so we never
+    // tie with another primary still running on that term (fencing compares terms strictly).
+    updateNodeState({ term: msg.knownTerm + 1 });
+    self = readNodeState();
+    clusterNotice("info", `Node ${msg.name} follows this primary at term ${msg.knownTerm}: now term ${self.term}`);
+  }
   const binary = await ompBinaryFor(msg.resources);
   const s = state();
-  if (channel.closed || !s.active) return;
+  if (channel.closed) return;
+  if (!s.active) {
+    // Stopped while registering: close, or the node waits on this channel (heartbeats keep it open).
+    channel.close("this primary stopped");
+    return;
+  }
 
   const previous = s.members.get(msg.nodeId);
   if (previous) closeSession(previous, "replaced by a new connection");
@@ -251,6 +303,11 @@ async function register(channel: ClusterChannel, raw: WireMessage): Promise<void
     replSeq: msg.replSeq,
     replAt: previous && previous.replSeq === msg.replSeq ? previous.replAt : now,
     reserved: previous?.reserved ?? 0,
+    bootedAt: msg.boot?.at ?? null,
+    lastStatusAt: Date.now(),
+    offlineSince: null,
+    healCapable: msg.boot !== undefined,
+    holding: null,
   };
   s.members.set(member.nodeId, member);
   session.unsubscribe.push(
@@ -283,7 +340,12 @@ async function register(channel: ClusterChannel, raw: WireMessage): Promise<void
   reattachRuns(member, session, msg.runs);
   armFailback(member);
   channel.onClose(() => onSessionClosed(member.nodeId, channel));
-  clusterNotice("info", previous ? `Node ${member.name} reconnected` : `Node ${member.name} joined the cluster`);
+  if (!member.healCapable) {
+    console.log(`[cluster] Node ${member.name} runs a version without auto-healing (${member.version}): not health-checked`);
+  }
+  const healNotice = s.heal?.onRegister(member.nodeId, msg.boot) ?? null;
+  if (healNotice) clusterNotice(healNotice.level, healNotice.message);
+  else clusterNotice("info", previous ? `Node ${member.name} reconnected` : `Node ${member.name} joined the cluster`);
   if (member.omp.ready && member.slots > 0) refreshAgentQueue();
 }
 
@@ -330,10 +392,16 @@ function onNodeStatus(nodeId: string, channel: ClusterChannel, raw: WireMessage)
   if (!member || !msg) return;
   const now = new Date().toISOString();
   member.resources = msg.resources;
-  const grew = msg.omp.ready && (!member.omp.ready || msg.slots > member.slots);
+  // Capacity grew: omp became ready, more slots, the node stopped holding new runs, or its status
+  // had gone stale (it took no runs meanwhile).
+  const released = (member.holding?.length ?? 0) > 0 && !msg.holding?.length;
+  const wasStale = Date.now() - member.lastStatusAt > HEAL_STATUS_STALE_MS;
+  const grew = msg.omp.ready && (!member.omp.ready || msg.slots > member.slots || released || wasStale);
+  member.holding = msg.holding ?? null;
   member.slots = msg.slots;
   member.omp = msg.omp;
   member.lastSeenAt = now;
+  member.lastStatusAt = Date.now();
   if (msg.replSeq !== member.replSeq) {
     member.replSeq = msg.replSeq;
     member.replAt = now;
@@ -368,6 +436,7 @@ function onSessionClosed(nodeId: string, channel: ClusterChannel): void {
   if (!member || member.session?.channel !== channel) return;
   closeSession(member, null);
   member.lastSeenAt = new Date().toISOString();
+  member.offlineSince = Date.now();
   if (!s.active) return;
   for (const run of runsOn(nodeId)) run.detach();
   clusterNotice("warning", `Node ${member.name} went offline`);
@@ -443,8 +512,8 @@ function memberInfos(self: NodeState): StoredMember[] {
   return [primary, ...replicas];
 }
 
-/** A member loaded from node.json: offline until it registers again. */
-function storedMember(info: StoredMember): Member {
+/** A member loaded from node.json: offline (since `offlineSince`, the primary's start) until it registers again. */
+function storedMember(info: StoredMember, offlineSince: number): Member {
   return {
     nodeId: info.nodeId,
     name: info.name,
@@ -462,6 +531,11 @@ function storedMember(info: StoredMember): Member {
     replSeq: info.replSeq,
     replAt: null,
     reserved: 0,
+    bootedAt: null,
+    lastStatusAt: offlineSince,
+    offlineSince,
+    healCapable: true,
+    holding: null,
   };
 }
 
@@ -528,6 +602,68 @@ export function requestHandover(nodeId: string, msg: HandoverMsg): Promise<Hando
   return channel.request<HandoverAckMsg>(msg, HANDOVER_TIMEOUT_MS);
 }
 
+// --- Auto-healing --------------------------------------------------------------------------------
+
+/** What the auto-healing monitor (lib/cluster/heal.ts) drives: the members, their channels, notices and status. */
+function healHost(): HealHost {
+  return {
+    nodes: () =>
+      [...state().members.values()].map((m) => ({
+        nodeId: m.nodeId,
+        name: m.name,
+        address: memberAddress(m),
+        online: m.online,
+        offlineSince: m.offlineSince,
+        capable: m.healCapable,
+        lastStatusAt: m.lastStatusAt,
+      })),
+    config: async () => healConfigFrom(await getAppSettings(await getRepo())),
+    check: (nodeId, timeoutMs) => {
+      const channel = state().members.get(nodeId)?.session?.channel;
+      if (!channel) return Promise.reject(new Error("not connected"));
+      const msg: HealCheckMsg = { t: "heal.check" };
+      return channel.request<HealStatusMsg>(msg, timeoutMs);
+    },
+    restart: restartNode,
+    notice: clusterNotice,
+    // A node passing its checks again can take cards now.
+    changed: () => {
+      publishClusterStatus();
+      refreshAgentQueue();
+    },
+    term: () => readNodeState().term,
+    now: () => Date.now(),
+  };
+}
+
+/** Ask a member to restart: on its member channel while online, else on a fresh probe channel. Throws when unreachable or the answer is not a heal.ack. */
+async function restartNode(nodeId: string, msg: HealRestartMsg, timeoutMs: number): Promise<HealAckMsg> {
+  const member = state().members.get(nodeId);
+  if (!member) throw new Error("not a member of the cluster");
+  let reply: WireMessage;
+  const session = member.session;
+  if (session) {
+    reply = await session.channel.request(msg, timeoutMs);
+  } else {
+    const self = readNodeState();
+    if (!self.token) throw new Error("this node has no cluster token");
+    const { channel } = await dialPeer(
+      { host: member.host, port: member.port, httpUrl: member.httpUrl },
+      { token: self.token, hello: { nodeId: self.nodeId, name: self.name, purpose: "probe" }, timeoutMs },
+    );
+    try {
+      reply = await channel.request(msg, timeoutMs);
+    } finally {
+      channel.close("restart request finished");
+    }
+  }
+  const ack = reply as Partial<HealAckMsg>;
+  if (ack.t !== "heal.ack" || !(ack.outcome === "restarting" || ack.outcome === "already" || ack.outcome === "refused")) {
+    throw new Error(`unexpected answer to the restart request (${reply.t})`);
+  }
+  return reply as HealAckMsg;
+}
+
 // --- Placement and capacity ----------------------------------------------------------------------
 
 /** Where a run goes: the primary itself (`local`) or a replica node. */
@@ -537,39 +673,61 @@ export interface RunPlacement {
   local: boolean;
 }
 
-/** Capacity for the manager's pump. `localLimit` = the manager's own resolveConcurrency limit. */
+/**
+ * Capacity for the manager's pump. `localLimit` = the manager's own resolveConcurrency limit.
+ * Replicas that cannot take new runs (memberAvailable) add only the runs they already carry.
+ */
 export function clusterCapacity(
   localLimit: number,
   runLocal: boolean,
 ): { limit: number; info: NonNullable<ConcurrencyInfo["cluster"]> } {
   const s = state();
   s.runLocal = runLocal;
-  const nodes = [...s.members.values()].map((m) => ({ online: m.online, ompReady: m.omp.ready, slots: m.slots }));
+  const now = Date.now();
+  const memoryHoldPct = currentResourcePressure()?.memoryHoldPct ?? DEFAULT_RESOURCE_GUARD_CONFIG.memoryHoldPct;
+  const nodes = [...s.members.values()].map((m) => ({
+    online: m.online,
+    ompReady: m.omp.ready,
+    slots: m.slots,
+    available: memberAvailable(m, now, memoryHoldPct),
+    occupied: runsOn(m.nodeId).length + m.reserved,
+  }));
   return computeCapacity(localLimit, runLocal, nodes);
 }
 
 /**
- * Reserve a slot for a run about to launch; `localLimit` = the primary's own agent limit,
- * `localFree` = localLimit - local active runs. Never null while primary active.
+ * Reserve a slot for a run about to launch, replica first: a healthy replica with a free slot
+ * gets it before the primary. `localLimit` = the primary's own agent limit, `localFree` =
+ * localLimit - local active runs, `localHeld` = a resource or load guard holds the primary,
+ * `overflow` = the run fills a slot lent by board_wait_for_cards (the manager's active runs already
+ * reach its limit), so the primary or a full replica may take it beyond its own limit.
+ * Null when no node can safely take a run now: keep the card queued.
  */
 export function placeRun(input: {
   taskId: string;
   localFree: number;
   localLimit: number;
   runLocal: boolean;
+  localHeld: boolean;
+  overflow: boolean;
   preferNodeId: string | null;
-}): RunPlacement {
+}): RunPlacement | null {
   const s = state();
   s.runLocal = input.runLocal;
   const self = readNodeState();
+  // The primary is never scored against replicas (it only takes runs no replica can), so its own
+  // load and memory are not sampled.
   const local: PlacementCandidate = {
     nodeId: self.nodeId,
     nodeName: self.name,
     local: true,
     slots: Math.max(0, input.localLimit),
     free: input.localFree,
-    loadPerCore: os.loadavg()[0] / Math.max(1, os.availableParallelism()),
+    loadPerCore: 0,
+    available: !input.localHeld,
   };
+  const now = Date.now();
+  const memoryHoldPct = currentResourcePressure()?.memoryHoldPct ?? DEFAULT_RESOURCE_GUARD_CONFIG.memoryHoldPct;
   const replicas = [...s.members.values()]
     .filter((m) => m.online && m.session && m.omp.ready)
     .map(
@@ -580,11 +738,34 @@ export function placeRun(input: {
         slots: m.slots,
         free: m.slots - runsOn(m.nodeId).length - m.reserved,
         loadPerCore: m.resources ? m.resources.loadAvg1 / Math.max(1, m.resources.cpus) : 0,
+        memoryUsed: m.resources ? memoryUsedShare(m.resources.freeMemoryBytes, m.resources.totalMemoryBytes) : 0,
+        available: memberAvailable(m, now, memoryHoldPct),
       }),
     );
-  const choice = choosePlacement({ local, replicas, runLocal: input.runLocal, preferNodeId: input.preferNodeId });
+  const choice = choosePlacement({
+    local,
+    replicas,
+    runLocal: input.runLocal,
+    overflow: input.overflow,
+    preferNodeId: input.preferNodeId,
+  });
+  if (!choice) return null;
   if (!choice.local) s.members.get(choice.nodeId)!.reserved++;
   return { nodeId: choice.nodeId, nodeName: choice.nodeName, local: choice.local };
+}
+
+/**
+ * Whether a replica may take new runs: a recent node.status, passing health checks and no guard
+ * holding it. `memoryHoldPct` = the primary's own memory hold %, for nodes that do not report holds.
+ */
+function memberAvailable(m: Member, now: number, memoryHoldPct: number): boolean {
+  return replicaAvailable({
+    statusAgeMs: now - m.lastStatusAt,
+    health: m.healCapable ? (state().heal?.health(m.nodeId) ?? null) : null,
+    holding: m.holding,
+    memoryUsed: m.resources ? memoryUsedShare(m.resources.freeMemoryBytes, m.resources.totalMemoryBytes) : 0,
+    memoryHoldPct,
+  });
 }
 
 /** A placement the manager will not use (the run was released before it opened). */
@@ -626,6 +807,8 @@ export function openRemoteRun(
       onFinished: () => {
         if (s.runs.get(spec.runKey) === transport) s.runs.delete(spec.runKey);
         publishClusterStatus();
+        // The replica slot frees only now, after the manager already released the run: re-pump.
+        if (s.active) refreshAgentQueue();
       },
     },
     spec,
@@ -678,6 +861,7 @@ function selfStatus(self: NodeState): ClusterNodeStatus {
     omp: s.selfOmp,
     replication: null,
     latencyMs: null,
+    health: null,
   };
 }
 
@@ -694,7 +878,7 @@ function memberStatus(m: Member): ClusterNodeStatus {
     role: "replica",
     self: false,
     online: m.online,
-    address: `${m.host.includes(":") ? `[${m.host}]` : m.host}:${m.port}`,
+    address: memberAddress(m),
     httpUrl: m.httpUrl,
     version: m.version,
     joinedAt: m.joinedAt,
@@ -705,7 +889,13 @@ function memberStatus(m: Member): ClusterNodeStatus {
     omp: m.omp,
     replication: { seq: m.replSeq, at: m.replAt, lagSeconds },
     latencyMs: m.session?.channel.latencyMs ?? null,
+    health: m.healCapable ? (state().heal?.health(m.nodeId) ?? null) : null,
   };
+}
+
+/** host:port of a member as shown and named in messages (IPv6 in brackets). */
+function memberAddress(m: Member): string {
+  return `${m.host.includes(":") ? `[${m.host}]` : m.host}:${m.port}`;
 }
 
 /** The primary's omp binary (settings.ompPath); also refreshes the self entry's omp info. */
@@ -753,10 +943,13 @@ function parseRegister(msg: WireMessage): RegisterMsg | null {
     isCount(m.slots) &&
     isCount(m.replSeq) &&
     isCount(m.knownTerm) &&
+    Number.isSafeInteger(m.knownTerm) &&
     (m.knownPrimary === null || isPeer(m.knownPrimary)) &&
     Array.isArray(m.runs) &&
     m.runs.every(isRunState);
-  return valid ? (m as RegisterMsg) : null;
+  if (!valid) return null;
+  // An invalid boot is dropped, not a reason to reject the node.
+  return { ...(m as RegisterMsg), boot: isBoot(m.boot) ? m.boot : undefined };
 }
 
 function parseNodeStatus(msg: WireMessage): NodeStatusMsg | null {
@@ -769,8 +962,13 @@ function parseNodeStatus(msg: WireMessage): NodeStatusMsg | null {
     isObject(m.runs) &&
     Object.values(m.runs).every(
       (r: unknown) => isObject(r) && isCount(r.memoryBytes) && isCount(r.cpuSeconds) && isCount(r.inSeq),
-    );
+    ) &&
+    (m.holding === undefined || isHolding(m.holding));
   return valid ? (m as NodeStatusMsg) : null;
+}
+
+function isHolding(v: unknown): v is NodeHold[] {
+  return Array.isArray(v) && v.length <= 3 && v.every((h) => h === "memory" || h === "cpu" || h === "load");
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -819,6 +1017,15 @@ function isPeer(v: unknown): v is PeerAddress {
     typeof v.host === "string" &&
     isPort(v.port) &&
     typeof v.httpUrl === "string"
+  );
+}
+
+function isBoot(v: unknown): v is BootInfo {
+  return (
+    isObject(v) &&
+    typeof v.at === "string" &&
+    v.at.length <= MAX_BOOT_FIELD_LENGTH &&
+    (v.reason === null || (typeof v.reason === "string" && v.reason.length <= MAX_BOOT_FIELD_LENGTH))
   );
 }
 

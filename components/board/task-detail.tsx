@@ -1341,7 +1341,7 @@ function DescriptionEditor({
   const fieldId = `description-${task.id}`;
   const bodyId = `${fieldId}-body`;
   // "/" skills and shortcuts, "@" project files, "skill://" skill names, like the new-card composer.
-  const slash = useComposerAutocomplete(fieldRef, draft, setDraft, { boardId: task.boardId });
+  const slash = useComposerAutocomplete(fieldRef, draft, setDraft, { enabled: editing, boardId: task.boardId });
   // Linked files of the saved description stay one click away while the text is collapsed.
   const linked = useMemo(() => extractAttachments(base), [base]);
   const hasText = draft.trim() !== "";

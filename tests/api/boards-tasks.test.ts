@@ -58,8 +58,22 @@ const ORCHESTRATION_DEFAULTS = {
   telemetryEndpoint: DEFAULT_SETTINGS.telemetryEndpoint,
   loadGuard: DEFAULT_SETTINGS.loadGuard,
   loadGuardPercent: DEFAULT_SETTINGS.loadGuardPercent,
+  subagentLimits: DEFAULT_SETTINGS.subagentLimits,
+  subagentMaxConcurrency: DEFAULT_SETTINGS.subagentMaxConcurrency,
+  subagentMaxDepth: DEFAULT_SETTINGS.subagentMaxDepth,
+  subagentTimeoutMinutes: DEFAULT_SETTINGS.subagentTimeoutMinutes,
+  contextCompaction: DEFAULT_SETTINGS.contextCompaction,
+  contextCompactPercent: DEFAULT_SETTINGS.contextCompactPercent,
+  wrapUpNudge: DEFAULT_SETTINGS.wrapUpNudge,
+  wrapUpPercent: DEFAULT_SETTINGS.wrapUpPercent,
   clusterRunLocal: DEFAULT_SETTINGS.clusterRunLocal,
   clusterFailoverSeconds: DEFAULT_SETTINGS.clusterFailoverSeconds,
+  clusterAutoHeal: DEFAULT_SETTINGS.clusterAutoHeal,
+  clusterHealIntervalSeconds: DEFAULT_SETTINGS.clusterHealIntervalSeconds,
+  clusterHealTimeoutSeconds: DEFAULT_SETTINGS.clusterHealTimeoutSeconds,
+  clusterHealFailures: DEFAULT_SETTINGS.clusterHealFailures,
+  clusterHealOfflineSeconds: DEFAULT_SETTINGS.clusterHealOfflineSeconds,
+  clusterHealMaxRestarts: DEFAULT_SETTINGS.clusterHealMaxRestarts,
 };
 
 interface TaskDetail {

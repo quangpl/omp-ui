@@ -35,7 +35,14 @@ prints each step and stops with a clear message when something cannot be fixed:
    or the primary's own Node binary when nodejs.org is unreachable) and enables `pnpm`/`yarn` shims;
 5. downloads the primary's omp binary (checksum-verified) where the node's server runs it from;
 6. installs the primary's omp-ui build, writes the node's settings (mode 600) and starts it;
-7. waits until the node has joined and reports what it installed — or shows the node's log.
+7. waits until the node has joined and is connected to the primary, then reports what it installed —
+   or shows the node's log. Every 15 s it prints the node's role and link state (`replica,
+   connecting`) and, in the background and `--service` modes, the node's latest `[cluster]` log line.
+
+Running the join command again on a machine that already is a node makes it a replica of the
+primary named in the command, whatever it was before: a stale replica takes the new token and
+address, and a node left as primary by a failover steps down (its database is backed up to
+`DATA_DIR/cluster/backups/` first). A plain restart of the node never joins again.
 
 | Needed on the node | Where it comes from |
 | --- | --- |
@@ -72,12 +79,29 @@ database is backed up to `DATA_DIR/cluster/backups/` first) and it restarts as a
 ## How runs are distributed
 
 The primary's queue limit becomes the cluster's: its own limit (when **Run cards on this machine too**
-is on) plus the slots of every online node that can run omp. A node's slots follow the same rule as a
-standalone server's limit (`maxConcurrentAgents`: `auto` from its cores and free memory, or the fixed
-number per node). Cards are spread over all machines: each card goes to the machine that is least
-busy once it takes the card — the share of its agent slots in use plus a term for its CPU load per
-core — so machines fill in proportion to their capacity instead of one machine taking every card.
-The node that ran the card's previous run only wins a tie.
+is on) plus the slots of every online node that can run omp and takes new cards. A node's slots follow
+the same rule as a standalone server's limit (`maxConcurrentAgents`: `auto` from its cores and free
+memory, or the fixed number per node).
+
+Nodes come first, so the primary keeps its headroom for coordinating the cluster: a card goes to a
+node with a free slot, and the primary takes cards only when no node has one. Among the nodes, each
+card goes to the one that is least busy once it takes the card — the share of its agent slots in use
+plus terms for its CPU load per core and its memory use — so nodes fill in proportion to their
+capacity. The node that ran the card's previous run only wins a tie.
+
+A node gets no new cards (its running cards keep running) while:
+
+- its last status report is older than 15 s (3 missed reports), it fails the primary's health checks,
+  or it is being restarted;
+- its resource guard holds (memory or CPU at or above the `OMP_UI_MEMORY_HOLD_PCT` /
+  `OMP_UI_CPU_HOLD_PCT` set on that node) or the load guard trips. Every node runs its own resource
+  guard and reports its holds with its status; for a node of an older version that does not, the
+  primary applies its own memory hold % to the memory use the node reports.
+
+When neither a node nor the primary (held by its own guard, or **Run cards on this machine too** off)
+can take a card, it stays queued and starts as soon as a slot frees or a node is available again. Only
+a slot lent by an agent waiting in `board_wait_for_cards` may go past a machine's limit: the primary
+takes that card first, else the least busy available node.
 
 A remote run is executed exactly like a local one: the primary keeps the whole run logic (prompt,
 board tools, advisor, run guards, comments, database) and only the `omp` process runs on the node.
@@ -120,6 +144,13 @@ run report and details say which machine ran it.
   primary is promoted under a new term and the interim primary becomes a replica again. Cards still
   running at the handover are resumed by the home primary. Any other returning primary simply stays a
   replica of the current primary.
+- **Two primaries** (the interim primary and the original one restarted while the other was down):
+  whichever starts second probes the members; it steps down to a primary of a higher term, or tells a
+  primary of a lower term to step down. Failback then hands control back to the home primary.
+- **Reconnecting**: a replica retries the primary every 1 s, doubling up to 10 s, and logs each failed
+  attempt with its reason (`[cluster] connecting to the primary failed (attempt 3): …; retrying in
+  4 s`), at most once a minute while the reason stays the same. The link state (`connected`,
+  `connecting`, `electing`) is also on the public `GET /api/v1/cluster/info`.
 
 Replication is asynchronous: the database is shipped every 15 s when it changed, project and card
 files every 60 s. A promotion can therefore lose up to that much work; interrupted cards are resumed.

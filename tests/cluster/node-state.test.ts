@@ -3,17 +3,45 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// node.ts drives the cluster runtimes; this suite only covers its state file, so keep those inert.
-vi.mock("@/lib/agent/manager", () => ({}));
-vi.mock("@/lib/cluster/primary", () => ({}));
-vi.mock("@/lib/cluster/replica", () => ({}));
-vi.mock("@/lib/cluster/replication", () => ({}));
-vi.mock("@/lib/cluster/protocol", () => ({ ClusterAuthError: class ClusterAuthError extends Error {} }));
+// node.ts drives the cluster runtimes; this suite covers its state file and boot decisions, so keep those inert.
+const { dialPeer } = vi.hoisted(() => ({ dialPeer: vi.fn() }));
+vi.mock("@/lib/agent/manager", () => ({ holdNewRuns: vi.fn() }));
+vi.mock("@/lib/cluster/dial", () => ({ dialPeer }));
+vi.mock("@/lib/cluster/primary", () => ({
+  isPrimaryActive: vi.fn(() => false),
+  primaryNodeStatuses: vi.fn(() => []),
+  startPrimary: vi.fn(),
+  stopPrimary: vi.fn(),
+}));
+vi.mock("@/lib/cluster/replica", () => ({
+  replicaConnection: vi.fn(() => null),
+  replicaNodeStatuses: vi.fn(() => []),
+  startReplica: vi.fn(),
+  stopReplica: vi.fn(),
+}));
+vi.mock("@/lib/cluster/replication", () => ({ replicatedSeq: vi.fn(() => 0), resetReplicatedSeq: vi.fn() }));
+vi.mock("@/lib/cluster/protocol", () => ({
+  ClusterAuthError: class ClusterAuthError extends Error {},
+  // Booting a clustered role must not open sockets: the listener fails (a notice) and boot goes on.
+  listenChannels: vi.fn(() => Promise.reject(new Error("no cluster listener in tests"))),
+}));
 vi.mock("@/lib/cluster/sync", () => ({}));
-vi.mock("@/lib/cluster/promote", () => ({}));
+vi.mock("@/lib/cluster/promote", () => ({ useReplicatedOmpAgentDir: vi.fn() }));
+vi.mock("@/lib/db", () => ({
+  describeDatabase: vi.fn(() => ({ driver: "sqlite", target: ":memory:" })),
+  getRepo: vi.fn(async () => ({})),
+}));
+vi.mock("@/lib/settings", () => ({
+  getAppSettings: vi.fn(async () => ({ clusterRunLocal: true })),
+  setOmpPathResolver: vi.fn(),
+}));
 
+import { holdNewRuns } from "@/lib/agent/manager";
 import { clusterRole, readNodeState, startCluster, updateNodeState } from "@/lib/cluster/node";
-import { DEFAULT_CLUSTER_PORT } from "@/lib/cluster/types";
+import { startPrimary } from "@/lib/cluster/primary";
+import { startReplica } from "@/lib/cluster/replica";
+import { resetReplicatedSeq } from "@/lib/cluster/replication";
+import { CLUSTER_PROTOCOL_VERSION, DEFAULT_CLUSTER_PORT, type MemberInfo, type WireMessage } from "@/lib/cluster/types";
 
 const savedDataDir = process.env.DATA_DIR;
 const savedPort = process.env.OMP_UI_CLUSTER_PORT;
@@ -190,6 +218,8 @@ describe("joining from the environment at boot", () => {
     g.__ompUiClusterEnvJoin = undefined;
     g.__ompUiClusterPublish = undefined;
     g.__ompUiClusterStart = undefined;
+    dialPeer.mockReset();
+    vi.clearAllMocks();
   });
 
   it("joins (and keeps retrying) while the join id differs from the consumed one", async () => {
@@ -221,5 +251,111 @@ describe("joining from the environment at boot", () => {
     const fetch = await boot();
 
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["primary", "replica"] as const)(
+    "attempts the join on a %s when the join script ran again (new join id) and keeps its role meanwhile",
+    async (role) => {
+      process.env.OMP_UI_CLUSTER_JOIN_ID = "run-2";
+      updateNodeState({ role, token: "omc_old", term: 4, envJoinId: "run-1" });
+
+      const fetch = await boot();
+
+      expect(fetch).toHaveBeenCalledWith(`${url}/api/v1/cluster/info`, expect.anything());
+      expect(g.__ompUiClusterEnvJoin).toBeDefined();
+      expect(readNodeState()).toMatchObject({ role, envJoinId: "run-1" });
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining(`keeps running as a ${role} meanwhile`));
+      expect(role === "primary" ? startPrimary : startReplica).toHaveBeenCalled();
+    },
+  );
+
+  it("does not re-join on a primary's restart once the join id was consumed", async () => {
+    process.env.OMP_UI_CLUSTER_JOIN_ID = "run-2";
+    updateNodeState({ role: "primary", token: "omc_old", term: 4, envJoinId: "run-2" });
+
+    const fetch = await boot();
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(g.__ompUiClusterEnvJoin).toBeUndefined();
+    expect(readNodeState().role).toBe("primary");
+    expect(startPrimary).toHaveBeenCalled();
+  });
+
+  it("turns a primary into a replica of the environment's primary when the join works", async () => {
+    process.env.OMP_UI_CLUSTER_JOIN_ID = "run-2";
+    updateNodeState({ role: "primary", token: "omc_old", term: 4, envJoinId: "run-1" });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ protocol: CLUSTER_PROTOCOL_VERSION, port: 7700 }));
+    const reply = { t: "test.reply", nodeId: "node-p", name: "p", role: "primary", term: 2, version: "test" };
+    dialPeer.mockResolvedValue({ channel: { latencyMs: 1, request: async () => reply, close: () => {} } });
+    g.__ompUiClusterStart = undefined;
+
+    await startCluster();
+
+    expect(readNodeState()).toMatchObject({
+      role: "replica",
+      token: "omc_test",
+      term: 4,
+      envJoinId: "run-2",
+      primary: { nodeId: "node-p", name: "p", host: "127.0.0.1", port: 7700, httpUrl: url },
+    });
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("(this node was a primary before)"));
+    expect(resetReplicatedSeq).toHaveBeenCalled();
+    expect(holdNewRuns).not.toHaveBeenCalled();
+    expect(startPrimary).not.toHaveBeenCalled();
+    expect(startReplica).toHaveBeenCalled();
+    expect(g.__ompUiClusterEnvJoin).toBeUndefined();
+  });
+});
+
+describe("boot fencing of a primary", () => {
+  const other: MemberInfo = {
+    nodeId: "node-b",
+    name: "b",
+    host: "10.0.0.2",
+    port: DEFAULT_CLUSTER_PORT,
+    httpUrl: "http://10.0.0.2:3000",
+    role: "primary",
+    joinedAt: "2026-01-01T00:00:00.000Z",
+    replSeq: 0,
+    online: false,
+  };
+
+  beforeEach(() => {
+    for (const key of JOIN_ENV) delete process.env[key];
+  });
+
+  afterEach(() => {
+    clearTimeout(g.__ompUiClusterPublish);
+    g.__ompUiClusterPublish = undefined;
+    g.__ompUiClusterStart = undefined;
+    dialPeer.mockReset();
+    vi.clearAllMocks();
+  });
+
+  it("tells a reachable lower-term primary to step down after starting", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    updateNodeState({ role: "primary", token: "omc_test", term: 5, members: [other] });
+    const sent: WireMessage[] = [];
+    const reply = { t: "probe.reply", nodeId: "node-b", name: "b", role: "primary", term: 3, primary: null, replSeq: 0 };
+    dialPeer.mockImplementation(async () => ({
+      channel: {
+        request: async (msg: WireMessage) => {
+          sent.push(msg);
+          return reply;
+        },
+        close: () => {},
+      },
+    }));
+    g.__ompUiClusterStart = undefined;
+
+    await startCluster();
+
+    expect(sent).toEqual([{ t: "probe" }, expect.objectContaining({ t: "announce", term: 5 })]);
+    expect(vi.mocked(startPrimary).mock.invocationCallOrder[0]).toBeLessThan(dialPeer.mock.invocationCallOrder[1]);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("b is also a primary (term 3 < 5)"));
+    expect(readNodeState().role).toBe("primary");
   });
 });

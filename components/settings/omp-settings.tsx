@@ -4,7 +4,9 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { ChevronDownIcon, Loader2Icon, RefreshCwIcon, SquareTerminalIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 import { AI_PROVIDERS_CHANGED_EVENT } from "@/components/settings/ai-providers-settings";
+import { splitModel, byProvider } from "@/components/settings/model-select";
 import { OmpAllSettings } from "@/components/settings/omp-all-settings";
+import { OmpFallbackModels } from "@/components/settings/omp-fallback-models";
 import {
   SettingsField,
   SettingsGroup,
@@ -78,21 +80,6 @@ function toValue(field: OmpConfigField, value: string | boolean | null): OmpConf
 function describe(field: OmpConfigField, value: OmpConfigValue): string {
   if (value === null || value === "") return "not set";
   return field.options?.find((o) => o.value === value)?.label ?? String(value);
-}
-
-/** A model role value "provider/model-id[:thinking]" split into its model and thinking level ("" = none). */
-function splitModel(value: string, levels: ReadonlySet<string>): { model: string; thinking: string } {
-  const text = value.trim();
-  const colon = text.lastIndexOf(":");
-  if (colon > 0 && levels.has(text.slice(colon + 1))) return { model: text.slice(0, colon), thinking: text.slice(colon + 1) };
-  return { model: text, thinking: "" };
-}
-
-/** Models by provider, in omp's order. */
-function byProvider(models: OmpModel[]): [string, OmpModel[]][] {
-  const groups = new Map<string, OmpModel[]>();
-  for (const m of models) groups.set(m.provider, [...(groups.get(m.provider) ?? []), m]);
-  return [...groups];
 }
 
 function message(err: unknown, fallback: string): string {
@@ -448,6 +435,15 @@ export function OmpSettingsSection() {
               />
             </SettingsPanel>
           </form>
+
+          <OmpFallbackModels
+            snapshot={snapshot}
+            models={models}
+            modelsStatus={modelsStatus}
+            thinkingLevels={thinkingLevels}
+            thinkingOptions={thinkingOptions}
+            onSaved={(next) => applySaved(next, { keepDraft: dirty, keepRaw: rawDirty })}
+          />
 
           <OmpAllSettings snapshot={snapshot} onSaved={(next) => applySaved(next, { keepDraft: dirty, keepRaw: rawDirty })} />
 

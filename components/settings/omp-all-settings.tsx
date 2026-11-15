@@ -3,6 +3,7 @@
 import { useDeferredValue, useId, useState } from "react";
 import { ChevronDownIcon, RefreshCwIcon, SearchIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
+import { FALLBACK_SETTINGS_KEYS } from "@/components/settings/omp-fallback-models";
 import { SettingsPanel, SettingsSaveBar } from "@/components/settings/settings-section";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -103,7 +104,7 @@ export function OmpAllSettings({
       );
   }
 
-  const formKeys = new Set(snapshot.schema.map((f) => f.key));
+  const formKeys = new Set<string>([...snapshot.schema.map((f) => f.key), ...FALLBACK_SETTINGS_KEYS]);
   const settings = (catalog ?? []).filter((s) => !formKeys.has(s.key));
   const isSet = (key: string) => key in snapshot.settings || snapshot.secretsSet.includes(key);
   const initial = (s: OmpSettingInfo) => (s.secret ? "" : toText(s, snapshot.settings[s.key]));

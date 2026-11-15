@@ -6,10 +6,12 @@ import {
   type ReactNode,
   type RefObject,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import { BookOpen, FileText, Folder, Zap } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/lib/api-client";
@@ -86,16 +88,38 @@ interface WordSuggestion {
   scrollLeft: number;
 }
 
+/** Letters of right-to-left scripts, whose bidi reordering the ghost's layer 2 can't follow. */
+const RTL_SCRIPT = /[\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Adlam}]/u;
+
+/** Point-to-caret hit testing; optional because browsers ship either one (`caretRangeFromPoint` is WebKit's older name). */
+interface CaretHitDocument {
+  caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+  caretRangeFromPoint?: (x: number, y: number) => Range | null;
+}
+
+/** The DOM position under a viewport point, or null without a hit or a hit-testing API. */
+function caretFromPoint(doc: Document, x: number, y: number): { node: Node; offset: number } | null {
+  const hit = doc as CaretHitDocument;
+  if (hit.caretPositionFromPoint) {
+    const position = hit.caretPositionFromPoint(x, y);
+    return position && { node: position.offsetNode, offset: position.offset };
+  }
+  const range = hit.caretRangeFromPoint?.(x, y);
+  return range ? { node: range.startContainer, offset: range.startOffset } : null;
+}
+
 /**
- * The textarea's text layout for the ghost overlay, so the suggestion lands right after the caret.
- * The box is the textarea's border box minus any scrollbar (client size plus borders): with
- * inset-0 a vertical scrollbar would leave the overlay's lines wider than the textarea's.
+ * The textarea's text layout (and text color) for the ghost overlay, which paints the text in the
+ * textarea's place while a suggestion shows. The box is the textarea's border box minus any
+ * scrollbar (client size plus borders): with inset-0 a vertical scrollbar would leave the
+ * overlay's lines wider than the textarea's.
  */
 function ghostBox(el: HTMLTextAreaElement): CSSProperties {
   const style = getComputedStyle(el);
   const px = (value: string) => Number.parseFloat(value) || 0;
   return {
     boxSizing: "border-box",
+    color: style.color,
     width: el.clientWidth + px(style.borderLeftWidth) + px(style.borderRightWidth),
     height: el.clientHeight + px(style.borderTopWidth) + px(style.borderBottomWidth),
     borderStyle: "solid",
@@ -129,6 +153,169 @@ function ghostBox(el: HTMLTextAreaElement): CSSProperties {
   };
 }
 
+/**
+ * The word suggestion painted inline, VS Code style: the text with the rest of the word spliced in
+ * after the caret, pushing the following text along, while the textarea's own glyphs are hidden
+ * (its caret stays). Layer 1 mirrors the textarea exactly (so every line up to the caret's breaks
+ * like it does) and shows the text before the caret; layer 2 starts at the caret and paints the
+ * suffix plus the rest of the value reflowed after it. A press dismisses the suggestion; one on
+ * the pushed text puts the caret where it was aimed there, not where the textarea has that point.
+ */
+function WordGhost({
+  word,
+  textareaRef,
+  onDismiss,
+}: {
+  word: WordSuggestion;
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
+  onDismiss: () => void;
+}) {
+  const { value, query, suffix, box } = word;
+  const textRef = useRef<HTMLDivElement>(null);
+  const caretRef = useRef<HTMLSpanElement>(null);
+  const restRef = useRef<HTMLDivElement>(null);
+  const probeRef = useRef<HTMLSpanElement>(null);
+  const afterRef = useRef<HTMLSpanElement>(null);
+  /** Where layer 2 goes, in the text container's unscaled pixels: its top, and the caret's x. */
+  const [spot, setSpot] = useState<{ top: number; left: number } | null>(null);
+
+  // Before paint, so no frame shows the suffix unplaced. Container-relative, so scrolling (which
+  // only moves the container's translate) never needs a re-measure.
+  useLayoutEffect(() => {
+    const container = textRef.current;
+    const caret = caretRef.current;
+    const rest = restRef.current;
+    const probe = probeRef.current;
+    if (!container || !caret || !rest || !probe) {
+      setSpot(null);
+      return;
+    }
+    const rect = container.getBoundingClientRect();
+    // Client rects are scaled by any ancestor transform (the dialog's zoom-in); layout pixels are not.
+    const scale = container.offsetWidth ? rect.width / container.offsetWidth : 1;
+    const caretRect = caret.getBoundingClientRect();
+    // The probe sits on layer 2's first line, so its offset inside layer 2 is where that line's
+    // inline box lands (independent of where layer 2 is placed); subtracting it puts that box exactly
+    // on the caret's, with no line-height rounding.
+    const firstLineOffset = (probe.getBoundingClientRect().top - rest.getBoundingClientRect().top) / scale;
+    setSpot({
+      left: (caretRect.left - rect.left) / scale,
+      top: (caretRect.top - rect.top) / scale - firstLineOffset,
+    });
+  }, [value, query.end, box]);
+
+  // Hide the textarea's glyphs only once the overlay paints them; unmounting restores them in the same commit.
+  const measured = spot !== null;
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!measured || !el) return;
+    el.style.setProperty("-webkit-text-fill-color", "transparent");
+    return () => {
+      el.style.removeProperty("-webkit-text-fill-color");
+    };
+  }, [measured, textareaRef]);
+
+  // The textarea under a press on layer 2 holds other (unpushed) text there, so such a press is
+  // mapped through the painted text instead. Dismissing synchronously restores the textarea's
+  // glyphs before the press's default (or the mapped caret) acts on them.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const onMouseDown = (event: MouseEvent) => {
+      const container = textRef.current;
+      const caret = caretRef.current;
+      const rest = restRef.current;
+      if (event.button !== 0 || !measured || !container || !caret || !rest) {
+        flushSync(onDismiss);
+        return;
+      }
+      const { clientX: x, clientY: y } = event;
+      const rect = container.getBoundingClientRect();
+      const scale = container.offsetWidth ? rect.width / container.offsetWidth : 1;
+      const restRect = rest.getBoundingClientRect();
+      const lineHeight = Number.parseFloat(getComputedStyle(container).lineHeight) * scale;
+      // Layer 2 below the container's bottom is clipped, not painted. On its first line, left of
+      // the caret is layer 1's text, which the textarea lays out the same way.
+      const pushed =
+        x >= restRect.left &&
+        x < restRect.right &&
+        y >= restRect.top &&
+        y < Math.min(restRect.bottom, rect.bottom) &&
+        !(y < restRect.top + lineHeight && x <= caret.getBoundingClientRect().left);
+      if (!pushed) {
+        flushSync(onDismiss);
+        return;
+      }
+      event.preventDefault();
+      // The overlay ignores the pointer, so hit testing would see only the textarea.
+      rest.style.pointerEvents = "auto";
+      let hit: { node: Node; offset: number } | null = null;
+      try {
+        hit = caretFromPoint(el.ownerDocument, x, y);
+      } finally {
+        rest.style.pointerEvents = "";
+      }
+      // Map before dismissing: unmounting the ghost detaches layer 2 and nulls its refs.
+      let target: number | null = null;
+      if (hit && rest.contains(hit.node)) {
+        // The suffix, the spacer and empty space all stand for the caret itself.
+        const inAfter = hit.node.nodeType === Node.TEXT_NODE && hit.node.parentNode === afterRef.current;
+        target = inAfter ? query.end + hit.offset : query.end;
+      }
+      flushSync(onDismiss);
+      if (target !== null) el.setSelectionRange(event.shiftKey ? query.end : target, target, "forward");
+    };
+    el.addEventListener("mousedown", onMouseDown);
+    return () => el.removeEventListener("mousedown", onMouseDown);
+  }, [textareaRef, onDismiss, measured, query.end]);
+
+  const after = value.slice(query.end);
+  return (
+    <div
+      data-composer-ghost
+      aria-hidden
+      className="pointer-events-none absolute top-0 left-0 overflow-hidden select-none"
+      style={box}
+    >
+      {/* Clipped at the textarea's text, or lower at the last whole line its content box still shows:
+          text pushed down by the suffix stays visible where the textarea has room for it, but never
+          peeks into the padding or shows as a sliver of a line. */}
+      <div
+        ref={textRef}
+        className="relative"
+        style={{
+          transform: `translate(${-word.scrollLeft}px, ${-word.scrollTop}px)`,
+          overflowY: "clip",
+          minHeight: `round(down, calc(100% + ${word.scrollTop}px), ${box.lineHeight})`,
+        }}
+      >
+        <span>{value.slice(0, query.end)}</span>
+        {/* Empty inline, so no new break opportunity: marks the caret's position. */}
+        <span ref={caretRef} />
+        {/* Keeps line breaking and height identical; the zero-width space gives a trailing newline its line, like the textarea. */}
+        <span className="text-transparent">
+          {after}
+          {value.endsWith("\n") ? "\u200b" : ""}
+        </span>
+        {/* Always laid out so the probe can be measured; hidden until placed. */}
+        <div
+          ref={restRef}
+          className="absolute inset-x-0"
+          style={{ top: spot?.top ?? 0, textIndent: 0, visibility: spot ? undefined : "hidden" }}
+        >
+          <span ref={probeRef} />
+          {/* Atomic, so the suffix still drops to the next line when not even one letter fits on the caret's. */}
+          <span className="inline-block" style={{ width: spot?.left ?? 0 }} />
+          <span data-ghost-suffix className="break-all text-muted-foreground/70">
+            {suffix}
+          </span>
+          <span ref={afterRef}>{after}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const MENU_LABELS: Record<AutocompleteToken["trigger"], { hint: string; aria: string }> = {
   slash: { hint: "OMP skills & shortcuts", aria: "OMP skills and shortcuts" },
   mention: { hint: "Project files", aria: "Project files" },
@@ -145,8 +332,11 @@ export interface ComposerAutocomplete {
   /** Attach as the textarea's onSelect, so caret moves open and close the menu and the word suggestion. */
   onSelect: () => void;
   /**
-   * Dim inline rest-of-word after the caret; render right after the textarea inside a `relative`
-   * wrapper whose top-left corner is the textarea's. Null without a suggestion.
+   * Inline word suggestion: an overlay that paints the text with the rest of the word spliced in
+   * after the caret (pushing the following text along) while the textarea's own glyphs are hidden.
+   * Any press dismisses it; one on the pushed text puts the caret where it was aimed in the
+   * painted text. Render right after the textarea inside a `relative` wrapper whose top-left corner
+   * is the textarea's. Null without a suggestion.
    */
   ghost: ReactNode;
   /**
@@ -167,7 +357,8 @@ export interface ComposerAutocomplete {
  *   inserts `@dir/` and keeps listing its children, picking a file inserts `@path `; either pick
  *   is also reported to `onPickFile` (e.g. to open the file next to the composer);
  * - elsewhere, typing a prose word shows the rest of the likeliest word (learned from past
- *   prompts and this draft) as ghost text after the caret; Tab or → inserts it, Esc hides it.
+ *   prompts and this draft) inline after the caret, pushing the following text along; Tab or →
+ *   inserts it, Esc hides it.
  *   Enter is never taken.
  */
 export function useComposerAutocomplete(
@@ -232,6 +423,12 @@ export function useComposerAutocomplete(
       return null;
     }
     if (wordDismissedRef.current === query.start) return null;
+    // Layer 2 lays out the continuation left to right from the caret's x, which bidi reordering
+    // would break: no suggestion in a right-to-left textarea or a paragraph with RTL letters.
+    if (getComputedStyle(el).direction === "rtl") return null;
+    const paragraphStart = el.value.lastIndexOf("\n", caret - 1) + 1;
+    const paragraphEnd = el.value.indexOf("\n", caret);
+    if (RTL_SCRIPT.test(el.value.slice(paragraphStart, paragraphEnd === -1 ? undefined : paragraphEnd))) return null;
     const suffix = suggestWord(wordModel, el.value, query);
     if (!suffix) return null;
     return { value: el.value, query, suffix, box: ghostBox(el), scrollTop: el.scrollTop, scrollLeft: el.scrollLeft };
@@ -251,10 +448,12 @@ export function useComposerAutocomplete(
   };
 
   // Typing changes the text (and the caret with it); caret-only moves are caught by onSelect.
+  // Runs before paint, so a keystroke never paints hidden textarea glyphs next to a stale overlay.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(sync, [text, enabled, boardId, wordModel]);
+  useLayoutEffect(sync, [text, enabled, boardId, wordModel]);
 
   // Focus, blur and IME composition change whether the ghost belongs there without an onSelect.
+  // Presses are the ghost's own to handle (it dismisses itself before the press acts).
   useEffect(() => {
     const el = ref.current;
     if (!el || !enabled) return;
@@ -288,13 +487,13 @@ export function useComposerAutocomplete(
     const el = ref.current;
     if (!suggesting || !el) return;
     const onScroll = () => {
-      setWord((current) => current && { ...current, scrollTop: el.scrollTop, scrollLeft: el.scrollLeft });
+      flushSync(() => setWord((current) => current && { ...current, scrollTop: el.scrollTop, scrollLeft: el.scrollLeft }));
     };
     el.addEventListener("scroll", onScroll);
     const observer =
       typeof ResizeObserver === "undefined"
         ? null
-        : new ResizeObserver(() => setWord((current) => current && { ...current, box: ghostBox(el) }));
+        : new ResizeObserver(() => flushSync(() => setWord((current) => current && { ...current, box: ghostBox(el) })));
     observer?.observe(el);
     return () => {
       el.removeEventListener("scroll", onScroll);
@@ -500,16 +699,7 @@ export function useComposerAutocomplete(
     </div>
   ) : null;
 
-  const ghost = word ? (
-    <div aria-hidden className="pointer-events-none absolute top-0 left-0 overflow-hidden select-none" style={word.box}>
-      {/* The whole value keeps wrapping identical to the textarea; only the suffix is visible. */}
-      <div style={{ transform: `translate(${-word.scrollLeft}px, ${-word.scrollTop}px)` }}>
-        <span className="text-transparent">{word.value.slice(0, word.query.end)}</span>
-        <span className="text-muted-foreground/70">{word.suffix}</span>
-        <span className="text-transparent">{word.value.slice(word.query.end)}</span>
-      </div>
-    </div>
-  ) : null;
+  const ghost = word ? <WordGhost word={word} textareaRef={ref} onDismiss={() => setWord(null)} /> : null;
 
   const suggestion = word && isMobile ? (
     <div className="flex justify-end">

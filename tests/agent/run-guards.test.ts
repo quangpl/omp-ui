@@ -9,9 +9,11 @@ import type { OmpRpcProcess } from "@/lib/agent/rpc";
 import {
   evaluateBudget,
   evaluateRunGuards,
+  evaluateWrapUp,
   guardsEnabled,
   sessionUsage,
   totalUsage,
+  wrapUpSteerMessage,
   type RunGuardState,
 } from "@/lib/agent/run-guards";
 import type { AgentManager } from "@/lib/agent/types";
@@ -153,6 +155,107 @@ describe("evaluateRunGuards", () => {
   });
 });
 
+describe("evaluateWrapUp", () => {
+  beforeEach(() => {
+    delete process.env.OMP_UI_GUARD_MINUTE_MS;
+  });
+
+  it("stays quiet while the nudge is off or neither the time limit nor the budget is on", () => {
+    const limits = { runTimeLimit: true, runTimeLimitMinutes: 10, runBudget: true, runBudgetUsd: 1, runBudgetTokens: 100 };
+    const nearly = guardState({ costUsd: 0.99, tokens: 99 });
+    expect(evaluateWrapUp(nearly, guardSettings({ ...limits, wrapUpNudge: false }), T0 + 9.9 * MINUTE)).toBeNull();
+    // The stall watchdog alone has no limit to wrap up before.
+    const stallOnly = guardSettings({ wrapUpNudge: true, stallWatchdog: true, stallTimeoutMinutes: 1 });
+    expect(evaluateWrapUp(nearly, stallOnly, T0 + 9.9 * MINUTE)).toBeNull();
+  });
+
+  it("nudges from the threshold of the time limit (scaled by OMP_UI_GUARD_MINUTE_MS), even during a board-tool wait", () => {
+    process.env.OMP_UI_GUARD_MINUTE_MS = "10";
+    const settings = guardSettings({ wrapUpNudge: true, wrapUpPercent: 80, runTimeLimit: true, runTimeLimitMinutes: 120 });
+    // 120 settings-minutes = 1,200 ms; 80 % = 960 ms.
+    expect(evaluateWrapUp(guardState(), settings, T0 + 959)).toBeNull();
+    expect(evaluateWrapUp(guardState({ waitingOnHost: true }), settings, T0 + 960)).toEqual({
+      guard: "time",
+      percent: 80,
+      detail: "96 of 120 min",
+    });
+    expect(evaluateWrapUp(guardState(), settings, T0 + 1_100)?.percent).toBe(91);
+  });
+
+  it("measures the budget by the larger of the USD and token fractions", () => {
+    const settings = guardSettings({
+      wrapUpNudge: true,
+      wrapUpPercent: 80,
+      runBudget: true,
+      runBudgetUsd: 5,
+      runBudgetTokens: 500_000,
+    });
+    expect(evaluateWrapUp(guardState({ costUsd: 4.1, tokens: 100_000 }), settings, T0)).toEqual({
+      guard: "budget",
+      percent: 82,
+      detail: "$4.10 of $5.00",
+    });
+    expect(evaluateWrapUp(guardState({ costUsd: 4.1, tokens: 450_000 }), settings, T0)).toEqual({
+      guard: "budget",
+      percent: 90,
+      detail: "450,000 of 500,000 tokens",
+    });
+    expect(evaluateWrapUp(guardState({ costUsd: 3.9, tokens: 390_000 }), settings, T0)).toBeNull();
+    // 0.57 * 100 is 56.99… in floating point; the threshold and the shown percent still read 57.
+    const exact = guardSettings({ wrapUpNudge: true, wrapUpPercent: 57, runBudget: true, runBudgetUsd: 1, runBudgetTokens: 0 });
+    expect(evaluateWrapUp(guardState({ costUsd: 0.57 }), exact, T0)?.percent).toBe(57);
+  });
+
+  it("picks the guard further along when both the time limit and the budget are on", () => {
+    const settings = guardSettings({
+      wrapUpNudge: true,
+      wrapUpPercent: 50,
+      runTimeLimit: true,
+      runTimeLimitMinutes: 100,
+      runBudget: true,
+      runBudgetUsd: 10,
+      runBudgetTokens: 0,
+    });
+    expect(evaluateWrapUp(guardState({ costUsd: 6 }), settings, T0 + 70 * MINUTE)?.guard).toBe("time");
+    expect(evaluateWrapUp(guardState({ costUsd: 8 }), settings, T0 + 70 * MINUTE)?.guard).toBe("budget");
+  });
+
+  it("leaves a run at or past the limit to the hard guard", () => {
+    const settings = guardSettings({
+      wrapUpNudge: true,
+      wrapUpPercent: 80,
+      runTimeLimit: true,
+      runTimeLimitMinutes: 10,
+      runBudget: true,
+      runBudgetUsd: 5,
+      runBudgetTokens: 0,
+    });
+    expect(evaluateWrapUp(guardState(), settings, T0 + 10 * MINUTE)).toBeNull();
+    expect(evaluateWrapUp(guardState({ costUsd: 6 }), settings, T0 + 9 * MINUTE)).toBeNull();
+  });
+
+  it("ignores zero budget caps", () => {
+    const settings = guardSettings({ wrapUpNudge: true, wrapUpPercent: 80, runBudget: true, runBudgetUsd: 0, runBudgetTokens: 0 });
+    expect(evaluateWrapUp(guardState({ costUsd: 1_000, tokens: 1e9 }), settings, T0)).toBeNull();
+    const tokensOnly = { ...settings, runBudgetTokens: 1_000 };
+    expect(evaluateWrapUp(guardState({ costUsd: 1_000, tokens: 850 }), tokensOnly, T0)).toEqual({
+      guard: "budget",
+      percent: 85,
+      detail: "850 of 1,000 tokens",
+    });
+  });
+
+  it("tells the agent how much it used and to wrap up with its Report", () => {
+    const time = wrapUpSteerMessage({ guard: "time", percent: 85, detail: "102 of 120 min" });
+    expect(time).toContain("85% of your run time limit (102 of 120 min)");
+    expect(time).toMatch(/do not start new work/);
+    expect(time).toMatch(/Report/);
+    expect(wrapUpSteerMessage({ guard: "budget", percent: 90, detail: "$4.50 of $5.00" })).toContain(
+      "90% of your run budget ($4.50 of $5.00)",
+    );
+  });
+});
+
 describe("run usage", () => {
   it("reads the session spend from get_session_stats and adds the subagents'", () => {
     expect(sessionUsage({ cost: 1.5, tokens: { total: 2_000 }, contextUsage: { tokens: 10 } })).toEqual({
@@ -204,13 +307,45 @@ describe("run guards through the agent manager", () => {
       .filter((line) => line.includes('"kind":"argv"')).length;
   }
 
-  function promptsReceived(): number {
-    if (!existsSync(logFile)) return 0;
+  interface LogEntry {
+    kind: string;
+    argv?: string[];
+    message?: string;
+    via?: string;
+    streamingBehavior?: string;
+    command?: { type: string; message?: string; streamingBehavior?: string };
+  }
+
+  function logEntries(): LogEntry[] {
+    if (!existsSync(logFile)) return [];
     return readFileSync(logFile, "utf8")
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { kind: string; command?: { type: string } })
-      .filter((e) => e.kind === "command" && e.command?.type === "prompt").length;
+      .map((line) => JSON.parse(line) as LogEntry);
+  }
+
+  /** Every `prompt` command card runs got, steers included. */
+  function promptsReceived(): number {
+    return logEntries().filter((e) => e.kind === "command" && e.command?.type === "prompt").length;
+  }
+
+  /** The prompts that started card runs (steers excluded), in order. */
+  function runPrompts(): string[] {
+    return logEntries()
+      .filter((e) => e.kind === "command" && e.command?.type === "prompt" && !e.command.streamingBehavior)
+      .map((e) => e.command?.message ?? "");
+  }
+
+  /** The `--config` overlay each card run was started with, in spawn order. */
+  function runConfigs(): Record<string, unknown>[] {
+    return logEntries()
+      .filter((e) => e.kind === "argv")
+      .map((e) => {
+        const argv = e.argv ?? [];
+        const index = argv.indexOf("--config");
+        expect(index).toBeGreaterThanOrEqual(0);
+        return JSON.parse(readFileSync(argv[index + 1]!, "utf8")) as Record<string, unknown>;
+      });
   }
 
   async function getTask(id: string): Promise<Task> {
@@ -379,5 +514,57 @@ describe("run guards through the agent manager", () => {
     const failed = await waitTask(task.id, (t) => t.agentState === "error", "the token budget to stop the run");
     expect(failed.agentError).toBe("Run budget exceeded: 1,000 of 500 tokens; stopped without an automatic retry.");
     expect(failed.retryAt).toBeNull();
+  });
+
+  it("nudges the agent to wrap up exactly once before the time limit stops the run", async () => {
+    // 20-min limit = 400 ms, nudge at 50 % = 200 ms: ~10 supervisor ticks fall between the two.
+    await updateAppSettings(repo, { runTimeLimit: true, runTimeLimitMinutes: 20, wrapUpNudge: true, wrapUpPercent: 50 });
+    // "spend" keeps working after a steer ("slow" would complete on it).
+    const { task } = await startCard("Long", "spend");
+
+    const failed = await waitTask(task.id, (t) => t.agentState === "error", "the time limit to stop the run");
+    expect(failed.agentError).toBe("Run time limit reached (20 min); stopped without an automatic retry.");
+    const steers = logEntries().filter((e) => e.kind === "steer");
+    expect(steers).toHaveLength(1);
+    expect(steers[0]).toMatchObject({ via: "prompt", streamingBehavior: "steer" });
+    expect(steers[0]!.message).toContain("of your run time limit");
+    expect(steers[0]!.message).toContain("Wrap up now");
+    // The run's prompt plus the one nudge.
+    expect(promptsReceived()).toBe(2);
+  });
+
+  it("tells an automatic retry why the previous run failed", async () => {
+    await updateAppSettings(repo, { stallWatchdog: true, stallTimeoutMinutes: 2, maxAutoRetries: 1 });
+    const { task } = await startCard("Hangs once", "slow");
+
+    const [first, retry] = await waitFor(() => {
+      const prompts = runPrompts();
+      return prompts.length === 2 ? prompts : null;
+    }, "the automatic retry to get its prompt");
+    expect((await getTask(task.id)).autoRetries).toBe(1);
+    expect(first).not.toContain("The previous run failed");
+    expect(retry).toContain("The previous run failed: No activity from the agent for 2 min (stall watchdog).");
+  });
+
+  it("passes the orchestration limits to omp in the run's config overlay", async () => {
+    await updateAppSettings(repo, {
+      subagentLimits: true,
+      subagentMaxDepth: 2,
+      contextCompaction: true,
+      contextCompactPercent: 60,
+    });
+    await startCard("Limited", "success");
+    await updateAppSettings(repo, { subagentLimits: false, contextCompaction: false });
+    await startCard("Plain", "success");
+
+    const [limited, plain] = runConfigs();
+    expect(limited).toMatchObject({
+      task: { maxConcurrency: expect.any(Number), maxRecursionDepth: 2 },
+      compaction: { thresholdPercent: 60 },
+    });
+    expect(Object.keys(plain!)).toEqual(["browser"]);
+    const { screenshotDir: _plainDir, ...plainBrowser } = plain!.browser as Record<string, unknown>;
+    const { screenshotDir: _limitedDir, ...limitedBrowser } = limited!.browser as Record<string, unknown>;
+    expect(plainBrowser).toEqual(limitedBrowser);
   });
 });

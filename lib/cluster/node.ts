@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { activeRunCount, getAgentManager, holdNewRuns, resetAgentManager } from "@/lib/agent/manager";
+import { SUPERVISED_ENV } from "@/lib/agent/resource-guard";
 import { dialPeer } from "@/lib/cluster/dial";
 import { openFirewallPort } from "@/lib/cluster/firewall";
 import { ensureOmpCommandOnPath, localOmpCommand } from "@/lib/cluster/omp-runtime";
@@ -40,16 +41,19 @@ import { replicatedSeq, resetReplicatedSeq } from "@/lib/cluster/replication";
 import { snapshotSqlite } from "@/lib/cluster/sync";
 import {
   type AnnounceMsg,
+  type BootInfo,
   CLUSTER_PROTOCOL_VERSION,
   DEFAULT_CLUSTER_PORT,
   ELECTION_PROBE_TIMEOUT_MS,
   FAILBACK_DRAIN_MS,
   type HandoverMsg,
+  type HealAckMsg,
   type MemberInfo,
   type NodeState,
   type PeerAddress,
   type ProbeReplyMsg,
   type RedirectMsg,
+  RESTART_REASON_ENV,
   type TestReplyMsg,
   type WireMessage,
 } from "@/lib/cluster/types";
@@ -99,6 +103,8 @@ const g = globalThis as unknown as {
   __ompUiClusterCreated?: string;
   /** Next retry of the join from the environment. */
   __ompUiClusterEnvJoin?: NodeJS.Timeout;
+  /** When this server process started and why (computed once, see bootInfo). */
+  __ompUiClusterBoot?: BootInfo;
 };
 
 // --- Node state (DATA_DIR/cluster/node.json) ----------------------------------------------------
@@ -480,6 +486,10 @@ function onChannel(channel: ClusterChannel, hello: HelloInfo): void {
     channel.on("probe", (msg) => {
       if (msg.t === "probe") channel.reply(msg, probeReply());
     });
+    // The primary restarts an offline replica over a probe channel (auto-healing).
+    channel.on("heal.restart", (msg) => {
+      if (msg.t === "heal.restart") answerHealRestart(channel, msg, hello.nodeId);
+    });
     channel.on("announce", (msg) => {
       if (msg.t !== "announce") return;
       onAnnounce(channel, msg).catch((err: unknown) => {
@@ -583,19 +593,31 @@ function otherMembers(state: NodeState): MemberInfo[] {
   return state.members.filter((m) => m.nodeId !== state.nodeId);
 }
 
+interface BootFencing {
+  /** The highest-term primary another member names, when that term is above ours. */
+  higher: { primary: PeerAddress; term: number } | null;
+  /** Members still acting as a primary of a term below ours (a split brain to end). */
+  lower: Array<{ member: MemberInfo; term: number }>;
+}
+
 /**
- * Boot fencing of a primary: the highest-term primary another member names (itself as primary,
- * or the one a replica follows) when that term is above ours; null when we are still in charge.
+ * Boot fencing of a primary, one probe round of the other members: the highest-term primary
+ * another member names (itself as primary, or the one a replica follows) when that term is above
+ * ours (`higher`, null when we are still in charge), and the members that answered as a primary
+ * of a lower term (`lower`: they must step down for us).
  */
-async function findHigherPrimary(): Promise<{ primary: PeerAddress; term: number } | null> {
+async function probeOtherPrimaries(): Promise<BootFencing> {
   const state = readNodeState();
   const replies = await Promise.all(
     otherMembers(state).map(async (member) => ({ member, reply: await probePeer(member, { t: "probe" }) })),
   );
-  let best: { primary: PeerAddress; term: number } | null = null;
+  let higher: BootFencing["higher"] = null;
+  const lower: BootFencing["lower"] = [];
   for (const { member, reply } of replies) {
     const term = reply?.t === "probe.reply" ? reply.term : null;
-    if (!reply || typeof term !== "number" || term <= state.term || (best && term <= best.term)) continue;
+    if (!reply || typeof term !== "number") continue;
+    if (term < state.term && reply.role === "primary") lower.push({ member, term });
+    if (term <= state.term || (higher && term <= higher.term)) continue;
     const named = parsePeer(reply.primary);
     let primary: PeerAddress | null = null;
     if (reply.role === "primary") {
@@ -604,9 +626,9 @@ async function findHigherPrimary(): Promise<{ primary: PeerAddress; term: number
     } else if (reply.role === "replica" && named && named.nodeId !== state.nodeId) {
       primary = named;
     }
-    if (primary) best = { primary, term };
+    if (primary) higher = { primary, term };
   }
-  return best;
+  return { higher, lower };
 }
 
 // --- Boot -------------------------------------------------------------------------------------
@@ -623,21 +645,23 @@ interface EnvJoinRequest {
 }
 
 /**
- * Whether this node should (still) join the primary the environment names: only while standalone;
- * with a join id until a join consumed it (state.envJoinId), so re-running the join script joins
- * again but a restart never re-joins a cluster an admin left; without one (older scripts, which
- * keep the variables for good) only a fresh node (no node.json before this boot).
+ * Whether this node should (still) join the primary the environment names. With a join id: until
+ * a join consumed it (state.envJoinId), whatever the role, so re-running the join script joins
+ * again (also a node a failover left as primary, or a replica of a stale primary or token) but a
+ * restart never re-joins a cluster an admin left. Without one (older scripts, which keep the
+ * variables for good): only a standalone, fresh node (no node.json before this boot).
  */
 function envJoinPending(id: string | null): boolean {
   const state = readNodeState();
-  if (state.role !== "standalone") return false;
-  return id ? state.envJoinId !== id : g.__ompUiClusterCreated === clusterPaths().nodeFile;
+  if (id) return state.envJoinId !== id;
+  return state.role === "standalone" && g.__ompUiClusterCreated === clusterPaths().nodeFile;
 }
 
 /**
  * Boot of a node started by the join script: join the primary named in the environment (see
- * envJoinPending). With a join id a failed join is retried in the background (scheduleEnvJoin);
- * boot never waits for the retries.
+ * envJoinPending), replacing a primary or replica role. With a join id a failed join is retried
+ * in the background (scheduleEnvJoin) while the node runs its current role; boot never waits for
+ * the retries.
  */
 async function joinFromEnv(): Promise<void> {
   const url = process.env.OMP_UI_CLUSTER_JOIN?.trim();
@@ -646,25 +670,28 @@ async function joinFromEnv(): Promise<void> {
   const request: EnvJoinRequest = { url, token, id: envJoinId() };
   if (!envJoinPending(request.id)) return;
   try {
-    await joinCluster(url, token, { boot: true });
+    await joinCluster(url, token, { boot: true, replace: true });
   } catch (err) {
-    clusterNotice("error", `Could not join the cluster at ${url}: ${errorText(err)}`);
+    // The join script greps the journal for "Could not join the cluster".
+    const role = readNodeState().role;
+    const meanwhile = role === "standalone" ? "" : `; this node keeps running as a ${role} meanwhile and retries`;
+    clusterNotice("error", `Could not join the cluster at ${url}: ${errorText(err)}${meanwhile}`);
     if (request.id) scheduleEnvJoin(request, ENV_JOIN_RETRY_MS, Date.now());
   }
 }
 
 /**
  * Retry the join from the environment in `delay` ms (doubling up to ENV_JOIN_RETRY_MAX_MS) until
- * it works, the role changes or the join id is consumed; a failure notice at most every
- * ENV_JOIN_NOTICE_MS (`noticedAt`: the last one). Past boot the server runs as a full server, so
- * a successful join restarts it as a replica.
+ * it works or the join id is consumed; a failure notice at most every ENV_JOIN_NOTICE_MS
+ * (`noticedAt`: the last one). Past boot the server runs as a full server, so a successful join
+ * restarts it as a replica.
  */
 function scheduleEnvJoin(request: EnvJoinRequest, delay: number, noticedAt: number): void {
   clearTimeout(g.__ompUiClusterEnvJoin);
   const timer = setTimeout(() => {
     if (g.__ompUiClusterEnvJoin === timer) g.__ompUiClusterEnvJoin = undefined;
     if (!envJoinPending(request.id)) return;
-    joinCluster(request.url, request.token).catch((err: unknown) => {
+    joinCluster(request.url, request.token, { replace: true }).catch((err: unknown) => {
       const now = Date.now();
       const notify = now - noticedAt >= ENV_JOIN_NOTICE_MS;
       if (notify) clusterNotice("error", `Still cannot join the cluster at ${request.url}, retrying: ${errorText(err)}`);
@@ -675,9 +702,13 @@ function scheduleEnvJoin(request: EnvJoinRequest, delay: number, noticedAt: numb
   g.__ompUiClusterEnvJoin = timer;
 }
 
-/** A primary coming back first checks that nobody took over while it was away. */
+/**
+ * A primary coming back first checks that nobody took over while it was away (then it steps
+ * down); otherwise it starts and tells every member still acting as a lower-term primary to step
+ * down (onAnnounce there: it demotes itself and restarts as our replica).
+ */
 async function bootPrimary(): Promise<void> {
-  const higher = await findHigherPrimary();
+  const { higher, lower } = await probeOtherPrimaries();
   if (higher) {
     await demoteSelf(
       higher.primary,
@@ -688,6 +719,15 @@ async function bootPrimary(): Promise<void> {
   }
   useReplicatedOmpAgentDir();
   await startPrimary();
+  if (lower.length === 0) return;
+  const { term } = readNodeState();
+  for (const other of lower) {
+    clusterNotice(
+      "warning",
+      `${other.member.name} is also a primary (term ${other.term} < ${term}): telling it to step down`,
+    );
+  }
+  await announcePrimary(term, lower.map((other) => other.member));
 }
 
 async function bootCluster(): Promise<void> {
@@ -731,6 +771,78 @@ function restartProcess(reason: string): void {
   g.__ompUiClusterRestarting = true;
   console.log(`[cluster] restarting the server: ${reason}`);
   setTimeout(() => process.exit(RESTART_EXIT_CODE), RESTART_DELAY_MS);
+}
+
+// --- Auto-healing (node side) -----------------------------------------------------------------
+
+/** Refusal of a restart request on a node bin/supervisor.mjs would not bring back. */
+const UNSUPERVISED_ERROR = "this node runs without bin/supervisor.mjs, so it would not come back; restart it by hand";
+
+/**
+ * This server process: when it started and why bin/supervisor.mjs (re)started it
+ * (OMP_UI_RESTART_REASON; null on a first start or without the supervisor). Computed once per
+ * process so every registration reports the same `at`.
+ */
+export function bootInfo(): BootInfo {
+  return (g.__ompUiClusterBoot ??= {
+    at: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+    reason: process.env[RESTART_REASON_ENV]?.trim() || null,
+  });
+}
+
+/** Runs under bin/supervisor.mjs, which starts the server again after it exits. */
+export function isSupervised(): boolean {
+  return process.env[SUPERVISED_ENV] === "1";
+}
+
+/** Why this node does not obey a `heal.restart` from node `requesterId`; null when it does. */
+function healRestartRefusal(msg: WireMessage, requesterId: string): string | null {
+  const { reason, term, bootedAt } = msg;
+  if (
+    typeof reason !== "string" ||
+    !reason.trim() ||
+    typeof term !== "number" ||
+    !Number.isInteger(term) ||
+    (bootedAt !== undefined && bootedAt !== null && typeof bootedAt !== "string")
+  ) {
+    return "invalid request";
+  }
+  const state = readNodeState();
+  if (state.role !== "replica") return `this node is ${state.role === "primary" ? "a primary" : "standalone"}, not a replica`;
+  if (requesterId !== state.primary?.nodeId) return "the request does not come from the primary this node follows";
+  if (term < state.term) return `stale term ${term} (this node knows term ${state.term})`;
+  if (!isSupervised()) return UNSUPERVISED_ERROR;
+  return null;
+}
+
+/**
+ * Answer the primary's `heal.restart` (member channel, or a probe channel while the primary sees
+ * this node offline; `requesterId` is the sender's node id) with `heal.ack`. "restarting" posts a
+ * notice, sends the reply, then exits with RESTART_EXIT_CODE so bin/supervisor.mjs starts this
+ * server again; "already" (the request names an earlier process of this node: `bootedAt` differs
+ * from this process's boot time; no clocks are compared across machines) and "refused" never exit.
+ */
+export function answerHealRestart(channel: ClusterChannel, msg: WireMessage, requesterId: string): HealAckMsg {
+  const boot = bootInfo();
+  const error = healRestartRefusal(msg, requesterId);
+  const reason = String(msg.reason).trim();
+  let outcome: HealAckMsg["outcome"] = "refused";
+  if (error === null) {
+    const meant = msg.bootedAt;
+    const sameProcess = typeof meant !== "string" || meant === boot.at || Date.parse(meant) === Date.parse(boot.at);
+    outcome = sameProcess ? "restarting" : "already";
+  }
+  const ack: HealAckMsg = { t: "heal.ack", outcome, error, bootedAt: boot.at };
+  if (outcome === "refused") {
+    console.warn(`[cluster] Refused the primary's restart request: ${error}`);
+  } else if (outcome === "already") {
+    console.log(`[cluster] The primary asked for a restart (${reason}); this server already restarted at ${boot.at}`);
+  } else {
+    clusterNotice("warning", `Restarting this node at the primary's request (auto-healing): ${reason}`);
+  }
+  channel.reply(msg, ack);
+  if (outcome === "restarting") restartProcess(`auto-healing: ${reason}`);
+  return ack;
 }
 
 /** Timestamped copy of the SQLite database before the primary's data replaces it (other drivers: nothing). */
@@ -777,12 +889,15 @@ export async function enableCluster(): Promise<ClusterStatus> {
 /**
  * Primary/replica → standalone. A replica leaves (see leaveCluster); a primary first removes every
  * connected replica (they become standalone instead of electing a successor that would resume the
- * same cards), then stops coordinating.
+ * same cards), then stops coordinating. Consumes the env join id (and cancels its pending retry) so
+ * a restart does not re-join the cluster.
  */
 export async function disableCluster(): Promise<ClusterStatus> {
   const role = clusterRole();
   if (role === "standalone") return getClusterStatus();
   if (role === "replica") return leaveCluster();
+  clearTimeout(g.__ompUiClusterEnvJoin);
+  g.__ompUiClusterEnvJoin = undefined;
   const replicas = primaryNodeStatuses().filter((n) => !n.self && n.online);
   await Promise.all(
     replicas.map((n) =>
@@ -793,7 +908,7 @@ export async function disableCluster(): Promise<ClusterStatus> {
   );
   await stopPrimary("Cluster mode disabled");
   await closeListener();
-  updateNodeState(STANDALONE);
+  updateNodeState({ ...STANDALONE, envJoinId: envJoinId() ?? readNodeState().envJoinId });
   clusterNotice("info", "Cluster mode disabled: this node runs on its own");
   return getClusterStatus();
 }
@@ -865,13 +980,22 @@ export async function testClusterConnection(url: string, token: string): Promise
  * Standalone → replica of the primary at `url`: tested first, the local database backed up, the
  * state persisted; then the process restarts as a replica (exit 75 after the response). At boot
  * (`boot`, joined from the environment) the server simply continues: its manager starts dormant.
- * Any successful join consumes the join script's join id (OMP_UI_CLUSTER_JOIN_ID), so leaving
- * later never makes a restart join the environment's primary again.
+ * `replace` (the join from the environment only) also lets a primary or a replica join: a re-run
+ * of the join script wins over the role a failover or a stale primary left; a primary holds new
+ * runs first (past boot) and drops its replication counter. Any successful join consumes the join
+ * script's join id (OMP_UI_CLUSTER_JOIN_ID), so leaving later never makes a restart join the
+ * environment's primary again.
  */
-export async function joinCluster(url: string, token: string, opts: { boot?: boolean } = {}): Promise<ClusterStatus> {
+export async function joinCluster(
+  url: string,
+  token: string,
+  opts: { boot?: boolean; replace?: boolean } = {},
+): Promise<ClusterStatus> {
   const state = readNodeState();
-  if (state.role === "primary") throw new HttpError(409, "This node is a cluster primary; disable cluster mode first");
-  if (state.role === "replica") throw new HttpError(409, "This node already belongs to a cluster; leave it first");
+  if (!opts.replace) {
+    if (state.role === "primary") throw new HttpError(409, "This node is a cluster primary; disable cluster mode first");
+    if (state.role === "replica") throw new HttpError(409, "This node already belongs to a cluster; leave it first");
+  }
   const base = parseClusterUrl(url);
   const secret = token.trim();
   if (!secret) throw new HttpError(400, "A join token is required");
@@ -880,7 +1004,18 @@ export async function joinCluster(url: string, token: string, opts: { boot?: boo
   const target = result.node;
   if (target.role !== "primary") throw new HttpError(400, `${target.name} is not a primary (it is ${target.role})`);
   if (target.nodeId === state.nodeId) throw new HttpError(400, "A node cannot join itself");
-  await backupDatabase("join");
+  const wasPrimary = state.role === "primary";
+  // A running primary stops starting cards before its data is handed over (as demote does).
+  const hold = wasPrimary && !opts.boot;
+  if (hold) holdNewRuns(true);
+  try {
+    await backupDatabase("join");
+  } catch (err) {
+    if (hold) holdNewRuns(false);
+    throw err;
+  }
+  // A former primary's replication round counter belongs to an older era (see demote).
+  if (wasPrimary) resetReplicatedSeq();
   updateNodeState({
     role: "replica",
     token: secret,
@@ -891,7 +1026,8 @@ export async function joinCluster(url: string, token: string, opts: { boot?: boo
     envJoinId: envJoinId() ?? state.envJoinId,
   });
   if (opts.boot) {
-    clusterNotice("info", `Joined the cluster of ${target.name} as a replica`);
+    const before = state.role === "standalone" ? "" : ` (this node was a ${state.role} before)`;
+    clusterNotice("info", `Joined the cluster of ${target.name} as a replica${before}`);
   } else {
     clusterNotice("info", `Joined the cluster of ${target.name}; restarting as a replica`);
     restartProcess(`joined the cluster of ${target.name}`);
@@ -914,15 +1050,24 @@ async function releaseInheritedCards(): Promise<void> {
   }
 }
 
-/** Replica → standalone, keeping the replicated data as this node's own. */
+/**
+ * Replica → standalone, keeping the replicated data as this node's own. Consumes the env join id
+ * (and cancels its pending retry) so a restart does not re-join the cluster an admin left.
+ */
 export async function leaveCluster(): Promise<ClusterStatus> {
   const state = readNodeState();
   if (state.role !== "replica") throw new HttpError(409, "This node is not a replica");
+  clearTimeout(g.__ompUiClusterEnvJoin);
+  g.__ompUiClusterEnvJoin = undefined;
   await stopReplica("Left the cluster");
   await closeListener();
   // A shared database (postgres/mongo of the primary) is not ours to keep: reopen our own after a restart.
   const sharedDb = state.secrets.databaseUrl !== null;
-  updateNodeState({ ...STANDALONE, secrets: { ...state.secrets, databaseUrl: null } });
+  updateNodeState({
+    ...STANDALONE,
+    envJoinId: envJoinId() ?? state.envJoinId,
+    secrets: { ...state.secrets, databaseUrl: null },
+  });
   if (sharedDb) {
     clusterNotice("info", "This node left the cluster; restarting to reopen its own database");
     restartProcess("left the cluster");
@@ -961,10 +1106,11 @@ export async function removeClusterNode(nodeId: string): Promise<void> {
 
 // --- Promotion, demotion, failback ------------------------------------------------------------
 
-async function announcePromotion(term: number): Promise<void> {
+/** Tell `members` (default: every other member) that this node is the primary of `term`. */
+async function announcePrimary(term: number, members?: readonly PeerAddress[]): Promise<void> {
   const state = readNodeState();
   const msg: AnnounceMsg = { t: "announce", term, primary: selfAddress(state) };
-  await Promise.all(otherMembers(state).map((member) => probePeer(member, msg)));
+  await Promise.all((members ?? otherMembers(state)).map((member) => probePeer(member, msg)));
 }
 
 /** A failed promotion: back to the replica we were, so the replica runtime resumes (never two primaries). */
@@ -996,7 +1142,7 @@ async function promote(reason: string, minTerm: number): Promise<void> {
     await rollBackPromotion(previous);
     throw err;
   }
-  await announcePromotion(term);
+  await announcePrimary(term);
   clusterNotice("info", `This node was promoted to primary (term ${term}): ${reason}`);
 }
 

@@ -1,5 +1,6 @@
 import { clusterRole, readNodeState } from "@/lib/cluster/node";
 import { primaryOmpBinary } from "@/lib/cluster/omp-runtime";
+import { replicaConnection } from "@/lib/cluster/replica";
 import { CLUSTER_PROTOCOL_VERSION } from "@/lib/cluster/types";
 import { json, withApi } from "@/lib/server/http";
 import { getAppSettings } from "@/lib/settings";
@@ -16,6 +17,7 @@ export const GET = withApi(
       version: APP_VERSION,
       protocol: CLUSTER_PROTOCOL_VERSION,
       role: clusterRole(),
+      connection: replicaConnection()?.state ?? null,
       port: readNodeState().port,
       platform: process.platform,
       arch: process.arch,

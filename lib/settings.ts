@@ -4,10 +4,12 @@ import {
   BROWSER_MODES,
   CLEANUP_SCHEDULES,
   CLUSTER_FAILOVER_LIMITS,
+  CLUSTER_HEAL_LIMITS,
   DASHBOARD_MENU_IDS,
   DEFAULT_SETTINGS,
   ORCHESTRATION_LIMITS,
   SCHEDULED_CLEANUP_IDS,
+  type ClusterHealNumberKey,
   type OrchestrationNumberKey,
   type AppSettings,
   type ApprovalMode,
@@ -52,7 +54,11 @@ export function setOmpPathResolver(fn: ((stored: string) => string) | null): voi
 }
 
 /**
- * Stored settings merged over defaults; env vars (OMP_PATH, MAX_AGENTS) override the defaults.
+ * Stored settings merged over defaults; env vars override the defaults (saved values win):
+ * OMP_PATH, MAX_AGENTS, and auto-healing's OMP_UI_CLUSTER_AUTO_HEAL (true/1/yes/on or
+ * false/0/no/off), OMP_UI_CLUSTER_HEAL_INTERVAL_SEC, OMP_UI_CLUSTER_HEAL_TIMEOUT_SEC,
+ * OMP_UI_CLUSTER_HEAL_FAILURES, OMP_UI_CLUSTER_HEAL_OFFLINE_SEC and OMP_UI_CLUSTER_HEAL_MAX_RESTARTS
+ * (clamped into CLUSTER_HEAL_LIMITS; anything unparsable keeps the built-in default).
  * MAX_AGENTS: a number is an explicit limit; `auto` or unset derives it from the machine.
  * `ompPath` is the command to run on this machine (see setOmpPathResolver).
  */
@@ -77,6 +83,12 @@ async function storedAppSettings(repo: Repository): Promise<AppSettings> {
     ...DEFAULT_SETTINGS,
     ompPath: process.env.OMP_PATH || DEFAULT_SETTINGS.ompPath,
     maxConcurrentAgents: parseAgentLimit(process.env.MAX_AGENTS) ?? DEFAULT_SETTINGS.maxConcurrentAgents,
+    clusterAutoHeal: envFlag(process.env.OMP_UI_CLUSTER_AUTO_HEAL) ?? DEFAULT_SETTINGS.clusterAutoHeal,
+    clusterHealIntervalSeconds: healNumber(process.env.OMP_UI_CLUSTER_HEAL_INTERVAL_SEC, "clusterHealIntervalSeconds"),
+    clusterHealTimeoutSeconds: healNumber(process.env.OMP_UI_CLUSTER_HEAL_TIMEOUT_SEC, "clusterHealTimeoutSeconds"),
+    clusterHealFailures: healNumber(process.env.OMP_UI_CLUSTER_HEAL_FAILURES, "clusterHealFailures"),
+    clusterHealOfflineSeconds: healNumber(process.env.OMP_UI_CLUSTER_HEAL_OFFLINE_SEC, "clusterHealOfflineSeconds"),
+    clusterHealMaxRestarts: healNumber(process.env.OMP_UI_CLUSTER_HEAL_MAX_RESTARTS, "clusterHealMaxRestarts"),
   };
   const raw = await repo.getSetting(KEY);
   if (!raw) return base;
@@ -153,8 +165,22 @@ function sanitize(s: AppSettings, knownMenus: readonly unknown[]): AppSettings {
     telemetryEndpoint: typeof s.telemetryEndpoint === "string" ? s.telemetryEndpoint.trim() : "",
     loadGuard: bool(s, "loadGuard"),
     loadGuardPercent: orchestrationNumber(s.loadGuardPercent, "loadGuardPercent"),
+    subagentLimits: bool(s, "subagentLimits"),
+    subagentMaxConcurrency: orchestrationNumber(s.subagentMaxConcurrency, "subagentMaxConcurrency"),
+    subagentMaxDepth: orchestrationNumber(s.subagentMaxDepth, "subagentMaxDepth"),
+    subagentTimeoutMinutes: orchestrationNumber(s.subagentTimeoutMinutes, "subagentTimeoutMinutes"),
+    contextCompaction: bool(s, "contextCompaction"),
+    contextCompactPercent: orchestrationNumber(s.contextCompactPercent, "contextCompactPercent"),
+    wrapUpNudge: bool(s, "wrapUpNudge"),
+    wrapUpPercent: orchestrationNumber(s.wrapUpPercent, "wrapUpPercent"),
     clusterRunLocal: bool(s, "clusterRunLocal"),
     clusterFailoverSeconds: failoverSeconds(s.clusterFailoverSeconds),
+    clusterAutoHeal: bool(s, "clusterAutoHeal"),
+    clusterHealIntervalSeconds: healNumber(s.clusterHealIntervalSeconds, "clusterHealIntervalSeconds"),
+    clusterHealTimeoutSeconds: healNumber(s.clusterHealTimeoutSeconds, "clusterHealTimeoutSeconds"),
+    clusterHealFailures: healNumber(s.clusterHealFailures, "clusterHealFailures"),
+    clusterHealOfflineSeconds: healNumber(s.clusterHealOfflineSeconds, "clusterHealOfflineSeconds"),
+    clusterHealMaxRestarts: healNumber(s.clusterHealMaxRestarts, "clusterHealMaxRestarts"),
   };
 }
 
@@ -184,6 +210,24 @@ function failoverSeconds(value: unknown): number {
     return DEFAULT_SETTINGS.clusterFailoverSeconds;
   }
   return Math.min(CLUSTER_FAILOVER_LIMITS.max, Math.max(CLUSTER_FAILOVER_LIMITS.min, Math.floor(n)));
+}
+
+/** A whole number clamped into the setting's CLUSTER_HEAL_LIMITS; the default when not a finite number. */
+function healNumber(value: unknown, key: ClusterHealNumberKey): number {
+  const n = Number(value);
+  if (value === undefined || value === null || value === "" || typeof value === "boolean" || !Number.isFinite(n)) {
+    return DEFAULT_SETTINGS[key];
+  }
+  const { min, max } = CLUSTER_HEAL_LIMITS[key];
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+/** An env var switch: true/1/yes/on or false/0/no/off (any case); null when unset or anything else. */
+function envFlag(value: string | undefined): boolean | null {
+  const v = value?.trim().toLowerCase();
+  if (v === "true" || v === "1" || v === "yes" || v === "on") return true;
+  if (v === "false" || v === "0" || v === "no" || v === "off") return false;
+  return null;
 }
 
 /** Whether `value` names a navigation menu section the user may hide. */

@@ -534,6 +534,32 @@ export interface AppSettings {
   loadGuard: boolean;
   loadGuardPercent: number;
   /**
+   * Subagent limits (Hermes-style delegation caps), written into each run's omp config overlay:
+   * at most `subagentMaxConcurrency` subagents at once, scaled down to the run's fair share of
+   * the machine's cores and free memory (lib/agent/concurrency.ts subagentConcurrency); nesting
+   * at most `subagentMaxDepth` levels (1 = subagents cannot delegate further); each subagent
+   * stopped after `subagentTimeoutMinutes` (0 = no limit). Applies to runs started while on.
+   */
+  subagentLimits: boolean;
+  subagentMaxConcurrency: number;
+  subagentMaxDepth: number;
+  subagentTimeoutMinutes: number;
+  /**
+   * Early context compaction (Hermes compresses at 50 % of the window): omp compacts a run's
+   * context once it fills `contextCompactPercent` % of the model's window, so each model request
+   * resends fewer tokens. Applies to runs started while on.
+   */
+  contextCompaction: boolean;
+  contextCompactPercent: number;
+  /**
+   * Wrap-up nudge (Hermes' iteration-budget summary request): once a run has used
+   * `wrapUpPercent` % of its run time limit or run budget, the agent is told once to finish its
+   * current step, verify and write its summary, so the hard stop rarely discards work.
+   * Needs the run time limit or run budget on.
+   */
+  wrapUpNudge: boolean;
+  wrapUpPercent: number;
+  /**
    * Cluster mode (lib/cluster): the primary also runs cards on its own machine. Off = the
    * primary only coordinates and every card runs on a replica node. Ignored outside cluster mode.
    */
@@ -543,6 +569,24 @@ export interface AppSettings {
    * a new one (CLUSTER_FAILOVER_LIMITS).
    */
   clusterFailoverSeconds: number;
+  /**
+   * Cluster mode (primary): auto-healing. The primary health-checks every online node and asks a
+   * node to restart (its bin/supervisor.mjs starts it again) after `clusterHealFailures` failed
+   * checks in a row, or once it stayed offline `clusterHealOfflineSeconds`. Restart attempts back
+   * off and pause after `clusterHealMaxRestarts` in a row (docs/CLUSTER.md, "Auto-healing").
+   * Defaults come from OMP_UI_CLUSTER_AUTO_HEAL and OMP_UI_CLUSTER_HEAL_* (lib/settings.ts).
+   */
+  clusterAutoHeal: boolean;
+  /** Seconds between two health checks of an online node (CLUSTER_HEAL_LIMITS). */
+  clusterHealIntervalSeconds: number;
+  /** Seconds a node has to answer one health check. */
+  clusterHealTimeoutSeconds: number;
+  /** Failed health checks in a row before the node is restarted. */
+  clusterHealFailures: number;
+  /** Seconds an offline node may take to come back before a restart is attempted. */
+  clusterHealOfflineSeconds: number;
+  /** Restart attempts in a row (the node did not stay healthy in between) before auto-restart pauses for that node. */
+  clusterHealMaxRestarts: number;
 }
 
 /**
@@ -555,11 +599,26 @@ export const ORCHESTRATION_LIMITS = {
   runBudgetUsd: { min: 0, max: 10_000 },
   runBudgetTokens: { min: 0, max: 1_000_000_000 },
   loadGuardPercent: { min: 10, max: 1000 },
+  subagentMaxConcurrency: { min: 1, max: 32 },
+  subagentMaxDepth: { min: 1, max: 3 },
+  subagentTimeoutMinutes: { min: 0, max: 480 },
+  contextCompactPercent: { min: 20, max: 95 },
+  wrapUpPercent: { min: 50, max: 95 },
 } as const;
 export type OrchestrationNumberKey = keyof typeof ORCHESTRATION_LIMITS;
 
 /** Bounds of `AppSettings.clusterFailoverSeconds`. */
 export const CLUSTER_FAILOVER_LIMITS = { min: 5, max: 600 } as const;
+
+/** Bounds of the numeric auto-healing settings (`AppSettings.clusterHeal*`), whole numbers. */
+export const CLUSTER_HEAL_LIMITS = {
+  clusterHealIntervalSeconds: { min: 5, max: 600 },
+  clusterHealTimeoutSeconds: { min: 1, max: 120 },
+  clusterHealFailures: { min: 1, max: 20 },
+  clusterHealOfflineSeconds: { min: 10, max: 3600 },
+  clusterHealMaxRestarts: { min: 1, max: 20 },
+} as const;
+export type ClusterHealNumberKey = keyof typeof CLUSTER_HEAL_LIMITS;
 
 /** What GET /settings answers for a stored secret (chat bot tokens). */
 export const REDACTED_SECRET = "********";
@@ -729,8 +788,22 @@ export const DEFAULT_SETTINGS: AppSettings = {
   telemetryEndpoint: "",
   loadGuard: false,
   loadGuardPercent: 150,
+  subagentLimits: false,
+  subagentMaxConcurrency: 8,
+  subagentMaxDepth: 1,
+  subagentTimeoutMinutes: 30,
+  contextCompaction: false,
+  contextCompactPercent: 50,
+  wrapUpNudge: false,
+  wrapUpPercent: 80,
   clusterRunLocal: true,
   clusterFailoverSeconds: 20,
+  clusterAutoHeal: true,
+  clusterHealIntervalSeconds: 15,
+  clusterHealTimeoutSeconds: 10,
+  clusterHealFailures: 3,
+  clusterHealOfflineSeconds: 30,
+  clusterHealMaxRestarts: 3,
 };
 
 /** An installed omp skill (from `omp skill list`): pickable with "/" when composing a card. */
@@ -952,11 +1025,23 @@ export interface ConcurrencyInfo {
   /** One line for the UI, e.g. "Auto: 12 parallel (16 cores, 28 GB free)". */
   reason: string;
   /**
+   * Auto mode: memory one agent is expected to need, learned from the peak memory of recent runs
+   * (lib/agent/concurrency.ts AgentMemoryModel; AGENT_MEMORY_BYTES until enough runs finished).
+   */
+  agentMemoryBytes?: number;
+  /**
+   * Auto mode: memory still promised to running agents that have not grown to `agentMemoryBytes`
+   * yet (just started); subtracted from the free memory so a burst of launches cannot overcommit.
+   */
+  committedMemoryBytes?: number;
+  /**
    * Cluster mode (primary): `limit` = `localLimit` (this machine's own limit; 0 when
-   * `clusterRunLocal` is off) + `remoteSlots` (the slots of the online replica nodes that can run omp).
+   * `clusterRunLocal` is off) + `remoteSlots` (the slots of the `nodes` online replicas that can run
+   * omp and take new cards) + the cards running on online replicas that take none (stale status,
+   * failing health checks, a resource or load guard holding).
    */
   cluster?: { localLimit: number; nodes: number; remoteSlots: number };
-  /** Latest resource-guard sample; null before the first one or where the guard does not run (replica). */
+  /** Latest resource-guard sample; null before the first one and on a replica (its holds go to the primary with its status). */
   pressure?: ResourcePressure | null;
 }
 
@@ -1069,6 +1154,33 @@ export interface ClusterNodeStatus {
   /** Replicas: how far the replicated copy of the primary's state is behind; null for the primary. */
   replication: { seq: number; at: string | null; lagSeconds: number | null } | null;
   latencyMs: number | null;
+  /** Auto-healing view of a replica (the primary's answer only); null for the primary itself and on replicas. */
+  health: ClusterNodeHealth | null;
+}
+
+/**
+ * - `ok`: passes its health checks.
+ * - `failing`: `failures` checks failed in a row, still below `clusterHealFailures`.
+ * - `offline`: offline; a restart is attempted after `clusterHealOfflineSeconds` (`nextAttemptAt`).
+ * - `restarting`: asked to restart, waiting for it to reconnect.
+ * - `paused`: `clusterHealMaxRestarts` attempts in a row did not help; no more automatic restarts
+ *   until it has been online and healthy for 10 minutes, or the auto-healing settings change.
+ * - `off`: auto-healing is turned off (`clusterAutoHeal`).
+ */
+export type ClusterNodeHealthState = "ok" | "failing" | "offline" | "restarting" | "paused" | "off";
+
+export interface ClusterNodeHealth {
+  state: ClusterNodeHealthState;
+  /** Failed health checks in a row. */
+  failures: number;
+  /** Latest problem (failed check, unreachable or refused restart); null while healthy. */
+  problem: string | null;
+  /** Restart attempts in a row without the node staying healthy for 10 minutes. */
+  restarts: number;
+  lastCheckAt: string | null;
+  lastRestartAt: string | null;
+  /** When the next restart attempt is due while offline or backing off; null otherwise. */
+  nextAttemptAt: string | null;
 }
 
 export interface ClusterNotice {
@@ -1140,6 +1252,12 @@ export interface ClusterInfo {
   version: string;
   protocol: number;
   role: ClusterRole;
+  /**
+   * A replica's link to its primary (the state only: the route is public, the error text stays
+   * behind authentication); null on a primary or standalone server. The join script waits for
+   * `connected`.
+   */
+  connection: "connected" | "connecting" | "electing" | null;
   /** TCP port of the cluster channel. */
   port: number;
   platform: string;

@@ -65,6 +65,7 @@ export function uniqueName(prefix: string): string {
 /** Signs in through the login form and waits until the app lands on `/`. */
 export async function login(page: Page): Promise<void> {
   await page.goto("/login");
+  await page.getByLabel("Username or email", { exact: true }).fill("admin");
   await page.getByLabel("Password", { exact: true }).fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL((url) => url.pathname === "/");
