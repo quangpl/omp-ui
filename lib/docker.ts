@@ -31,6 +31,7 @@ import type {
 } from "@/lib/docker-types";
 import { dataDir } from "@/lib/files";
 import { HttpError } from "@/lib/server/http";
+import { TASK_DOCKER_LABEL, type TaskDockerCleanup, taskComposeProject } from "@/lib/task-docker";
 
 const QUICK_TIMEOUT_MS = 20_000;
 const STATS_TIMEOUT_MS = 15_000;
@@ -783,6 +784,96 @@ export async function prune(kind: PruneKind): Promise<string> {
   const out = await dockerOrThrow(args, { timeout: 5 * 60_000 });
   const reclaimed = /Total reclaimed space:\s*(.+)/i.exec(out)?.[1]?.trim();
   return reclaimed ? `Reclaimed ${reclaimed}` : "Nothing to remove";
+}
+
+// ---------------------------------------------------------------------------------------------
+// Card task resources
+
+const TASK_ID_RE = /^[A-Za-z0-9_-]+$/;
+
+/** What a card cleanup lists and removes by id, in removal order (containers first: they hold the rest). */
+const TASK_RESOURCE_KINDS = [
+  { kind: "container", key: "containers", list: ["ps", "-aq", "--no-trunc"], remove: ["rm", "-f", "-v"], timeout: 60_000 },
+  { kind: "network", key: "networks", list: ["network", "ls", "-q", "--no-trunc"], remove: ["network", "rm"], timeout: QUICK_TIMEOUT_MS },
+  { kind: "volume", key: "volumes", list: ["volume", "ls", "-q"], remove: ["volume", "rm"], timeout: QUICK_TIMEOUT_MS },
+] as const;
+
+/** Image listing, one `<id> <repository>:<tag>` line per tag (`<none>:<none>` when untagged). */
+const TASK_IMAGE_LIST = ["images", "--no-trunc", "--format", "{{.ID}} {{.Repository}}:{{.Tag}}"] as const;
+const UNTAGGED_IMAGE = "<none>:<none>";
+
+/** Removes the Docker resources marked as temporary for a card; null when Docker is not available. */
+export async function removeTaskDockerResources(taskId: string): Promise<TaskDockerCleanup | null> {
+  if (!TASK_ID_RE.test(taskId)) return null;
+  // A resource belongs to the card when it matches either filter; docker ANDs filters given in one call.
+  const filters = [`label=${TASK_DOCKER_LABEL}=${taskId}`, `label=com.docker.compose.project=${taskComposeProject(taskId)}`];
+  const cleanup: TaskDockerCleanup = { containers: 0, networks: 0, volumes: 0, images: 0, errors: [] };
+  let firstCall = true;
+  /** Non-empty output lines of a listing run once per filter; null when the very first docker call fails. */
+  const listLines = async (list: readonly string[], kind: string): Promise<string[] | null> => {
+    const lines: string[] = [];
+    for (const filter of filters) {
+      const listing = await docker([...list, "--filter", filter]);
+      if (!listing.ok) {
+        if (firstCall) return null;
+        cleanup.errors.push(`${kind}s: ${listing.error}`);
+        continue;
+      }
+      firstCall = false;
+      for (const line of listing.stdout.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed) lines.push(trimmed);
+      }
+    }
+    return lines;
+  };
+
+  for (const { kind, key, list, remove, timeout } of TASK_RESOURCE_KINDS) {
+    const ids = await listLines(list, kind);
+    if (!ids) return null;
+    for (const id of new Set(ids)) {
+      const result = await docker([...remove, id], { timeout });
+      if (result.ok) cleanup[key]++;
+      else cleanup.errors.push(`${kind} ${id.replace(/^sha256:/, "").slice(0, 12)}: ${result.error}`);
+    }
+  }
+
+  // Images last: one id can carry several tags, listed by both filters.
+  const imageLines = await listLines(TASK_IMAGE_LIST, "image");
+  if (!imageLines) return null;
+  const refsById = new Map<string, Set<string>>();
+  for (const line of imageLines) {
+    const [id, ref = UNTAGGED_IMAGE] = line.split(/\s+/, 2);
+    const refs = refsById.get(id) ?? new Set<string>();
+    refs.add(ref);
+    refsById.set(id, refs);
+  }
+  for (const [id, refs] of refsById) {
+    // Untag each tag (no -f: an image another container still uses stays, and its error is reported);
+    // an untagged image goes by id.
+    const tags = [...refs].filter((ref) => ref !== UNTAGGED_IMAGE);
+    const targets = tags.length > 0 ? tags : [id];
+    let removed = true;
+    for (const target of targets) {
+      const result = await docker(["rmi", target], { timeout: 60_000 });
+      if (result.ok) continue;
+      removed = false;
+      cleanup.errors.push(`image ${target === id ? id.replace(/^sha256:/, "").slice(0, 12) : target}: ${result.error}`);
+    }
+    if (removed) cleanup.images++;
+  }
+  return cleanup;
+}
+
+/** Background card cleanups, chained so they run one card at a time. */
+let taskCleanupQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Queues `removeTaskDockerResources` for a card without waiting for it. Queued cleanups run one card at a
+ * time, so a bulk delete never starts many docker sequences at once. Never rejects.
+ */
+export function queueTaskDockerCleanup(taskId: string): void {
+  taskCleanupQueue = taskCleanupQueue.then(() => removeTaskDockerResources(taskId)).catch(() => null);
 }
 
 // ---------------------------------------------------------------------------------------------

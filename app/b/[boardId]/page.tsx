@@ -7,6 +7,7 @@ import { Plus, TriangleAlert } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { toastCardAdded } from "@/components/board/card-added-toast";
 import { BoardMenu } from "@/components/board/board-menu";
+import { recordBoardAccess } from "@/components/boards/board-access";
 import type { BoardMenuActions } from "@/components/board/card-context-menu";
 import { ConnectionPill } from "@/components/board/connection-status";
 import { DeleteCardsDialog } from "@/components/board/delete-cards-dialog";
@@ -26,6 +27,7 @@ import { useTaskCompletionNotifications } from "@/hooks/use-task-completion-noti
 import { isTypingTarget } from "@/lib/hotkeys";
 import { loadMobileColumn, saveMobileColumn } from "@/lib/mobile-column";
 import { newCardHref, takeMobileColumnHint } from "@/lib/new-card-route";
+import { DEFAULT_PUSH_BRANCH } from "@/lib/push-branch";
 import { TASK_STATUSES, type Board, type Task, type TaskStatus } from "@/lib/types";
 
 export default function BoardPage() {
@@ -116,6 +118,11 @@ function BoardScreen() {
     setMobileColumn(takeMobileColumnHint(boardId) ?? loadMobileColumn(boardId) ?? "todo");
   }, [boardId]);
 
+  // Opening the board moves it to the top of the sidebar's "Your projects".
+  useEffect(() => {
+    void recordBoardAccess(boardId);
+  }, [boardId]);
+
   // A deep-linked card on a phone: show the column it lives in behind the drawer.
   const syncedDeepLinkRef = useRef(false);
   const selectedTask = selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) : undefined;
@@ -167,7 +174,7 @@ function BoardScreen() {
   const refreshGit = git.refresh;
   // Primitives, so menuActions (and every card) only change when shipping becomes (un)available.
   const canPush = canShip(git.statuses);
-  const { prNoun, pushTarget } = shipLabels(git.statuses ?? []);
+  const { prNoun, pushTarget } = shipLabels(git.statuses ?? [], board?.pushBranch ?? DEFAULT_PUSH_BRANCH);
   const menuActions = useMemo<BoardMenuActions>(
     () => ({
       boardId,
@@ -247,7 +254,12 @@ function BoardScreen() {
                 the live pill keeps its dot and the git button drops the branch name. */}
             <div className="flex min-w-0 items-center max-lg:[&_.font-mono]:hidden max-lg:[&_[role=status]>span:last-child]:sr-only">
               <ConnectionPill status={controller.connection} />
-              <GitIndicator boardId={boardId} statuses={git.statuses} onChanged={() => void git.refresh()} />
+              <GitIndicator
+                boardId={boardId}
+                statuses={git.statuses}
+                pushBranch={board.pushBranch}
+                onChanged={() => void git.refresh()}
+              />
             </div>
             <span aria-hidden className="mx-1 hidden h-5 w-px bg-border md:block" />
             {/* Phones use the thumb-reachable floating button instead; tablets get the icon only. */}

@@ -4,9 +4,11 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  ActivityIcon,
   ArrowRightIcon,
   ArrowUpIcon,
   ChevronDownIcon,
+  CircleAlertIcon,
   ExternalLinkIcon,
   FolderIcon,
   GitBranchIcon,
@@ -20,7 +22,6 @@ import {
   SearchXIcon,
   SparklesIcon,
   Trash2Icon,
-  TriangleAlertIcon,
   ZapIcon,
 } from "lucide-react";
 import { formatDateTime, formatRelative } from "@/components/board/format";
@@ -44,7 +45,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { STATUS_LABELS, TASK_STATUSES, type BoardWithCounts, type DashboardBoard, type TaskStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { FOCUS_RING, boardHref, plural, useEntrance } from "./shared";
+import { EmptyState, FOCUS_RING, boardHref, plural, useEntrance } from "./shared";
 
 const DOT_CLASS: Record<TaskStatus, string> = {
   todo: "bg-muted-foreground/50",
@@ -54,6 +55,23 @@ const DOT_CLASS: Record<TaskStatus, string> = {
 
 const TAG_CLASS =
   "inline-flex h-5 min-w-0 items-center gap-1 rounded-md border px-1.5 text-[11px] font-medium text-muted-foreground";
+
+/** Quiet meta chip: one grouped fact (running, needs you, success, git) per pill. */
+const CHIP_CLASS = "inline-flex min-w-0 items-center gap-1 rounded-md bg-muted/50 px-1.5 py-0.5 text-[11px] leading-4";
+
+/**
+ * Card emphasis by urgency, one signal per card: waiting on you (amber, as in Needs you) beats
+ * running agents (primary); idle cards keep the plain border. The ring is an outline so it survives
+ * card-lift's hover shadow.
+ */
+const CARD_TONE = {
+  attention: "border-amber-500/40 outline-1 outline-amber-500/15 hover:border-amber-500/60",
+  running: "border-primary/30 outline-1 outline-primary/10 hover:border-primary/50",
+  idle: "hover:border-foreground/20",
+} as const;
+
+/** Runs below this count make the success rate a weak signal, so it is shown dimmed. */
+const SMALL_SAMPLE = 5;
 
 /** Show the project filter once scanning the grid gets slow. */
 const FILTER_THRESHOLD = 5;
@@ -69,24 +87,24 @@ function GitSummary({ git }: { git: DashboardBoard["git"] }) {
     .map((repo) => `${repo.folder}: ${repo.branch ?? "detached"}, ${repo.changedFiles} changed, ${repo.ahead} unpushed`)
     .join("\n");
   return (
-    <span className="inline-flex min-w-0 items-center gap-1.5" title={title}>
-      <span className={cn(TAG_CLASS, "max-w-32")}>
-        <GitBranchIcon className="size-3 shrink-0" aria-hidden="true" />
-        <span className="truncate font-mono">{branch}</span>
-      </span>
+    <span className={cn(CHIP_CLASS, "text-muted-foreground")} title={title}>
+      <GitBranchIcon className="size-3 shrink-0" aria-hidden="true" />
+      <span className="max-w-28 truncate font-mono">{branch}</span>
       {changed > 0 && (
-        <span className="inline-flex items-center gap-1 text-[11px] text-amber-700 dark:text-amber-300">
+        <span className="ml-0.5 inline-flex shrink-0 items-center gap-1 font-mono text-amber-700 tabular-nums dark:text-amber-300">
           <span aria-hidden="true" className="size-1.5 rounded-full bg-amber-500" />
-          {changed} uncommitted
+          <span aria-hidden="true">{changed}</span>
+          <span className="sr-only">{`, ${changed} uncommitted`}</span>
         </span>
       )}
       {ahead > 0 && (
-        <span className="inline-flex items-center gap-0.5 text-[11px] text-muted-foreground">
+        <span className="ml-0.5 inline-flex shrink-0 items-center gap-0.5 font-mono tabular-nums">
           <ArrowUpIcon className="size-3" aria-hidden="true" />
-          {ahead} unpushed
+          <span aria-hidden="true">{ahead}</span>
+          <span className="sr-only">{`, ${ahead} unpushed`}</span>
         </span>
       )}
-      {changed === 0 && ahead === 0 && <span className="text-[11px] text-muted-foreground">clean</span>}
+      {changed === 0 && ahead === 0 && <span className="sr-only">, clean</span>}
     </span>
   );
 }
@@ -113,6 +131,7 @@ export function ProjectCard({
   const finishedRuns = board.runs30d.succeeded + board.runs30d.failed;
   const successRate = finishedRuns > 0 ? Math.round((board.runs30d.succeeded / finishedRuns) * 100) : null;
   const enter = useEntrance()(index);
+  const tone = board.needsYouCount > 0 ? "attention" : board.runningCount > 0 ? "running" : "idle";
 
   return (
     <ContextMenu>
@@ -121,19 +140,20 @@ export function ProjectCard({
           style={enter.style}
           className={cn(
             enter.className,
-            "group/board card-lift relative flex h-full min-w-0 flex-col gap-3 rounded-xl border bg-card p-4 text-card-foreground has-[a:focus-visible]:border-ring has-[a:focus-visible]:ring-3 has-[a:focus-visible]:ring-ring/50 hover:border-foreground/20 data-[state=open]:border-ring",
+            "group/board card-lift relative flex h-full min-w-0 flex-col gap-3.5 rounded-xl border bg-card p-4 text-card-foreground has-[a:focus-visible]:border-ring has-[a:focus-visible]:ring-3 has-[a:focus-visible]:ring-ring/50 data-[state=open]:border-ring",
+            CARD_TONE[tone],
           )}
         >
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
-              <h3 className="truncate text-base leading-snug font-semibold tracking-tight">
+              <h3 className="truncate text-sm leading-5 font-semibold tracking-tight">
                 {/* Stretched link: the whole card opens the board; the buttons sit above it. */}
                 <Link href={href} className="outline-none after:absolute after:inset-0 after:rounded-xl after:content-['']">
                   {board.name}
                 </Link>
               </h3>
               <p
-                className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+                className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground"
                 title={[board.workdir, ...board.extraFolders].join("\n")}
               >
                 <FolderIcon className="size-3.5 shrink-0" aria-hidden="true" />
@@ -196,90 +216,122 @@ export function ProjectCard({
             </div>
           </div>
 
-          <dl className="grid grid-cols-3 divide-x">
-            {TASK_STATUSES.map((status) => (
-              <div key={status} className="flex min-w-0 flex-col gap-1 px-3 first:pl-0 last:pr-0">
-                <dt className="flex items-center gap-1.5 truncate text-[11px] text-muted-foreground">
-                  <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full", DOT_CLASS[status])} />
-                  {STATUS_LABELS[status]}
-                </dt>
-                <dd className="font-mono text-lg leading-none font-semibold tabular-nums">
-                  {board.counts[status]}
-                  {/* Keeps the text unambiguous: "Done 1. 100% success", not "Done1100% success". */}
-                  <span className="sr-only">. </span>
-                </dd>
+          <div className="flex flex-col gap-2.5">
+            <dl className="grid grid-cols-3 gap-3">
+              {TASK_STATUSES.map((status) => (
+                // Reversed visually so the figure leads; the DOM keeps label-then-value for screen readers.
+                <div key={status} className="flex min-w-0 flex-col-reverse gap-1.5">
+                  <dt className="flex min-w-0 items-center gap-1.5 text-[11px] leading-none text-muted-foreground">
+                    <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full", DOT_CLASS[status])} />
+                    <span className="truncate">{STATUS_LABELS[status]}</span>
+                  </dt>
+                  <dd
+                    className={cn(
+                      "font-mono text-xl leading-none font-semibold tracking-tight tabular-nums",
+                      board.counts[status] === 0 && "text-muted-foreground/60",
+                    )}
+                  >
+                    {board.counts[status]}
+                    {/* Keeps the text unambiguous: "Done 1. 100% success", not "Done1100% success". */}
+                    <span className="sr-only">. </span>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+
+            {total > 0 && (
+              <div
+                className="flex h-1.5 gap-px overflow-hidden rounded-full bg-muted"
+                role="img"
+                aria-label={`${board.counts.done} of ${total} cards done`}
+              >
+                {TASK_STATUSES.map(
+                  (status) =>
+                    board.counts[status] > 0 && (
+                      <span
+                        key={status}
+                        className={cn("h-full transition-[flex-grow] duration-500", DOT_CLASS[status])}
+                        style={{ flexGrow: board.counts[status] }}
+                      />
+                    ),
+                )}
               </div>
-            ))}
-          </dl>
+            )}
+          </div>
 
-          {total > 0 && (
-            <div
-              className="flex h-1 gap-px overflow-hidden rounded-full bg-muted"
-              role="img"
-              aria-label={`${board.counts.done} of ${total} cards done`}
-            >
-              {TASK_STATUSES.map(
-                (status) =>
-                  board.counts[status] > 0 && (
-                    <span
-                      key={status}
-                      className={cn("h-full transition-[flex-grow] duration-500", DOT_CLASS[status])}
-                      style={{ flexGrow: board.counts[status] }}
-                    />
-                  ),
-              )}
-            </div>
-          )}
-
-          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-muted-foreground">
             {board.runningCount > 0 && (
-              <span className="inline-flex items-center gap-1.5 font-medium text-primary">
-                <span aria-hidden="true" className="relative flex size-2">
+              <span className={cn(CHIP_CLASS, "gap-1.5 bg-primary/10 font-medium text-primary")}>
+                <span aria-hidden="true" className="relative flex size-1.5">
                   <span className="animate-breathe absolute inset-0 rounded-full bg-primary" />
-                  <span className="relative inline-flex size-2 rounded-full bg-primary" />
+                  <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
                 </span>
                 <span className="font-mono tabular-nums">{board.runningCount}</span> running
               </span>
             )}
             {board.needsYouCount > 0 && (
-              <span className="inline-flex items-center gap-1 font-medium text-destructive">
-                <TriangleAlertIcon className="size-3" aria-hidden="true" />
-                {board.needsYouCount} need{board.needsYouCount === 1 ? "s" : ""} you
+              <span className={cn(CHIP_CLASS, "bg-amber-500/10 font-medium text-amber-700 dark:text-amber-300")}>
+                <CircleAlertIcon className="size-3 shrink-0" aria-hidden="true" />
+                <span className="font-mono tabular-nums">{board.needsYouCount}</span>
+                {board.needsYouCount === 1 ? " needs you" : " need you"}
               </span>
             )}
-            <span title="Run success rate, last 30 days (stopped runs excluded)">
+            <span
+              className={CHIP_CLASS}
+              title={
+                successRate === null
+                  ? "No finished runs in the last 30 days"
+                  : `Run success rate, last 30 days: ${board.runs30d.succeeded} of ${plural(finishedRuns, "run")} succeeded (stopped runs excluded)`
+              }
+            >
+              <ActivityIcon className="size-3 shrink-0" aria-hidden="true" />
               {successRate === null ? (
                 "No runs in 30 days"
               ) : (
                 <>
-                  <span className="font-mono font-medium text-foreground tabular-nums">{successRate}%</span> success ·{" "}
-                  {plural(finishedRuns, "run")}
+                  <span
+                    className={cn(
+                      "font-mono font-medium text-foreground tabular-nums",
+                      finishedRuns < SMALL_SAMPLE && "opacity-60",
+                    )}
+                  >
+                    {successRate}%
+                  </span>
+                  <span className="sr-only"> success, </span>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono tabular-nums">{finishedRuns}</span>
+                  <span className="sr-only"> {finishedRuns === 1 ? "run" : "runs"}</span>
                 </>
               )}
             </span>
             <GitSummary git={board.git} />
           </div>
 
-          <div className="mt-auto flex min-w-0 items-center gap-1.5 border-t pt-2.5 text-xs text-muted-foreground">
-            {board.autoRun && (
-              <span className={TAG_CLASS} title="Moving a card to In progress starts its agent">
-                <ZapIcon className="size-3" aria-hidden="true" />
-                Auto-run
-              </span>
-            )}
-            {board.worktrees && (
-              <span className={TAG_CLASS} title="Each card works in its own git worktree">
-                <GitBranchIcon className="size-3" aria-hidden="true" />
-                Worktrees
-              </span>
-            )}
-            {board.model && (
-              <span className={cn(TAG_CLASS, "max-w-32")} title={`Model: ${board.model}`}>
-                <SparklesIcon className="size-3 shrink-0" aria-hidden="true" />
-                <span className="truncate">{board.model}</span>
-              </span>
-            )}
-            <span className="ml-auto shrink-0" title={formatDateTime(board.lastActivityAt)}>
+          <div className="mt-auto flex min-w-0 items-center gap-2 border-t pt-2.5 text-[11px] text-muted-foreground">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+              {board.autoRun && (
+                <span
+                  className={cn(TAG_CLASS, "shrink-0 border-primary/20 bg-primary/10 text-primary")}
+                  title="Moving a card to In progress starts its agent"
+                >
+                  <ZapIcon className="size-3" aria-hidden="true" />
+                  Auto-run
+                </span>
+              )}
+              {board.worktrees && (
+                <span className={TAG_CLASS} title="Each card works in its own git worktree">
+                  <GitBranchIcon className="size-3 shrink-0" aria-hidden="true" />
+                  <span className="truncate">Worktrees</span>
+                </span>
+              )}
+              {board.model && (
+                <span className={cn(TAG_CLASS, "max-w-32")} title={`Model: ${board.model}`}>
+                  <SparklesIcon className="size-3 shrink-0" aria-hidden="true" />
+                  <span className="truncate">{board.model}</span>
+                </span>
+              )}
+            </div>
+            <span className="shrink-0" title={formatDateTime(board.lastActivityAt)}>
               Active {formatRelative(board.lastActivityAt, now)}
             </span>
             <ArrowRightIcon
@@ -362,13 +414,13 @@ export function ProjectsSection({ boards, ...actions }: CardActions & { boards: 
     <section aria-labelledby="home-projects">
       <div className="mb-2.5 flex flex-wrap items-end gap-x-3 gap-y-2">
         <div className="min-w-0 flex-1">
-          <h2 id="home-projects" className="text-sm font-semibold tracking-tight">
+          <h2 id="home-projects" className="text-[13px] font-semibold tracking-tight text-foreground">
             Pinned projects
-            <span className="ml-2 rounded-md bg-muted px-1.5 font-mono text-xs font-medium text-muted-foreground tabular-nums">
+            <span className="ml-2 rounded-md bg-muted px-1.5 font-mono text-[11px] font-medium text-muted-foreground tabular-nums">
               {pinnedTotal}
             </span>
           </h2>
-          <p className="text-xs text-muted-foreground">Most recently active first · tap one to open its board</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">Most recently active first · tap one to open its board</p>
         </div>
         {boards.length >= FILTER_THRESHOLD && (
           <div className="relative w-full sm:w-56">
@@ -388,14 +440,16 @@ export function ProjectsSection({ boards, ...actions }: CardActions & { boards: 
         )}
       </div>
       {query && matching.length === 0 ? (
-        <div className="animate-fade-in-soft flex flex-col items-center gap-3 rounded-xl border border-dashed px-4 py-10 text-center">
-          <span className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-            <SearchXIcon className="size-5" aria-hidden="true" />
-          </span>
-          <p className="text-sm text-muted-foreground">No project matches “{filter.trim()}”.</p>
-          <Button variant="outline" size="sm" className="h-11 md:h-8" onClick={() => setFilter("")}>
-            Clear filter
-          </Button>
+        <div className="animate-fade-in-soft">
+          <EmptyState
+            icon={<SearchXIcon />}
+            title={`No project matches “${filter.trim()}”`}
+            action={
+              <Button variant="outline" size="sm" className="h-11 md:h-8" onClick={() => setFilter("")}>
+                Clear filter
+              </Button>
+            }
+          />
         </div>
       ) : (
         <>
@@ -403,14 +457,13 @@ export function ProjectsSection({ boards, ...actions }: CardActions & { boards: 
             <ProjectGrid boards={pinned} offset={0} {...actions} />
           ) : (
             !query && (
-              <div className="animate-fade-in-soft flex flex-col items-center gap-2 rounded-xl border border-dashed px-4 py-8 text-center">
-                <span className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-                  <PinIcon className="size-5" aria-hidden="true" />
-                </span>
-                <p className="text-sm font-medium">Pin projects to keep them on top</p>
-                <p className="max-w-xs text-xs text-pretty text-muted-foreground">
-                  Pinned projects lead the dashboard and the sidebar. Pin one from its ⋯ menu under Other projects.
-                </p>
+              <div className="animate-fade-in-soft">
+                <EmptyState
+                  icon={<PinIcon />}
+                  title="Pin projects to keep them on top"
+                  hint="Pinned projects lead the dashboard. Pin one from its ⋯ menu under Other projects."
+                  tone="primary"
+                />
               </div>
             )
           )}

@@ -6,6 +6,7 @@ import { TriangleAlertIcon } from "lucide-react";
 import { formatDateTime, formatRelative } from "@/components/board/format";
 import { boardHref, cardHref, plural } from "@/components/home/shared";
 import { workerIdentity } from "@/components/visualize/game";
+import { modelLabel } from "@/components/visualize/roles";
 import { WorkerAvatar } from "@/components/visualize/worker-avatar";
 import { type Dashboard, type DashboardBoard, type QueueEntry, TASK_STATUSES, type TaskStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -83,8 +84,8 @@ function ProductionStrip({ board, total }: { board: DashboardBoard; total: numbe
   );
 }
 
-/** The workers on site right now: one robot per running card, each linking to its card. */
-function Crew({ running }: { running: QueueEntry[] }) {
+/** The workers on site right now: one robot per running card, each linking to its card; the model is in its tooltip. */
+function Crew({ running, models }: { running: QueueEntry[]; models: ReadonlyMap<string, string | null> }) {
   if (running.length === 0) {
     return <span className="font-mono text-xs text-muted-foreground">Site quiet</span>;
   }
@@ -93,7 +94,8 @@ function Crew({ running }: { running: QueueEntry[] }) {
     <ul aria-label={`${plural(running.length, "worker")} on site`} className="flex items-center gap-1">
       {shown.map((entry) => {
         const worker = workerIdentity(entry.taskId);
-        const label = `${worker.name} on ${entry.title}`;
+        const model = models.get(entry.taskId);
+        const label = `${worker.name} on ${entry.title}${model ? `, model ${modelLabel(model)}` : ""}`;
         return (
           <li key={entry.taskId}>
             <Link
@@ -117,11 +119,14 @@ function Crew({ running }: { running: QueueEntry[] }) {
 function WorksiteRow({
   board,
   running,
+  models,
   now,
   index,
 }: {
   board: DashboardBoard;
   running: QueueEntry[];
+  /** Lead model by card id, when known. */
+  models: ReadonlyMap<string, string | null>;
   now: number;
   index: number;
 }) {
@@ -184,7 +189,7 @@ function WorksiteRow({
             ))}
             {scaled && <li>1 tick ≈ {(total / MAX_TICKS).toFixed(1)} cards</li>}
           </ul>
-          <Crew running={running} />
+          <Crew running={running} models={models} />
         </div>
       </div>
 
@@ -217,6 +222,7 @@ export function Worksites({ dashboard, now }: { dashboard: Dashboard; now: numbe
     else runningByBoard.set(entry.boardId, [entry]);
   }
   const active = boards.filter((b) => runningByBoard.has(b.id)).length;
+  const models = new Map(dashboard.live.map((agent) => [agent.taskId, agent.model]));
 
   return (
     <section aria-labelledby="viz-worksites" className="min-w-0">
@@ -238,6 +244,7 @@ export function Worksites({ dashboard, now }: { dashboard: Dashboard; now: numbe
               key={board.id}
               board={board}
               running={runningByBoard.get(board.id) ?? []}
+              models={models}
               now={now}
               index={index}
             />

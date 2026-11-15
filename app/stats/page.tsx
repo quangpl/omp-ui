@@ -3,15 +3,18 @@
 import { AppHeader } from "@/components/app-header";
 import { AiSection } from "@/components/stats/ai-section";
 import { LiveIndicator, RefreshRing } from "@/components/stats/charts";
+import { ClusterSection } from "@/components/stats/cluster-section";
 import { OptimizeSection } from "@/components/stats/optimize-section";
 import { Overview } from "@/components/stats/overview";
 import { SystemSection } from "@/components/stats/system-section";
 import { SYSTEM_REFRESH_MS, useAiStats, useSystemStats, type SystemState } from "@/components/stats/use-stats";
+import { useClusterStatus } from "@/hooks/use-cluster";
 import { useCurrentUser } from "@/hooks/use-current-user";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 
 const JUMP_LINKS = [
   { href: "#system-stats", label: "System" },
+  { href: "#cluster-stats", label: "Cluster", clusterOnly: true },
   { href: "#ai-quota", label: "AI quota" },
   { href: "#optimize", label: "Optimize", adminOnly: true },
 ] as const;
@@ -48,7 +51,12 @@ export default function StatsPage() {
   const system = useSystemStats();
   // Optimize lists host processes and every user's folders (admin-only API); hidden while loading.
   const { isAdmin } = useCurrentUser();
-  const jumpLinks = JUMP_LINKS.filter((link) => isAdmin || !("adminOnly" in link));
+  // The Cluster section shows only when this server is part of a cluster.
+  const { status } = useClusterStatus();
+  const cluster = status && status.role !== "standalone" ? status : null;
+  const jumpLinks = JUMP_LINKS.filter(
+    (link) => (isAdmin || !("adminOnly" in link)) && (cluster !== null || !("clusterOnly" in link)),
+  );
   return (
     <div className="flex min-h-dvh flex-col">
       <AppHeader title="Stats" />
@@ -86,8 +94,9 @@ export default function StatsPage() {
           </div>
           <Overview system={system} ai={ai} />
           <SystemSection system={system} />
+          {cluster && <ClusterSection status={cluster} />}
           <AiSection ai={ai} />
-          {isAdmin && <OptimizeSection />}
+          {isAdmin && <OptimizeSection resourceGuard={system.stats ? system.stats.resourceGuard : undefined} />}
         </div>
       </main>
     </div>

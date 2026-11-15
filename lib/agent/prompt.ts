@@ -1,5 +1,6 @@
 import { SDLC_PHASE_INFO, SDLC_PHASES, sdlcProgress } from "@/lib/sdlc";
 import type { Board, BrowserMode, Comment, Task } from "@/lib/types";
+import { TASK_DOCKER_LABEL, taskComposeProject } from "@/lib/task-docker";
 
 /** Per-run facts beyond the card: shared folders, workspace, browser, message senders. */
 export interface RunContext {
@@ -15,7 +16,7 @@ export interface RunContext {
 }
 
 const SUMMARY_INSTRUCTION =
-  "Finish with a concise summary of what you did (this summary is shown to the user on the card): what changed, how you verified it, and anything left for the user to decide.";
+  "Finish with a short, scannable summary for the user (it is shown on the card): lead with the result, then how you verified it and anything left for the user to decide, in a few plain sentences or at most 5 bullets (about 120 words before the Report). Say what changed and why at the level a reviewer needs; skip step-by-step narration, file-by-file tours, tool output, restating the task, and details the diff already shows.";
 
 /**
  * Ends the summary with a `## Report` the card renders as a report card (outcome, tests, changes,
@@ -23,11 +24,30 @@ const SUMMARY_INSTRUCTION =
  */
 function reportInstruction(task: Task, context?: RunContext): string {
   const folder = context ? `this card's shared files folder (${context.taskFiles})` : "this card's shared files folder";
-  return `When the work involves a UI or tests, save screenshots of the result and test result files (reports, logs) to ${folder}. End the summary, after any question for the user, with a short \`## Report\` section: an \`Outcome:\` line (one sentence: done, partly done or failed, and why); a \`Tests:\` line with the counts you observed (e.g. \`Tests: 42 passed, 0 failed\`, or \`Tests: not run\`); a \`Changes:\` line with \`git diff --shortstat\` of your work when code changed; and one markdown image per saved screenshot, linked by its path inside that folder as \`![what it shows](/api/v1/tasks/${task.id}/files/<path>)\` (e.g. \`![cart page](/api/v1/tasks/${task.id}/files/screenshots/cart.png)\`), with other saved files linked the same way as \`[name](/api/v1/tasks/${task.id}/files/<path>)\`.`;
+  return `When the work involves a UI or tests, save screenshots of the result and test result files (reports, logs) to ${folder}. End the summary, after any question for the user, with a short \`## Report\` section holding only these lines (no extra prose): an \`Outcome:\` line (one sentence: done, partly done or failed, and why); a \`Tests:\` line with the counts you observed (e.g. \`Tests: 42 passed, 0 failed\`, or \`Tests: not run\`); a \`Changes:\` line with \`git diff --shortstat\` of your work when code changed; and one markdown image per saved screenshot, linked by its path inside that folder as \`![what it shows](/api/v1/tasks/${task.id}/files/<path>)\` (e.g. \`![cart page](/api/v1/tasks/${task.id}/files/screenshots/cart.png)\`), with other saved files linked the same way as \`[name](/api/v1/tasks/${task.id}/files/<path>)\`.`;
+}
+
+/**
+ * Task artifact cleanup policy (docs/TASK-CLEANUP.md): once the work is verified, before any commit or
+ * push, the agent removes what it created only to do the task, so a card's result is its summary plus the
+ * files the Report links. Docker resources started only for the card are marked with the
+ * `agentman.task=<card id>` label or the `task-<card id>` compose project (lib/task-docker.ts); AgentMan
+ * removes marked leftovers when a run moves the card to Done or the card is deleted.
+ */
+function cleanupInstruction(task: Task): string {
+  const project = taskComposeProject(task.id);
+  const label = `${TASK_DOCKER_LABEL}=${task.id}`;
+  return (
+    "Once the work is done and verified, before you commit or push anything and before your final summary, clean up everything you created only to do this task: analytics and profiling output, throwaway scripts and tests, test-runner output (e.g. test-results/, playwright-report/, coverage/), scratch notes, logs and dumps, and work-in-progress files in this card's shared files folder that your Report does not link; stop the dev servers, browsers and other background processes you started; and remove the Docker containers, compose stacks, volumes, networks and images you created for it. Keep only the result: your summary with its Report, the files the Report links, and the changes the task asked for (including tests meant to stay). Never delete or remove anything you did not create: files that existed before this task, files the user uploaded, other cards' files and changes (they may share this working tree), Docker resources that were already there, or permanent project infrastructure such as test suites and Docker configuration. " +
+    "Put scratch files in a temporary folder outside the project (e.g. `mktemp -d`) so they are easy to remove. " +
+    `Mark every Docker resource you start only for this task: run compose stacks as \`docker compose -p ${project}\` and add \`--label ${label}\` to \`docker run\`, \`docker create\`, \`docker build\`, \`docker volume create\` and \`docker network create\`. ` +
+    `Before you finish, stop and remove them (\`docker compose -p ${project} down -v --remove-orphans\`, \`docker rm -f\`, \`docker volume rm\`, \`docker network rm\`, \`docker image rm\`) and check that \`docker ps -a --filter label=${label}\` and \`docker ps -a --filter label=com.docker.compose.project=${project}\` list nothing; AgentMan also removes marked leftovers when a run moves the card to Done or the card is deleted. ` +
+    "A container the task asks you to leave running is a result, not a leftover: do not mark it or the image it runs from (containers inherit their image's labels), and name it in your Report."
+  );
 }
 
 const PUSH_INSTRUCTION =
-  "Do not push on your own; the user ships the work from the card. But when the task or the user's feedback explicitly asks you to push to main (or the default branch) or to open a pull/merge request, do it directly without asking for confirmation: commit, push, and open the PR/MR (gh or glab), then put the branch and the PR/MR URL in your Report.";
+  "Do not push on your own; the user ships the work from the card. But when the task or the user's feedback explicitly asks you to push to main (or the default branch) or to open a pull/merge request, do it directly without asking for confirmation: commit, push, and open the PR/MR (gh or glab), then add `Branch:` and `PR:` lines with the branch and the PR/MR URL to your Report.";
 
 const HEADLESS_INSTRUCTION =
   "Nobody can answer questions during this run, so do not stop to ask. When you or one of your subagents are unsure which way to go (approach, library, design or behavior choice, unclear scope), call the ask_advisor tool and follow its decision. Leave a question for the user (at the end of your summary) only when it needs their own judgment: personal preference or taste, private information, business/legal/money decisions, or destructive actions the task does not ask for; meanwhile make the most reasonable, easily reversible assumption and mention it in your summary.";
@@ -120,6 +140,7 @@ export function buildPrompt(
       feedbackSdlcInstruction(task),
       ...(needsOrchestration(null, feedback) ? [ORCHESTRATE_INSTRUCTION, SDLC_STAFFING_INSTRUCTION] : []),
       HEADLESS_INSTRUCTION,
+      cleanupInstruction(task),
       PUSH_INSTRUCTION,
       SUMMARY_INSTRUCTION,
       reportInstruction(task, context),
@@ -138,6 +159,7 @@ export function buildPrompt(
       "Continue from the SDLC phase your todo list shows.",
       ...(needsOrchestration(task, []) ? [ORCHESTRATE_INSTRUCTION, SDLC_STAFFING_INSTRUCTION] : []),
       HEADLESS_INSTRUCTION,
+      cleanupInstruction(task),
       PUSH_INSTRUCTION,
       SUMMARY_INSTRUCTION,
       reportInstruction(task, context),
@@ -165,6 +187,7 @@ export function buildPrompt(
     ...(needsOrchestration(task, feedback) ? [`- ${ORCHESTRATE_INSTRUCTION}`, `- ${SDLC_STAFFING_INSTRUCTION}`] : []),
     "- Verify it: run the relevant build, tests, or a quick check as appropriate.",
     `- ${HEADLESS_INSTRUCTION}`,
+    `- ${cleanupInstruction(task)}`,
     `- ${PUSH_INSTRUCTION}`,
     `- ${SUMMARY_INSTRUCTION}`,
     `- ${reportInstruction(task, context)}`,
@@ -239,7 +262,7 @@ export function buildSteerMessage(comment: Comment, senderTitle?: string | null)
     "",
     fromAgent ? defuseMagicKeywords(comment.body.trim()) : comment.body.trim(),
     "",
-    "Take it into account in your current work and mention how you addressed it in your final summary.",
+    "Take it into account in your current work and mention briefly how you addressed it in your final summary.",
   ];
   if (!fromAgent && needsOrchestration(null, [comment])) lines.push(ORCHESTRATE_INSTRUCTION);
   return lines.join("\n");

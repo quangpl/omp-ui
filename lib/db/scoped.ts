@@ -152,6 +152,10 @@ class ScopedRepository implements Repository {
     return this.base.updateBoard(id, patch);
   }
 
+  markBoardAccessed(id: string): Promise<Board | null> {
+    return this.base.markBoardAccessed(id);
+  }
+
   deleteBoard(id: string): Promise<boolean> {
     return this.base.deleteBoard(id);
   }
@@ -328,6 +332,10 @@ class UserScopedRepository extends ScopedRepository {
 
   override async updateBoard(id: string, patch: UpdateBoardInput): Promise<Board | null> {
     return (await this.ownedBoard(id)) ? this.base.updateBoard(id, patch) : null;
+  }
+
+  override async markBoardAccessed(id: string): Promise<Board | null> {
+    return (await this.ownedBoard(id)) ? this.base.markBoardAccessed(id) : null;
   }
 
   override async deleteBoard(id: string): Promise<boolean> {

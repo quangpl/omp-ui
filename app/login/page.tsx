@@ -311,9 +311,7 @@ export default function LoginPage() {
 
             {!isSetup && (
               <p className="mt-8 border-t pt-4 text-xs leading-relaxed text-muted-foreground">
-                Forgot your password? An admin can reset it in Settings → Users. The{" "}
-                <code className="font-mono">admin</code> account can be recovered by restarting the server with{" "}
-                <code className="font-mono">ADMIN_PASSWORD</code> set.
+                Forgot your password? An admin can reset it in Settings → Users.
               </p>
             )}
           </div>

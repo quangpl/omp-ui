@@ -22,6 +22,7 @@ import { useBoardTasks, useQueueDrafting, useQueuePosition } from "@/hooks/use-b
 import { isQuotaError } from "@/lib/quota";
 import { questionPreview } from "@/lib/question";
 import { formatDateTime } from "@/components/board/format";
+import { CardResources } from "@/components/board/agent-resources";
 import { SdlcTrack, TaskProgressIcon, TodoEta } from "@/components/board/task-progress";
 import { todoProgress } from "@/lib/todos";
 import { cn } from "@/lib/utils";
@@ -380,9 +381,10 @@ export const TaskCard = memo(function TaskCard({
             <span className="mt-1 block truncate text-xs leading-4 text-muted-foreground">{preview}</span>
           )
         )}
-        {/* Meta row: agent state and flags on the left, conversation and age on the right. */}
-        <span className="mt-2.5 flex min-h-5 items-center gap-2">
-          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+        {/* Meta row: agent state and flags on the left, conversation, agent resources and age on the
+            right. The right cluster wraps under the flags once they'd get less than `basis-20`. */}
+        <span className="mt-2.5 flex min-h-5 flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="flex min-w-0 grow basis-20 flex-wrap items-center gap-1.5">
             <AgentStateBadge
               state={task.agentState}
               queuePosition={queuePosition}
@@ -433,7 +435,7 @@ export const TaskCard = memo(function TaskCard({
               </span>
             )}
           </span>
-          <span className="flex shrink-0 items-center gap-2.5 text-[11px] text-muted-foreground">
+          <span className="ml-auto flex shrink-0 items-center gap-2.5 text-[11px] text-muted-foreground">
             {progress && (
               <span
                 className={cn(
@@ -458,6 +460,7 @@ export const TaskCard = memo(function TaskCard({
                 <span className="sr-only">comments</span>
               </span>
             )}
+            <CardResources task={task} />
             <CardAge iso={task.updatedAt} />
           </span>
         </span>

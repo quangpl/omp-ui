@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { ArrowRightIcon, BotIcon, CpuIcon, LoaderCircleIcon, SquareIcon, ZapIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -11,13 +11,28 @@ import { Kbd } from "@/components/ui/kbd";
 import { api } from "@/lib/api-client";
 import type { DashboardLiveAgent, QueueEntry, QueueSnapshot } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { FOCUS_RING, Panel, SectionTitle, cardHref, plural, useEntrance } from "./shared";
+import { EmptyState, FOCUS_RING, Panel, SectionTitle, cardHref, plural, useEntrance } from "./shared";
 
 /** Rows shown; the rest are summarized with a link to the visual overview. */
 const MAX_ROWS = 6;
 
 /** Latest activity per card from live `run.event`s, newer than the dashboard payload's. */
 export type LiveActivity = Record<string, { activity: string; at: string }>;
+
+/** Staggered ellipsis for work in progress without a measurable step (the smart queue ordering). */
+function WorkingDots() {
+  return (
+    <span aria-hidden="true" className="inline-flex gap-0.5">
+      {[0, 1, 2].map((dot) => (
+        <span
+          key={dot}
+          className="animate-working-dot size-1 rounded-full bg-current"
+          style={{ "--dot": dot } as CSSProperties}
+        />
+      ))}
+    </span>
+  );
+}
 
 function AgentRow({
   entry,
@@ -67,8 +82,11 @@ function AgentRow({
       <span
         aria-hidden="true"
         className={cn(
-          "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full font-mono text-[11px] font-medium tabular-nums",
-          running ? "bg-primary/10" : "bg-muted text-muted-foreground",
+          "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full font-mono tabular-nums",
+          running
+            ? "bg-primary/10"
+            : "bg-muted text-[10px] font-medium text-muted-foreground/70",
+          !running && entry.planning && "animate-shimmer",
         )}
       >
         {running ? (
@@ -85,29 +103,35 @@ function AgentRow({
         className={cn("pressable min-w-0 flex-1 rounded-md", FOCUS_RING)}
       >
         <span className="flex min-w-0 items-baseline gap-2">
-          <span className="truncate text-sm font-medium" title={entry.title}>
+          <span className={cn("truncate text-sm", running ? "font-medium" : "text-foreground/90")} title={entry.title}>
             {entry.title}
           </span>
           {running && live?.startedAt && (
-            <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground tabular-nums" title="Running for">
+            <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums" title="Running for">
               {formatDuration(now - Date.parse(live.startedAt))}
             </span>
           )}
         </span>
         <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="max-w-[45%] shrink-0 truncate">{entry.boardName}</span>
+          <span className="max-w-[55%] min-w-0 shrink-0 truncate font-medium text-foreground/90">{entry.boardName}</span>
           {live?.model && (
-            <span className="inline-flex min-w-0 items-center gap-1 rounded border px-1 leading-4" title={`Model: ${live.model}`}>
+            <span className="inline-flex min-w-0 items-center gap-1 text-[11px]" title={`Model: ${live.model}`}>
               <CpuIcon className="size-3 shrink-0" aria-hidden="true" />
               <span className="truncate">{live.model}</span>
             </span>
           )}
-          {status && <span className="truncate">· {status}</span>}
+          {status && (
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <span aria-hidden="true">·</span>
+              <span className="truncate">{status}</span>
+              {entry.planning && <WorkingDots />}
+            </span>
+          )}
         </span>
         {running ? (
           <span
-            className="mt-1 block truncate rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
-            title={activity ? `${activity}${activityAt ? ` — ${formatRelative(activityAt, now)}` : ""}` : undefined}
+            className="mt-1.5 block truncate border-l-2 border-primary/30 pl-2 text-xs text-muted-foreground"
+            title={activity ? `${activity}${activityAt ? ` · ${formatRelative(activityAt, now)}` : ""}` : undefined}
           >
             {activity ?? "Starting…"}
           </span>
@@ -148,60 +172,68 @@ export function LiveAgents({
   const shown = entries.slice(0, MAX_ROWS);
   const liveById = new Map(live.map((agent) => [agent.taskId, agent]));
 
+  const saturated = limit > 0 && busy >= limit;
+
   return (
     <section aria-labelledby="home-agents">
-      <SectionTitle
-        id="home-agents"
-        title="Live agents"
-        action={
-          <span className="text-xs text-muted-foreground">
-            <span className="font-mono tabular-nums">
+      <SectionTitle id="home-agents" title="Live agents" />
+      <Panel className="p-3">
+        <div className="flex items-center gap-3">
+          <div className="flex flex-1 gap-1" role="img" aria-label={`${busy} of ${limit} agent slots busy`}>
+            {Array.from({ length: limit }, (_, i) => (
+              <span key={i} className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                <span
+                  className={cn(
+                    "absolute inset-0 rounded-full bg-primary opacity-0 transition-opacity duration-500 motion-reduce:transition-none",
+                    i < busy && "opacity-100",
+                  )}
+                />
+              </span>
+            ))}
+          </div>
+          <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
+            <span className={cn(saturated && "font-medium text-foreground")}>
               {busy}/{limit}
             </span>{" "}
-            slots{queued.length > 0 ? ` · ${queued.length} queued` : ""}
+            slots
+            {queued.length > 0 && (
+              <>
+                {" · "}
+                <span className={cn(saturated && "text-foreground/80")}>{queued.length}</span> queued
+              </>
+            )}
           </span>
-        }
-      />
-      <Panel className="p-3">
-        <div className="flex gap-1" role="img" aria-label={`${busy} of ${limit} agent slots busy`}>
-          {Array.from({ length: limit }, (_, i) => (
-            <span key={i} className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
-              <span
-                className={cn(
-                  "absolute inset-0 rounded-full bg-primary opacity-0 transition-opacity duration-500 motion-reduce:transition-none",
-                  i < busy && "opacity-100",
-                )}
-              />
-            </span>
-          ))}
         </div>
         {planning.length > 0 && (
-          <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-            <LoaderCircleIcon className="size-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-            Ordering the queue of {planning.map((p) => p.boardName).join(", ")}
+          <p className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="shrink-0 text-primary">
+              <WorkingDots />
+            </span>
+            <span className="truncate">Ordering the queue of {planning.map((p) => p.boardName).join(", ")}</span>
           </p>
         )}
         {entries.length === 0 ? (
-          <div className="flex items-start gap-3 pt-3">
-            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-              <BotIcon className="size-4.5" aria-hidden="true" />
-            </span>
-            <div className="min-w-0">
-              <p className="text-sm font-medium">No agents working</p>
-              <p className="text-xs text-pretty text-muted-foreground">Start a card to see its agent and current step here.</p>
-              <button
-                type="button"
-                onClick={() => openNewCard()}
-                className={cn(
-                  "pressable mt-1 inline-flex min-h-11 items-center gap-1.5 rounded-md text-sm font-medium text-primary hover:underline md:min-h-8",
-                  FOCUS_RING,
-                )}
-              >
-                <ZapIcon className="size-3.5" aria-hidden="true" />
-                New task
-                <Kbd className="hidden md:inline-flex">N</Kbd>
-              </button>
-            </div>
+          <div className="mt-3">
+            <EmptyState
+              tone="muted"
+              icon={<BotIcon />}
+              title="No agents working"
+              hint="Start a card to see its agent and current step here."
+              action={
+                <button
+                  type="button"
+                  onClick={() => openNewCard()}
+                  className={cn(
+                    "pressable inline-flex min-h-11 items-center gap-1.5 rounded-md px-1 text-sm font-medium text-primary hover:underline md:min-h-8",
+                    FOCUS_RING,
+                  )}
+                >
+                  <ZapIcon className="size-3.5" aria-hidden="true" />
+                  New task
+                  <Kbd className="hidden md:inline-flex">N</Kbd>
+                </button>
+              }
+            />
           </div>
         ) : (
           <ul className="mt-3 flex flex-col divide-y">
@@ -226,7 +258,7 @@ export function LiveAgents({
               FOCUS_RING,
             )}
           >
-            <span className="font-mono tabular-nums">{entries.length - shown.length}</span> more — view all
+            <span className="font-mono tabular-nums">{entries.length - shown.length}</span> more · view all
             <ArrowRightIcon className="size-3" aria-hidden="true" />
           </Link>
         )}

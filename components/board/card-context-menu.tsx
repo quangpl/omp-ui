@@ -33,7 +33,7 @@ export interface BoardMenuActions {
   revertToTodo: (taskId: string) => Promise<void>;
   runAgent: (taskId: string) => Promise<void>;
   stopAgent: (taskId: string) => Promise<void>;
-  /** Quick action on Done cards: commit and push to the default branch. Null when the project can't ship. */
+  /** Quick action on Done cards: commit and push to the project's push branch. Null when the project can't ship. */
   pushToMain: ((taskId: string) => Promise<void>) | null;
   duplicate: (task: Task) => Promise<void>;
   /** Asks for confirmation before deleting. */

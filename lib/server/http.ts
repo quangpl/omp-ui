@@ -2,6 +2,7 @@
 import { getAgentManager } from "@/lib/agent/manager";
 import type { AgentManager } from "@/lib/agent/types";
 import { clientIp, ensureAuthBoot, getRequestToken, getRequestUser, issueToken, sessionCookie } from "@/lib/auth";
+import { clusterRole, readNodeState } from "@/lib/cluster/node";
 import { getRepo } from "@/lib/db";
 import { ScopeError, scopeRepo } from "@/lib/db/scoped";
 import type { Repository } from "@/lib/db/types";
@@ -188,6 +189,28 @@ function recordAccess(req: Request, pathname: string, status: number, durationMs
   });
 }
 
+/** Methods a replica serves itself: reads never change the replicated state. */
+const REPLICA_READ_METHODS = ["GET", "HEAD", "OPTIONS"];
+/**
+ * Writes a replica still accepts: signing in/out and managing its own cluster membership. Never
+ * setup or password changes: the replicated user table would undo them (and a freshly joined node's
+ * empty database must not let anyone create an admin).
+ */
+const REPLICA_WRITE_PATHS = ["/api/v1/auth/login", "/api/v1/auth/logout"];
+const REPLICA_WRITE_PREFIX = "/api/v1/cluster/";
+
+/**
+ * A replica keeps a read-only copy of the primary's state (replication overwrites it), so changes
+ * are refused with 409 and a pointer to the primary.
+ */
+function assertWritable(req: Request, pathname: string): void {
+  if (REPLICA_READ_METHODS.includes(req.method) || clusterRole() !== "replica") return;
+  if (REPLICA_WRITE_PATHS.includes(pathname) || pathname.startsWith(REPLICA_WRITE_PREFIX)) return;
+  const primary = readNodeState().primary;
+  const where = primary ? `${primary.name} (${primary.httpUrl})` : "the cluster's primary";
+  throw new HttpError(409, `This node is a replica of ${where}; make changes there.`);
+}
+
 /**
  * Wrap a route handler: boots the repo, auth (ADMIN_PASSWORD) and agent manager, enforces
  * authentication unless `auth: false` (and the admin role with `admin: true`), awaits route params,
@@ -231,6 +254,7 @@ export function withApi<P extends Record<string, string | string[]> = Record<str
         });
         response = error(403, "Admin only");
       } else {
+        assertWritable(req, pathname);
         const params = ((await context?.params) ?? {}) as P;
         const repo = requireAuth && user ? scopeRepo(baseRepo, user) : baseRepo;
         response = await run({ req, repo, manager, params, user });

@@ -23,28 +23,52 @@ import { Kbd } from "@/components/ui/kbd";
 import { api } from "@/lib/api-client";
 import { isQuotaError } from "@/lib/quota";
 import { isModalOpen, isTypingTarget } from "@/lib/hotkeys";
+import { DEFAULT_PUSH_BRANCH } from "@/lib/push-branch";
 import type { DashboardBoard, NeedsYouCard, NeedsYouReason } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { FOCUS_RING, Panel, SectionTitle, cardHref, plural, useEntrance } from "./shared";
+import { EmptyState, FOCUS_RING, Panel, SectionTitle, cardHref, plural, useEntrance } from "./shared";
 
 /** Rows shown before "Show all". */
 const COLLAPSED_ROWS = 6;
 
-const REASON: Record<NeedsYouReason, { label: string; icon: ReactNode; tone: string }> = {
+/** Per reason: label, icon, icon-bubble tone and the row's left-edge urgency accent. */
+const REASON: Record<NeedsYouReason, { label: string; icon: ReactNode; tone: string; accent: string }> = {
   question: {
     label: "Asked you a question",
     icon: <MessageCircleQuestionIcon />,
     tone: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    accent: "border-l-amber-500/60",
   },
-  failed: { label: "Agent failed", icon: <TriangleAlertIcon />, tone: "bg-destructive/10 text-destructive" },
-  retrying: { label: "Failed, retry scheduled", icon: <TimerIcon />, tone: "bg-muted text-muted-foreground" },
-  feedback: { label: "Open feedback", icon: <MessageSquareIcon />, tone: "bg-primary/10 text-primary" },
+  failed: {
+    label: "Agent failed",
+    icon: <TriangleAlertIcon />,
+    tone: "bg-destructive/10 text-destructive",
+    accent: "border-l-destructive/60",
+  },
+  retrying: {
+    label: "Failed, retry scheduled",
+    icon: <TimerIcon />,
+    tone: "bg-muted text-muted-foreground",
+    accent: "border-l-transparent",
+  },
+  feedback: {
+    label: "Open feedback",
+    icon: <MessageSquareIcon />,
+    tone: "bg-primary/10 text-primary",
+    accent: "border-l-primary/40",
+  },
   stalled: {
     label: "In progress, no agent working",
     icon: <PauseCircleIcon />,
     tone: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    accent: "border-l-amber-500/40",
   },
-  unpushed: { label: "Done, not pushed yet", icon: <UploadIcon />, tone: "bg-success/10 text-success" },
+  unpushed: {
+    label: "Done, not pushed yet",
+    icon: <UploadIcon />,
+    tone: "bg-success/10 text-success",
+    accent: "border-l-success/50",
+  },
 };
 
 /** Second line of a row: what exactly waits on the user. */
@@ -62,7 +86,7 @@ function detailFor(card: NeedsYouCard, now: number): string {
     case "stalled":
       return "In progress, but no agent is working on it";
     case "unpushed":
-      return "Finished — review the summary and push it";
+      return "Finished. Review the summary and push it";
   }
 }
 
@@ -86,12 +110,14 @@ function NeedsYouRow({
   const actions = quickActionsFor(card, { canPush })
     .filter((action) => action.id !== "revert")
     .slice(0, 2);
-  const top = REASON[card.reasons[0]];
+  const reason = card.reasons[0];
+  const top = REASON[reason];
   // A retry waiting out a quota or usage limit reads as such.
-  const labels = card.reasons.map((reason) =>
-    reason === "retrying" && isQuotaError(card.agentError) ? "Waiting for quota" : REASON[reason].label,
+  const labels = card.reasons.map((r) =>
+    r === "retrying" && isQuotaError(card.agentError) ? "Waiting for quota" : REASON[r].label,
   );
-  const pushTarget = shipLabels(board?.git ?? []).pushTarget;
+  const extra = labels.slice(1);
+  const pushTarget = shipLabels(board?.git ?? [], board?.pushBranch ?? DEFAULT_PUSH_BRANCH).pushTarget;
   const enter = useEntrance()(index);
 
   return (
@@ -100,68 +126,88 @@ function NeedsYouRow({
       style={enter.style}
       className={cn(
         enter.className,
-        "flex items-center gap-2.5 px-3 py-2 transition-colors focus-within:bg-muted/50 hover:bg-muted/40 has-[a:active]:bg-muted/60",
+        "flex flex-wrap items-center gap-x-3 gap-y-1.5 border-l-2 py-2.5 pr-3 pl-2.5 transition-colors focus-within:bg-muted/50 hover:bg-muted/40 has-[a:active]:bg-muted/60",
+        top.accent,
+        reason === "failed" && "bg-destructive/[0.03]",
       )}
     >
-      <span
-        aria-hidden="true"
-        className={cn("flex size-7 shrink-0 items-center justify-center rounded-md [&_svg]:size-3.5", top.tone)}
-      >
-        {top.icon}
-      </span>
-      <Link
-        href={cardHref(card)}
-        data-needs-you-link=""
-        aria-keyshortcuts="Enter J K"
-        className={cn("flex min-h-11 min-w-0 flex-1 flex-col justify-center rounded-md md:min-h-9", FOCUS_RING)}
-      >
-        <span className="flex min-w-0 items-baseline gap-2">
-          <span className="truncate text-sm font-medium" title={card.title}>
+      {/* Text block: icon + two lines. Its flex-basis forces the action cluster onto its own line in narrow rows. */}
+      <div className="flex min-w-0 flex-[1_1_15rem] items-center gap-3">
+        <span
+          aria-hidden="true"
+          className={cn("flex size-7 shrink-0 items-center justify-center rounded-md [&_svg]:size-4", top.tone)}
+        >
+          {top.icon}
+        </span>
+        <Link
+          href={cardHref(card)}
+          data-needs-you-link=""
+          aria-keyshortcuts="Enter J K"
+          className={cn("flex min-h-11 min-w-0 flex-1 flex-col justify-center gap-0.5 rounded-md md:min-h-9", FOCUS_RING)}
+        >
+          <span className="truncate text-sm leading-5 font-medium" title={card.title}>
             {card.title}
           </span>
-          <span className="ml-auto hidden shrink-0 text-xs text-muted-foreground tabular-nums sm:inline" title={formatDateTime(card.updatedAt)}>
-            {formatRelative(card.updatedAt, now)}
-          </span>
-        </span>
-        <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="max-w-[40%] shrink-0 truncate font-medium text-foreground/70">{card.boardName}</span>
-          <span aria-hidden="true">·</span>
-          <span
-            className={cn("truncate", card.reasons[0] === "failed" && "text-destructive")}
-            title={card.reasons[0] === "question" ? (card.question ?? undefined) : (card.agentError ?? undefined)}
-          >
-            {detailFor(card, now)}
-          </span>
-          {card.reasons.length > 1 && (
-            <span className="ml-auto hidden shrink-0 gap-1 md:flex">
-              {card.reasons.slice(1).map((reason, i) => (
-                <span key={reason} className="rounded border px-1 text-[11px] leading-4 whitespace-nowrap">
-                  {labels[i + 1]}
-                </span>
-              ))}
+          <span className="flex min-w-0 items-center gap-1.5 text-[11px] leading-4 text-muted-foreground">
+            <span className="max-w-56 min-w-0 truncate font-medium text-foreground/70">{card.boardName}</span>
+            <span aria-hidden="true">·</span>
+            <span
+              className={cn(
+                "min-w-0 flex-[1_1_6rem] truncate",
+                reason === "failed" && "text-destructive",
+                reason === "question" && "text-foreground/80",
+              )}
+              title={reason === "question" ? (card.question ?? undefined) : (card.agentError ?? undefined)}
+            >
+              {detailFor(card, now)}
             </span>
-          )}
-        </span>
-        <span className="sr-only">. {labels.join(", ")}</span>
-      </Link>
-      <div className="flex shrink-0 items-center gap-1 self-center">
-        {card.reasons[0] === "question" && (
-          <Button size="sm" variant="outline" className="hidden h-11 sm:inline-flex md:h-7" asChild>
-            <Link href={cardHref(card)} tabIndex={-1}>
+            {extra.length > 0 && (
+              <>
+                <span className="hidden shrink-0 gap-1 @3xl/home:flex">
+                  {extra.map((label) => (
+                    <span key={label} className="rounded-md bg-muted px-1.5 leading-4 whitespace-nowrap">
+                      {label}
+                    </span>
+                  ))}
+                </span>
+                <span
+                  aria-hidden="true"
+                  className="shrink-0 rounded-md bg-muted px-1 font-mono leading-4 tabular-nums @3xl/home:hidden"
+                  title={extra.join(", ")}
+                >
+                  +{extra.length}
+                </span>
+              </>
+            )}
+            <span
+              className="ml-auto shrink-0 pl-1 font-mono tabular-nums"
+              title={formatDateTime(card.updatedAt)}
+            >
+              {formatRelative(card.updatedAt, now)}
+            </span>
+          </span>
+          <span className="sr-only">. {labels.join(", ")}</span>
+        </Link>
+      </div>
+      <div className="ml-auto flex shrink-0 items-center gap-1">
+        {reason === "question" && (
+          <Button size="sm" variant="default" className="h-11 min-w-11 md:h-7 md:min-w-0" asChild>
+            <Link href={cardHref(card)} tabIndex={-1} aria-label={`Reply to “${card.title}”`}>
               <CornerDownLeftIcon />
-              Reply
+              <span className="hidden md:inline">Reply</span>
             </Link>
           </Button>
         )}
         {actions.map((action, i) => {
           const Icon = action.icon;
           const label = action.id === "push" ? "Push" : action.label;
+          const primary = i === 0 && reason !== "question";
           return (
             <Button
               key={action.id}
               size="sm"
-              variant={i === 0 && card.reasons[0] !== "question" ? "default" : "outline"}
-              className={cn("h-11 min-w-11 md:h-7 md:min-w-0", i > 0 && "hidden sm:inline-flex")}
+              variant={primary ? "default" : "ghost"}
+              className={cn("h-11 min-w-11 md:h-7 md:min-w-0", !primary && "text-muted-foreground hover:text-foreground")}
               disabled={busy}
               onClick={() => onAction(card, action)}
               title={`${action.id === "push" ? `Push to ${pushTarget}` : action.hint} (${action.shortcut})`}
@@ -203,7 +249,8 @@ export function NeedsYouList({
     setBusy((prev) => new Set(prev).add(card.id));
     try {
       if (action.id === "push") {
-        await shipTask("push", card.id, shipLabels(boardById.get(card.boardId)?.git ?? []));
+        const board = boardById.get(card.boardId);
+        await shipTask("push", card.id, shipLabels(board?.git ?? [], board?.pushBranch ?? DEFAULT_PUSH_BRANCH));
       } else if (action.id === "stop") {
         await api.tasks.stop(card.id);
         toast("Agent stopped", { description: card.title });
@@ -282,16 +329,13 @@ export function NeedsYouList({
         }
       />
       {cards.length === 0 ? (
-        <div className="animate-fade-in-soft flex items-center gap-3 rounded-xl border border-dashed px-4 py-4">
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-success/10 text-success">
-            <CircleCheckIcon className="size-4.5" aria-hidden="true" />
-          </span>
-          <span className="min-w-0">
-            <span className="block text-sm font-medium">Nothing is waiting on you</span>
-            <span className="block text-xs text-pretty text-muted-foreground">
-              Agent questions, failures, open feedback and unpushed work land here.
-            </span>
-          </span>
+        <div className="animate-fade-in-soft">
+          <EmptyState
+            tone="success"
+            icon={<CircleCheckIcon />}
+            title="Nothing needs you"
+            hint="Agent questions, failures, open feedback and unpushed work land here."
+          />
         </div>
       ) : (
         <Panel className="shadow-diffuse overflow-hidden">
@@ -309,25 +353,33 @@ export function NeedsYouList({
             ))}
           </ul>
           {(cards.length > COLLAPSED_ROWS || total > cards.length) && (
-            <div className="flex min-h-11 items-center gap-2 border-t px-3 text-xs text-muted-foreground md:min-h-9">
+            <div className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-t bg-muted/30 px-3 py-1 text-[11px] text-muted-foreground md:min-h-9">
               {cards.length > COLLAPSED_ROWS && (
                 <button
                   type="button"
                   onClick={() => setExpanded((v) => !v)}
                   aria-expanded={expanded}
                   className={cn(
-                    "pressable inline-flex min-h-11 items-center gap-1 rounded-md font-medium text-foreground hover:underline md:min-h-0",
+                    "pressable inline-flex min-h-11 items-center gap-1 rounded-md text-xs font-medium text-foreground hover:underline md:min-h-0",
                     FOCUS_RING,
                   )}
                 >
-                  {expanded ? "Show fewer" : `View all ${cards.length}`}
+                  {expanded ? (
+                    "Show fewer"
+                  ) : (
+                    <>
+                      View all <span className="font-mono tabular-nums">{cards.length}</span>
+                    </>
+                  )}
                   <ChevronDownIcon className={cn("size-3.5 transition-transform", expanded && "rotate-180")} />
                 </button>
               )}
               {total > cards.length && (
                 <span className="ml-auto text-right">
-                  <span className="font-mono tabular-nums">{cards.length}</span> most urgent of{" "}
-                  <span className="font-mono tabular-nums">{total}</span> · the rest are on their boards
+                  <span className="font-mono font-medium text-foreground/80 tabular-nums">
+                    {cards.length}/{total}
+                  </span>{" "}
+                  most urgent · the rest are on their boards
                 </span>
               )}
             </div>

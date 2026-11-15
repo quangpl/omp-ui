@@ -1,11 +1,12 @@
-// Git operations for project folders: clone, init, status, branches, push to the default branch, open PR/MR.
+// Git operations for project folders: clone, init, status, branches, push to the project's push branch, open PR/MR.
 // Every command runs via execFile with an argument array (never a shell) and never prompts.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { childEnv } from "@/lib/child-env";
 import { HttpError } from "@/lib/server/http";
-import type { GitBranches, GitProvider, GitRepoActionResult, GitStatus } from "@/lib/types";
+import { isValidBranchName } from "@/lib/push-branch";
+import type { GitBranches, GitProvider, GitRepoActionResult, GitStatus, GitSwitchResult } from "@/lib/types";
 import { getWorkspaceRoot } from "@/lib/workspace";
 
 const QUICK_TIMEOUT_MS = 15_000;
@@ -82,7 +83,7 @@ function explain(cmd: string, result: CommandResult): string {
     ],
     [
       /protected branch|pre-receive hook declined|gh006/i,
-      "The default branch is protected. Use “Create PR” instead.",
+      "This branch is protected. Use “Create PR” instead.",
     ],
     [
       /\[rejected\]|non-fast-forward|fetch first|updates were rejected/i,
@@ -94,8 +95,16 @@ function explain(cmd: string, result: CommandResult): string {
     ],
     [/gh auth login|not logged in|glab auth login/i, `"${cmd}" isn't signed in. Run "${cmd} auth login" on the server.`],
     [
+      /would be overwritten by merge/i,
+      "Uncommitted changes would be overwritten by the update. Commit or discard them, then pull.",
+    ],
+    [
       /would be overwritten by checkout|commit your changes or stash them/i,
       "Uncommitted changes would be overwritten by switching. Commit or discard them first.",
+    ],
+    [
+      /not possible to fast-forward|diverging branches/i,
+      "The branch has local commits that aren't on the remote, so it wasn't updated. Merge or rebase it yourself.",
     ],
     [/already exists/i, "That already exists."],
   ];
@@ -339,10 +348,25 @@ export async function listBranches(folder: string): Promise<GitBranches> {
 }
 
 /**
- * Check out an existing branch (local, or origin-only → new local tracking branch). Uncommitted
- * changes carry over unless they conflict, in which case git refuses and nothing changes.
+ * Fast-forward the checked-out branch to its upstream. A branch without an upstream is left as is;
+ * a failed pull (offline, diverged, conflicting local edits) changes nothing and returns the reason.
  */
-export function switchBranch(folder: string, name: string): Promise<GitStatus> {
+async function pullCurrent(folder: string): Promise<Pick<GitSwitchResult, "pulled" | "pullError">> {
+  const upstream = await git(folder, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
+  if (!upstream.ok) return { pulled: 0, pullError: null };
+  const before = (await git(folder, ["rev-parse", "HEAD"])).stdout.trim();
+  const pull = await git(folder, ["pull", "--ff-only", "--no-rebase"], NETWORK_TIMEOUT_MS);
+  if (!pull.ok) return { pulled: 0, pullError: explain("git", pull) };
+  const count = await git(folder, ["rev-list", "--count", `${before}..HEAD`]);
+  return { pulled: (count.ok && Number.parseInt(count.stdout, 10)) || 0, pullError: null };
+}
+
+/**
+ * Check out an existing branch (local, or origin-only → new local tracking branch), then pull its
+ * upstream (fast-forward only). Uncommitted changes carry over unless they conflict, in which case
+ * git refuses and nothing changes. A failed pull leaves the switch in place and is reported.
+ */
+export function switchBranch(folder: string, name: string): Promise<GitSwitchResult> {
   return withFolderLock(folder, async () => {
     const { current, branches } = await listBranches(folder);
     const branch = branches.find((b) => b.name === name);
@@ -354,7 +378,8 @@ export function switchBranch(folder: string, name: string): Promise<GitStatus> {
       );
       if (!result.ok) throw new HttpError(400, explain("git", result));
     }
-    return gitStatus(folder);
+    const pull = await pullCurrent(folder);
+    return { ...(await gitStatus(folder)), ...pull };
   });
 }
 
@@ -501,11 +526,18 @@ function baseResult(folder: string): GitRepoActionResult {
   return { folder, branch: null, commit: null, url: null, output: "", error: null, skipped: false };
 }
 
-/** Commit uncommitted changes (if any) and push HEAD straight to origin's default branch. */
-export function pushToDefault(folder: string, message: string): Promise<GitFolderOutcome> {
+/**
+ * Commit uncommitted changes (if any) and push HEAD to `target` on origin (the project's push
+ * branch), creating it there if missing.
+ */
+export function pushToBranch(folder: string, target: string, message: string): Promise<GitFolderOutcome> {
   return withFolderLock(folder, async () => {
     const result = baseResult(folder);
     const name = label(folder);
+    if (!isValidBranchName(target)) {
+      const error = `“${target}” isn't a valid branch name. Change the project's push branch in its settings.`;
+      return { result: { ...result, error }, summary: `Couldn't push ${name}: ${error}` };
+    }
     const status = await gitStatus(folder);
     if (!status.isRepo) {
       return { result: { ...result, skipped: true, output: "Not a git repository." }, summary: `${name}: not a git repository, skipped.` };
@@ -514,11 +546,10 @@ export function pushToDefault(folder: string, message: string): Promise<GitFolde
       const error = "This folder has no “origin” remote, so there is nowhere to push.";
       return { result: { ...result, error }, summary: `Couldn't push ${name}: ${error}` };
     }
-    const target = status.defaultBranch ?? "main";
     const { log, step } = makeRunner(folder);
     try {
       result.branch = target;
-      await step("git", ["fetch", "origin", target], NETWORK_TIMEOUT_MS, true);
+      await step("git", ["fetch", "origin", `refs/heads/${target}`], NETWORK_TIMEOUT_MS, true);
       result.commit = await commitAll(folder, step, message);
       if (!result.commit && (await unpushedCount(folder, target)) === 0) {
         return {

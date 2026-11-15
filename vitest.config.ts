@@ -17,6 +17,15 @@ export default defineConfig({
     fileParallelism: false,
     // Card runs must never reach the developer's real agentmemory server (session tagging, auto-start).
     // Suites that never set DATA_DIR must not write event logs (lib/server/log-store.ts) into ./data.
-    env: { AGENTMEMORY_ENABLED: "false", DATA_DIR: path.join(os.tmpdir(), "omp-ui-vitest-data") },
+    // Card runs and card deletes must never touch the developer's real Docker; suites with a stand-in docker set DOCKER_BIN themselves.
+    // Manager suites must not be held by the developer machine's real memory/CPU (the resource guard samples the host);
+    // under NODE_ENV=test the guard ignores `.env`, so these process.env values are what suites see.
+    env: {
+      AGENTMEMORY_ENABLED: "false",
+      DATA_DIR: path.join(os.tmpdir(), "omp-ui-vitest-data"),
+      DOCKER_BIN: path.join(os.tmpdir(), "omp-ui-vitest-no-docker"),
+      OMP_UI_MEMORY_HOLD_PCT: "0",
+      OMP_UI_CPU_HOLD_PCT: "0",
+    },
   },
 });

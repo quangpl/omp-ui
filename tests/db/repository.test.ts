@@ -72,7 +72,12 @@ describe("sqlite migration", () => {
       const repo = new SqliteRepository(file);
       await repo.init();
       try {
-        expect(await repo.getBoard("b1")).toMatchObject({ extraFolders: [], worktrees: false, userId: null });
+        expect(await repo.getBoard("b1")).toMatchObject({
+          extraFolders: [],
+          worktrees: false,
+          pushBranch: "main",
+          userId: null,
+        });
         expect(await repo.getTask("t1")).toMatchObject({ blockedBy: [], createdByTaskId: null, userId: null });
         expect(await repo.getComment("c1")).toMatchObject({ fromTaskId: null, userId: null });
 

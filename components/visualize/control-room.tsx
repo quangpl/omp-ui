@@ -11,6 +11,7 @@ import {
   MedalIcon,
   PlayIcon,
   RocketIcon,
+  ServerIcon,
   ShieldCheckIcon,
   StickyNoteIcon,
   TriangleAlertIcon,
@@ -20,7 +21,7 @@ import { ACTIVITY_ICON } from "@/components/visualize/activity-icons";
 import { sdlcStation } from "@/components/visualize/agent-map";
 import { type AchievementId, XP_PER_CARD, achievements, crewLevel, workerIdentity } from "@/components/visualize/game";
 import { agentVitals, moodTone, type Vitals } from "@/components/visualize/mood";
-import { ROLE_INFO, roleOf, subagentName } from "@/components/visualize/roles";
+import { modelLabel, ROLE_INFO, roleOf, subagentName } from "@/components/visualize/roles";
 import type { LiveAgent } from "@/components/visualize/use-live-agents";
 import { ManaBar, MOOD_LABEL, RoleTag, WorkerAvatar } from "@/components/visualize/worker-avatar";
 import { SDLC_PHASE_INFO, type SdlcProgress } from "@/lib/sdlc";
@@ -145,7 +146,7 @@ function VitalMeter({ label, value, className }: { label: string; value: number;
   );
 }
 
-/** The subagents a lead has working right now: robot, name and role each. */
+/** The subagents a lead has working right now: robot, name, role and (when omp reported it) model each. */
 function Crew({ taskId, agent }: { taskId: string; agent: LiveAgent | undefined }) {
   const busy = Object.values(agent?.helpers ?? {}).filter((s) => s.status === "running" || s.status === "pending");
   if (busy.length === 0) return null;
@@ -165,6 +166,14 @@ function Crew({ taskId, agent }: { taskId: string; agent: LiveAgent | undefined 
             <WorkerAvatar hue={hue} mood="working" role={role} animated={false} className="size-5 shrink-0" />
             <span className="max-w-32 truncate font-mono text-muted-foreground">{name}</span>
             <RoleTag hue={hue}>{ROLE_INFO[role].label}</RoleTag>
+            {subagent.model && (
+              <span
+                className="max-w-36 truncate font-mono text-[11px] text-muted-foreground"
+                title={`Model: ${subagent.model}`}
+              >
+                {modelLabel(subagent.model)}
+              </span>
+            )}
           </li>
         );
       })}
@@ -214,6 +223,7 @@ function TickerRow({
   agent,
   vitals,
   startedAt,
+  model,
   now,
   index,
 }: {
@@ -221,6 +231,8 @@ function TickerRow({
   agent: LiveAgent | undefined;
   vitals: Vitals;
   startedAt: string | null;
+  /** Model the lead runs on, when known. */
+  model: string | null;
   now: number;
   index: number;
 }) {
@@ -244,6 +256,16 @@ function TickerRow({
           <span className="flex shrink-0 items-baseline gap-1.5">
             <span className="font-mono text-xs text-muted-foreground">{worker.name}</span>
             <RoleTag hue={worker.hue}>{ROLE_INFO.lead.label}</RoleTag>
+            {entry.node && (
+              <span
+                title={`Running on cluster node ${entry.node.name}`}
+                className="inline-flex max-w-28 items-center gap-0.5 self-center rounded-[3px] border border-border px-1 font-mono text-[10px] leading-[14px] text-muted-foreground"
+              >
+                <ServerIcon className="size-2.5 shrink-0" aria-hidden />
+                <span className="sr-only">on node </span>
+                <span className="truncate">{entry.node.name}</span>
+              </span>
+            )}
           </span>
           <Link
             href={href}
@@ -288,6 +310,11 @@ function TickerRow({
             {shift}
           </span>
         )}
+        {model && (
+          <span className="max-w-32 truncate font-mono text-[11px] text-muted-foreground" title={`Model: ${model}`}>
+            {modelLabel(model)}
+          </span>
+        )}
         <div className="flex flex-col items-end gap-1" title={vitals.notes.join("\n") || undefined}>
           <div className="flex items-center gap-1.5">
             <span className="w-8 text-right font-mono text-[10px] leading-none text-muted-foreground">Mana</span>
@@ -307,6 +334,7 @@ function FloorPulse({ dashboard, live, now }: { dashboard: Dashboard; live: Reco
   const running = queue.running.length;
   const startedAt = new Map(dashboard.live.map((agent) => [agent.taskId, agent.startedAt]));
   const context = new Map(dashboard.live.map((agent) => [agent.taskId, agent.context]));
+  const model = new Map(dashboard.live.map((agent) => [agent.taskId, agent.model]));
   const rows = queue.running.map((entry) => ({
     entry,
     vitals: agentVitals(live[entry.taskId], now, context.get(entry.taskId)),
@@ -345,6 +373,7 @@ function FloorPulse({ dashboard, live, now }: { dashboard: Dashboard; live: Reco
                   agent={live[entry.taskId]}
                   vitals={vitals}
                   startedAt={startedAt.get(entry.taskId) ?? null}
+                  model={model.get(entry.taskId) ?? null}
                   now={now}
                   index={index}
                 />

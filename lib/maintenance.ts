@@ -11,6 +11,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import v8 from "node:v8";
 import vm from "node:vm";
+import { clockTicksPerSecond, procStatFields } from "@/lib/agent/resources";
 import { liveOmpPids } from "@/lib/agent/rpc";
 import { closeIdleWorkers, idleWorkerPids } from "@/lib/agent/rpc-pool";
 import type { AgentManager } from "@/lib/agent/types";
@@ -78,17 +79,6 @@ interface RawProcess {
 
 type ProcessScan = { ok: true; list: RawProcess[] } | { ok: false; error: string };
 
-let clockTicks: number | null = null;
-
-/** USER_HZ: `getconf CLK_TCK`, 100 on practically every Linux. */
-async function ticksPerSecond(): Promise<number> {
-  if (clockTicks === null) {
-    const out = await run("getconf", ["CLK_TCK"], 2000);
-    clockTicks = Number.parseInt(out.stdout, 10) || 100;
-  }
-  return clockTicks;
-}
-
 function userNames(): Map<number, string> {
   const names = new Map<number, string>();
   try {
@@ -102,14 +92,13 @@ function userNames(): Map<number, string> {
   return names;
 }
 
-/** `/proc/<pid>/stat` fields after the `(comm)`: [state, ppid, …]; utime/stime are fields 14/15, starttime 22. */
+/** `/proc/<pid>/stat` (see `procStatFields`): comm, ppid, utime+stime ticks (fields 14/15) and starttime (22). */
 function parseStat(text: string): { comm: string; ppid: number; ticks: number; start: number } | null {
-  const open = text.indexOf("(");
-  const close = text.lastIndexOf(")");
-  if (open < 0 || close < 0) return null;
-  const rest = text.slice(close + 2).split(" ");
+  const stat = procStatFields(text);
+  if (!stat) return null;
+  const rest = stat.fields;
   return {
-    comm: text.slice(open + 1, close),
+    comm: stat.comm,
     ppid: Number(rest[1]),
     ticks: Number(rest[11]) + Number(rest[12]),
     start: Number(rest[19]),
@@ -133,7 +122,7 @@ async function readProcTicks(pids: string[]): Promise<Map<string, number>> {
 
 async function scanLinux(sample: boolean): Promise<RawProcess[]> {
   const pids = (await fs.readdir("/proc")).filter((name) => /^\d+$/.test(name));
-  const hz = await ticksPerSecond();
+  const hz = await clockTicksPerSecond();
   const first = sample ? await readProcTicks(pids) : null;
   const startedAt = performance.now();
   if (sample) await sleep(CPU_SAMPLE_MS);

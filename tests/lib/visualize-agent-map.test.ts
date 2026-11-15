@@ -33,6 +33,7 @@ function entry(taskId: string, state: QueueEntry["state"], extra: Partial<QueueE
     planNote: null,
     createdByTaskId: null,
     sdlc: null,
+    node: null,
     ...extra,
   };
 }

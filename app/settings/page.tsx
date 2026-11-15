@@ -14,6 +14,7 @@ import {
   KeyRoundIcon,
   Loader2Icon,
   MessageCircleIcon,
+  NetworkIcon,
   PaletteIcon,
   PanelLeftIcon,
   RotateCcwIcon,
@@ -31,6 +32,7 @@ import { AiProvidersSettingsSection } from "@/components/settings/ai-providers-s
 import { AppearanceSettingsSection } from "@/components/settings/appearance-settings";
 import { ChatSettingsSection } from "@/components/settings/chat-settings";
 import { CleanupSettingsSection } from "@/components/settings/cleanup-settings";
+import { ClusterSettingsSection } from "@/components/settings/cluster-settings";
 import { MemorySettingsSection } from "@/components/settings/memory-settings";
 import { MenuSettingsSection } from "@/components/settings/menu-settings";
 import { NotificationSettingsSection } from "@/components/settings/notification-settings";
@@ -116,6 +118,7 @@ const SECTIONS: SettingsNavItem[] = [
   { id: "menu", label: "Menu", icon: <PanelLeftIcon /> },
   { id: "appearance", label: "Appearance", icon: <PaletteIcon /> },
   { id: "system", label: "System", icon: <ServerIcon /> },
+  { id: "cluster", label: "Cluster", icon: <NetworkIcon /> },
   { id: "security", label: "Security", icon: <KeyRoundIcon /> },
   { id: "users", label: "Users", icon: <UsersIcon /> },
   { id: "api", label: "Mobile & API", icon: <SmartphoneIcon /> },
@@ -897,7 +900,7 @@ export default function SettingsPage() {
                   "min-w-0 max-w-3xl space-y-10 md:space-y-12",
                   "[&>section+section]:border-t [&>section+section]:pt-10 md:[&>section+section]:pt-12",
                   "[&>section]:animate-card-in motion-reduce:[&>section]:animate-none",
-                  "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12] [&>section:nth-child(8)]:[--stagger:14] [&>section:nth-child(9)]:[--stagger:16] [&>section:nth-child(10)]:[--stagger:18] [&>section:nth-child(11)]:[--stagger:20] [&>section:nth-child(12)]:[--stagger:22] [&>section:nth-child(13)]:[--stagger:24] [&>section:nth-child(14)]:[--stagger:26]",
+                  "[&>section:nth-child(2)]:[--stagger:2] [&>section:nth-child(3)]:[--stagger:4] [&>section:nth-child(4)]:[--stagger:6] [&>section:nth-child(5)]:[--stagger:8] [&>section:nth-child(6)]:[--stagger:10] [&>section:nth-child(7)]:[--stagger:12] [&>section:nth-child(8)]:[--stagger:14] [&>section:nth-child(9)]:[--stagger:16] [&>section:nth-child(10)]:[--stagger:18] [&>section:nth-child(11)]:[--stagger:20] [&>section:nth-child(12)]:[--stagger:22] [&>section:nth-child(13)]:[--stagger:24] [&>section:nth-child(14)]:[--stagger:26] [&>section:nth-child(15)]:[--stagger:28]",
                 )}
               >
                 {isAdmin && <AgentSettingsSection />}
@@ -917,6 +920,10 @@ export default function SettingsPage() {
                   <AppearanceSettingsSection />
                 </SettingsReadOnly>
                 <SystemInfoSection />
+                {/* Everyone sees the cluster's state; changing it is for admins. */}
+                <SettingsReadOnly value={readOnly}>
+                  <ClusterSettingsSection />
+                </SettingsReadOnly>
                 <SecuritySection username={user?.username ?? ""} />
                 {isAdmin && <UsersSettingsSection />}
                 <ApiAccessSection />

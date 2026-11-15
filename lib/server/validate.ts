@@ -5,6 +5,7 @@ import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
 import { BRIEF_MAX, DESCRIPTION_MAX, TITLE_MAX } from "@/lib/card-draft";
 import { cronError, isValidTimeZone } from "@/lib/cron";
 import type { Repository } from "@/lib/db/types";
+import { isValidBranchName, PUSH_BRANCH_MAX } from "@/lib/push-branch";
 import { HttpError } from "@/lib/server/http";
 import {
   CLEANUP_IDS,
@@ -33,6 +34,13 @@ function text(value: unknown, field: string, min: number, max: number): string {
 
 export function parseBoardName(value: unknown): string {
   return text(value, "name", 1, 100);
+}
+
+/** Board.pushBranch: a git branch name, trimmed (see isValidBranchName). */
+export function parsePushBranch(value: unknown): string {
+  const name = text(value, "pushBranch", 1, PUSH_BRANCH_MAX);
+  if (!isValidBranchName(name)) throw new HttpError(400, "pushBranch must be a valid git branch name");
+  return name;
 }
 
 export function parseTitle(value: unknown): string {

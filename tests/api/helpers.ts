@@ -84,10 +84,13 @@ const MANAGED_ENV = [
   "FAKE_OMP_PROTOCOLS",
   "FAKE_OMP_SKILLS",
   "FAKE_OMP_DRAFT",
+  "OMP_UI_CLUSTER_PORT",
+  "OMP_UI_CLUSTER_JOIN",
+  "OMP_UI_CLUSTER_TOKEN",
 ];
 
 // Process-wide singletons the app keeps on globalThis (lib/db, lib/agent/manager, lib/auth,
-// lib/stats, app/api/v1/system, lib/omp-skills, lib/agent/draft).
+// lib/stats, app/api/v1/system, lib/omp-skills, lib/agent/draft, lib/cluster/node).
 const g = globalThis as unknown as {
   __ompUiRepo?: Promise<Repository>;
   __ompUiAgentManager?: Promise<AgentManager>;
@@ -100,6 +103,10 @@ const g = globalThis as unknown as {
   __ompUiOmpInfo?: unknown;
   __ompUiSkills?: unknown;
   __ompUiDrafts?: unknown;
+  __ompUiClusterListener?: Promise<{ close(): Promise<void> }>;
+  __ompUiClusterStart?: Promise<void>;
+  __ompUiClusterNode?: unknown;
+  __ompUiClusterCreated?: string;
 };
 
 let current: TestEnv | null = null;
@@ -120,6 +127,13 @@ export async function stopServer(): Promise<void> {
   const managerPromise = g.__ompUiAgentManager;
   g.__ompUiAgentManager = undefined;
   const manager = managerPromise ? await managerPromise.catch(() => null) : null;
+  // A suite that enabled cluster mode and did not disable it must not leak its listener.
+  const listener = g.__ompUiClusterListener;
+  g.__ompUiClusterListener = undefined;
+  if (listener) await (await listener.catch(() => null))?.close();
+  g.__ompUiClusterStart = undefined;
+  g.__ompUiClusterNode = undefined;
+  g.__ompUiClusterCreated = undefined;
   if (manager) {
     const { running, queued } = manager.stats();
     for (const taskId of [...running, ...queued]) await manager.onTaskDeleted(taskId);

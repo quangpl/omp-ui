@@ -141,8 +141,18 @@ export const TONE_STROKE: Record<Tone, string> = {
 export const PANEL =
   "min-w-0 rounded-2xl bg-card ring-1 ring-foreground/[0.07] shadow-[0_1px_2px_color-mix(in_oklch,var(--shadow-tint)_5%,transparent),0_24px_48px_-28px_color-mix(in_oklch,var(--shadow-tint)_20%,transparent)] dark:shadow-[inset_0_1px_0_oklch(1_0_0/0.05)]";
 
-/** Horizontal usage bar; turns amber at 75% and red at 90%. */
-export function Meter({ fraction, label, className }: { fraction: number; label: string; className?: string }) {
+/** Horizontal usage bar; turns amber at 75% and red at 90% unless `tone` overrides the colour. */
+export function Meter({
+  fraction,
+  label,
+  tone,
+  className,
+}: {
+  fraction: number;
+  label: string;
+  tone?: Tone;
+  className?: string;
+}) {
   const clamped = Math.min(1, Math.max(0, Number.isFinite(fraction) ? fraction : 0));
   return (
     <div
@@ -156,7 +166,7 @@ export function Meter({ fraction, label, className }: { fraction: number; label:
       <div
         className={cn(
           "h-full w-full origin-left rounded-full transition-transform duration-700 ease-(--ease-out-smooth) motion-reduce:transition-none",
-          TONE_BG[toneForFraction(clamped)],
+          TONE_BG[tone ?? toneForFraction(clamped)],
         )}
         style={{ transform: `scaleX(${clamped})` }}
       />

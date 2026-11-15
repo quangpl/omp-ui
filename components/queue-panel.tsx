@@ -6,6 +6,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   ChevronsUpIcon,
+  GaugeIcon,
   HourglassIcon,
   ListOrderedIcon,
   LoaderCircleIcon,
@@ -92,6 +93,7 @@ function QueueRow({
   onMove,
   onStop,
   onNavigate,
+  held = false,
 }: {
   entry: QueueEntry;
   /** Position in the queued list; -1 for running entries. */
@@ -101,6 +103,8 @@ function QueueRow({
   onMove: (position: number) => void;
   onStop: () => void;
   onNavigate: () => void;
+  /** The resource guard is holding queued cards (memory/CPU pressure). */
+  held?: boolean;
 }) {
   const queued = entry.state === "queued";
   /** Held until the planner has ordered this card's project. */
@@ -136,6 +140,15 @@ function QueueRow({
           <span className="truncate">{entry.boardName}</span>
           {queued && entry.drafting && <span className="shrink-0 italic">Writing the card…</span>}
           {planning && <span className="shrink-0 italic">Planning…</span>}
+          {queued && held && (
+            <span
+              className="inline-flex shrink-0 items-center gap-1 text-amber-700 dark:text-amber-400"
+              title="Held: resource pressure"
+            >
+              <GaugeIcon className="size-3" aria-hidden />
+              Held<span className="sr-only">: resource pressure</span>
+            </span>
+          )}
           {waiting > 0 && (
             <span className="inline-flex shrink-0 items-center gap-1 text-primary">
               <HourglassIcon className="size-3" aria-hidden />
@@ -269,15 +282,25 @@ export function QueuePanel({
 
   /** Projects whose queued cards the planner is ordering right now. */
   const planningProjects = snapshot.planning.map((p) => p.boardName).join(", ");
+  const boundBy = snapshot.concurrency?.boundBy;
+  /** Memory/CPU pressure: the resource guard starts no queued card until it eases. */
+  const held = boundBy === "resources";
 
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-muted-foreground">
         {snapshot.limit} at a time · change it in Settings
       </p>
-      {snapshot.concurrency?.boundBy === "load" && (
-        <p className="text-xs text-pretty text-amber-700 dark:text-amber-400" role="status">
-          {snapshot.concurrency.reason}
+      {(boundBy === "load" || held) && (
+        <p
+          className={cn(
+            "text-xs text-pretty text-amber-700 dark:text-amber-400",
+            held && "flex items-start gap-1.5",
+          )}
+          role="status"
+        >
+          {held && <GaugeIcon className="mt-px size-3.5 shrink-0" aria-hidden />}
+          {held ? <span className="min-w-0">{snapshot.concurrency.reason}</span> : snapshot.concurrency.reason}
         </p>
       )}
       {snapshot.planning.length > 0 && (
@@ -314,6 +337,7 @@ export function QueuePanel({
                       onMove={(position) => void move(entry.taskId, position)}
                       onStop={() => void stop(entry.taskId)}
                       onNavigate={onNavigate}
+                      held={held}
                     />
                   ))}
                 </ul>

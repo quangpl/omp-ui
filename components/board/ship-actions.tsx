@@ -42,10 +42,13 @@ function changesLabel(count: number): string {
 export function GitIndicator({
   boardId,
   statuses,
+  pushBranch,
   onChanged,
 }: {
   boardId: string;
   statuses: GitStatus[] | null;
+  /** The project's push branch: where the quick push chip lands every repo's changes. */
+  pushBranch: string;
   /** Called after a branch switch or quick push so the board can re-read git status. */
   onChanged: () => void;
 }) {
@@ -128,6 +131,7 @@ export function GitIndicator({
         <QuickPushChip
           boardId={boardId}
           repos={repos}
+          pushBranch={pushBranch}
           changes={changes}
           unpushed={unpushed}
           onPushed={onChanged}
@@ -137,22 +141,24 @@ export function GitIndicator({
   );
 }
 
-/** Amber "N changes" chip: one click commits every repo's changes and pushes to the default branch. */
+/** Amber "N changes" chip: one click commits every repo's changes and pushes to the project's push branch. */
 function QuickPushChip({
   boardId,
   repos,
+  pushBranch,
   changes,
   unpushed,
   onPushed,
 }: {
   boardId: string;
   repos: GitStatus[];
+  pushBranch: string;
   changes: number;
   unpushed: number;
   onPushed: () => void;
 }) {
   const [pushing, setPushing] = useState(false);
-  const { pushTarget } = shipLabels(repos);
+  const { pushTarget } = shipLabels(repos, pushBranch);
   const noRemote = !canShip(repos);
   const count = changes > 0 ? changes : unpushed;
   const noun = changes > 0 ? (changes === 1 ? "change" : "changes") : "unpushed";
@@ -266,8 +272,16 @@ function BranchPicker({
   const switchTo = async (branch: string) => {
     setSwitching(branch);
     try {
-      await api.git.switchBranch(boardId, { folder: repo.folder, branch });
-      toast.success(`Switched ${folderName(repo.folder)} to ${branch}`);
+      const result = await api.git.switchBranch(boardId, { folder: repo.folder, branch });
+      const title = `Switched ${folderName(repo.folder)} to ${branch}`;
+      if (result.pullError) {
+        toast.warning(title, { description: `Couldn't pull the latest changes: ${result.pullError}` });
+      } else {
+        toast.success(title, {
+          description:
+            result.pulled > 0 ? `Pulled ${result.pulled} new ${result.pulled === 1 ? "commit" : "commits"}.` : undefined,
+        });
+      }
       onSwitched();
     } catch (err) {
       toast.error("Couldn't switch branch", {
@@ -386,13 +400,12 @@ export function useTaskGitStatus(
 
 export type ShipAction = "pr" | "push";
 
-/** User-facing names for a set of repos: "PR" vs GitLab's "MR", and the branch a push lands on. */
-export function shipLabels(statuses: GitStatus[]): { prNoun: string; pushTarget: string } {
+/** User-facing names for a set of repos: "PR" vs GitLab's "MR", and the project's push branch a push lands on. */
+export function shipLabels(statuses: GitStatus[], pushBranch: string): { prNoun: string; pushTarget: string } {
   const repos = statuses.filter((status) => status.isRepo);
-  const branches = [...new Set(repos.map((repo) => repo.defaultBranch ?? "main"))];
   return {
     prNoun: repos[0]?.provider === "gitlab" ? "MR" : "PR",
-    pushTarget: branches.length === 1 ? branches[0] : "the default branch",
+    pushTarget: pushBranch,
   };
 }
 
@@ -441,18 +454,21 @@ export async function shipTask(
 }
 
 /**
- * "Ship" panel on a card: open a PR/MR or push straight to the default branch.
+ * "Ship" panel on a card: open a PR/MR or push straight to the project's push branch.
  * Acts on every project folder with changes (or the card's worktrees when `fromWorkspace`);
  * results link out per folder.
  */
 export function ShipActions({
   task,
   statuses,
+  pushBranch,
   fromWorkspace = false,
   onShipped,
 }: {
   task: Task;
   statuses: GitStatus[] | null;
+  /** The project's push branch: where "Push to …" lands the card's changes. */
+  pushBranch: string;
   /** `statuses` describe the card's dedicated workspace rather than the project folders. */
   fromWorkspace?: boolean;
   /** Called after an action finishes, with the agent comment the server posted. */
@@ -462,7 +478,7 @@ export function ShipActions({
   const [result, setResult] = useState<GitActionResult | null>(null);
 
   const repos = statuses?.filter((status) => status.isRepo) ?? [];
-  const { prNoun, pushTarget } = shipLabels(repos);
+  const { prNoun, pushTarget } = shipLabels(repos, pushBranch);
   const agentActive = task.agentState === "running" || task.agentState === "queued";
   const hasChanges = repos.some((repo) => repo.dirty || repo.ahead > 0);
   const noRemote = !canShip(repos);

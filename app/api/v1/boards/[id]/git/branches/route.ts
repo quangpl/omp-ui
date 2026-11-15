@@ -22,7 +22,7 @@ export const GET = withApi<{ id: string }>(async ({ req, repo, params }) => {
   return json(await listBranches(projectFolder(board, new URL(req.url).searchParams.get("folder"))));
 });
 
-/** Switch one project folder to an existing branch: `{ folder, branch }` → fresh `GitStatus`. */
+/** Switch one project folder to an existing branch and pull it: `{ folder, branch }` → `GitSwitchResult`. */
 export const POST = withApi<{ id: string }>(async ({ req, repo, params }) => {
   const board = await requireBoard(repo, params.id);
   const body = await readJson(req);

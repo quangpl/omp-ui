@@ -266,10 +266,9 @@ export function CommandPalette() {
   useEffect(() => {
     if (!open || !boardId) return;
     let cancelled = false;
-    api.git
-      .status(boardId)
-      .then((statuses) => {
-        if (!cancelled) setShip(canShip(statuses) ? { boardId, ...shipLabels(statuses) } : null);
+    Promise.all([api.git.status(boardId), api.boards.get(boardId)])
+      .then(([statuses, board]) => {
+        if (!cancelled) setShip(canShip(statuses) ? { boardId, ...shipLabels(statuses, board.pushBranch) } : null);
       })
       .catch(() => {
         if (!cancelled) setShip(null);

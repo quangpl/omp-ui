@@ -5,6 +5,7 @@ import { MAX_EXPLICIT_AGENTS, getAppSettings, isDashboardMenuId, updateAppSettin
 import {
   BROWSER_MODES,
   CLEANUP_SCHEDULES,
+  CLUSTER_FAILOVER_LIMITS,
   DASHBOARD_MENU_IDS,
   ORCHESTRATION_LIMITS,
   REDACTED_SECRET,
@@ -56,6 +57,22 @@ function parseOrchestration(body: Record<string, unknown>, patch: Partial<AppSet
       throw new HttpError(400, "telemetryEndpoint must be an http(s) URL");
     }
     patch.telemetryEndpoint = trimmed;
+  }
+}
+
+/** Settings → Cluster fields: run cards on the primary too, and the failover delay. */
+function parseCluster(body: Record<string, unknown>, patch: Partial<AppSettings>): void {
+  if (body.clusterRunLocal !== undefined) {
+    if (typeof body.clusterRunLocal !== "boolean") throw new HttpError(400, "clusterRunLocal must be a boolean");
+    patch.clusterRunLocal = body.clusterRunLocal;
+  }
+  if (body.clusterFailoverSeconds !== undefined) {
+    const n = body.clusterFailoverSeconds;
+    const { min, max } = CLUSTER_FAILOVER_LIMITS;
+    if (typeof n !== "number" || !Number.isInteger(n) || n < min || n > max) {
+      throw new HttpError(400, `clusterFailoverSeconds must be an integer between ${min} and ${max}`);
+    }
+    patch.clusterFailoverSeconds = n;
   }
 }
 
@@ -154,6 +171,7 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
     patch.primaryColor = body.primaryColor;
   }
   parseOrchestration(body, patch);
+  parseCluster(body, patch);
   return patch;
 }
 

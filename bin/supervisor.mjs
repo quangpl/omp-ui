@@ -9,6 +9,9 @@
 //   server's whole process group (its omp agents included). Failures count once the server has
 //   answered once, or after the startup grace period.
 // - SIGTERM / SIGINT / SIGHUP stop the server (same escalation) and then the supervisor.
+// - Runs the server with OMP_UI_SUPERVISED=1 (the resource guard's graceful restart needs it). Exit
+//   code 75 (RESTART_EXIT_CODE) is a requested restart (resource guard, cluster role changes): it
+//   restarts the server after 1 s without counting as a crash.
 // The first probe also boots the agent manager, which resumes interrupted and failed cards.
 //
 // Environment (milliseconds unless noted):
@@ -47,6 +50,8 @@ const STOP_TIMEOUT_MS = envMs("OMP_UI_STOP_TIMEOUT_MS", 8_000);
 const FIRST_PROBE_MS = 1_000;
 const STABLE_UPTIME_MS = 60_000;
 const MAX_BACKOFF_MS = 30_000;
+/** Exit code the server uses to ask for a restart; must match lib/agent/resource-guard.ts. */
+const RESTART_EXIT_CODE = 75;
 
 function healthUrl() {
   if (process.env.OMP_UI_HEALTH_URL) return process.env.OMP_UI_HEALTH_URL;
@@ -103,7 +108,12 @@ function start() {
   startedAt = Date.now();
   healthyOnce = false;
   failures = 0;
-  const proc = spawn(command, args, { stdio: "inherit", detached: !IS_WIN, windowsHide: true });
+  const proc = spawn(command, args, {
+    stdio: "inherit",
+    detached: !IS_WIN,
+    windowsHide: true,
+    env: { ...process.env, OMP_UI_SUPERVISED: "1" },
+  });
   child = proc;
   say(`started server (pid ${proc.pid}): ${[command, ...args].join(" ")}`);
   proc.once("error", (err) => {
@@ -125,6 +135,12 @@ function onExit(proc, code, signal) {
   if (stopping) {
     say("server stopped");
     process.exit(0);
+  }
+  if (code === RESTART_EXIT_CODE) {
+    say(`server exited with code ${RESTART_EXIT_CODE} (restart requested) — restarting it`);
+    crashStreak = 0;
+    restartTimer = setTimeout(start, 1_000);
+    return;
   }
   const uptime = Date.now() - startedAt;
   crashStreak = uptime >= STABLE_UPTIME_MS ? 1 : crashStreak + 1;

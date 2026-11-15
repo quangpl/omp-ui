@@ -22,7 +22,7 @@ import {
 } from "@/components/visualize/agent-map";
 import { workerIdentity } from "@/components/visualize/game";
 import { agentVitals, subagentVitals } from "@/components/visualize/mood";
-import { ROLE_INFO, roleOf, subagentName } from "@/components/visualize/roles";
+import { modelLabel, ROLE_INFO, roleOf, subagentName } from "@/components/visualize/roles";
 import { CycleRing, type RingSegment, ringAngle, ringPoint } from "@/components/visualize/sdlc-cycle-ring";
 import type { LiveAgent } from "@/components/visualize/use-live-agents";
 import { RoleTag, WorkerAvatar, WorkerOutline } from "@/components/visualize/worker-avatar";
@@ -100,19 +100,22 @@ function progressSentence(entry: QueueEntry): string {
 }
 
 /**
- * A running card's agent at its station: robot, name, title, phase track and phase progress.
+ * A running card's agent at its station: robot, name, model, title, phase track and phase progress.
  * `compact` is the ring node variant: smaller robot, one-line title, no role tag.
  */
 function CardWorker({
   entry,
   agent,
   context,
+  model,
   now,
   compact = false,
 }: {
   entry: QueueEntry;
   agent: LiveAgent | undefined;
   context: ContextUsage | null | undefined;
+  /** Model the lead runs on, when known. */
+  model: string | null | undefined;
   now: number;
   compact?: boolean;
 }) {
@@ -122,12 +125,13 @@ function CardWorker({
   const phase = sdlc?.phases.find((p) => p.id === sdlcStation(sdlc));
   const flagged = (sdlc?.violations.length ?? 0) > 0;
   const progress = progressSentence(entry);
+  const modelNote = model ? `, model ${modelLabel(model)}` : "";
   return (
     <li className="min-w-0">
       <Link
         href={cardHref({ boardId: entry.boardId, id: entry.taskId })}
-        aria-label={`${worker.name}, lead on ${entry.title}: ${progress}`}
-        title={`${entry.title} in ${entry.boardName}\n${progress}`}
+        aria-label={`${worker.name}, lead on ${entry.title}${modelNote}: ${progress}`}
+        title={`${entry.title} in ${entry.boardName}\n${progress}${model ? `\nModel: ${model}` : ""}`}
         className={cn(
           "grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start rounded-[3px] transition-colors hover:bg-muted motion-reduce:transition-none",
           compact ? "gap-x-1.5 gap-y-0.5 p-1" : "gap-x-2 gap-y-1 p-1.5",
@@ -146,11 +150,29 @@ function CardWorker({
             compact ? "flex-nowrap" : "flex-wrap",
           )}
         >
-          <span className="max-w-full min-w-0 truncate font-mono text-[11px] leading-tight font-medium">{worker.name}</span>
+          <span
+            className={cn(
+              "max-w-full min-w-0 truncate font-mono text-[11px] leading-tight font-medium",
+              compact && "shrink-0",
+            )}
+          >
+            {worker.name}
+          </span>
           {!compact && (
             <RoleTag hue={worker.hue} className="shrink-0">
               {ROLE_INFO.lead.label}
             </RoleTag>
+          )}
+          {model && (
+            <span
+              className={cn(
+                "min-w-0 truncate font-mono text-[11px] leading-tight text-muted-foreground",
+                !compact && "max-w-36",
+              )}
+              title={`Model: ${model}`}
+            >
+              {modelLabel(model)}
+            </span>
           )}
           {flagged && <TriangleAlertIcon className="size-3 shrink-0 text-destructive" aria-hidden />}
         </span>
@@ -181,7 +203,7 @@ function CardWorker({
   );
 }
 
-/** Who a busy subagent is: its robot, role and the one-line description used for tooltips and screen readers. */
+/** Who a busy subagent is: its robot, role and the one-line description (with its model when known) used for tooltips and screen readers. */
 function crewIdentity({ entry, subagent }: CrewMember, now: number) {
   const role = roleOf(subagent.agent);
   const name = subagentName(subagent.id, subagent.agent);
@@ -192,13 +214,14 @@ function crewIdentity({ entry, subagent }: CrewMember, now: number) {
     hue,
     mood: subagentVitals(subagent, now).mood,
     href: cardHref({ boardId: entry.boardId, id: entry.taskId }),
-    label: `${name}: ${ROLE_INFO[role].label} (${subagent.agent} agent) for ${entry.title}${subagent.description ? `, ${subagent.description}` : ""}`,
+    label: `${name}: ${ROLE_INFO[role].label} (${subagent.agent} agent) for ${entry.title}${subagent.description ? `, ${subagent.description}` : ""}${subagent.model ? `, model ${modelLabel(subagent.model)}` : ""}`,
   };
 }
 
-/** A busy subagent at the station of its role: small robot, name and role tag; links to its lead's card. */
+/** A busy subagent at the station of its role: small robot, name, role tag and model; links to its lead's card. */
 function CrewWorker({ worker, now }: { worker: CrewMember; now: number }) {
   const crew = crewIdentity(worker, now);
+  const { model } = worker.subagent;
   return (
     <li className="min-w-0">
       <Link
@@ -215,6 +238,11 @@ function CrewWorker({ worker, now }: { worker: CrewMember; now: number }) {
         <RoleTag hue={crew.hue} className="ml-auto shrink-0">
           {ROLE_INFO[crew.role].label}
         </RoleTag>
+        {model && (
+          <span className="max-w-24 shrink-0 truncate font-mono text-[11px] text-muted-foreground" title={`Model: ${model}`}>
+            {modelLabel(model)}
+          </span>
+        )}
       </Link>
     </li>
   );
@@ -288,6 +316,7 @@ function StackStation({
   done,
   live,
   contexts,
+  models,
   now,
 }: {
   phase: SdlcPhaseId;
@@ -300,6 +329,7 @@ function StackStation({
   done: boolean;
   live: Record<string, LiveAgent>;
   contexts: ReadonlyMap<string, ContextUsage | null>;
+  models: ReadonlyMap<string, string | null>;
   now: number;
 }) {
   const info = SDLC_PHASE_INFO[phase];
@@ -341,6 +371,7 @@ function StackStation({
                   entry={worker.entry}
                   agent={live[worker.entry.taskId]}
                   context={contexts.get(worker.entry.taskId)}
+                  model={models.get(worker.entry.taskId)}
                   now={now}
                 />
               ))}
@@ -380,6 +411,7 @@ function RingStation({
   done,
   live,
   contexts,
+  models,
   now,
 }: {
   phase: SdlcPhaseId;
@@ -392,6 +424,7 @@ function RingStation({
   done: boolean;
   live: Record<string, LiveAgent>;
   contexts: ReadonlyMap<string, ContextUsage | null>;
+  models: ReadonlyMap<string, string | null>;
   now: number;
 }) {
   const info = SDLC_PHASE_INFO[phase];
@@ -433,6 +466,7 @@ function RingStation({
                   entry={worker.entry}
                   agent={live[worker.entry.taskId]}
                   context={contexts.get(worker.entry.taskId)}
+                  model={models.get(worker.entry.taskId)}
                   now={now}
                   compact
                 />
@@ -728,6 +762,10 @@ export function SdlcPipeline({
     () => new Map(dashboard.live.map((agent) => [agent.taskId, agent.context])),
     [dashboard.live],
   );
+  const models = useMemo(
+    () => new Map(dashboard.live.map((agent) => [agent.taskId, agent.model])),
+    [dashboard.live],
+  );
   const phases = pipeline.visible;
   const count = phases.length;
   /** Visible phases nobody works in that every running card including them has finished: highlighted as done. */
@@ -800,6 +838,7 @@ export function SdlcPipeline({
                     done={donePhases.has(phase)}
                     live={live}
                     contexts={contexts}
+                    models={models}
                     now={now}
                   />
                 </div>
@@ -845,6 +884,7 @@ export function SdlcPipeline({
                   done={donePhases.has(phase)}
                   live={live}
                   contexts={contexts}
+                  models={models}
                   now={now}
                 />
                 {phase === "maintenance" ? (

@@ -1,8 +1,9 @@
 // How many card agents run at once. An explicit setting is used as is; `auto` derives the limit
 // from the machine: one agent per logical core, and only as many new agents as free memory holds.
-// The optional load guard then holds new runs while the machine is overloaded.
+// The optional load guard then holds new runs while the machine is overloaded, and the resource
+// guard (lib/agent/resource-guard.ts, memory/CPU %) holds them while it reports pressure.
 import { availableParallelism, cpus as listCpus, freemem, loadavg, totalmem } from "node:os";
-import type { AppSettings, ConcurrencyInfo } from "@/lib/types";
+import type { AppSettings, ConcurrencyInfo, ResourcePressure } from "@/lib/types";
 
 /** Rough memory one card agent needs (omp plus the builds, tests and browsers it runs). */
 export const AGENT_MEMORY_BYTES = 600 * 1024 ** 2;
@@ -73,25 +74,45 @@ function sampleLoad(): { loadAvg1: number; cpuCount: number } {
 /**
  * The limit in effect. `running` agents already hold their memory, so the memory bound is them
  * plus the agents the free memory (beyond the reserve) can still hold; a low-memory machine thus
- * stops starting new agents without stopping running ones. A tripped load guard (`hold`, see
- * readLoadHold) likewise caps the limit at `running`, in auto and manual mode alike.
+ * stops starting new agents without stopping running ones. A holding resource guard (`pressure`,
+ * see lib/agent/resource-guard.ts) or a tripped load guard (`hold`, see readLoadHold) is strict:
+ * nothing launches, not even into slots lent by runs waiting on cards (`lent`, counted among
+ * `running`), so the limit is capped at `running − lent`, in auto and manual mode alike; resource
+ * pressure wins when both apply. The latest pressure reading is attached as `pressure` either way.
  */
 export function resolveConcurrency(
   setting: AppSettings["maxConcurrentAgents"],
   running: number,
   resources: MachineResources = readMachineResources(),
   hold: LoadHold | null = null,
+  pressure: ResourcePressure | null = null,
+  lent = 0,
 ): ConcurrencyInfo {
-  const info = resolveLimit(setting, running, resources);
+  const info: ConcurrencyInfo = { ...resolveLimit(setting, running, resources), pressure: pressure ?? null };
+  const capped = Math.max(0, Math.min(info.limit, running - lent));
+  if (pressure?.holding.length) {
+    return { ...info, limit: capped, boundBy: "resources", reason: resourcePressureReason(pressure) };
+  }
   if (!hold) return info;
   return {
     ...info,
-    limit: Math.max(0, Math.min(info.limit, running)),
+    limit: capped,
     boundBy: "load",
     reason:
       `Load guard: holding new runs (load ${hold.load.toFixed(1)} on ${hold.cores} cores = ` +
       `${Math.round(hold.percent)} % > ${hold.threshold} %)`,
   };
+}
+
+/** Why the resource guard holds queued cards: each held resource with its reading and resume %. */
+export function resourcePressureReason(p: ResourcePressure): string {
+  const parts = p.holding.map((resource) =>
+    resource === "memory"
+      ? `memory at ${Math.round(p.memoryPercent)}% (resumes below ${p.memoryResumePct}%)`
+      : `CPU at ${p.cpuPercent === null ? "n/a" : `${Math.round(p.cpuPercent)}%`} over ${p.cpuWindowSec} s ` +
+        `(resumes below ${p.cpuResumePct}%)`,
+  );
+  return `Resource pressure: ${parts.join(", ")} — holding queued cards`;
 }
 
 function resolveLimit(
@@ -106,7 +127,7 @@ function resolveLimit(
   }
   const reserve = Math.min(RESERVE_MAX_BYTES, totalMemoryBytes * RESERVE_FRACTION);
   const byMemory = running + Math.floor(Math.max(0, freeMemoryBytes - reserve) / AGENT_MEMORY_BYTES);
-  const candidates: [Exclude<ConcurrencyInfo["boundBy"], "load" | null>, number][] = [
+  const candidates: [Exclude<ConcurrencyInfo["boundBy"], "load" | "resources" | null>, number][] = [
     ["cpu", cpus],
     ["memory", byMemory],
     ["max", AUTO_MAX_AGENTS],

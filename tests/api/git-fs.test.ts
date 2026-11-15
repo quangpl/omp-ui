@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { api, env, freshEnv, setupAdmin, teardown, tempDir, waitFor } from "./helpers";
 
 import * as boardGitRoute from "@/app/api/v1/boards/[id]/git/route";
+import * as boardRoute from "@/app/api/v1/boards/[id]/route";
 import * as boardPushRoute from "@/app/api/v1/boards/[id]/git/push/route";
 import * as boardBranchesRoute from "@/app/api/v1/boards/[id]/git/branches/route";
 import * as boardTasksRoute from "@/app/api/v1/boards/[id]/tasks/route";
@@ -30,6 +31,7 @@ import type {
   GitActionResult,
   GitBranches,
   GitStatus,
+  GitSwitchResult,
   Task,
 } from "@/lib/types";
 
@@ -397,6 +399,48 @@ describe("git status and quick actions", () => {
   );
 
   it(
+    "Push to main and the quick push land on the project's push branch, creating it on the remote",
+    async () => {
+      const repo = makeRepo("release-train");
+      const releaseBoard = await createBoard({ name: "Release train", workdir: repo.work, autoRun: false });
+      expect(releaseBoard.pushBranch).toBe("main");
+      const patched = await api<Board>(boardRoute, "PATCH", `/boards/${releaseBoard.id}`, {
+        body: { pushBranch: "release" },
+        params: { id: releaseBoard.id },
+      });
+      expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+      expect(patched.body.pushBranch).toBe("release");
+      const mainBefore = remoteHead(repo.bare, "main").sha;
+
+      const releaseTask = await createTask(releaseBoard.id, "Cut the release");
+      writeFileSync(path.join(repo.work, "release.txt"), "v1\n");
+      const res = await gitAction("push", releaseTask.id);
+      expect(res.status).toBe(200);
+      const [result] = res.body.results;
+      expect(result).toMatchObject({ branch: "release", error: null, skipped: false });
+      expect(result.commit).toMatch(SHA);
+      // The branch didn't exist on the remote: the push created it; main is untouched.
+      expect(remoteHead(repo.bare, "refs/heads/release")).toMatchObject({ sha: result.commit, subject: "Cut the release" });
+      expect(remoteHead(repo.bare, "main").sha).toBe(mainBefore);
+      expect(res.body.comment.body).toContain("**Push to release**");
+      expect(res.body.comment.body).toContain("Pushed to release in release-train/");
+      expect((await taskDetail(releaseTask.id)).task.pushedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+      writeFileSync(path.join(repo.work, "notes.txt"), "notes\n");
+      const quick = await boardPush(releaseBoard.id);
+      expect(quick.status).toBe(200);
+      const [quickResult] = quick.body.results;
+      expect(quickResult).toMatchObject({ branch: "release", error: null, skipped: false });
+      expect(remoteHead(repo.bare, "refs/heads/release")).toMatchObject({
+        sha: quickResult.commit,
+        subject: "Update from AgentMan (1 file)",
+      });
+      expect(remoteHead(repo.bare, "main").sha).toBe(mainBefore);
+    },
+    GIT_TIMEOUT,
+  );
+
+  it(
     "explains a rejected push when the remote has newer commits",
     async () => {
       const repo = makeRepo("diverged");
@@ -432,7 +476,8 @@ describe("git status and quick actions", () => {
       // Looks like GitHub to the server, but pushes go to the local bare repo (no network).
       git(repo.work, "remote", "set-url", "origin", "ssh://git@github.invalid/acme/widgets.git");
       git(repo.work, "remote", "set-url", "--push", "origin", repo.bare);
-      const ghBoard = await createBoard({ name: "Widgets", workdir: repo.work, autoRun: false });
+      // A push branch other than main: Create PR still targets the repo's default branch.
+      const ghBoard = await createBoard({ name: "Widgets", workdir: repo.work, autoRun: false, pushBranch: "release" });
       const ghTask = await createTask(ghBoard.id, "Widget polish");
       writeFileSync(path.join(repo.work, "widget.txt"), "shiny\n");
 
@@ -489,7 +534,7 @@ describe("branch switching", () => {
   }
 
   async function switchTo(body: Record<string, unknown>) {
-    return api<GitStatus & { error?: string }>(boardBranchesRoute, "POST", `/boards/${board.id}/git/branches`, {
+    return api<GitSwitchResult & { error?: string }>(boardBranchesRoute, "POST", `/boards/${board.id}/git/branches`, {
       body,
       params: { id: board.id },
     });
@@ -528,7 +573,13 @@ describe("branch switching", () => {
   it("switches to a local branch and to an origin-only branch", async () => {
     const toFeature = await switchTo({ folder: shop.work, branch: "feature/cart" });
     expect(toFeature.status, JSON.stringify(toFeature.body)).toBe(200);
-    expect(toFeature.body).toMatchObject({ folder: shop.work, branch: "feature/cart", dirty: false });
+    expect(toFeature.body).toMatchObject({
+      folder: shop.work,
+      branch: "feature/cart",
+      dirty: false,
+      pulled: 0,
+      pullError: null,
+    });
     expect(git(shop.work, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature/cart");
 
     const toRelease = await switchTo({ folder: shop.work, branch: "release" });
@@ -546,6 +597,46 @@ describe("branch switching", () => {
     expect(git(shop.work, "rev-parse", "--abbrev-ref", "HEAD")).toBe("release");
     git(shop.work, "checkout", "--", "README.md");
   });
+
+  it(
+    "pulls the latest commits after switching, and keeps the switch when the pull can't fast-forward",
+    async () => {
+      const other = tempDir(path.join("clones", "shop"));
+      git(env().root, "clone", shop.bare, other);
+      writeFileSync(path.join(other, "NEWS.md"), "one\n");
+      git(other, "add", "-A");
+      git(other, "commit", "-m", "Remote one");
+      git(other, "push", "origin", "main");
+
+      const toMain = await switchTo({ folder: shop.work, branch: "main" });
+      expect(toMain.status, JSON.stringify(toMain.body)).toBe(200);
+      expect(toMain.body).toMatchObject({ branch: "main", pulled: 1, pullError: null, behind: 0 });
+      expect(git(shop.work, "rev-parse", "HEAD")).toBe(remoteHead(shop.bare, "main").sha);
+
+      // Local and remote both gain a commit: no fast-forward, so the branch stays as it was.
+      writeFileSync(path.join(shop.work, "LOCAL.md"), "local\n");
+      git(shop.work, "add", "-A");
+      git(shop.work, "commit", "-m", "Local");
+      const local = git(shop.work, "rev-parse", "HEAD");
+      writeFileSync(path.join(other, "NEWS.md"), "two\n");
+      git(other, "commit", "-am", "Remote two");
+      git(other, "push", "origin", "main");
+      expect((await switchTo({ folder: shop.work, branch: "release" })).body.pulled).toBe(0);
+
+      const diverged = await switchTo({ folder: shop.work, branch: "main" });
+      expect(diverged.status, JSON.stringify(diverged.body)).toBe(200);
+      expect(diverged.body).toMatchObject({
+        branch: "main",
+        pulled: 0,
+        pullError:
+          "The branch has local commits that aren't on the remote, so it wasn't updated. Merge or rebase it yourself.",
+      });
+      expect(git(shop.work, "rev-parse", "HEAD")).toBe(local);
+
+      expect((await switchTo({ folder: shop.work, branch: "release" })).status).toBe(200);
+    },
+    GIT_TIMEOUT,
+  );
 
   it("validates the folder and branch", async () => {
     const outside = tempDir("branch-outside");

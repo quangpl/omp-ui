@@ -45,10 +45,12 @@ import {
   normalizeLimit,
   normalizeRecentRunLimit,
   nowIso,
+  parseAgentResources,
   parseFolderList,
   parseTaskReview,
 } from "@/lib/db/util";
 import { parseTodoPhases } from "@/lib/todos";
+import { DEFAULT_PUSH_BRANCH } from "@/lib/push-branch";
 
 /** Arbitrary constant key for the advisory lock serializing schema creation across processes. */
 const SCHEMA_LOCK_KEY = 4_708_312_655;
@@ -81,7 +83,9 @@ CREATE TABLE IF NOT EXISTS boards (
   model TEXT,
   auto_run BOOLEAN NOT NULL DEFAULT TRUE,
   worktrees BOOLEAN NOT NULL DEFAULT FALSE,
+  push_branch TEXT NOT NULL DEFAULT 'main',
   pinned BOOLEAN NOT NULL DEFAULT FALSE,
+  last_accessed_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   user_id TEXT
@@ -89,7 +93,9 @@ CREATE TABLE IF NOT EXISTS boards (
 -- Migrations for databases created before these columns existed.
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS extra_folders TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS worktrees BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS push_branch TEXT NOT NULL DEFAULT 'main';
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS last_accessed_at TEXT;
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS user_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_boards_created ON boards (created_at);
 CREATE INDEX IF NOT EXISTS idx_boards_user ON boards (user_id);
@@ -113,6 +119,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   retry_at TEXT,
   todos TEXT NOT NULL DEFAULT '[]',
   review TEXT,
+  resources TEXT,
   scheduler_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -126,6 +133,7 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS auto_retries INTEGER NOT NULL DEFAULT
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS retry_at TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS todos TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS resources TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS scheduler_id TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS user_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_tasks_board_status_position ON tasks (board_id, status, position);
@@ -158,9 +166,13 @@ CREATE TABLE IF NOT EXISTS runs (
   error TEXT,
   started_at TEXT NOT NULL,
   ended_at TEXT,
-  user_id TEXT
+  user_id TEXT,
+  node_id TEXT,
+  node_name TEXT
 );
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS user_id TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS node_id TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS node_name TEXT;
 CREATE INDEX IF NOT EXISTS idx_runs_task_started ON runs (task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (status);
 CREATE INDEX IF NOT EXISTS idx_runs_started ON runs (started_at);
@@ -230,7 +242,9 @@ interface BoardRow {
   model: string | null;
   auto_run: boolean;
   worktrees: boolean;
+  push_branch: string | null;
   pinned: boolean;
+  last_accessed_at: string | null;
   created_at: string;
   updated_at: string;
   user_id: string | null;
@@ -255,6 +269,7 @@ interface TaskRow {
   retry_at: string | null;
   todos: string;
   review: string | null;
+  resources: string | null;
   scheduler_id: string | null;
   created_at: string;
   updated_at: string;
@@ -286,6 +301,8 @@ interface RunRow {
   started_at: string;
   ended_at: string | null;
   user_id: string | null;
+  node_id: string | null;
+  node_name: string | null;
 }
 
 interface RunEventRow {
@@ -350,7 +367,9 @@ function toBoard(r: BoardRow): Board {
     model: r.model,
     autoRun: r.auto_run,
     worktrees: r.worktrees,
+    pushBranch: r.push_branch ?? DEFAULT_PUSH_BRANCH,
     pinned: r.pinned,
+    lastAccessedAt: r.last_accessed_at ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     userId: r.user_id ?? null,
@@ -377,6 +396,7 @@ function toTask(r: TaskRow): Task {
     retryAt: r.retry_at,
     todos: parseTodoPhases(r.todos),
     review: parseTaskReview(r.review),
+    resources: parseAgentResources(r.resources),
     schedulerId: r.scheduler_id ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -412,6 +432,8 @@ function toRun(r: RunRow): Run {
     startedAt: r.started_at,
     endedAt: r.ended_at,
     userId: r.user_id ?? null,
+    nodeId: r.node_id,
+    nodeName: r.node_name,
   };
 }
 
@@ -682,8 +704,8 @@ export class PostgresRepository implements Repository {
   async createBoard(input: CreateBoardInput): Promise<Board> {
     const now = nowIso();
     const res = await this.query<BoardRow>(
-      `INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, created_at, updated_at, user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9) RETURNING *`,
+      `INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, push_branch, created_at, updated_at, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10) RETURNING *`,
       [
         newId(),
         input.name,
@@ -692,6 +714,7 @@ export class PostgresRepository implements Repository {
         input.model ?? null,
         input.autoRun ?? true,
         input.worktrees ?? false,
+        input.pushBranch ?? DEFAULT_PUSH_BRANCH,
         now,
         input.userId ?? null,
       ],
@@ -707,6 +730,7 @@ export class PostgresRepository implements Repository {
       ["model", patch.model],
       ["auto_run", patch.autoRun],
       ["worktrees", patch.worktrees],
+      ["push_branch", patch.pushBranch],
       ["pinned", patch.pinned],
       ["updated_at", boardPatchUpdatedAt(patch)],
     ]);
@@ -714,6 +738,14 @@ export class PostgresRepository implements Repository {
       `UPDATE boards SET ${sql} WHERE id = $${params.length + 1} RETURNING *`,
       [...params, id],
     );
+    return res.rows[0] ? toBoard(res.rows[0]) : null;
+  }
+
+  async markBoardAccessed(id: string): Promise<Board | null> {
+    const res = await this.query<BoardRow>("UPDATE boards SET last_accessed_at = $1 WHERE id = $2 RETURNING *", [
+      nowIso(),
+      id,
+    ]);
     return res.rows[0] ? toBoard(res.rows[0]) : null;
   }
 
@@ -805,6 +837,10 @@ export class PostgresRepository implements Repository {
       ["retry_at", patch.retryAt],
       ["todos", patch.todos === undefined ? undefined : JSON.stringify(patch.todos)],
       ["review", patch.review === undefined ? undefined : patch.review === null ? null : JSON.stringify(patch.review)],
+      [
+        "resources",
+        patch.resources === undefined ? undefined : patch.resources === null ? null : JSON.stringify(patch.resources),
+      ],
       ["updated_at", nowIso()],
     ]);
     const res = await this.query(`UPDATE tasks SET ${sql} WHERE id = $${params.length + 1}`, [
@@ -922,9 +958,9 @@ export class PostgresRepository implements Repository {
 
   async createRun(input: CreateRunInput): Promise<Run> {
     const res = await this.query<RunRow>(
-      `INSERT INTO runs (id, task_id, status, prompt, summary, error, started_at, ended_at, user_id)
-       VALUES ($1, $2, 'running', $3, NULL, NULL, $4, NULL, (SELECT user_id FROM tasks WHERE id = $2)) RETURNING *`,
-      [newId(), input.taskId, input.prompt, nowIso()],
+      `INSERT INTO runs (id, task_id, status, prompt, summary, error, started_at, ended_at, user_id, node_id, node_name)
+       VALUES ($1, $2, 'running', $3, NULL, NULL, $4, NULL, (SELECT user_id FROM tasks WHERE id = $2), $5, $6) RETURNING *`,
+      [newId(), input.taskId, input.prompt, nowIso(), input.nodeId ?? null, input.nodeName ?? null],
     );
     return toRun(res.rows[0]);
   }
