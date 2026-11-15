@@ -7,6 +7,7 @@ import {
   CLEANUP_SCHEDULES,
   CLUSTER_FAILOVER_LIMITS,
   CLUSTER_HEAL_LIMITS,
+  CLUSTER_RESTART_LIMITS,
   DASHBOARD_MENU_IDS,
   ORCHESTRATION_LIMITS,
   REDACTED_SECRET,
@@ -65,7 +66,10 @@ function parseOrchestration(body: Record<string, unknown>, patch: Partial<AppSet
   }
 }
 
-/** Settings → Cluster fields: run cards on the primary too, the failover delay and auto-healing. */
+/**
+ * Settings → Cluster fields: run cards on the primary too, the failover delay, auto-healing and the
+ * replica disconnect watchdog.
+ */
 function parseCluster(body: Record<string, unknown>, patch: Partial<AppSettings>): void {
   if (body.clusterRunLocal !== undefined) {
     if (typeof body.clusterRunLocal !== "boolean") throw new HttpError(400, "clusterRunLocal must be a boolean");
@@ -91,6 +95,18 @@ function parseCluster(body: Record<string, unknown>, patch: Partial<AppSettings>
       throw new HttpError(400, `${key} must be an integer between ${min} and ${max}`);
     }
     patch[key] = n;
+  }
+  if (body.clusterAutoRestart !== undefined) {
+    if (typeof body.clusterAutoRestart !== "boolean") throw new HttpError(400, "clusterAutoRestart must be a boolean");
+    patch.clusterAutoRestart = body.clusterAutoRestart;
+  }
+  if (body.clusterRestartAfterSeconds !== undefined) {
+    const n = body.clusterRestartAfterSeconds;
+    const { min, max } = CLUSTER_RESTART_LIMITS;
+    if (typeof n !== "number" || !Number.isInteger(n) || n < min || n > max) {
+      throw new HttpError(400, `clusterRestartAfterSeconds must be an integer between ${min} and ${max}`);
+    }
+    patch.clusterRestartAfterSeconds = n;
   }
 }
 

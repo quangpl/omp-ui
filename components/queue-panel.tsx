@@ -388,7 +388,7 @@ export function QueueButton() {
         {trigger}
         <Drawer open={open} onOpenChange={setOpen}>
           <DrawerContent className="data-[vaul-drawer-direction=bottom]:max-h-[85dvh]">
-            <DrawerHeader className="text-left">
+            <DrawerHeader>
               <DrawerTitle className="text-lg font-semibold tracking-tight">Agent queue</DrawerTitle>
               <DrawerDescription>Running and queued agents across all projects.</DrawerDescription>
             </DrawerHeader>

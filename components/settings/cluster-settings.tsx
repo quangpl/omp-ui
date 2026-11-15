@@ -2,7 +2,7 @@
 
 // Settings → Cluster: turn this server into the primary of a cluster or join one as a replica;
 // on a primary, add machines (join command, token), choose where cards run and watch the nodes;
-// on a replica, check the link to the primary or leave the cluster.
+// on a replica, check the link to the primary, reconnect or restart the node, or leave the cluster.
 import { useCallback, useEffect, useState } from "react";
 import {
   CheckIcon,
@@ -59,6 +59,7 @@ import { api } from "@/lib/api-client";
 import {
   CLUSTER_FAILOVER_LIMITS,
   CLUSTER_HEAL_LIMITS,
+  CLUSTER_RESTART_LIMITS,
   type AppSettings,
   type ClusterHealNumberKey,
   type ClusterJoinInfo,
@@ -912,8 +913,15 @@ function SchedulingGroup({ status }: { status: ClusterStatus }) {
 /** The Auto-healing group's settings, as last loaded or saved. */
 type HealSettings = Pick<AppSettings, "clusterAutoHeal" | ClusterHealNumberKey>;
 
-interface HealField {
-  key: ClusterHealNumberKey;
+/** The Replica auto-restart group's settings, as last loaded or saved. */
+type RestartSettings = Pick<AppSettings, "clusterAutoRestart" | "clusterRestartAfterSeconds">;
+
+/** The whole-number settings of the Cluster section that ClusterNumberField edits. */
+type ClusterNumberKey = ClusterHealNumberKey | "clusterRestartAfterSeconds";
+
+/** One ClusterNumberField; `K` narrows the key so HEAL_FIELDS can index CLUSTER_HEAL_LIMITS. */
+interface NumberFieldSpec<K extends ClusterNumberKey = ClusterHealNumberKey> {
+  key: K;
   id: string;
   label: string;
   /** Whole seconds (error text). */
@@ -923,7 +931,7 @@ interface HealField {
   hint: string;
 }
 
-const HEAL_FIELDS: readonly HealField[] = [
+const HEAL_FIELDS: readonly NumberFieldSpec[] = [
   {
     key: "clusterHealIntervalSeconds",
     id: "cluster-heal-interval",
@@ -966,14 +974,27 @@ const HEAL_FIELDS: readonly HealField[] = [
   },
 ];
 
-/** One auto-healing number (CLUSTER_HEAL_LIMITS), saved when the field is left or Enter is pressed. */
-function HealNumberField({
+/** The watchdog's wait before a disconnected replica restarts itself (CLUSTER_RESTART_LIMITS). */
+const RESTART_AFTER_FIELD: NumberFieldSpec<"clusterRestartAfterSeconds"> = {
+  key: "clusterRestartAfterSeconds",
+  id: "cluster-restart-after",
+  label: "Restart after (seconds)",
+  seconds: true,
+  noun: "Restart delay",
+  hint: "How long a replica may stay without its primary before it restarts; never shorter than the failover delay + 60 s",
+};
+
+/** One whole-number cluster setting within `limits`, saved when the field is left or Enter is pressed. */
+function ClusterNumberField({
   field,
+  limits,
   saved,
   disabled,
   onSaved,
 }: {
-  field: HealField;
+  field: NumberFieldSpec<ClusterNumberKey>;
+  /** Accepted range (CLUSTER_HEAL_LIMITS or CLUSTER_RESTART_LIMITS), also shown in the hint. */
+  limits: { min: number; max: number };
   /** The stored value; null until loaded. */
   saved: number | null;
   disabled: boolean;
@@ -982,7 +1003,6 @@ function HealNumberField({
   /** What the user typed; null shows the saved value. */
   const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const limits = CLUSTER_HEAL_LIMITS[field.key];
   const invalid = draft === null ? null : wholeNumberError(draft, limits, field.seconds);
 
   async function save() {
@@ -1109,14 +1129,84 @@ function AutoHealGroup({ onFailuresChange }: { onFailuresChange: (failures: numb
       </SettingsRows>
       <div className="grid gap-5 sm:grid-cols-2">
         {HEAL_FIELDS.map((field) => (
-          <HealNumberField
+          <ClusterNumberField
             key={field.key}
             field={field}
+            limits={CLUSTER_HEAL_LIMITS[field.key]}
             saved={heal ? heal[field.key] : null}
             disabled={!enabled}
             onSaved={apply}
           />
         ))}
+      </div>
+    </SettingsGroup>
+  );
+}
+
+/**
+ * Replica auto-restart: clusterAutoRestart and clusterRestartAfterSeconds (disabled while it is off).
+ * Settings are shared by the cluster, so the primary sets the disconnect watchdog of every replica.
+ */
+function AutoRestartGroup() {
+  const [restart, setRestart] = useState<RestartSettings | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  /** The switch value being saved; null when none is in flight. */
+  const [pendingAutoRestart, setPendingAutoRestart] = useState<boolean | null>(null);
+
+  const apply = useCallback((settings: AppSettings) => {
+    setRestart({
+      clusterAutoRestart: settings.clusterAutoRestart,
+      clusterRestartAfterSeconds: settings.clusterRestartAfterSeconds,
+    });
+  }, []);
+
+  useEffect(() => {
+    api.settings
+      .get()
+      .then(apply)
+      .catch((err) => setLoadError(errorText(err, "Could not load the auto-restart settings.")));
+  }, [apply]);
+
+  async function saveAutoRestart(checked: boolean) {
+    setPendingAutoRestart(checked);
+    try {
+      apply(await api.settings.update({ clusterAutoRestart: checked }));
+      toast.success(checked ? "Replica auto-restart is on" : "Replica auto-restart is off");
+    } catch (err) {
+      toast.error(errorText(err, "Could not save the setting."));
+    } finally {
+      setPendingAutoRestart(null);
+    }
+  }
+
+  const enabled = pendingAutoRestart ?? restart?.clusterAutoRestart ?? false;
+  return (
+    <SettingsGroup title="Replica auto-restart">
+      <SettingsRows>
+        <SettingsToggle
+          htmlFor="cluster-auto-restart"
+          title="Restart disconnected replicas automatically"
+          description={
+            loadError ??
+            "A replica that cannot reach the primary for the set time restarts itself through bin/supervisor.mjs and joins again; each further restart in a row doubles the wait, up to 1 h. Replicas without the supervisor only report it."
+          }
+        >
+          <Switch
+            id="cluster-auto-restart"
+            checked={enabled}
+            disabled={restart === null || pendingAutoRestart !== null}
+            onCheckedChange={(checked) => void saveAutoRestart(checked)}
+          />
+        </SettingsToggle>
+      </SettingsRows>
+      <div className="grid gap-5 sm:grid-cols-2">
+        <ClusterNumberField
+          field={RESTART_AFTER_FIELD}
+          limits={CLUSTER_RESTART_LIMITS}
+          saved={restart ? restart.clusterRestartAfterSeconds : null}
+          disabled={!enabled}
+          onSaved={apply}
+        />
       </div>
     </SettingsGroup>
   );
@@ -1153,6 +1243,7 @@ function PrimaryPanel({ status, isAdmin }: { status: ClusterStatus; isAdmin: boo
       {isAdmin && <AddMachineGroup />}
       <SchedulingGroup status={status} />
       <AutoHealGroup onFailuresChange={setHealFailures} />
+      <AutoRestartGroup />
       <NodesGroup status={status} canRemove={isAdmin} healFailures={healFailures} />
       <ConfirmDialog
         open={disabling}
@@ -1180,6 +1271,8 @@ function ReplicaPanel({ status }: { status: ClusterStatus }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<ClusterTestResult | null>(null);
   const [leaving, setLeaving] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const { primary, connection } = status;
   const self = status.nodes.find((node) => node.self) ?? null;
 
@@ -1194,6 +1287,34 @@ function ReplicaPanel({ status }: { status: ClusterStatus }) {
       setResult({ ok: false, latencyMs: null, node: null, error: errorText(err, "Could not test the connection.") });
     } finally {
       setTesting(false);
+    }
+  }
+
+  /** Drop the current link and dial the primary again right away (no backoff wait). */
+  async function reconnect() {
+    if (reconnecting) return;
+    setReconnecting(true);
+    try {
+      setClusterStatus(await api.cluster.restore(false));
+      toast.success("Reconnecting to the primary");
+    } catch (err) {
+      toast.error(errorText(err, "Could not reconnect to the primary."));
+    } finally {
+      setReconnecting(false);
+    }
+  }
+
+  /** Restart this node through its supervisor; the server answers 409 when there is none. */
+  async function restart(): Promise<boolean> {
+    try {
+      setClusterStatus(await api.cluster.restore(true));
+      toast.success("Restarting this node", {
+        description: "It reconnects to the cluster when it is back; the page reconnects by itself.",
+      });
+      return true;
+    } catch (err) {
+      toast.error(errorText(err, "Could not restart this node."));
+      return false;
     }
   }
 
@@ -1263,7 +1384,7 @@ function ReplicaPanel({ status }: { status: ClusterStatus }) {
           </p>
         )}
         {result && <TestResultNote result={result} />}
-        <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           <Button
             type="button"
             variant="outline"
@@ -1273,6 +1394,25 @@ function ReplicaPanel({ status }: { status: ClusterStatus }) {
           >
             {testing ? <Loader2Icon className="animate-spin" /> : <PlugZapIcon />}
             Test connection
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void reconnect()}
+            disabled={reconnecting}
+            className={cn(FIELD, "pressable gap-2")}
+          >
+            {reconnecting ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
+            Reconnect
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setRestarting(true)}
+            className={cn(FIELD, "pressable gap-2")}
+          >
+            <RotateCcwIcon />
+            Restart node
           </Button>
           <Button
             type="button"
@@ -1298,6 +1438,19 @@ function ReplicaPanel({ status }: { status: ClusterStatus }) {
         <p>
           This server stops following {primary?.name ?? "the primary"} and becomes standalone, keeping its copy of the
           data as its own. It no longer runs cards for the cluster or takes over when the primary goes down.
+        </p>
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={restarting}
+        onOpenChange={setRestarting}
+        icon={<RotateCcwIcon />}
+        title="Restart this node?"
+        confirmLabel="Restart node"
+        onConfirm={restart}
+      >
+        <p>
+          {status.nodeName} stops and its bin/supervisor.mjs starts it again; it then joins{" "}
+          {primary?.name ?? "the primary"} again. Use this when reconnecting does not help.
         </p>
       </ConfirmDialog>
     </SettingsPanel>

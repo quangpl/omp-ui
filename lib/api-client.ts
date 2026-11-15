@@ -359,6 +359,12 @@ export const api = {
       request<ClusterStatus>("/cluster/join", { method: "POST", json: { url, token } }),
     /** Replica → standalone, keeping the replicated data as its own. */
     leave: () => request<ClusterStatus>("/cluster/leave", { method: "POST" }),
+    /**
+     * Replica: reconnect to the primary now, or (`restart`) restart this node through its supervisor;
+     * 409 when this is not a replica or (restart) it runs without bin/supervisor.mjs.
+     */
+    restore: (restart = false) =>
+      request<ClusterStatus>("/cluster/restore", { method: "POST", json: { restart } }),
     /** Can this server reach and authenticate with the primary at `url`? */
     test: (url: string, token: string) =>
       request<ClusterTestResult>("/cluster/test", { method: "POST", json: { url, token } }),

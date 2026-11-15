@@ -74,6 +74,8 @@ const ORCHESTRATION_DEFAULTS = {
   clusterHealFailures: DEFAULT_SETTINGS.clusterHealFailures,
   clusterHealOfflineSeconds: DEFAULT_SETTINGS.clusterHealOfflineSeconds,
   clusterHealMaxRestarts: DEFAULT_SETTINGS.clusterHealMaxRestarts,
+  clusterAutoRestart: DEFAULT_SETTINGS.clusterAutoRestart,
+  clusterRestartAfterSeconds: DEFAULT_SETTINGS.clusterRestartAfterSeconds,
 };
 
 interface TaskDetail {

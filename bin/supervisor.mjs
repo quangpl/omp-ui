@@ -10,11 +10,16 @@
 //   answered once, or after the startup grace period.
 // - SIGTERM / SIGINT / SIGHUP stop the server (same escalation) and then the supervisor.
 // - Runs the server with OMP_UI_SUPERVISED=1 (the resource guard's graceful restart needs it). Exit
-//   code 75 (RESTART_EXIT_CODE) is a requested restart (resource guard, cluster role changes): it
-//   restarts the server after 1 s without counting as a crash.
+//   code 75 (RESTART_EXIT_CODE) is a requested restart (resource guard, cluster role changes, a
+//   replica's disconnect watchdog or an admin's restore): it restarts the server after 1 s without
+//   counting as a crash. Before exiting 75 the server may write its own reason to the file named by
+//   OMP_UI_RESTART_REASON_FILE (in a private 0700 dir per supervisor in the OS temp dir, removed when
+//   the supervisor exits); the supervisor reads and deletes it on every server exit and passes it on
+//   for code 75 only.
 // - Tells every server it starts after the first why (OMP_UI_RESTART_REASON, e.g. "crashed (signal
-//   SIGKILL, up 42 s)", "unhealthy: 3 failed health checks (…)", "restart requested"); cluster mode
-//   reports it to the primary. The first server starts without it.
+//   SIGKILL, up 42 s)", "unhealthy: 3 failed health checks (…)", the server's own reason from the
+//   file, else "restart requested"); cluster mode reports it to the primary. The first server
+//   starts without it.
 // The first probe also boots the agent manager, which resumes interrupted and failed cards.
 //
 // Environment (milliseconds unless noted):
@@ -28,8 +33,12 @@
 //   AGENTMEMORY_ENABLED         auto (default) | true | false: keep the agentmemory memory server
 //                               running (bin/agentmemory.mjs) — checked at boot, then every
 //                               OMP_UI_MEMORY_CHECK_MS (default 300000; 0 = boot only). Never fatal.
-// Set on the server (not read): OMP_UI_SUPERVISED=1, OMP_UI_RESTART_REASON (see above).
+// Set on the server (not read): OMP_UI_SUPERVISED=1, OMP_UI_RESTART_REASON, OMP_UI_RESTART_REASON_FILE
+// (see above).
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { agentmemoryMode, ensureAgentmemory } from "./agentmemory.mjs";
 
 const [command, ...args] = process.argv.slice(2);
@@ -58,6 +67,30 @@ const MAX_BACKOFF_MS = 30_000;
 const RESTART_EXIT_CODE = 75;
 /** Env var telling a restarted server why; must match RESTART_REASON_ENV in lib/cluster/types.ts. */
 const RESTART_REASON_ENV = "OMP_UI_RESTART_REASON";
+/**
+ * Env var naming the file a server writes its own restart reason to before exiting 75; must match
+ * RESTART_REASON_FILE_ENV in lib/cluster/types.ts.
+ */
+const RESTART_REASON_FILE_ENV = "OMP_UI_RESTART_REASON_FILE";
+/**
+ * A private 0700 dir per supervisor in the OS temp dir (mkdtemp: random name, created atomically),
+ * so no other local user can plant a file, FIFO or symlink at the reason file's path — a fixed name
+ * in a shared sticky /tmp would let them block the supervisor or spoof reasons. Null when the temp
+ * dir is unusable: servers then get no reason file, supervising goes on.
+ */
+const RESTART_REASON_DIR = makeReasonDir();
+const RESTART_REASON_FILE = RESTART_REASON_DIR && path.join(RESTART_REASON_DIR, "restart-reason.txt");
+/** Longest reason passed on: it ends up in a log line and a cluster notice, not a stack dump. */
+const MAX_REASON_CHARS = 500;
+
+function makeReasonDir() {
+  try {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "omp-ui-supervisor-"));
+  } catch (err) {
+    console.error(`[supervisor] could not create a temp dir for restart reasons: ${err?.message ?? err}`);
+    return null;
+  }
+}
 
 function healthUrl() {
   if (process.env.OMP_UI_HEALTH_URL) return process.env.OMP_UI_HEALTH_URL;
@@ -70,6 +103,59 @@ const HEALTH_URL = healthUrl();
 
 function say(message) {
   console.log(`[supervisor ${new Date().toISOString()}] ${message}`);
+}
+
+/** Delete the reason file (best effort: a missing file is the normal case). */
+function removeReasonFile() {
+  if (!RESTART_REASON_FILE) return;
+  try {
+    fs.rmSync(RESTART_REASON_FILE, { force: true });
+  } catch {
+    // unwritable dir: the next server's exclusive create then fails and it sends no reason
+  }
+}
+
+/** Remove the private reason dir when the supervisor exits (best effort). */
+function removeReasonDir() {
+  if (!RESTART_REASON_DIR) return;
+  try {
+    fs.rmSync(RESTART_REASON_DIR, { recursive: true, force: true });
+  } catch {
+    // nothing more to do on the way out
+  }
+}
+
+/** Open flags for the reason file: never follow a symlink, never block on a FIFO (0 where unsupported). */
+const REASON_OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+
+/**
+ * Read and delete the reason the exited server left, so it never leaks into a later exit. Returns it
+ * on one line without control characters, capped at MAX_REASON_CHARS; null when there is no file,
+ * it is not a regular file (anything else is removed unread), or it holds only whitespace.
+ */
+function takeReasonFile() {
+  if (!RESTART_REASON_FILE) return null;
+  let text = null;
+  let fd;
+  try {
+    fd = fs.openSync(RESTART_REASON_FILE, REASON_OPEN_FLAGS);
+    // Only a regular file is read: a FIFO or device would block the event loop (or never end).
+    if (fs.fstatSync(fd).isFile()) text = fs.readFileSync(fd, "utf8");
+  } catch (err) {
+    if (err?.code === "ENOENT") return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  removeReasonFile();
+  if (text === null) return null;
+  const reason = text
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: strip control characters (ESC sequences) from log lines
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_REASON_CHARS)
+    .trimEnd();
+  return reason || null;
 }
 
 /** Current server: its process, when it started, and whether it has answered a probe yet. */
@@ -119,8 +205,13 @@ function start() {
   healthyOnce = false;
   failures = 0;
   const env = { ...process.env, OMP_UI_SUPERVISED: "1" };
+  if (RESTART_REASON_FILE) env[RESTART_REASON_FILE_ENV] = RESTART_REASON_FILE;
+  else delete env[RESTART_REASON_FILE_ENV];
   if (restartReason) env[RESTART_REASON_ENV] = restartReason;
   else delete env[RESTART_REASON_ENV];
+  // A reason left by an earlier server must not be mistaken for the new server's; the server also
+  // creates the file exclusively, so it must not exist yet.
+  removeReasonFile();
   const proc = spawn(command, args, {
     stdio: "inherit",
     detached: !IS_WIN,
@@ -140,6 +231,8 @@ function start() {
 function onExit(proc, code, signal) {
   if (child !== proc) return;
   child = null;
+  // Read on every exit so a reason written by a server that then crashed is not kept around.
+  const fileReason = takeReasonFile();
   clearTimeout(probeTimer);
   clearTimeout(killTimer);
   // Agents the server left behind (it was killed before it could stop them) must not keep running
@@ -153,8 +246,9 @@ function onExit(proc, code, signal) {
   const forced = forcedReason;
   forcedReason = null;
   if (code === RESTART_EXIT_CODE) {
-    say(`server exited with code ${RESTART_EXIT_CODE} (restart requested) — restarting it`);
-    restartReason = forced ?? "restart requested";
+    const requested = fileReason ? `restart requested: ${fileReason}` : "restart requested";
+    say(`server exited with code ${RESTART_EXIT_CODE} (${requested}) — restarting it`);
+    restartReason = forced ?? fileReason ?? "restart requested";
     crashStreak = 0;
     restartTimer = setTimeout(start, 1_000);
     return;
@@ -245,6 +339,8 @@ async function keepMemory() {
 }
 
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => stop(signal));
+// Every way out of the supervisor ends in process.exit: leave no reason dir behind in the temp dir.
+process.on("exit", removeReasonDir);
 
 start();
 void keepMemory();

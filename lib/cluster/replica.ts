@@ -1,14 +1,23 @@
 // Replica role of cluster mode: keeps the member channel to the primary (register, status reports,
 // replication receiver, hosted runs), follows redirects, stores membership/token updates, answers a
 // failback handover and, when the primary stays unreachable for `clusterFailoverSeconds`, runs the
-// failover election (lib/cluster/election.ts). It also runs this machine's resource guard: the
-// status reports carry its holds (and the load guard's), so the primary sends no new runs here
-// while they hold. One runtime per process (globalThis); node.ts starts and stops it.
+// failover election (lib/cluster/election.ts). Its disconnect watchdog relaunches a dead connect
+// loop and, after a long time without a session (lib/cluster/auto-restart.ts), restarts the server
+// through bin/supervisor.mjs. It also runs this machine's resource guard: the status reports carry
+// its holds (and the load guard's), so the primary sends no new runs here while they hold. One
+// runtime per process (globalThis); node.ts starts and stops it.
 import os from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { readLoadHold, readMachineResources, resolveConcurrency } from "@/lib/agent/concurrency";
 import { currentResourcePressure, startResourceGuard } from "@/lib/agent/resource-guard";
+import {
+  autoRestartConfigFrom,
+  decideAutoRestart,
+  DEFAULT_AUTO_RESTART,
+  WATCHDOG_MS,
+  type AutoRestartConfig,
+} from "@/lib/cluster/auto-restart";
 import { dialPeer } from "@/lib/cluster/dial";
 import { decideElection, rankCandidates, type Candidate } from "@/lib/cluster/election";
 import {
@@ -21,6 +30,7 @@ import {
   promoteSelf,
   publishClusterStatus,
   readNodeState,
+  restartWithReason,
   updateNodeState,
 } from "@/lib/cluster/node";
 import { ensureOmpBinary, localOmpInfo } from "@/lib/cluster/omp-runtime";
@@ -77,6 +87,12 @@ const HANDOVER_CLOSE_MS = 2_000;
 /** Retry backoff of the omp binary prefetch: doubles from the minimum up to the maximum. */
 const PREFETCH_RETRY_MIN_MS = 30_000;
 const PREFETCH_RETRY_MAX_MS = 5 * 60_000;
+/**
+ * The watchdog relaunches a dead connect loop at most this often: the delay doubles from
+ * WATCHDOG_MS per relaunch in a row, so a loop that throws on every launch (node.json on a full
+ * disk) does not churn every few seconds.
+ */
+const RELAUNCH_MAX_MS = 5 * 60_000;
 
 type Connection = NonNullable<ClusterStatus["connection"]>;
 /** How one member channel ended: a welcomed session, a failed attempt, or a redirect to another primary. */
@@ -101,6 +117,20 @@ interface ReplicaRuntime {
   session: Session | null;
   /** When the primary was last lost (boot counts as lost until the first welcome), ms epoch. */
   lostSince: number;
+  /** The disconnect watchdog's interval (checkLink every WATCHDOG_MS); cleared by stopReplica. */
+  watchdog: NodeJS.Timeout;
+  /** A checkLink is in flight: the next tick skips instead of overlapping it. */
+  watchdogBusy: boolean;
+  /** The connect loop (supervise) runs; the watchdog relaunches it when it died. */
+  looping: boolean;
+  /** Relaunches of a dead connect loop in a row (checkLink); a welcomed session resets them. */
+  relaunches: number;
+  /** checkLink relaunches a dead connect loop no earlier than this, ms epoch. */
+  nextRelaunchAt: number;
+  /** reconnectReplica asked for an attempt at once with the backoff reset (supervise consumes it). */
+  retryNow: boolean;
+  /** Aborted by reconnectReplica to cut the loop's current sleep short; replaced after each use. */
+  wake: AbortController;
   replicationAt: string | null;
   /** When the last membership list arrived. */
   membersAt: string | null;
@@ -111,10 +141,26 @@ interface ReplicaRuntime {
   statusAgain: boolean;
 }
 
+/**
+ * One disconnect episode of this process: from its first startReplica (or a lost session) until a
+ * welcomed session. Process-level rather than on the runtime: a failed promotion
+ * (rollBackPromotion), a failed failback handover and a new primary's announce replace the
+ * runtime, and a replica that keeps failing that way must still reach the watchdog's restart wait
+ * (and not repeat its notice) instead of starting the clock over each time.
+ */
+interface Unlinked {
+  /** When the episode started, ms epoch: the watchdog's restart wait counts from it. */
+  since: number;
+  /** The "runs without bin/supervisor.mjs" notice was posted. */
+  unsupervisedNoticed: boolean;
+}
+
 const g = globalThis as unknown as {
   __ompUiReplica?: ReplicaRuntime;
   __ompUiReplicaSlots?: number;
   __ompUiReplicaHolding?: NodeHold[];
+  /** The disconnect episode in progress; undefined while a welcomed session is up. */
+  __ompUiReplicaUnlinked?: Unlinked;
 };
 
 /** Join the primary in state.primary (or the members by rank) and stay joined until stopReplica. Idempotent. */
@@ -125,6 +171,13 @@ export async function startReplica(): Promise<void> {
     connection: { state: "connecting", since: new Date().toISOString(), error: null },
     session: null,
     lostSince: Date.now(),
+    watchdog: setInterval(() => void checkLink(rt), WATCHDOG_MS).unref(),
+    watchdogBusy: false,
+    looping: false,
+    relaunches: 0,
+    nextRelaunchAt: 0,
+    retryNow: false,
+    wake: new AbortController(),
     replicationAt: null,
     membersAt: null,
     handover: null,
@@ -132,6 +185,8 @@ export async function startReplica(): Promise<void> {
     statusAgain: false,
   };
   g.__ompUiReplica = rt;
+  // A runtime replacing another keeps the episode (and its clock) of the one it replaces.
+  g.__ompUiReplicaUnlinked ??= { since: Date.now(), unsupervisedNoticed: false };
   // Samples this machine like the primary's manager does. queuedCount 0: a replica queues nothing,
   // so the guard never restarts its server. stopReplica leaves it running (a promotion's manager
   // replaces these hooks), hence the hooks look up the live runtime.
@@ -145,9 +200,7 @@ export async function startReplica(): Promise<void> {
     queuedCount: () => 0,
   });
   publishClusterStatus();
-  supervise(rt).catch((err: unknown) => {
-    clusterNotice("error", `The link to the primary stopped: ${errorMessage(err)}`);
-  });
+  launchLoop(rt);
 }
 
 /**
@@ -160,9 +213,29 @@ export async function stopReplica(reason: string): Promise<void> {
   if (!rt) return;
   g.__ompUiReplica = undefined;
   rt.abort.abort();
+  clearInterval(rt.watchdog);
   endSession(rt, reason);
   runHost().shutdown();
   publishClusterStatus();
+}
+
+/**
+ * Reconnect to the primary now (restore by an admin): the current session is closed with `reason`,
+ * the connect loop's next attempt starts at once with the backoff starting over, and a dead loop
+ * is relaunched (the admin asked, so the watchdog's relaunch backoff does not apply).
+ * False when the replica runtime is not running.
+ */
+export function reconnectReplica(reason: string): boolean {
+  const rt = g.__ompUiReplica;
+  if (!rt) return false;
+  rt.retryNow = true;
+  const wake = rt.wake;
+  rt.wake = new AbortController();
+  wake.abort();
+  // The channel's onClose ends the session and reports the primary lost; a failback handover keeps its channel.
+  if (rt.session && rt.session.channel !== rt.handover) rt.session.channel.close(reason);
+  if (!rt.looping) launchLoop(rt);
+  return true;
 }
 
 /** The link to the primary; null when the replica runtime is not running. */
@@ -190,6 +263,26 @@ export function busyPaths(): Set<string> {
 
 // --- Connect loop -------------------------------------------------------------------------------
 
+/**
+ * Run the connect loop. `looping` tells the watchdog whether it still runs (supervise only returns
+ * once stopped or promoted, but a thrown error would otherwise leave the replica unlinked for good).
+ * Only the first failure of a disconnect episode posts a notice: a loop that throws on every
+ * relaunch would otherwise post one per relaunch.
+ */
+function launchLoop(rt: ReplicaRuntime): void {
+  rt.looping = true;
+  rt.retryNow = false;
+  supervise(rt)
+    .catch((err: unknown) => {
+      const message = `The link to the primary stopped: ${errorMessage(err)}`;
+      if (rt.relaunches === 0) clusterNotice("error", message);
+      else console.warn(`[cluster] ${message} (relaunch ${rt.relaunches})`);
+    })
+    .finally(() => {
+      rt.looping = false;
+    });
+}
+
 /** Connect to the primary until stopped: reconnect with backoff, follow redirects, elect on failover. */
 async function supervise(rt: ReplicaRuntime): Promise<void> {
   let backoff = RECONNECT_MIN_MS;
@@ -203,6 +296,13 @@ async function supervise(rt: ReplicaRuntime): Promise<void> {
     failures = 0;
     logged = null;
     unlogged = 0;
+    rt.retryNow = false;
+  };
+  /** reconnectReplica asked for an attempt at once: start over with the minimum backoff. */
+  const retryNow = () => {
+    if (!rt.retryNow) return false;
+    reset();
+    return true;
   };
   const logFailure = () => {
     const reason = rt.connection.error ?? "unknown error";
@@ -221,6 +321,7 @@ async function supervise(rt: ReplicaRuntime): Promise<void> {
   for (let attempt = 0; !rt.abort.signal.aborted; attempt++) {
     const outcome = await connectOnce(rt, attempt);
     if (rt.abort.signal.aborted) return;
+    if (retryNow()) continue;
     if (outcome === "redirected") {
       reset();
       continue;
@@ -235,6 +336,7 @@ async function supervise(rt: ReplicaRuntime): Promise<void> {
     }
     if (outcome === "failed") logFailure();
     await sleep(backoff, rt);
+    if (retryNow()) continue;
     backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
   }
 }
@@ -434,6 +536,8 @@ function onWelcome(
     primary,
     preferredPrimaryId: msg.preferredPrimaryId ?? null,
     joinedAt: state.joinedAt ?? self?.joinedAt ?? new Date().toISOString(),
+    // A session: the watchdog's restarts in a row start over (and so does its wait).
+    autoRestarts: 0,
   });
   const host = runHost();
   const endpoint = new SyncEndpoint(channel, "node", host.baselines);
@@ -458,6 +562,10 @@ function onWelcome(
   rt.session = session;
   rt.membersAt = new Date().toISOString();
   rt.lostSince = Date.now();
+  // A session ends the disconnect episode: the watchdog's clock and its relaunch backoff start over.
+  g.__ompUiReplicaUnlinked = undefined;
+  rt.relaunches = 0;
+  rt.nextRelaunchAt = 0;
   setConnection(rt, "connected", null);
   const over = via === "ws" ? " over the web URL (WebSocket)" : "";
   clusterNotice("info", `Connected to the primary ${msg.primaryName} (term ${msg.term})${over}`);
@@ -569,6 +677,7 @@ function endSession(rt: ReplicaRuntime, reason: string): void {
 
 function onPrimaryLost(rt: ReplicaRuntime, reason: string): void {
   rt.lostSince = Date.now();
+  g.__ompUiReplicaUnlinked = { since: Date.now(), unsupervisedNoticed: false };
   const name = readNodeState().primary?.name ?? "the primary";
   setConnection(rt, "connecting", reason);
   clusterNotice("warning", `Lost the connection to the primary ${name}: ${reason}`);
@@ -610,9 +719,81 @@ function setConnection(rt: ReplicaRuntime, state: Connection["state"], error: st
   publishClusterStatus();
 }
 
-/** Wait `ms`, or less when the replica is stopped. */
+/** Wait `ms`, or less when the replica is stopped or reconnectReplica wakes the loop. */
 async function sleep(ms: number, rt: ReplicaRuntime): Promise<void> {
-  await delay(ms, undefined, { signal: rt.abort.signal }).catch(() => undefined);
+  const signal = AbortSignal.any([rt.abort.signal, rt.wake.signal]);
+  await delay(ms, undefined, { signal }).catch(() => undefined);
+}
+
+// --- Disconnect watchdog ------------------------------------------------------------------------
+
+/** The watchdog's settings; the defaults when the settings cannot be read. */
+async function autoRestartConfig(): Promise<AutoRestartConfig> {
+  try {
+    return autoRestartConfigFrom(await getAppSettings(await getRepo()));
+  } catch {
+    return DEFAULT_AUTO_RESTART;
+  }
+}
+
+/**
+ * One watchdog check (every WATCHDOG_MS): relaunch a dead connect loop (with backoff, see
+ * RELAUNCH_MAX_MS), then restart this server through bin/supervisor.mjs once it has had no session
+ * with its primary for autoRestartWaitMs (a node without the supervisor gets one notice per
+ * disconnect episode instead and keeps reconnecting). Does nothing once the runtime was stopped
+ * (also mid-check) or during a failback.
+ */
+async function checkLink(rt: ReplicaRuntime): Promise<void> {
+  const current = () => g.__ompUiReplica === rt && !rt.abort.signal.aborted && rt.handover === null;
+  if (!current() || rt.watchdogBusy) return;
+  rt.watchdogBusy = true;
+  try {
+    const now = Date.now();
+    if (!rt.looping && now >= rt.nextRelaunchAt) {
+      const message = "The connect loop to the primary had stopped: starting it again";
+      if (rt.relaunches === 0) clusterNotice("warning", message);
+      else console.warn(`[cluster] ${message} (relaunch ${rt.relaunches + 1})`);
+      rt.nextRelaunchAt = now + Math.min(WATCHDOG_MS * 2 ** rt.relaunches, RELAUNCH_MAX_MS);
+      rt.relaunches++;
+      launchLoop(rt);
+    }
+    const config = await autoRestartConfig();
+    if (!current()) return;
+    const state = readNodeState();
+    if (state.role !== "replica") return;
+    const unlinked = g.__ompUiReplicaUnlinked;
+    const decision = decideAutoRestart({
+      config,
+      connected: rt.session !== null,
+      unlinkedSince: unlinked?.since ?? Date.now(),
+      now: Date.now(),
+      restarts: state.autoRestarts,
+      supervised: isSupervised(),
+      primary: state.primary?.name ?? null,
+      error: rt.connection.error,
+    });
+    if (decision.action === "restart") {
+      console.warn(`[cluster] disconnect watchdog: ${decision.reason}; restarting the server`);
+      try {
+        updateNodeState({ autoRestarts: state.autoRestarts + 1 });
+      } catch (err) {
+        // The restart still helps; only the next wait does not double.
+        console.warn(`[cluster] could not record the auto-restart in node.json: ${errorMessage(err)}`);
+      }
+      clusterNotice("warning", `Restarting this node: ${decision.reason}`);
+      restartWithReason(`auto-restart: ${decision.reason}`);
+    } else if (decision.action === "notice" && unlinked && !unlinked.unsupervisedNoticed) {
+      unlinked.unsupervisedNoticed = true;
+      clusterNotice(
+        "warning",
+        `Not restarting this node (${decision.reason}): it runs without bin/supervisor.mjs, so it keeps reconnecting; restart it by hand`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[cluster] disconnect watchdog check failed: ${errorMessage(err)}`);
+  } finally {
+    rt.watchdogBusy = false;
+  }
 }
 
 // --- Failover election --------------------------------------------------------------------------

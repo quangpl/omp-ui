@@ -587,6 +587,16 @@ export interface AppSettings {
   clusterHealOfflineSeconds: number;
   /** Restart attempts in a row (the node did not stay healthy in between) before auto-restart pauses for that node. */
   clusterHealMaxRestarts: number;
+  /**
+   * Cluster mode (replicas): disconnect watchdog. A replica without a session with its primary for
+   * `clusterRestartAfterSeconds` (CLUSTER_RESTART_LIMITS; at least clusterFailoverSeconds + 60 s, so
+   * a failover election always runs first) restarts itself through bin/supervisor.mjs and joins
+   * again; every further restart without a session in between doubles the wait (at most 1 h unless
+   * the setting is longer). Nodes without the supervisor only post a notice and keep reconnecting.
+   * Defaults come from OMP_UI_CLUSTER_AUTO_RESTART and OMP_UI_CLUSTER_RESTART_AFTER_SEC (lib/settings.ts).
+   */
+  clusterAutoRestart: boolean;
+  clusterRestartAfterSeconds: number;
 }
 
 /**
@@ -619,6 +629,9 @@ export const CLUSTER_HEAL_LIMITS = {
   clusterHealMaxRestarts: { min: 1, max: 20 },
 } as const;
 export type ClusterHealNumberKey = keyof typeof CLUSTER_HEAL_LIMITS;
+
+/** Bounds of `AppSettings.clusterRestartAfterSeconds` (whole seconds). */
+export const CLUSTER_RESTART_LIMITS = { min: 60, max: 86_400 } as const;
 
 /** What GET /settings answers for a stored secret (chat bot tokens). */
 export const REDACTED_SECRET = "********";
@@ -804,6 +817,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   clusterHealFailures: 3,
   clusterHealOfflineSeconds: 30,
   clusterHealMaxRestarts: 3,
+  clusterAutoRestart: true,
+  clusterRestartAfterSeconds: 300,
 };
 
 /** An installed omp skill (from `omp skill list`): pickable with "/" when composing a card. */

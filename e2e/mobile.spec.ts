@@ -1,6 +1,10 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import path from "node:path";
 import { expect, test } from "@playwright/test";
 import {
   AGENT_TIMEOUT,
+  PROJECTS_DIR,
   SLOW_MARKER,
   cardButton,
   columnTabName,
@@ -214,4 +218,48 @@ test("board: Cancel on the new-card page returns to the board without creating a
   await expect(page.getByRole("tab", { name: columnTabName("To do", 0) })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("tab", { name: columnTabName("In progress", 0) })).toBeVisible();
   await expect(page.getByRole("tab", { name: columnTabName("Done", 0) })).toBeVisible();
+});
+
+test("projects: New project clones a Git repository from the bottom sheet", async ({ page }) => {
+  mkdirSync(PROJECTS_DIR, { recursive: true });
+  const source = path.join(PROJECTS_DIR, `${uniqueName("upstream")}.git`);
+  execFileSync("git", ["init", "--bare", "--quiet", source]);
+  const folder = uniqueName("cloned");
+
+  await gotoProjects(page);
+  await page.getByRole("banner").getByRole("button", { name: "New project" }).click();
+  const chooseClone = page
+    .getByRole("dialog", { name: "New project" })
+    .getByRole("button", { name: /Clone a Git repository/ });
+  await chooseClone.click();
+
+  const sheet = page.getByRole("dialog", { name: "Clone a Git repository" });
+  const back = sheet.getByRole("button", { name: "Back" });
+  const url = sheet.getByLabel("Repository URL");
+  const name = sheet.getByLabel(/^Folder name/);
+  const submit = sheet.getByRole("button", { name: "Clone repository" });
+  await expectTouchTarget(back, "Back");
+  await expectTouchTarget(url, "Repository URL");
+  await expectTouchTarget(name, "Folder name");
+  await expectTouchTarget(submit, "Clone repository");
+  await expectNoHorizontalScroll(page);
+
+  // Back returns to the source choice.
+  await back.click();
+  await chooseClone.click();
+
+  await url.fill(source);
+  await expect(name).toHaveAttribute("placeholder", path.basename(source, ".git"));
+  await name.fill(folder);
+  await submit.click();
+
+  // The clone becomes the project folder and names the project.
+  const form = page.getByRole("dialog", { name: "New project" });
+  await expect(form.getByLabel("Project name", { exact: true })).toHaveValue(folder);
+  await expect(form).toContainText(`${path.sep}${folder}`);
+  await expectNoHorizontalScroll(page);
+  await form.getByRole("button", { name: "Create project" }).click();
+
+  await page.waitForURL(/\/b\/[^/?]+$/);
+  await expect(page.getByRole("heading", { name: folder, level: 1 })).toBeVisible();
 });

@@ -1,7 +1,8 @@
 // bin/supervisor.mjs end to end against a tiny fake server (no app build needed): health-probe
 // failures force a restart, a server ignoring SIGTERM is SIGKILLed, OMP_UI_HEALTH_FAILURES=0 never
 // restarts, SIGTERM to the supervisor lets the server shut down gracefully (persist its state), and
-// a restarted server learns why from OMP_UI_RESTART_REASON.
+// a restarted server learns why from OMP_UI_RESTART_REASON — for a requested restart (exit 75) the
+// reason the server itself wrote to OMP_UI_RESTART_REASON_FILE (in the supervisor's private temp dir).
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -16,11 +17,15 @@ const STOP_TIMEOUT_MS = 1_000;
 
 // Fake AgentMan server. Every instance appends its pid to $FAKE_DIR/pids. FAKE_MODE applies to the
 // first instance only (later ones are always healthy):
-//   healthy  — answers {"ok":true}
-//   flaky    — answers once, then 500 {"ok":false,"error":"db down"}
-//   stubborn — answers once, then hangs every probe and ignores SIGTERM (only SIGKILL stops it)
+//   healthy        — answers {"ok":true}
+//   flaky          — answers once, then 500 {"ok":false,"error":"db down"}
+//   stubborn       — answers once, then hangs every probe and ignores SIGTERM (only SIGKILL stops it)
+//   restart        — answers once, then writes FAKE_RESTART_REASON to $OMP_UI_RESTART_REASON_FILE and
+//                    exits 75 (a requested restart, like the replica's disconnect watchdog)
+//   restart-silent — answers once, then exits 75 without writing a reason
 // On SIGTERM a well-behaved instance "drains" for 200 ms, writes $FAKE_DIR/sigterm-<pid>, exits 0.
-// Every instance writes its OMP_UI_RESTART_REASON (JSON, null when unset) to $FAKE_DIR/reason-<pid>.
+// Every instance writes its OMP_UI_RESTART_REASON (JSON, null when unset) to $FAKE_DIR/reason-<pid>
+// and its OMP_UI_RESTART_REASON_FILE (JSON, null when unset) to $FAKE_DIR/reason-file-<pid>.
 const FAKE_SERVER = `
 import fs from "node:fs";
 import http from "node:http";
@@ -32,7 +37,9 @@ const pidsFile = path.join(dir, "pids");
 fs.appendFileSync(pidsFile, process.pid + "\\n");
 const first = fs.readFileSync(pidsFile, "utf8").trim().split("\\n").length === 1;
 fs.writeFileSync(path.join(dir, "reason-" + process.pid), JSON.stringify(process.env.OMP_UI_RESTART_REASON ?? null));
-const sick = first && mode !== "healthy";
+fs.writeFileSync(path.join(dir, "reason-file-" + process.pid), JSON.stringify(process.env.OMP_UI_RESTART_REASON_FILE ?? null));
+const sick = first && (mode === "flaky" || mode === "stubborn");
+const restarting = first && (mode === "restart" || mode === "restart-silent");
 let answered = 0;
 
 const server = http.createServer((req, res) => {
@@ -47,6 +54,11 @@ const server = http.createServer((req, res) => {
   }
   answered++;
   res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+  if (restarting && answered === 1) {
+    if (mode === "restart") fs.writeFileSync(process.env.OMP_UI_RESTART_REASON_FILE, process.env.FAKE_RESTART_REASON);
+    // Exit once the answer is flushed, so the supervisor has seen this instance healthy first.
+    res.once("finish", () => process.exit(75));
+  }
 });
 server.listen(Number(process.env.PORT), process.env.HOST);
 
@@ -59,7 +71,7 @@ process.on("SIGTERM", () => {
 });
 `;
 
-type FakeMode = "healthy" | "flaky" | "stubborn";
+type FakeMode = "healthy" | "flaky" | "stubborn" | "restart" | "restart-silent";
 
 interface Run {
   sup: ChildProcess;
@@ -161,14 +173,38 @@ function restartReason(r: Run, pid: number): string | null | undefined {
   }
 }
 
+/** The OMP_UI_RESTART_REASON_FILE instance `pid` started with (null: unset); undefined before it wrote it. */
+function reasonFile(r: Run, pid: number): string | null | undefined {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(r.dir, `reason-file-${pid}`), "utf8")) as string | null;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Stop the supervisor like a service manager would (SIGTERM, so its exit handler removes its private
+ * temp dir), SIGKILLing its group if it does not exit in time.
+ */
+async function stopSupervisor(r: Run): Promise<void> {
+  if (!r.sup.pid || r.sup.exitCode !== null || r.sup.signalCode !== null) return;
+  try {
+    process.kill(r.sup.pid, "SIGTERM");
+  } catch {
+    // already gone
+  }
+  await Promise.race([r.exited, sleep(STOP_TIMEOUT_MS + 2_000)]);
+  if (r.sup.exitCode === null && r.sup.signalCode === null) {
+    killGroup(r.sup.pid);
+    await Promise.race([r.exited, sleep(2_000)]);
+  }
+}
+
 afterEach(async () => {
   const r = run;
   run = null;
   if (!r) return;
-  if (r.sup.pid && r.sup.exitCode === null && r.sup.signalCode === null) {
-    killGroup(r.sup.pid);
-    await Promise.race([r.exited, sleep(2_000)]);
-  }
+  await stopSupervisor(r);
   // Fake servers lead their own process groups (the supervisor spawns them detached).
   for (const pid of fakePids(r)) if (isFake(pid, r.script)) killGroup(pid);
   fs.rmSync(r.dir, { recursive: true, force: true });
@@ -287,6 +323,61 @@ describe.skipIf(process.platform === "win32")("bin/supervisor.mjs", () => {
       const [, second] = fakePids(r);
       expect(r.output()).toContain("server exited unexpectedly (signal SIGKILL");
       expect(restartReason(r, second)).toMatch(/^crashed \(signal SIGKILL, up \d+ s\)$/);
+      expect(isAlive(second)).toBe(true);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.runIf(IS_LINUX)(
+    "passes the reason a server wrote to OMP_UI_RESTART_REASON_FILE to the next one on exit 75",
+    async () => {
+      // Written over two lines with extra spaces and a terminal escape: the supervisor hands it on
+      // as one tidy line without control characters.
+      const r = await startSupervisor("restart", {
+        FAKE_RESTART_REASON: "auto-restart: \u001b[31mno connection\u001b[0m to the primary p1\n  for 5 min\n",
+      });
+      const reason = "auto-restart: [31mno connection [0m to the primary p1 for 5 min";
+      await waitUntil(() => fakePids(r).length >= 2 && count(r.output(), "server is healthy (") >= 2, 8_000, 50);
+
+      const [first, second] = fakePids(r);
+      const file = reasonFile(r, first);
+      expect(typeof file).toBe("string");
+      expect(reasonFile(r, second)).toBe(file);
+      // A fresh private dir (mkdtemp, 0700) in the OS temp dir, not a predictable shared-/tmp name.
+      const dir = path.dirname(file!);
+      expect(path.basename(file!)).toBe("restart-reason.txt");
+      expect(path.dirname(dir)).toBe(os.tmpdir());
+      expect(path.basename(dir)).toMatch(/^omp-ui-supervisor-.+/);
+      expect(dir).not.toBe(r.dir);
+      expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+      expect(restartReason(r, first)).toBeNull();
+      expect(restartReason(r, second)).toBe(reason);
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control characters are gone
+      expect(restartReason(r, second)).not.toMatch(/[\u0000-\u001f\u007f]/);
+      const out = r.output();
+      expect(out).toContain(`server exited with code 75 (restart requested: ${reason}) — restarting it`);
+      expect(out).not.toContain("\u001b");
+      expect(out).not.toContain("exited unexpectedly");
+      // Read and deleted when the first server exited, so it cannot leak into a later restart.
+      expect(fs.existsSync(file!)).toBe(false);
+      expect(isAlive(second)).toBe(true);
+
+      // The supervisor removes its private dir when it exits.
+      await stopSupervisor(r);
+      expect(fs.existsSync(dir)).toBe(false);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.runIf(IS_LINUX)(
+    "falls back to \"restart requested\" when a server exits 75 without a reason file",
+    async () => {
+      const r = await startSupervisor("restart-silent");
+      await waitUntil(() => fakePids(r).length >= 2 && count(r.output(), "server is healthy (") >= 2, 8_000, 50);
+
+      const [, second] = fakePids(r);
+      expect(restartReason(r, second)).toBe("restart requested");
+      expect(r.output()).toContain("server exited with code 75 (restart requested) — restarting it");
       expect(isAlive(second)).toBe(true);
     },
     TEST_TIMEOUT,

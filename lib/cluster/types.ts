@@ -83,6 +83,11 @@ export interface NodeState {
    * keep working here and after a promotion); `databaseUrl` for a shared postgres/mongo database.
    */
   secrets: { authSecret: string | null; databaseUrl: string | null; credentialsKey: string | null };
+  /**
+   * Disconnect watchdog (lib/cluster/auto-restart.ts): restarts this replica made in a row because
+   * it had no session with its primary; each doubles the next wait. Reset by a welcomed session.
+   */
+  autoRestarts: number;
 }
 
 /** Folders and files on a node (DATA_DIR-relative there), reported at registration. */
@@ -284,6 +289,12 @@ export const HEAL_STABLE_MS = 10 * 60_000;
 export const HEAL_BACKOFF_MAX_MS = 15 * 60_000;
 /** Env var bin/supervisor.mjs sets on the server it (re)starts: why (unset on the first start). */
 export const RESTART_REASON_ENV = "OMP_UI_RESTART_REASON";
+/**
+ * Env var bin/supervisor.mjs sets on every server it starts: a file where the server may write why
+ * it exits with RESTART_EXIT_CODE; the supervisor reads (and deletes) it and passes the text on as
+ * RESTART_REASON_ENV to the next server. Unset without the supervisor.
+ */
+export const RESTART_REASON_FILE_ENV = "OMP_UI_RESTART_REASON_FILE";
 
 /** primary → replica (member channel): health check; the node answers `heal.status` (same rid). */
 export interface HealCheckMsg extends WireMessage {
