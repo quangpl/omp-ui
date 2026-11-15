@@ -902,14 +902,29 @@ class OmpAgentManager implements AgentManager, RunControl {
     const running = [...this.active.keys()];
     const queued = [...this.claiming, ...this.queue];
     const drafting = queued.filter((id) => this.preparing.has(id));
+    // Cluster mode: the machine each running card runs on (a card's placement is set at launch).
+    const nodes: Record<string, { id: string; name: string }> = {};
+    for (const taskId of running) {
+      const node = this.nodeOf(taskId);
+      if (node) nodes[taskId] = node;
+    }
     // Planning state is part of the key: the UI re-reads the snapshot when a plan starts or ends.
     const held = queued.filter((id) => this.isHeld(id));
     // So are the limit and what bounds it: an automatic one changes with the machine's free
     // resources, and a resource-guard hold/resume must reach the UI even when the limit stays.
-    const key = JSON.stringify([running, queued, drafting, [...this.plans.keys()], held, this.limit, this.boundBy]);
+    const key = JSON.stringify([
+      running,
+      queued,
+      drafting,
+      nodes,
+      [...this.plans.keys()],
+      held,
+      this.limit,
+      this.boundBy,
+    ]);
     if (key === this.lastQueue) return;
     this.lastQueue = key;
-    publish({ type: "queue.updated", running, queued, drafting });
+    publish({ type: "queue.updated", running, queued, drafting, nodes });
   }
 
   private async pump(): Promise<void> {
@@ -989,6 +1004,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       ? placeRun({
           taskId,
           localFree: this.localLimit - this.localRuns().length,
+          localLimit: this.localLimit,
           runLocal: settings.clusterRunLocal,
           preferNodeId,
         })

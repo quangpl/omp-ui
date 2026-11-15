@@ -1,8 +1,10 @@
-// The cluster channel: a TCP connection between two nodes with length-prefixed frames, a
-// mutual HMAC challenge-response on the shared join token, then AES-256-GCM encrypted frames
-// (HKDF-derived per-direction keys, counter IVs). On top: JSON messages routed by `t` prefix,
-// binary frames (file chunks), request/reply via `rid`, and an automatic heartbeat that measures
-// latency and closes silent channels. Only node: built-ins (runs unchanged on any Node 24 node).
+// The cluster channel: a byte stream between two nodes (a TCP connection to the cluster port, or a
+// WebSocket on the web port for nodes reachable only through an HTTP(S) proxy, see
+// lib/cluster/websocket.ts) with length-prefixed frames, a mutual HMAC challenge-response on the
+// shared join token, then AES-256-GCM encrypted frames (HKDF-derived per-direction keys, counter
+// IVs). On top: JSON messages routed by `t` prefix, binary frames (file chunks), request/reply via
+// `rid`, and an automatic heartbeat that measures latency and closes silent channels. Only node:
+// built-ins (runs unchanged on any Node 24 node).
 import {
   createCipheriv,
   createDecipheriv,
@@ -12,8 +14,9 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
-import net, { type Socket } from "node:net";
+import net from "node:net";
 import { performance } from "node:perf_hooks";
+import type { Duplex } from "node:stream";
 
 import type { ClusterRole } from "@/lib/types";
 import {
@@ -24,6 +27,7 @@ import {
   type ChannelPurpose,
   type WireMessage,
 } from "@/lib/cluster/types";
+import { webSocketStream } from "@/lib/cluster/websocket";
 
 /** Largest frame body accepted or sent once authenticated. */
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
@@ -99,14 +103,25 @@ export interface ChannelTiming {
   idleTimeoutMs?: number;
 }
 
-export interface ConnectChannelOptions extends ChannelTiming {
-  host: string;
-  port: number;
+interface ConnectBase extends ChannelTiming {
   token: string;
   hello: HelloInfo;
   /** Connect + handshake deadline (default 10 s). */
   timeoutMs?: number;
 }
+
+/** Over TCP to the node's cluster port. */
+export interface TcpConnectOptions extends ConnectBase {
+  host: string;
+  port: number;
+}
+
+/** Over a WebSocket on the node's web port (`ws:`/`wss:` URL of CLUSTER_WS_PATH, see clusterWsUrl). */
+export interface WebSocketConnectOptions extends ConnectBase {
+  url: string;
+}
+
+export type ConnectChannelOptions = TcpConnectOptions | WebSocketConnectOptions;
 
 export interface ListenChannelsOptions extends ChannelTiming {
   port: number;
@@ -125,6 +140,11 @@ export interface ListenChannelsOptions extends ChannelTiming {
 
 export interface ChannelListener {
   readonly port: number;
+  /**
+   * Run the server handshake over any byte stream (WebSocket upgrades on the web port) with the
+   * same token, identity, limits and timeouts as TCP connections; `remote` is the client address.
+   */
+  accept(stream: Duplex, remote: { host: string; port: number }): void;
   /** Stop listening and close every connection this listener accepted (handshaking or established). */
   close(): Promise<void>;
 }
@@ -145,9 +165,9 @@ export function generateClusterToken(): string {
 // --- Framing ----------------------------------------------------------------------------------
 
 /**
- * A socket speaking u32 BE length-prefixed frames. Reports each complete frame body to `onFrame`
- * (read per frame, so a handshake can hand the rest of a buffer over to the channel) and the end
- * of the connection once to `onEnd`.
+ * A byte stream (TCP socket or WebSocket) speaking u32 BE length-prefixed frames. Reports each
+ * complete frame body to `onFrame` (read per frame, so a handshake can hand the rest of a buffer
+ * over to the channel) and the end of the connection once to `onEnd`.
  */
 class FrameSocket {
   onFrame: (body: Buffer) => void = () => {};
@@ -162,9 +182,11 @@ class FrameSocket {
   /** A tick-end uncork is scheduled (see write). */
   private corked = false;
 
-  constructor(readonly socket: Socket) {
-    socket.setNoDelay(true);
-    socket.setKeepAlive(true, KEEPALIVE_DELAY_MS);
+  constructor(readonly socket: Duplex) {
+    if (socket instanceof net.Socket) {
+      socket.setNoDelay(true);
+      socket.setKeepAlive(true, KEEPALIVE_DELAY_MS);
+    }
     socket.on("data", (chunk: Buffer) => this.push(chunk));
     socket.on("error", (err) => this.end(`error: ${err.message}`));
     socket.on("end", () => this.end("closed"));
@@ -557,84 +579,119 @@ class Channel implements ClusterChannel {
 // --- Client -----------------------------------------------------------------------------------
 
 /**
- * Connect to a node's cluster port and authenticate with `token`. Rejects with ClusterAuthError
- * when the tokens differ (either side's proof fails) or the node refuses cluster connections,
- * with a plain Error on network failures, version mismatch or timeout.
+ * Connect to a node's cluster port (or its cluster WebSocket, `url`) and authenticate with
+ * `token`. Rejects with ClusterAuthError when the tokens differ (either side's proof fails) or the
+ * node refuses cluster connections, with a plain Error on network failures, version mismatch or
+ * timeout.
  */
 export function connectChannel(
   opts: ConnectChannelOptions,
 ): Promise<{ channel: ClusterChannel; server: ServerIdentity }> {
   const { promise, resolve, reject } = Promise.withResolvers<{ channel: ClusterChannel; server: ServerIdentity }>();
-  const where = `${opts.host}:${opts.port}`;
+  const where = "url" in opts ? opts.url : `${opts.host}:${opts.port}`;
+  const timeoutMs = opts.timeoutMs ?? HANDSHAKE_TIMEOUT_MS;
   const clientNonce = randomBytes(NONCE_BYTES);
   const clientNonceB64 = clientNonce.toString("base64");
-  const frames = new FrameSocket(net.connect({ host: opts.host, port: opts.port }));
+  let frames: FrameSocket | null = null;
   let settled = false;
   const timer = setTimeout(
-    () => fail(new Error(`Timed out connecting to the cluster port at ${where}`)),
-    opts.timeoutMs ?? HANDSHAKE_TIMEOUT_MS,
+    () =>
+      fail(
+        new Error(
+          "url" in opts
+            ? `Timed out connecting to the cluster WebSocket at ${where}`
+            : `Timed out connecting to the cluster port at ${where}`,
+        ),
+      ),
+    timeoutMs,
   );
 
   function fail(err: Error): void {
     if (settled) return;
     settled = true;
     clearTimeout(timer);
-    frames.shutdown();
+    frames?.shutdown();
     reject(err);
   }
 
-  frames.onEnd = (reason) =>
-    fail(
-      new Error(
-        reason === "closed"
-          ? `${where} closed the connection during the handshake`
-          : `Cannot reach ${where}: ${reason.replace(/^error: /, "")}`,
-      ),
-    );
-  frames.socket.once("connect", () =>
-    frames.writeJson({
+  function sendHello(): void {
+    frames?.writeJson({
       t: "hello",
       proto: CLUSTER_PROTOCOL_VERSION,
       nonce: clientNonceB64,
       nodeId: opts.hello.nodeId,
       name: opts.hello.name,
       purpose: opts.hello.purpose,
-    }),
-  );
-  frames.onFrame = (body) => {
-    const msg = parseJson(body);
-    if (msg?.t === "error") {
-      const message = typeof msg.message === "string" ? msg.message : "handshake refused";
-      return fail(msg.code === "auth" ? new ClusterAuthError(`${where}: ${message}`) : new Error(`${where}: ${message}`));
-    }
-    if (msg?.t !== "challenge") return fail(new Error(`${where} is not an omp-ui cluster port`));
-    if (msg.proto !== CLUSTER_PROTOCOL_VERSION) {
-      return fail(new Error(`${where} speaks cluster protocol ${String(msg.proto)}, this node ${CLUSTER_PROTOCOL_VERSION}`));
-    }
-    const serverNonce = decodeNonce(msg.nonce);
-    const role = msg.role as ClusterRole;
-    if (!serverNonce || !isId(msg.nodeId) || !isId(msg.name) || !ROLES.includes(role) || !Number.isFinite(msg.term)) {
-      return fail(new Error(`${where} sent a malformed challenge`));
-    }
-    const serverNonceB64 = msg.nonce as string;
-    if (!proofMatches(proof(opts.token, "s", clientNonceB64, serverNonceB64), msg.proof)) {
-      // Tell the server why we leave so it can report the token mismatch (onAuthFailure).
-      frames.writeJson({ t: "error", code: "auth", message: "server proof rejected" });
-      return fail(new ClusterAuthError(`Authentication with ${where} failed: the cluster tokens do not match`));
-    }
-    frames.writeJson({ t: "auth", proof: proof(opts.token, "c", clientNonceB64, serverNonceB64).toString("base64") });
-    settled = true;
-    clearTimeout(timer);
-    const server: ServerIdentity = { nodeId: msg.nodeId, name: msg.name, role, term: msg.term as number };
-    const channel = new Channel(
-      frames,
-      { host: opts.host, port: opts.port },
-      { nodeId: server.nodeId, name: server.name },
-      deriveKeys(opts.token, clientNonce, serverNonce, "client"),
-      opts,
-    );
-    resolve({ channel, server });
-  };
+    });
+  }
+
+  /** Run the client handshake on `stream`; the hello is sent once it is connected (sendHello). */
+  function start(stream: Duplex, remote: { host: string; port: number }): FrameSocket {
+    const socket = new FrameSocket(stream);
+    frames = socket;
+    socket.onEnd = (reason) =>
+      fail(
+        new Error(
+          reason === "closed"
+            ? `${where} closed the connection during the handshake`
+            : `Cannot reach ${where}: ${reason.replace(/^error: /, "")}`,
+        ),
+      );
+    socket.onFrame = (body) => {
+      const msg = parseJson(body);
+      if (msg?.t === "error") {
+        const message = typeof msg.message === "string" ? msg.message : "handshake refused";
+        return fail(msg.code === "auth" ? new ClusterAuthError(`${where}: ${message}`) : new Error(`${where}: ${message}`));
+      }
+      if (msg?.t !== "challenge") return fail(new Error(`${where} is not an omp-ui cluster port`));
+      if (msg.proto !== CLUSTER_PROTOCOL_VERSION) {
+        return fail(new Error(`${where} speaks cluster protocol ${String(msg.proto)}, this node ${CLUSTER_PROTOCOL_VERSION}`));
+      }
+      const serverNonce = decodeNonce(msg.nonce);
+      const role = msg.role as ClusterRole;
+      if (!serverNonce || !isId(msg.nodeId) || !isId(msg.name) || !ROLES.includes(role) || !Number.isFinite(msg.term)) {
+        return fail(new Error(`${where} sent a malformed challenge`));
+      }
+      const serverNonceB64 = msg.nonce as string;
+      if (!proofMatches(proof(opts.token, "s", clientNonceB64, serverNonceB64), msg.proof)) {
+        // Tell the server why we leave so it can report the token mismatch (onAuthFailure).
+        socket.writeJson({ t: "error", code: "auth", message: "server proof rejected" });
+        return fail(new ClusterAuthError(`Authentication with ${where} failed: the cluster tokens do not match`));
+      }
+      socket.writeJson({ t: "auth", proof: proof(opts.token, "c", clientNonceB64, serverNonceB64).toString("base64") });
+      settled = true;
+      clearTimeout(timer);
+      const server: ServerIdentity = { nodeId: msg.nodeId, name: msg.name, role, term: msg.term as number };
+      const channel = new Channel(
+        socket,
+        remote,
+        { nodeId: server.nodeId, name: server.name },
+        deriveKeys(opts.token, clientNonce, serverNonce, "client"),
+        opts,
+      );
+      resolve({ channel, server });
+    };
+    return socket;
+  }
+
+  if ("url" in opts) {
+    const url = opts.url;
+    webSocketStream(url, timeoutMs).then((stream) => {
+      if (settled) {
+        stream.destroy();
+        return;
+      }
+      const { hostname, port, protocol } = new URL(url);
+      start(stream, {
+        host: hostname.replace(/^\[(.*)\]$/, "$1"),
+        port: Number(port) || (protocol === "wss:" ? 443 : 80),
+      });
+      sendHello();
+    }, fail);
+  } else {
+    const remote = { host: opts.host, port: opts.port };
+    start(net.connect(remote), remote).socket.once("connect", sendHello);
+  }
   return promise;
 }
 
@@ -656,14 +713,14 @@ function parseHello(msg: Record<string, unknown> | null): ParsedHello | null {
   return { nodeId: msg.nodeId, name: msg.name, purpose, proto: msg.proto, nonce, nonceB64: msg.nonce as string };
 }
 
-/** Run the server side of the handshake on an accepted socket; `onChannel` gets the authenticated channel. */
+/** Run the server side of the handshake on an accepted stream; `onChannel` gets the authenticated channel. */
 function acceptConnection(
-  socket: Socket,
+  socket: Duplex,
+  remote: { host: string; port: number },
   opts: ListenChannelsOptions,
-  track: { sockets: Set<Socket>; channels: Set<Channel> },
+  track: { sockets: Set<Duplex>; channels: Set<Channel> },
 ): void {
   const frames = new FrameSocket(socket);
-  const remote = { host: normalizeHost(socket.remoteAddress), port: socket.remotePort ?? 0 };
   track.sockets.add(socket);
   const timer = setTimeout(() => refuse(), opts.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS);
   let hello: ParsedHello | null = null;
@@ -738,10 +795,16 @@ function acceptConnection(
   }
 }
 
-/** Listen for cluster channels on `port` (0 = ephemeral, see `listener.port`). */
+/**
+ * Listen for cluster channels on `port` (0 = ephemeral, see `listener.port`); `listener.accept`
+ * takes connections arriving another way (WebSocket upgrades on the web port).
+ */
 export function listenChannels(opts: ListenChannelsOptions): Promise<ChannelListener> {
-  const track = { sockets: new Set<Socket>(), channels: new Set<Channel>() };
-  const server = net.createServer((socket) => acceptConnection(socket, opts, track));
+  const track = { sockets: new Set<Duplex>(), channels: new Set<Channel>() };
+  let closing = false;
+  const server = net.createServer((socket) =>
+    acceptConnection(socket, { host: normalizeHost(socket.remoteAddress), port: socket.remotePort ?? 0 }, opts, track),
+  );
   const { promise, resolve, reject } = Promise.withResolvers<ChannelListener>();
   server.once("error", reject);
   server.listen(opts.port, opts.host ?? "0.0.0.0", () => {
@@ -750,7 +813,15 @@ export function listenChannels(opts: ListenChannelsOptions): Promise<ChannelList
     const address = server.address();
     resolve({
       port: typeof address === "object" && address ? address.port : opts.port,
+      accept(stream, remote) {
+        if (closing) {
+          stream.destroy();
+          return;
+        }
+        acceptConnection(stream, { host: normalizeHost(remote.host), port: remote.port }, opts, track);
+      },
       close() {
+        closing = true;
         const closed = Promise.withResolvers<void>();
         server.close(() => closed.resolve());
         for (const socket of track.sockets) socket.destroy();

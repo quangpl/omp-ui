@@ -548,10 +548,14 @@ export function clusterCapacity(
   return computeCapacity(localLimit, runLocal, nodes);
 }
 
-/** Reserve a slot for a run about to launch; `localFree` = localLimit - local active runs. Never null while primary active. */
+/**
+ * Reserve a slot for a run about to launch; `localLimit` = the primary's own agent limit,
+ * `localFree` = localLimit - local active runs. Never null while primary active.
+ */
 export function placeRun(input: {
   taskId: string;
   localFree: number;
+  localLimit: number;
   runLocal: boolean;
   preferNodeId: string | null;
 }): RunPlacement {
@@ -562,6 +566,7 @@ export function placeRun(input: {
     nodeId: self.nodeId,
     nodeName: self.name,
     local: true,
+    slots: Math.max(0, input.localLimit),
     free: input.localFree,
     loadPerCore: os.loadavg()[0] / Math.max(1, os.availableParallelism()),
   };
@@ -572,6 +577,7 @@ export function placeRun(input: {
         nodeId: m.nodeId,
         nodeName: m.name,
         local: false,
+        slots: m.slots,
         free: m.slots - runsOn(m.nodeId).length - m.reserved,
         loadPerCore: m.resources ? m.resources.loadAvg1 / Math.max(1, m.resources.cpus) : 0,
       }),

@@ -2,7 +2,7 @@
 
 import type { CSSProperties } from "react";
 import Link from "next/link";
-import { TriangleAlertIcon } from "lucide-react";
+import { ServerIcon, TriangleAlertIcon } from "lucide-react";
 import { formatDateTime, formatRelative } from "@/components/board/format";
 import { boardHref, cardHref, plural } from "@/components/home/shared";
 import { workerIdentity } from "@/components/visualize/game";
@@ -84,33 +84,42 @@ function ProductionStrip({ board, total }: { board: DashboardBoard; total: numbe
   );
 }
 
-/** The workers on site right now: one robot per running card, each linking to its card; the model is in its tooltip. */
+/** The workers on site right now: one robot per running card, each linking to its card; the model is in its tooltip, the cluster node under the robot. */
 function Crew({ running, models }: { running: QueueEntry[]; models: ReadonlyMap<string, string | null> }) {
   if (running.length === 0) {
     return <span className="font-mono text-xs text-muted-foreground">Site quiet</span>;
   }
   const shown = running.slice(0, MAX_WORKERS_SHOWN);
   return (
-    <ul aria-label={`${plural(running.length, "worker")} on site`} className="flex items-center gap-1">
+    <ul aria-label={`${plural(running.length, "worker")} on site`} className="flex items-start gap-1">
       {shown.map((entry) => {
         const worker = workerIdentity(entry.taskId);
         const model = models.get(entry.taskId);
-        const label = `${worker.name} on ${entry.title}${model ? `, model ${modelLabel(model)}` : ""}`;
+        const label = `${worker.name} on ${entry.title}${model ? `, model ${modelLabel(model)}` : ""}${entry.node ? `, running on cluster node ${entry.node.name}` : ""}`;
         return (
           <li key={entry.taskId}>
             <Link
               href={cardHref({ boardId: entry.boardId, id: entry.taskId })}
               title={label}
               aria-label={label}
-              className="block rounded-[3px] p-0.5 outline-none transition-transform hover:-translate-y-px focus-visible:ring-2 focus-visible:ring-signal active:scale-[0.98]"
+              className="flex max-w-14 min-w-0 flex-col items-center gap-0.5 rounded-[3px] p-0.5 outline-none transition-transform hover:-translate-y-px focus-visible:ring-2 focus-visible:ring-signal active:scale-[0.98]"
             >
               <WorkerAvatar hue={worker.hue} mood="working" className="size-7" />
+              {entry.node && (
+                <span
+                  aria-hidden
+                  className="inline-flex max-w-full min-w-0 items-center gap-0.5 rounded-[3px] border border-border px-0.5 font-mono text-[9px] leading-[12px] text-muted-foreground"
+                >
+                  <ServerIcon className="size-2 shrink-0" />
+                  <span className="truncate">{entry.node.name}</span>
+                </span>
+              )}
             </Link>
           </li>
         );
       })}
       {running.length > shown.length && (
-        <li className="pl-1 font-mono text-xs text-muted-foreground tabular-nums">+{running.length - shown.length}</li>
+        <li className="self-center pl-1 font-mono text-xs text-muted-foreground tabular-nums">+{running.length - shown.length}</li>
       )}
     </ul>
   );

@@ -7,6 +7,7 @@ import {
   InboxIcon,
   PackageCheckIcon,
   RotateCcwIcon,
+  ServerIcon,
   ShieldAlertIcon,
   ShieldCheckIcon,
   TriangleAlertIcon,
@@ -126,12 +127,13 @@ function CardWorker({
   const flagged = (sdlc?.violations.length ?? 0) > 0;
   const progress = progressSentence(entry);
   const modelNote = model ? `, model ${modelLabel(model)}` : "";
+  const nodeNote = entry.node ? `, on node ${entry.node.name}` : "";
   return (
     <li className="min-w-0">
       <Link
         href={cardHref({ boardId: entry.boardId, id: entry.taskId })}
-        aria-label={`${worker.name}, lead on ${entry.title}${modelNote}: ${progress}`}
-        title={`${entry.title} in ${entry.boardName}\n${progress}${model ? `\nModel: ${model}` : ""}`}
+        aria-label={`${worker.name}, lead on ${entry.title}${modelNote}${nodeNote}: ${progress}`}
+        title={`${entry.title} in ${entry.boardName}\n${progress}${model ? `\nModel: ${model}` : ""}${entry.node ? `\nRunning on cluster node ${entry.node.name}` : ""}`}
         className={cn(
           "grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start rounded-[3px] transition-colors hover:bg-muted motion-reduce:transition-none",
           compact ? "gap-x-1.5 gap-y-0.5 p-1" : "gap-x-2 gap-y-1 p-1.5",
@@ -172,6 +174,19 @@ function CardWorker({
               title={`Model: ${model}`}
             >
               {modelLabel(model)}
+            </span>
+          )}
+          {entry.node && (
+            <span
+              title={`Running on cluster node ${entry.node.name}`}
+              className={cn(
+                "inline-flex min-w-0 items-center gap-0.5 rounded-[3px] border border-border px-1 font-mono text-[10px] leading-[14px] text-muted-foreground",
+                compact ? "max-w-20" : "max-w-28",
+              )}
+            >
+              <ServerIcon className="size-2.5 shrink-0" aria-hidden />
+              <span className="sr-only">on node </span>
+              <span className="truncate">{entry.node.name}</span>
             </span>
           )}
           {flagged && <TriangleAlertIcon className="size-3 shrink-0 text-destructive" aria-hidden />}
