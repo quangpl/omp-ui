@@ -12,6 +12,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { activeRunCount, getAgentManager, holdNewRuns, resetAgentManager } from "@/lib/agent/manager";
 import { dialPeer } from "@/lib/cluster/dial";
 import { openFirewallPort } from "@/lib/cluster/firewall";
+import { ensureOmpCommandOnPath, localOmpCommand } from "@/lib/cluster/omp-runtime";
 import { clusterPaths } from "@/lib/cluster/paths";
 import {
   acceptMember,
@@ -57,7 +58,7 @@ import { describeDatabase, getRepo } from "@/lib/db";
 import { publish } from "@/lib/events";
 import { HttpError } from "@/lib/server/http";
 import { logEvent } from "@/lib/server/log-store";
-import { getAppSettings } from "@/lib/settings";
+import { getAppSettings, setOmpPathResolver } from "@/lib/settings";
 import type { ClusterInfo, ClusterNotice, ClusterRole, ClusterStatus, ClusterTestResult } from "@/lib/types";
 import { APP_VERSION } from "@/lib/version";
 
@@ -76,6 +77,11 @@ const SHORT_CHANNEL_MS = 30_000;
 /** How often a failback checks whether the local runs have finished. */
 const DRAIN_POLL_MS = 1_000;
 const ROLES: readonly ClusterRole[] = ["standalone", "primary", "replica"];
+/** Joining from the environment is retried this long after a failure, doubling up to ENV_JOIN_RETRY_MAX_MS. */
+const ENV_JOIN_RETRY_MS = 10_000;
+const ENV_JOIN_RETRY_MAX_MS = 120_000;
+/** A failing join from the environment posts a notice at most this often. */
+const ENV_JOIN_NOTICE_MS = 600_000;
 
 const g = globalThis as unknown as {
   __ompUiClusterNode?: { file: string; state: NodeState };
@@ -91,6 +97,8 @@ const g = globalThis as unknown as {
   __ompUiClusterFirewall?: Set<number>;
   /** node.json path this process created (it did not exist at boot): a fresh node. */
   __ompUiClusterCreated?: string;
+  /** Next retry of the join from the environment. */
+  __ompUiClusterEnvJoin?: NodeJS.Timeout;
 };
 
 // --- Node state (DATA_DIR/cluster/node.json) ----------------------------------------------------
@@ -156,6 +164,7 @@ function defaultState(): NodeState {
     members: [],
     preferredPrimaryId: null,
     joinedAt: null,
+    envJoinId: null,
     secrets: { authSecret: null, databaseUrl: null, credentialsKey: null },
   };
 }
@@ -180,6 +189,7 @@ function normalizeState(raw: unknown): NodeState | null {
       : [],
     preferredPrimaryId: text(raw.preferredPrimaryId),
     joinedAt: text(raw.joinedAt),
+    envJoinId: text(raw.envJoinId),
     secrets: {
       authSecret: text(secrets.authSecret),
       databaseUrl: text(secrets.databaseUrl),
@@ -601,21 +611,68 @@ async function findHigherPrimary(): Promise<{ primary: PeerAddress; term: number
 
 // --- Boot -------------------------------------------------------------------------------------
 
+/** OMP_UI_CLUSTER_JOIN_ID of the join-script run that started this server; null without one (older scripts). */
+function envJoinId(): string | null {
+  return process.env.OMP_UI_CLUSTER_JOIN_ID?.trim() || null;
+}
+
+interface EnvJoinRequest {
+  url: string;
+  token: string;
+  id: string | null;
+}
+
 /**
- * First boot of a node started by the join script: join the primary named in the environment.
- * Only a fresh node (no node.json before this boot) joins: the script keeps the variables in the
- * node's environment for good, and a node an admin made leave must not re-join on its next restart.
+ * Whether this node should (still) join the primary the environment names: only while standalone;
+ * with a join id until a join consumed it (state.envJoinId), so re-running the join script joins
+ * again but a restart never re-joins a cluster an admin left; without one (older scripts, which
+ * keep the variables for good) only a fresh node (no node.json before this boot).
+ */
+function envJoinPending(id: string | null): boolean {
+  const state = readNodeState();
+  if (state.role !== "standalone") return false;
+  return id ? state.envJoinId !== id : g.__ompUiClusterCreated === clusterPaths().nodeFile;
+}
+
+/**
+ * Boot of a node started by the join script: join the primary named in the environment (see
+ * envJoinPending). With a join id a failed join is retried in the background (scheduleEnvJoin);
+ * boot never waits for the retries.
  */
 async function joinFromEnv(): Promise<void> {
   const url = process.env.OMP_UI_CLUSTER_JOIN?.trim();
   const token = process.env.OMP_UI_CLUSTER_TOKEN?.trim();
-  const state = readNodeState();
-  if (!url || !token || state.role !== "standalone" || g.__ompUiClusterCreated !== clusterPaths().nodeFile) return;
+  if (!url || !token) return;
+  const request: EnvJoinRequest = { url, token, id: envJoinId() };
+  if (!envJoinPending(request.id)) return;
   try {
     await joinCluster(url, token, { boot: true });
   } catch (err) {
     clusterNotice("error", `Could not join the cluster at ${url}: ${errorText(err)}`);
+    if (request.id) scheduleEnvJoin(request, ENV_JOIN_RETRY_MS, Date.now());
   }
+}
+
+/**
+ * Retry the join from the environment in `delay` ms (doubling up to ENV_JOIN_RETRY_MAX_MS) until
+ * it works, the role changes or the join id is consumed; a failure notice at most every
+ * ENV_JOIN_NOTICE_MS (`noticedAt`: the last one). Past boot the server runs as a full server, so
+ * a successful join restarts it as a replica.
+ */
+function scheduleEnvJoin(request: EnvJoinRequest, delay: number, noticedAt: number): void {
+  clearTimeout(g.__ompUiClusterEnvJoin);
+  const timer = setTimeout(() => {
+    if (g.__ompUiClusterEnvJoin === timer) g.__ompUiClusterEnvJoin = undefined;
+    if (!envJoinPending(request.id)) return;
+    joinCluster(request.url, request.token).catch((err: unknown) => {
+      const now = Date.now();
+      const notify = now - noticedAt >= ENV_JOIN_NOTICE_MS;
+      if (notify) clusterNotice("error", `Still cannot join the cluster at ${request.url}, retrying: ${errorText(err)}`);
+      scheduleEnvJoin(request, Math.min(delay * 2, ENV_JOIN_RETRY_MAX_MS), notify ? now : noticedAt);
+    });
+  }, delay);
+  timer.unref();
+  g.__ompUiClusterEnvJoin = timer;
 }
 
 /** A primary coming back first checks that nobody took over while it was away. */
@@ -634,6 +691,11 @@ async function bootPrimary(): Promise<void> {
 }
 
 async function bootCluster(): Promise<void> {
+  // Before anything spawns omp: this node's own `omp` command (DATA_DIR/cluster/bin, installed by
+  // the join script or downloaded from the primary) goes on PATH, and the cluster-wide ompPath
+  // setting maps to it wherever the stored command does not exist on this machine.
+  ensureOmpCommandOnPath();
+  setOmpPathResolver(localOmpCommand);
   await joinFromEnv();
   const state = readNodeState();
   if (state.role === "standalone") return;
@@ -650,8 +712,8 @@ async function bootCluster(): Promise<void> {
 }
 
 /**
- * Boot cluster mode (idempotent; createAgentManager calls it first): join from the environment
- * when a fresh node was started by the join script, then run this node's role.
+ * Boot cluster mode (idempotent; createAgentManager calls it first): put this node's omp command
+ * in place, join from the environment when the join script asks for it, then run this node's role.
  */
 export function startCluster(): Promise<void> {
   g.__ompUiClusterStart ??= bootCluster().catch((err: unknown) => {
@@ -683,7 +745,10 @@ async function backupDatabase(label: string): Promise<void> {
   console.log(`[cluster] backed up the database to ${file}`);
 }
 
-/** Standalone → primary of a new cluster (new token, next term; this node becomes the home primary). */
+/**
+ * Standalone → primary of a new cluster (new token, next term; this node becomes the home primary).
+ * Consumes the join script's join id, like joinCluster.
+ */
 export async function enableCluster(): Promise<ClusterStatus> {
   const before = readNodeState();
   if (before.role === "primary") return getClusterStatus();
@@ -696,11 +761,12 @@ export async function enableCluster(): Promise<ClusterStatus> {
     members: [],
     preferredPrimaryId: before.nodeId,
     joinedAt: new Date().toISOString(),
+    envJoinId: envJoinId() ?? before.envJoinId,
   });
   try {
     await openListener();
   } catch (err) {
-    updateNodeState({ ...STANDALONE, term: before.term });
+    updateNodeState({ ...STANDALONE, term: before.term, envJoinId: before.envJoinId });
     throw new HttpError(500, `Cannot listen on cluster port ${before.port}: ${errorText(err)}`);
   }
   await startPrimary();
@@ -799,6 +865,8 @@ export async function testClusterConnection(url: string, token: string): Promise
  * Standalone → replica of the primary at `url`: tested first, the local database backed up, the
  * state persisted; then the process restarts as a replica (exit 75 after the response). At boot
  * (`boot`, joined from the environment) the server simply continues: its manager starts dormant.
+ * Any successful join consumes the join script's join id (OMP_UI_CLUSTER_JOIN_ID), so leaving
+ * later never makes a restart join the environment's primary again.
  */
 export async function joinCluster(url: string, token: string, opts: { boot?: boolean } = {}): Promise<ClusterStatus> {
   const state = readNodeState();
@@ -820,6 +888,7 @@ export async function joinCluster(url: string, token: string, opts: { boot?: boo
     primary: { nodeId: target.nodeId, name: target.name, host: hostOf(base), port, httpUrl: base },
     members: [],
     joinedAt: new Date().toISOString(),
+    envJoinId: envJoinId() ?? state.envJoinId,
   });
   if (opts.boot) {
     clusterNotice("info", `Joined the cluster of ${target.name} as a replica`);

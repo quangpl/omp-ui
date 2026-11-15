@@ -104,8 +104,8 @@ Cluster mode ([docs/CLUSTER.md](CLUSTER.md)). Types (`ClusterStatus`, `ClusterNo
 | POST | `/cluster/join` | `{ url, token }` | Admin. Joins the primary at `url` as a replica after a successful test: the local database is backed up to `DATA_DIR/cluster/backups/`, then the server restarts as a replica (its data is replaced by the primary's) → `ClusterStatus`. 400 when the test fails or `url` is not a primary |
 | POST | `/cluster/leave` | – | Admin. A replica leaves and becomes standalone, keeping the replicated data → `ClusterStatus` |
 | DELETE | `/cluster/nodes/{id}` | – | Admin, primary. Disconnects and forgets the node (it becomes standalone) → `{ ok: true }` |
-| GET | `/cluster/info` | – | Public. `ClusterInfo` `{ version, protocol, role, port, platform, arch, nodeVersion, omp }` |
-| GET | `/cluster/join` | – | Public. The POSIX shell join script (`curl -fsSL <url>/api/v1/cluster/join \| sh -s -- <token> [--service\|--background]`) |
+| GET | `/cluster/info` | – | Public. `ClusterInfo` `{ version, protocol, role, port, platform, arch, nodeVersion, omp: { available, version, sha256 } }` (`sha256` of the primary's omp binary, `null` without one) |
+| GET | `/cluster/join` | – | Public. The POSIX shell join script (`curl -fsSL <url>/api/v1/cluster/join \| sh -s -- <token> [--service\|--foreground]`): checks the machine, installs missing packages (root or `sudo -n`), Node.js with npm, the primary's omp and the app, starts the node in the background (default) and waits until it joined, else stops it and exits 1 |
 | GET | `/cluster/bundle` | – | Public. `application/gzip` tar of the running build (`dist/standalone`, `bin/supervisor.mjs`, `bin/agentmemory.mjs`; never `.env` or `data/`) |
 | GET | `/cluster/runtime/node?platform=&arch=` | – | Public. gzip of the server's Node binary when `platform`/`arch` match it, else 404 |
 | GET | `/cluster/runtime/omp` | – | Public. gzip of the primary's omp binary, 404 when omp is not installed |

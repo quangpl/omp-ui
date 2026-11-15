@@ -1145,7 +1145,11 @@ export interface ClusterInfo {
   platform: string;
   arch: string;
   nodeVersion: string;
-  omp: { available: boolean; version: string | null };
+  /**
+   * The primary's omp binary (downloadable from /cluster/runtime/omp when platform/arch match);
+   * `sha256` lets the join script verify it and store it where the node's server looks for it.
+   */
+  omp: { available: boolean; version: string | null; sha256: string | null };
 }
 
 /** A card with its project's name, for cross-project lists on the home dashboard. */

@@ -2,12 +2,15 @@
 // whose paths point at the old primary's disk. Rewrite what must work on this machine: project
 // folders → this machine's own originals (failback: brought up to date from the replicated copy)
 // or else their replicated mirrors, omp session files → this node's DATA_DIR, the omp binary → the
-// one downloaded from the old primary, and the omp agent dir → the replicated copy.
+// one downloaded from the old primary, and the omp agent dir and git/npm auth pack → the
+// replicated copies.
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { accessSync, constants, existsSync, readdirSync, statSync } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, realpath, rename, rm, stat, symlink, utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { authRunEnv, nodeAuthDir } from "@/lib/cluster/auth-pack";
 import { clusterNotice } from "@/lib/cluster/node";
 import { canonicalPath, clusterPaths, mirrorPath } from "@/lib/cluster/paths";
 import { replicationOrigin } from "@/lib/cluster/replication";
@@ -222,11 +225,17 @@ async function migrateOmpPath(repo: Repository): Promise<void> {
 }
 
 /**
- * Point omp at the replicated agent dir (config, credentials, skills) when this machine has no omp
- * setup of its own (~/.omp/agent without config.yml or agent.db) and PI_CODING_AGENT_DIR is unset.
- * Process-wide; node.ts also calls it whenever a primary boots, since the env does not survive restarts.
+ * Use what was replicated from the old primary where this machine has nothing of its own: the omp
+ * agent dir (config, credentials, skills) and the git/npm auth pack. Process-wide; node.ts also
+ * calls it whenever a primary boots, since the env does not survive restarts.
  */
 export function useReplicatedOmpAgentDir(): void {
+  useReplicatedAgentSettings();
+  useReplicatedAuthPack();
+}
+
+/** PI_CODING_AGENT_DIR → the replicated agent dir when it is unset and ~/.omp/agent has no config.yml or agent.db. */
+function useReplicatedAgentSettings(): void {
   if (process.env.PI_CODING_AGENT_DIR) return;
   const own = path.join(os.homedir(), ".omp", "agent");
   if (existsSync(path.join(own, "config.yml")) || existsSync(path.join(own, "agent.db"))) return;
@@ -234,6 +243,29 @@ export function useReplicatedOmpAgentDir(): void {
   if (!existsSync(replicated)) return;
   process.env.PI_CODING_AGENT_DIR = replicated;
   clusterNotice("info", `omp uses the agent settings replicated from the old primary (${replicated})`);
+}
+
+/**
+ * Local runs use the replicated auth pack (git identity, stored credentials, npmrc) when this
+ * machine has no global git identity. Its tokens are not on disk: local runs use this server's env.
+ */
+function useReplicatedAuthPack(): void {
+  if (process.env.OMPUI_AUTH_DIR) return;
+  const dir = nodeAuthDir(dataDir());
+  if (!existsSync(path.join(dir, "gitconfig"))) return;
+  let email = "";
+  try {
+    email = execFileSync("git", ["config", "--global", "--get", "user.email"], {
+      encoding: "utf8",
+      timeout: 5_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    // Unset (exit 1) or git unavailable.
+  }
+  if (email) return;
+  Object.assign(process.env, authRunEnv(dir, { dir, env: {} }));
+  clusterNotice("info", `git and npm use the identity and credentials replicated from the old primary (${dir})`);
 }
 
 /**
@@ -245,7 +277,7 @@ export async function migrateForPromotion(repo: Repository): Promise<void> {
     ["project folders", () => migrateBoards(repo)],
     ["card session files", () => migrateSessionFiles(repo)],
     ["omp binary", () => migrateOmpPath(repo)],
-    ["omp agent dir", useReplicatedOmpAgentDir],
+    ["omp agent dir and auth pack", useReplicatedOmpAgentDir],
   ];
   for (const [label, run] of steps) {
     try {

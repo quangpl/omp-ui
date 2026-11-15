@@ -39,11 +39,40 @@ const APPROVAL_MODES: ApprovalMode[] = ["yolo", "write", "always-ask"];
 /** Highest explicit agent limit (the automatic one has its own cap). */
 export const MAX_EXPLICIT_AGENTS = 16;
 
+// On globalThis so every module instance (dev hot reloads, separate bundles) shares the resolver.
+const g = globalThis as unknown as { __ompUiOmpPathResolver?: ((stored: string) => string) | null };
+
+/**
+ * Map the stored ompPath to the omp command this machine runs (cluster nodes share one settings
+ * record: lib/cluster/omp-runtime localOmpCommand); null: the stored value as is. Only
+ * getAppSettings applies it; the stored value never changes.
+ */
+export function setOmpPathResolver(fn: ((stored: string) => string) | null): void {
+  g.__ompUiOmpPathResolver = fn;
+}
+
 /**
  * Stored settings merged over defaults; env vars (OMP_PATH, MAX_AGENTS) override the defaults.
  * MAX_AGENTS: a number is an explicit limit; `auto` or unset derives it from the machine.
+ * `ompPath` is the command to run on this machine (see setOmpPathResolver).
  */
 export async function getAppSettings(repo: Repository): Promise<AppSettings> {
+  return resolveOmpPath(await storedAppSettings(repo));
+}
+
+export async function updateAppSettings(
+  repo: Repository,
+  patch: Partial<AppSettings>,
+): Promise<AppSettings> {
+  // Already current (read through storedAppSettings), so every menu is known.
+  const next = sanitize({ ...(await storedAppSettings(repo)), ...patch }, DASHBOARD_MENU_IDS);
+  const stored: StoredSettings = { ...next, knownDashboardMenus: [...DASHBOARD_MENU_IDS] };
+  await repo.setSetting(KEY, JSON.stringify(stored));
+  return resolveOmpPath(next);
+}
+
+/** getAppSettings before the ompPath resolver: what updateAppSettings merges with and persists. */
+async function storedAppSettings(repo: Repository): Promise<AppSettings> {
   const base: AppSettings = {
     ...DEFAULT_SETTINGS,
     ompPath: process.env.OMP_PATH || DEFAULT_SETTINGS.ompPath,
@@ -62,15 +91,9 @@ export async function getAppSettings(repo: Repository): Promise<AppSettings> {
   }
 }
 
-export async function updateAppSettings(
-  repo: Repository,
-  patch: Partial<AppSettings>,
-): Promise<AppSettings> {
-  // Already current (read through getAppSettings), so every menu is known.
-  const next = sanitize({ ...(await getAppSettings(repo)), ...patch }, DASHBOARD_MENU_IDS);
-  const stored: StoredSettings = { ...next, knownDashboardMenus: [...DASHBOARD_MENU_IDS] };
-  await repo.setSetting(KEY, JSON.stringify(stored));
-  return next;
+function resolveOmpPath(settings: AppSettings): AppSettings {
+  const resolve = g.__ompUiOmpPathResolver;
+  return resolve ? { ...settings, ompPath: resolve(settings.ompPath) } : settings;
 }
 
 /** `"auto"`, or a whole number clamped to 1…MAX_EXPLICIT_AGENTS; null when `value` is neither. */

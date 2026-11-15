@@ -1,15 +1,17 @@
 // Replication of the primary's state to every replica (sync scope `repl`, down only), so any
 // replica can be promoted with the primary's data. The primary pushes, per replica, a SQLite
 // snapshot of its database (when the db or its -wal changed), DATA_DIR/files, the card worktrees,
-// the cluster session dirs, every board's project folders (to the replica's mirror) and the omp
-// agent dir pack, plus the secrets the replica needs (`repl.secrets`). Each completed round has
-// a sequence number (`repl.seq`), which ranks replicas in elections. The replica swaps the
-// received database snapshot in and records the round in DATA_DIR/cluster/replication.json.
+// the cluster session dirs, every board's project folders (to the replica's mirror), the omp
+// agent dir pack and the git/npm auth pack, plus the secrets the replica needs (`repl.secrets`).
+// Each completed round has a sequence number (`repl.seq`), which ranks replicas in elections. The
+// replica swaps the received database snapshot in and records the round in
+// DATA_DIR/cluster/replication.json.
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync, mkdirSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { buildAuthPack, nodeAuthDir } from "@/lib/cluster/auth-pack";
 import { readNodeState, updateNodeState } from "@/lib/cluster/node";
 import { buildOmpAgentPack } from "@/lib/cluster/omp-runtime";
 import { canonicalPath, clusterPaths, mirrorPath } from "@/lib/cluster/paths";
@@ -291,6 +293,7 @@ async function replicationPlan(
       add(`project:${id}`, folder, nodePath, "tree");
     }
     add("omp-agent", await buildOmpAgentPack(), node.ompAgentDir, "raw");
+    add("auth", (await buildAuthPack()).dir, nodeAuthDir(node.dataDir), "raw");
   }
   // Longest prefix wins: mirrored project folders inside DATA_DIR map to their own node path.
   const map = new PathMap([[data, node.dataDir], ...projects]);

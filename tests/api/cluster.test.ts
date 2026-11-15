@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ADMIN_PASSWORD, api, createUser, freshEnv, loginAs, setupAdmin, teardown } from "./helpers";
@@ -18,6 +20,16 @@ import type { AppSettings, ClusterInfo, ClusterJoinInfo, ClusterStatus } from "@
 // The cluster channel really listens while the server is primary: a random high port keeps
 // parallel suites (and a cluster running on this machine) out of the way.
 const CLUSTER_PORT = 20_000 + Math.floor(Math.random() * 20_000);
+
+/** Whether `name` is a command on PATH. */
+function hasCommand(name: string): boolean {
+  try {
+    execFileSync("sh", ["-c", `command -v ${name}`], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 let userToken: string;
 
@@ -83,6 +95,16 @@ describe("/cluster", () => {
     });
     expect(hostile.body).toContain("PRIMARY_URL='http://localhost'");
     expect(hostile.body).not.toContain("reboot");
+
+    // POSIX sh, as run by `| sh` on the new machine (dash where it exists: Debian/Ubuntu's sh).
+    for (const shell of ["sh", "dash"]) {
+      if (shell === "dash" && !hasCommand("dash")) continue;
+      expect(() => execFileSync(shell, ["-n"], { input: res.body, stdio: ["pipe", "pipe", "pipe"] })).not.toThrow();
+    }
+    // A new join id per run (the server joins again), and the run waits until the node has joined.
+    expect(res.body).toContain('echo "OMP_UI_CLUSTER_JOIN_ID=$join_id"');
+    expect(res.body).toContain("/api/v1/cluster/info");
+    expect(res.body).toContain('if [ "$role" = replica ]; then return 0; fi');
   });
 
   it("refuses to build the join script for a request whose own host is not a plain host[:port]", async () => {
@@ -105,6 +127,9 @@ describe("/cluster", () => {
     });
     expect(typeof res.body.version).toBe("string");
     expect(typeof res.body.omp.available).toBe("boolean");
+    expect("sha256" in res.body.omp).toBe(true);
+    expect(res.body.omp.sha256 === null || /^[0-9a-f]{64}$/.test(res.body.omp.sha256)).toBe(true);
+    expect(res.body.omp.sha256 === null).toBe(!res.body.omp.available);
   });
 
   it("validates the target of a connection test", async () => {

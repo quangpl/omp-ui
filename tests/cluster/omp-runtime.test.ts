@@ -1,14 +1,37 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import fs from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { gzipSync } from "node:zlib";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { buildOmpAgentPack, ensureOmpBinary, localOmpInfo, primaryOmpBinary } from "@/lib/cluster/omp-runtime";
+import {
+  buildOmpAgentPack,
+  ensureOmpBinary,
+  ensureOmpCommandOnPath,
+  installOmpCommand,
+  localOmpCommand,
+  localOmpInfo,
+  primaryOmpBinary,
+} from "@/lib/cluster/omp-runtime";
 
 const ENV_KEYS = ["DATA_DIR", "PI_CODING_AGENT_DIR", "PATH"] as const;
 
@@ -25,6 +48,7 @@ describe("omp runtime", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const key of ENV_KEYS) {
       const value = saved.get(key);
       if (value === undefined) delete process.env[key];
@@ -173,6 +197,96 @@ describe("omp runtime", () => {
       const info = localOmpInfo();
       expect(info.ready).toBe(false);
       expect(info.reason).toMatch(/checksum mismatch/);
+    });
+
+    it.skipIf(process.platform === "win32")("never prunes the binary the omp command points at", async () => {
+      const bin = path.join(root, "data", "cluster", "bin");
+      mkdirSync(bin, { recursive: true });
+      const old = Date.now() / 1000 - 3600;
+      for (const [i, name] of ["omp-aaaaaaaaaaaa", "omp-bbbbbbbbbbbb", "omp-cccccccccccc"].entries()) {
+        writeFileSync(path.join(bin, name), "#!/bin/sh\n", { mode: 0o755 });
+        utimesSync(path.join(bin, name), old + i * 60, old + i * 60);
+      }
+      symlinkSync("omp-aaaaaaaaaaaa", path.join(bin, "omp"));
+      // Relinking fails, so the oldest binary is still the omp command when the old ones are pruned.
+      vi.spyOn(fs, "symlink").mockRejectedValue(new Error("no symlinks here"));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const sha = sha256(binary);
+
+      await ensureOmpBinary(baseUrl, { sha256: sha, version: "1.2.3", size: binary.length });
+
+      expect(readdirSync(bin).sort()).toEqual(
+        ["omp", "omp-aaaaaaaaaaaa", "omp-cccccccccccc", `omp-${sha.slice(0, 12)}`].sort(),
+      );
+      expect(readlinkSync(path.join(bin, "omp"))).toBe("omp-aaaaaaaaaaaa");
+      expect(warn).toHaveBeenCalled();
+    });
+  });
+
+  describe.skipIf(process.platform === "win32")("the omp command", () => {
+    const pathEntries = (): string[] => (process.env.PATH ?? "").split(path.delimiter);
+
+    function fakeBinary(file: string): string {
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, "#!/bin/sh\necho omp 1.0.0\n", { mode: 0o755 });
+      return file;
+    }
+
+    it("installOmpCommand points the omp symlink at the binary and puts the bin dir on PATH once", async () => {
+      const bin = path.join(root, "data", "cluster", "bin");
+      process.env.PATH = "/usr/bin";
+
+      await installOmpCommand(fakeBinary(path.join(bin, "omp-111111111111")));
+      expect(readlinkSync(path.join(bin, "omp"))).toBe("omp-111111111111");
+      expect(pathEntries()).toEqual([bin, "/usr/bin"]);
+
+      await installOmpCommand(fakeBinary(path.join(bin, "omp-222222222222")));
+      expect(readlinkSync(path.join(bin, "omp"))).toBe("omp-222222222222");
+      expect(pathEntries()).toEqual([bin, "/usr/bin"]);
+
+      // A binary elsewhere is linked by its absolute path; no temp links are left behind.
+      const elsewhere = fakeBinary(path.join(root, "elsewhere", "omp"));
+      await installOmpCommand(elsewhere);
+      expect(readlinkSync(path.join(bin, "omp"))).toBe(elsewhere);
+      expect(readdirSync(bin).sort()).toEqual(["omp", "omp-111111111111", "omp-222222222222"]);
+    });
+
+    it("ensureOmpCommandOnPath adds the bin dir only when it holds an omp", () => {
+      const bin = path.join(root, "data", "cluster", "bin");
+      process.env.PATH = "/usr/bin";
+
+      ensureOmpCommandOnPath();
+      expect(pathEntries()).toEqual(["/usr/bin"]);
+
+      fakeBinary(path.join(bin, "omp-111111111111"));
+      symlinkSync("omp-111111111111", path.join(bin, "omp"));
+      ensureOmpCommandOnPath();
+      ensureOmpCommandOnPath();
+      expect(pathEntries()).toEqual([bin, "/usr/bin"]);
+    });
+
+    it("localOmpCommand maps commands missing here to the node's omp command", () => {
+      const bin = path.join(root, "data", "cluster", "bin");
+      const tools = path.join(root, "tools");
+      const own = fakeBinary(path.join(tools, "omp-own"));
+      const notExecutable = path.join(tools, "omp-plain");
+      writeFileSync(notExecutable, "data", { mode: 0o644 });
+      process.env.PATH = tools;
+      const missing = path.join(root, "primary-home", ".local", "bin", "omp");
+
+      // Without a node omp command everything stays as configured.
+      expect(localOmpCommand(missing)).toBe(missing);
+      expect(localOmpCommand("omp-missing-for-sure")).toBe("omp-missing-for-sure");
+
+      fakeBinary(path.join(bin, "omp-111111111111"));
+      symlinkSync("omp-111111111111", path.join(bin, "omp"));
+      const command = path.join(bin, "omp");
+
+      expect(localOmpCommand(missing)).toBe(command);
+      expect(localOmpCommand("omp-missing-for-sure")).toBe(command);
+      expect(localOmpCommand(notExecutable)).toBe(command);
+      expect(localOmpCommand(own)).toBe(own);
+      expect(localOmpCommand("omp-own")).toBe("omp-own");
     });
   });
 });
