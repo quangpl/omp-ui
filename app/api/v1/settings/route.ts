@@ -6,6 +6,7 @@ import {
   BROWSER_MODES,
   CLEANUP_SCHEDULES,
   CLUSTER_FAILOVER_LIMITS,
+  CLUSTER_HEAL_LIMITS,
   DASHBOARD_MENU_IDS,
   ORCHESTRATION_LIMITS,
   REDACTED_SECRET,
@@ -14,6 +15,7 @@ import {
   type ApprovalMode,
   type BrowserMode,
   type CleanupSchedule,
+  type ClusterHealNumberKey,
   type OrchestrationNumberKey,
 } from "@/lib/types";
 
@@ -28,6 +30,9 @@ const ORCHESTRATION_TOGGLES = [
   "gitCheckpoints",
   "telemetryExport",
   "loadGuard",
+  "subagentLimits",
+  "contextCompaction",
+  "wrapUpNudge",
 ] as const satisfies readonly (keyof AppSettings)[];
 
 /** Settings → Orchestration fields: switches, bounded numbers, and the OTLP endpoint URL. */
@@ -60,7 +65,7 @@ function parseOrchestration(body: Record<string, unknown>, patch: Partial<AppSet
   }
 }
 
-/** Settings → Cluster fields: run cards on the primary too, and the failover delay. */
+/** Settings → Cluster fields: run cards on the primary too, the failover delay and auto-healing. */
 function parseCluster(body: Record<string, unknown>, patch: Partial<AppSettings>): void {
   if (body.clusterRunLocal !== undefined) {
     if (typeof body.clusterRunLocal !== "boolean") throw new HttpError(400, "clusterRunLocal must be a boolean");
@@ -73,6 +78,19 @@ function parseCluster(body: Record<string, unknown>, patch: Partial<AppSettings>
       throw new HttpError(400, `clusterFailoverSeconds must be an integer between ${min} and ${max}`);
     }
     patch.clusterFailoverSeconds = n;
+  }
+  if (body.clusterAutoHeal !== undefined) {
+    if (typeof body.clusterAutoHeal !== "boolean") throw new HttpError(400, "clusterAutoHeal must be a boolean");
+    patch.clusterAutoHeal = body.clusterAutoHeal;
+  }
+  for (const key of Object.keys(CLUSTER_HEAL_LIMITS) as ClusterHealNumberKey[]) {
+    const n = body[key];
+    if (n === undefined) continue;
+    const { min, max } = CLUSTER_HEAL_LIMITS[key];
+    if (typeof n !== "number" || !Number.isInteger(n) || n < min || n > max) {
+      throw new HttpError(400, `${key} must be an integer between ${min} and ${max}`);
+    }
+    patch[key] = n;
   }
 }
 

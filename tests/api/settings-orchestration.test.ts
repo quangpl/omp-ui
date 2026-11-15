@@ -32,6 +32,14 @@ const ENABLED = {
   telemetryEndpoint: "http://localhost:4318/v1/traces",
   loadGuard: true,
   loadGuardPercent: 200,
+  subagentLimits: true,
+  subagentMaxConcurrency: 4,
+  subagentMaxDepth: 2,
+  subagentTimeoutMinutes: 0,
+  contextCompaction: true,
+  contextCompactPercent: 40,
+  wrapUpNudge: true,
+  wrapUpPercent: 90,
 } satisfies Partial<AppSettings>;
 
 afterAll(teardown);
@@ -48,13 +56,15 @@ describe("/settings orchestration fields", () => {
 
   it("every orchestration feature is off on a fresh install and for settings stored before it existed", async () => {
     const fresh = await getSettings();
-    for (const key of ["runTimeLimit", "stallWatchdog", "runBudget", "loopDetection", "gitCheckpoints", "telemetryExport", "loadGuard"] as const) {
+    for (const key of ["runTimeLimit", "stallWatchdog", "runBudget", "loopDetection", "gitCheckpoints", "telemetryExport", "loadGuard", "subagentLimits", "contextCompaction", "wrapUpNudge"] as const) {
       expect(fresh[key], key).toBe(false);
     }
     await (await getRepo()).setSetting("app_settings", JSON.stringify({ ompPath: "omp", autoRetry: false }));
     const legacy = await getSettings();
     expect(legacy.runTimeLimitMinutes).toBe(DEFAULT_SETTINGS.runTimeLimitMinutes);
     expect(legacy.loadGuard).toBe(false);
+    expect(legacy.subagentLimits).toBe(false);
+    expect(legacy.subagentMaxDepth).toBe(DEFAULT_SETTINGS.subagentMaxDepth);
   });
 
   it("PATCH persists every toggle and value in the database, and turning them off sticks", async () => {
@@ -64,7 +74,7 @@ describe("/settings orchestration fields", () => {
     expect(stored).toMatchObject(ENABLED);
     expect(await getSettings()).toMatchObject(ENABLED);
 
-    const off = { runTimeLimit: false, stallWatchdog: false, runBudget: false, loopDetection: false, gitCheckpoints: false, telemetryExport: false, loadGuard: false };
+    const off = { runTimeLimit: false, stallWatchdog: false, runBudget: false, loopDetection: false, gitCheckpoints: false, telemetryExport: false, loadGuard: false, subagentLimits: false, contextCompaction: false, wrapUpNudge: false };
     expect(await patchSettings(off)).toMatchObject({ ...ENABLED, ...off });
   });
 
@@ -77,6 +87,12 @@ describe("/settings orchestration fields", () => {
       { runBudgetUsd: -1 },
       { runBudgetTokens: "100" },
       { loadGuardPercent: 5 },
+      { subagentMaxConcurrency: 33 },
+      { subagentMaxDepth: 0 },
+      { subagentTimeoutMinutes: -1 },
+      { contextCompactPercent: 96 },
+      { wrapUpPercent: 49.5 },
+      { subagentLimits: 1 },
       { loopDetection: "yes" },
       { telemetryEndpoint: "ftp://collector" },
     ]) {
@@ -89,12 +105,15 @@ describe("/settings orchestration fields", () => {
   it("clamps stored values that are out of range", async () => {
     await (await getRepo()).setSetting(
       "app_settings",
-      JSON.stringify({ runTimeLimitMinutes: 0, stallTimeoutMinutes: 99_999, runBudgetUsd: 1.239, loadGuardPercent: "x" }),
+      JSON.stringify({ runTimeLimitMinutes: 0, stallTimeoutMinutes: 99_999, runBudgetUsd: 1.239, loadGuardPercent: "x", subagentMaxConcurrency: 99, contextCompactPercent: 5, wrapUpPercent: "high" }),
     );
     const s = await getSettings();
     expect(s.runTimeLimitMinutes).toBe(5);
     expect(s.stallTimeoutMinutes).toBe(240);
     expect(s.runBudgetUsd).toBe(1.24);
     expect(s.loadGuardPercent).toBe(DEFAULT_SETTINGS.loadGuardPercent);
+    expect(s.subagentMaxConcurrency).toBe(32);
+    expect(s.contextCompactPercent).toBe(20);
+    expect(s.wrapUpPercent).toBe(DEFAULT_SETTINGS.wrapUpPercent);
   });
 });

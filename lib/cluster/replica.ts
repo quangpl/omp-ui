@@ -1,18 +1,23 @@
 // Replica role of cluster mode: keeps the member channel to the primary (register, status reports,
 // replication receiver, hosted runs), follows redirects, stores membership/token updates, answers a
 // failback handover and, when the primary stays unreachable for `clusterFailoverSeconds`, runs the
-// failover election (lib/cluster/election.ts). One runtime per process (globalThis); node.ts starts
-// and stops it.
+// failover election (lib/cluster/election.ts). It also runs this machine's resource guard: the
+// status reports carry its holds (and the load guard's), so the primary sends no new runs here
+// while they hold. One runtime per process (globalThis); node.ts starts and stops it.
 import os from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { readLoadHold, readMachineResources, resolveConcurrency } from "@/lib/agent/concurrency";
+import { currentResourcePressure, startResourceGuard } from "@/lib/agent/resource-guard";
 import { dialPeer } from "@/lib/cluster/dial";
 import { decideElection, rankCandidates, type Candidate } from "@/lib/cluster/election";
 import {
+  answerHealRestart,
+  bootInfo,
   clusterHttpUrl,
   clusterNotice,
   disableCluster,
+  isSupervised,
   promoteSelf,
   publishClusterStatus,
   readNodeState,
@@ -30,8 +35,10 @@ import {
   NODE_STATUS_MS,
   type HandoverAckMsg,
   type HandoverMsg,
+  type HealStatusMsg,
   type MemberInfo,
   type MembersMsg,
+  type NodeHold,
   type NodeState,
   type NodeStatusMsg,
   type PeerAddress,
@@ -41,6 +48,7 @@ import {
   type RemovedMsg,
   type TokenMsg,
   type WelcomeMsg,
+  type WireMessage,
 } from "@/lib/cluster/types";
 import { getRepo } from "@/lib/db";
 import { dataDir } from "@/lib/files";
@@ -53,6 +61,17 @@ const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 10_000;
 /** Connect + handshake deadline of the member channel. */
 const CONNECT_TIMEOUT_MS = 10_000;
+/**
+ * Deadline for the primary's answer (welcome or redirect) to our registration. The primary hashes
+ * its omp binary before the first welcome, so this is generous; heartbeats keep a registered but
+ * unanswered channel open forever, so without it the connect loop could wait indefinitely.
+ */
+const WELCOME_TIMEOUT_MS = 30_000;
+/**
+ * Failed connect attempts with an unchanged reason are logged at most this often, so a primary
+ * that stays down for days does not flood the log (a new reason is logged at once).
+ */
+const RECONNECT_LOG_MS = 60_000;
 /** After a failback ack, the interim primary closes the channel itself; this is the fallback. */
 const HANDOVER_CLOSE_MS = 2_000;
 /** Retry backoff of the omp binary prefetch: doubles from the minimum up to the maximum. */
@@ -88,9 +107,15 @@ interface ReplicaRuntime {
   /** A failback handover in progress: stopReplica leaves this channel open until the ack is sent. */
   handover: ClusterChannel | null;
   statusBusy: boolean;
+  /** A status was requested while another was in flight: sendStatus sends one more right after it. */
+  statusAgain: boolean;
 }
 
-const g = globalThis as unknown as { __ompUiReplica?: ReplicaRuntime; __ompUiReplicaSlots?: number };
+const g = globalThis as unknown as {
+  __ompUiReplica?: ReplicaRuntime;
+  __ompUiReplicaSlots?: number;
+  __ompUiReplicaHolding?: NodeHold[];
+};
 
 /** Join the primary in state.primary (or the members by rank) and stay joined until stopReplica. Idempotent. */
 export async function startReplica(): Promise<void> {
@@ -104,8 +129,21 @@ export async function startReplica(): Promise<void> {
     membersAt: null,
     handover: null,
     statusBusy: false,
+    statusAgain: false,
   };
   g.__ompUiReplica = rt;
+  // Samples this machine like the primary's manager does. queuedCount 0: a replica queues nothing,
+  // so the guard never restarts its server. stopReplica leaves it running (a promotion's manager
+  // replaces these hooks), hence the hooks look up the live runtime.
+  startResourceGuard({
+    onChange: () => {
+      const live = g.__ompUiReplica;
+      if (live?.session) void sendStatus(live, live.session.channel);
+    },
+    activeRunCount: () => runHost().activeCount(),
+    preparingCount: () => 0,
+    queuedCount: () => 0,
+  });
   publishClusterStatus();
   supervise(rt).catch((err: unknown) => {
     clusterNotice("error", `The link to the primary stopped: ${errorMessage(err)}`);
@@ -152,21 +190,50 @@ export function busyPaths(): Set<string> {
 
 // --- Connect loop -------------------------------------------------------------------------------
 
+/** Connect to the primary until stopped: reconnect with backoff, follow redirects, elect on failover. */
 async function supervise(rt: ReplicaRuntime): Promise<void> {
   let backoff = RECONNECT_MIN_MS;
+  /** Consecutive failed attempts since the last session, redirect or election. */
+  let failures = 0;
+  /** The last logged failure, and how many failures were not logged since. */
+  let logged: { reason: string; at: number } | null = null;
+  let unlogged = 0;
+  const reset = () => {
+    backoff = RECONNECT_MIN_MS;
+    failures = 0;
+    logged = null;
+    unlogged = 0;
+  };
+  const logFailure = () => {
+    const reason = rt.connection.error ?? "unknown error";
+    const now = Date.now();
+    if (logged && logged.reason === reason && now - logged.at < RECONNECT_LOG_MS) {
+      unlogged++;
+      return;
+    }
+    const skipped = unlogged > 0 ? ` (${unlogged} similar failure${unlogged === 1 ? "" : "s"} not logged)` : "";
+    console.warn(
+      `[cluster] connecting to the primary failed (attempt ${failures}): ${reason}; retrying in ${Math.round(backoff / 1000)} s${skipped}`,
+    );
+    logged = { reason, at: now };
+    unlogged = 0;
+  };
   for (let attempt = 0; !rt.abort.signal.aborted; attempt++) {
     const outcome = await connectOnce(rt, attempt);
     if (rt.abort.signal.aborted) return;
     if (outcome === "redirected") {
-      backoff = RECONNECT_MIN_MS;
+      reset();
       continue;
     }
-    if (outcome === "session") backoff = RECONNECT_MIN_MS;
+    if (outcome === "session") reset();
+    else failures++;
     if (await failoverDue(rt)) {
+      // elect() posts its own notice.
       if ((await elect(rt)) === "done") return;
-      backoff = RECONNECT_MIN_MS;
+      reset();
       continue;
     }
+    if (outcome === "failed") logFailure();
     await sleep(backoff, rt);
     backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
   }
@@ -222,14 +289,32 @@ async function runSession(
 ): Promise<Outcome> {
   const { promise, resolve } = Promise.withResolvers<Outcome>();
   let outcome: Outcome = "failed";
+  /** Why the primary's answer was refused; kept over the generic close reason. */
+  let detail: string | null = null;
+  let welcomeTimer: NodeJS.Timeout | undefined;
   const current = () => g.__ompUiReplica === rt;
   const offs = [
     channel.on("welcome", (msg) => {
-      if (current() && onWelcome(rt, channel, target, via, msg as WelcomeMsg)) outcome = "session";
+      clearTimeout(welcomeTimer);
+      if (!current()) {
+        // Stopped while this channel registered: close it, heartbeats would keep it open.
+        channel.close("replica stopped");
+        return;
+      }
+      const refused = onWelcome(rt, channel, target, via, msg as WelcomeMsg);
+      if (refused === null) {
+        outcome = "session";
+        return;
+      }
+      detail = refused;
+      channel.close("stale primary");
     }),
     channel.on("redirect", (msg) => {
+      clearTimeout(welcomeTimer);
       if (!current()) return;
-      outcome = onRedirect(rt, target, msg as RedirectMsg);
+      const result = onRedirect(target, msg as RedirectMsg);
+      outcome = result.outcome;
+      detail = result.error;
       channel.close("redirected");
     }),
     channel.on("members", (msg) => {
@@ -245,19 +330,36 @@ async function runSession(
     channel.on("handover", (msg) => {
       if (msg.t === "handover" && current()) void onHandover(rt, channel, msg as HandoverMsg);
     }),
+    channel.on("heal.check", (msg) => {
+      if (msg.t === "heal.check" && current() && rt.session?.channel === channel) void answerHealCheck(channel, msg);
+    }),
+    channel.on("heal.restart", (msg) => {
+      // The requester is the primary this session registered with (its identity from the handshake).
+      if (msg.t === "heal.restart" && current() && rt.session?.channel === channel) {
+        answerHealRestart(channel, msg, channel.peer.nodeId);
+      }
+    }),
   ];
   channel.onClose((reason) => {
+    clearTimeout(welcomeTimer);
     for (const off of offs) off();
     if (rt.session?.channel === channel) {
       endSession(rt, reason);
       if (!rt.abort.signal.aborted) onPrimaryLost(rt, reason);
     } else if (outcome === "failed" && !rt.abort.signal.aborted) {
-      setConnection(rt, "connecting", `${target.name}: ${reason}`);
+      setConnection(rt, "connecting", detail ?? `${target.name}: ${reason}`);
     }
     resolve(outcome);
   });
   try {
     channel.send(await registerMessage(readNodeState()));
+    if (!channel.closed) {
+      welcomeTimer = setTimeout(
+        () => channel.close(`no answer to the registration within ${WELCOME_TIMEOUT_MS / 1000} s`),
+        WELCOME_TIMEOUT_MS,
+      );
+      welcomeTimer.unref();
+    }
   } catch (err) {
     channel.close(`register failed: ${errorMessage(err)}`);
   }
@@ -275,28 +377,48 @@ async function registerMessage(state: NodeState): Promise<RegisterMsg> {
     port: state.port,
     paths: { dataDir: dataDir(), mirrorRoot: paths.mirror, ompAgentDir: paths.ompAgent },
     resources: nodeResources(),
-    slots: await refreshSlots(),
+    slots: (await refreshCapacity()).slots,
     omp: localOmpInfo(),
     replSeq: replicatedSeq(),
     knownTerm: state.term,
     knownPrimary: state.primary,
     runs: runHost().states(),
+    boot: bootInfo(),
   };
 }
 
-/** Accept the primary: persist membership, start replication, runs and status reports. False when fenced. */
+/** The primary's health check (auto-healing): this node's own checks, its boot time and supervision. */
+async function answerHealCheck(channel: ClusterChannel, msg: WireMessage): Promise<void> {
+  let problem: string | null = null;
+  try {
+    await (await getRepo()).getSetting("app_settings");
+  } catch (err) {
+    problem = `database: ${errorMessage(err)}`;
+  }
+  const status: HealStatusMsg = {
+    t: "heal.status",
+    ok: problem === null,
+    problem,
+    bootedAt: bootInfo().at,
+    supervised: isSupervised(),
+  };
+  channel.reply(msg, status);
+}
+
+/**
+ * Accept the primary: persist membership, start replication, runs and status reports. Returns why
+ * the welcome is refused (a stale primary, the caller closes the channel), null once accepted.
+ */
 function onWelcome(
   rt: ReplicaRuntime,
   channel: ClusterChannel,
   target: PeerAddress,
   via: "tcp" | "ws",
   msg: WelcomeMsg,
-): boolean {
+): string | null {
   const state = readNodeState();
   if (typeof msg.term !== "number" || msg.term < state.term) {
-    setConnection(rt, "connecting", `${msg.primaryName} is a stale primary (term ${msg.term} < ${state.term})`);
-    channel.close("stale primary");
-    return false;
+    return `${msg.primaryName} is a stale primary (term ${msg.term} < ${state.term})`;
   }
   const primary: PeerAddress = {
     nodeId: msg.primaryId,
@@ -340,7 +462,7 @@ function onWelcome(
   const over = via === "ws" ? " over the web URL (WebSocket)" : "";
   clusterNotice("info", `Connected to the primary ${msg.primaryName} (term ${msg.term})${over}`);
   prefetchOmp(rt, session, msg, PREFETCH_RETRY_MIN_MS);
-  return true;
+  return null;
 }
 
 /**
@@ -367,8 +489,11 @@ function prefetchOmp(rt: ReplicaRuntime, session: Session, msg: WelcomeMsg, retr
   );
 }
 
-/** Follow a redirect to a primary of our term or newer; anything else is a failed attempt. */
-function onRedirect(rt: ReplicaRuntime, target: PeerAddress, msg: RedirectMsg): Outcome {
+/**
+ * Follow a redirect to a primary of our term or newer; anything else is a failed attempt, with the
+ * reason to report when the redirect is unusable.
+ */
+function onRedirect(target: PeerAddress, msg: RedirectMsg): { outcome: Outcome; error: string | null } {
   const state = readNodeState();
   const primary = msg.primary;
   const usable =
@@ -377,14 +502,11 @@ function onRedirect(rt: ReplicaRuntime, target: PeerAddress, msg: RedirectMsg): 
     primary.nodeId !== state.nodeId &&
     typeof msg.term === "number" &&
     msg.term >= state.term;
-  if (!usable) {
-    setConnection(rt, "connecting", `${target.name} redirected: ${String(msg.reason)}`);
-    return "failed";
-  }
+  if (!usable) return { outcome: "failed", error: `${target.name} redirected: ${String(msg.reason)}` };
   updateNodeState({ primary, term: msg.term });
-  if (primary.host === target.host && primary.port === target.port) return "failed";
+  if (primary.host === target.host && primary.port === target.port) return { outcome: "failed", error: null };
   clusterNotice("info", `Following primary ${primary.name} (term ${msg.term})`);
-  return "redirected";
+  return { outcome: "redirected", error: null };
 }
 
 function onMembers(rt: ReplicaRuntime, msg: MembersMsg): void {
@@ -453,13 +575,19 @@ function onPrimaryLost(rt: ReplicaRuntime, reason: string): void {
 }
 
 async function sendStatus(rt: ReplicaRuntime, channel: ClusterChannel): Promise<void> {
-  if (rt.statusBusy) return;
+  // Not dropped: a guard hold or resume during an in-flight status must still reach the primary.
+  if (rt.statusBusy) {
+    rt.statusAgain = true;
+    return;
+  }
   rt.statusBusy = true;
   try {
+    const { slots, holding } = await refreshCapacity();
     const msg: NodeStatusMsg = {
       t: "node.status",
       resources: nodeResources(),
-      slots: await refreshSlots(),
+      slots,
+      holding,
       omp: localOmpInfo(),
       replSeq: replicatedSeq(),
       runs: await runHost().usage(),
@@ -467,6 +595,11 @@ async function sendStatus(rt: ReplicaRuntime, channel: ClusterChannel): Promise<
     if (rt.session?.channel === channel) channel.send(msg);
   } finally {
     rt.statusBusy = false;
+    // One follow-up covers every request made while this status was in flight.
+    if (rt.statusAgain) {
+      rt.statusAgain = false;
+      if (rt.session?.channel === channel && !channel.closed) void sendStatus(rt, channel);
+    }
   }
 }
 
@@ -659,20 +792,28 @@ function nodeResources(): NodeResources {
   };
 }
 
-/** Agents this node accepts at once (its settings' limit given the hosted runs); the last value when settings fail. */
-async function refreshSlots(): Promise<number> {
+/**
+ * Agents this node accepts at once (its settings' limit given the hosted runs) and the guards
+ * holding new runs: the resource guard's held resources plus "load" when the load guard trips.
+ * While any holds, slots are capped at the hosted runs. The last values when settings fail.
+ */
+async function refreshCapacity(): Promise<{ slots: number; holding: NodeHold[] }> {
   try {
     const settings = await getAppSettings(await getRepo());
+    const pressure = currentResourcePressure();
+    const loadHold = readLoadHold(settings);
     g.__ompUiReplicaSlots = resolveConcurrency(
       settings.maxConcurrentAgents,
       runHost().activeCount(),
       readMachineResources(),
-      readLoadHold(settings),
+      loadHold,
+      pressure,
     ).limit;
+    g.__ompUiReplicaHolding = [...(pressure?.holding ?? []), ...(loadHold ? (["load"] as const) : [])];
   } catch (err) {
     console.warn(`[cluster] could not compute this node's slots: ${errorMessage(err)}`);
   }
-  return g.__ompUiReplicaSlots ?? 0;
+  return { slots: g.__ompUiReplicaSlots ?? 0, holding: g.__ompUiReplicaHolding ?? [] };
 }
 
 const UNKNOWN_OMP: NodeOmpInfo = { ready: false, version: null, source: null, reason: "Reported to the primary only" };
@@ -695,6 +836,7 @@ function selfStatus(state: NodeState, rt: ReplicaRuntime | undefined, now: strin
     omp: localOmpInfo(),
     replication: { seq: replicatedSeq(), at: rt?.replicationAt ?? null, lagSeconds: null },
     latencyMs: null,
+    health: null,
   };
 }
 
@@ -718,6 +860,7 @@ function memberStatus(member: MemberInfo, rt: ReplicaRuntime | undefined, now: s
     omp: UNKNOWN_OMP,
     replication: member.role === "replica" ? { seq: member.replSeq, at: null, lagSeconds: null } : null,
     latencyMs: linked ? linked.channel.latencyMs : null,
+    health: null,
   };
 }
 

@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AGENT_MEMORY_BYTES,
+  AgentMemoryModel,
+  committedMemoryBytes,
   loadGuardHold,
+  MAX_AGENT_MEMORY_BYTES,
+  MIN_AGENT_MEMORY_BYTES,
   readLoadHold,
   resolveConcurrency,
   resourcePressureReason,
+  subagentConcurrency,
   type MachineResources,
+  type SubagentBudgetInput,
 } from "@/lib/agent/concurrency";
 import type { PressureResource, ResourcePressure } from "@/lib/types";
 
@@ -162,5 +169,159 @@ describe("resolveConcurrency with resource pressure", () => {
       resolveConcurrency("auto", 4, MACHINE, null, pressure([], 40, 20)),
     );
     expect(resolveConcurrency(4, 4, MACHINE, null, null, 2)).toMatchObject({ limit: 4, boundBy: null });
+  });
+});
+
+const MB = 1024 ** 2;
+
+function model(...peaks: number[]): AgentMemoryModel {
+  const m = new AgentMemoryModel();
+  for (const peak of peaks) m.record(peak);
+  return m;
+}
+
+describe("AgentMemoryModel", () => {
+  it("answers the default until three runs finished", () => {
+    expect(model().estimate()).toBe(AGENT_MEMORY_BYTES);
+    expect(model(2 * GB, 2 * GB).estimate()).toBe(AGENT_MEMORY_BYTES);
+    expect(model(2 * GB, 2 * GB, 2 * GB).estimate()).toBe(2 * GB);
+  });
+
+  it("ignores non-finite and non-positive readings", () => {
+    const m = model(Number.NaN, Number.POSITIVE_INFINITY, 0, -GB, GB);
+    expect(m.samples).toBe(1);
+    expect(m.estimate()).toBe(AGENT_MEMORY_BYTES);
+  });
+
+  it("uses the nearest-rank 75th percentile, so one heavy run does not dominate", () => {
+    expect(model(4 * GB, 1 * GB, 3 * GB, 2 * GB).estimate()).toBe(3 * GB);
+    expect(model(500 * MB, 500 * MB, 500 * MB, 500 * MB, 3 * GB).estimate()).toBe(500 * MB);
+  });
+
+  it("clamps the estimate to the bounds", () => {
+    expect(model(50 * MB, 60 * MB, 70 * MB).estimate()).toBe(MIN_AGENT_MEMORY_BYTES);
+    expect(model(8 * GB, 9 * GB, 10 * GB).estimate()).toBe(MAX_AGENT_MEMORY_BYTES);
+  });
+
+  it("keeps only the last WINDOW peaks", () => {
+    const m = model(...Array<number>(AgentMemoryModel.WINDOW).fill(3 * GB), ...Array<number>(5).fill(GB));
+    expect(m.samples).toBe(AgentMemoryModel.WINDOW);
+    // 15 heavy + 5 light peaks: the 75th percentile is still heavy.
+    expect(m.estimate()).toBe(3 * GB);
+    for (let i = 0; i < 10; i++) m.record(GB);
+    // 5 heavy + 15 light: the oldest heavy peaks dropped out of the window.
+    expect(m.samples).toBe(AgentMemoryModel.WINDOW);
+    expect(m.estimate()).toBe(GB);
+  });
+});
+
+describe("committedMemoryBytes", () => {
+  it("counts unsampled agents in full and only the missing part of growing ones", () => {
+    expect(committedMemoryBytes(GB, [null, 256 * MB, 2 * GB])).toBe(GB + 768 * MB);
+  });
+
+  it("is zero without running agents or when all outgrew the estimate", () => {
+    expect(committedMemoryBytes(GB, [])).toBe(0);
+    expect(committedMemoryBytes(GB, [GB, 3 * GB])).toBe(0);
+  });
+});
+
+describe("resolveConcurrency with a memory plan", () => {
+  /** 16 cores, 8 GB free of 10 GB (a 1 GB reserve): memory bounds the automatic limit. */
+  const SMALL: MachineResources = { cpus: 16, freeMemoryBytes: 8 * GB, totalMemoryBytes: 10 * GB };
+
+  it("defaults to the fixed estimate and reports it", () => {
+    expect(resolveConcurrency("auto", 2, MACHINE)).toMatchObject({
+      limit: 8,
+      boundBy: "cpu",
+      reason: "Auto: 8 parallel (8 cores, 30 GB free, ~0.6 GB per agent)",
+      agentMemoryBytes: AGENT_MEMORY_BYTES,
+      committedMemoryBytes: 0,
+    });
+    // 7 GB spare / 600 MB = 11 more agents beside the 2 running.
+    expect(resolveConcurrency("auto", 2, SMALL)).toMatchObject({ limit: 13, boundBy: "memory" });
+  });
+
+  it("subtracts the memory committed to just-launched runs", () => {
+    const plan = { perAgentBytes: GB, committedBytes: committedMemoryBytes(GB, [null, null]) };
+    expect(resolveConcurrency("auto", 2, SMALL, null, null, 0, { perAgentBytes: GB, committedBytes: 0 }).limit).toBe(9);
+    expect(resolveConcurrency("auto", 2, SMALL, null, null, 0, plan)).toMatchObject({
+      limit: 7,
+      boundBy: "memory",
+      reason: "Auto: 7 parallel (16 cores, 8 GB free, ~1 GB per agent, limited by memory)",
+      agentMemoryBytes: GB,
+      committedMemoryBytes: 2 * GB,
+    });
+  });
+
+  it("never drops below the running agents (or 1) when the commitment exceeds free memory", () => {
+    const plan = { perAgentBytes: GB, committedBytes: 100 * GB };
+    expect(resolveConcurrency("auto", 3, SMALL, null, null, 0, plan)).toMatchObject({ limit: 3, boundBy: "memory" });
+    expect(resolveConcurrency("auto", 0, SMALL, null, null, 0, plan).limit).toBe(1);
+  });
+
+  it("leaves manual mode alone and reports no memory estimate there", () => {
+    const plan = { perAgentBytes: 4 * GB, committedBytes: 6 * GB };
+    const manual = resolveConcurrency(6, 2, SMALL, null, null, 0, plan);
+    expect(manual).toEqual(resolveConcurrency(6, 2, SMALL));
+    expect(manual).toMatchObject({ mode: "manual", limit: 6, reason: "Manual: 6 parallel" });
+    expect(manual).not.toHaveProperty("agentMemoryBytes");
+    expect(manual).not.toHaveProperty("committedMemoryBytes");
+  });
+
+  it("still caps at the running agents minus lent slots under a hold", () => {
+    const plan = { perAgentBytes: 300 * MB, committedBytes: 0 };
+    expect(resolveConcurrency("auto", 4, SMALL, loadGuardHold(40, 16, 150), null, 1, plan)).toMatchObject({
+      limit: 3,
+      boundBy: "load",
+      agentMemoryBytes: 300 * MB,
+    });
+    expect(resolveConcurrency("auto", 4, SMALL, null, pressure(["memory"]), 1, plan)).toMatchObject({
+      limit: 3,
+      boundBy: "resources",
+    });
+  });
+});
+
+describe("subagentConcurrency", () => {
+  const ROOMY: SubagentBudgetInput = {
+    ceiling: 32,
+    cpus: 16,
+    freeMemoryBytes: 30 * GB,
+    totalMemoryBytes: 32 * GB,
+    runningAgents: 1,
+  };
+
+  it("is bound by the cores, shared among the running agents", () => {
+    expect(subagentConcurrency({ ...ROOMY, cpus: 4 })).toBe(8);
+    expect(subagentConcurrency({ ...ROOMY, cpus: 4, runningAgents: 3 })).toBe(2);
+  });
+
+  it("is bound by the free memory beyond the reserve", () => {
+    // 3 GB free − 1 GB reserve = 2 GB = 10.7 subagents, shared by 2 agents: 5 each.
+    const tight = { ...ROOMY, freeMemoryBytes: 3 * GB, totalMemoryBytes: 10 * GB, runningAgents: 2 };
+    expect(subagentConcurrency(tight)).toBe(5);
+  });
+
+  it("is bound by the ceiling", () => {
+    expect(subagentConcurrency({ ...ROOMY, ceiling: 4 })).toBe(4);
+    expect(subagentConcurrency({ ...ROOMY, ceiling: 0 })).toBe(1);
+  });
+
+  it("allows one subagent on a saturated machine", () => {
+    const saturated = { ...ROOMY, cpus: 4, freeMemoryBytes: GB, totalMemoryBytes: 16 * GB, runningAgents: 20 };
+    expect(subagentConcurrency(saturated)).toBe(1);
+  });
+
+  it("treats no running agents as one", () => {
+    expect(subagentConcurrency({ ...ROOMY, cpus: 3, runningAgents: 0 })).toBe(6);
+  });
+
+  it("falls back safely on non-finite readings", () => {
+    expect(subagentConcurrency({ ...ROOMY, cpus: Number.NaN })).toBe(1);
+    expect(subagentConcurrency({ ...ROOMY, freeMemoryBytes: Number.NaN })).toBe(1);
+    expect(subagentConcurrency({ ...ROOMY, ceiling: Number.POSITIVE_INFINITY })).toBe(1);
+    expect(subagentConcurrency({ ...ROOMY, cpus: 4, runningAgents: Number.NaN })).toBe(8);
+    expect(subagentConcurrency({ ...ROOMY, cpus: 4, totalMemoryBytes: Number.NaN })).toBe(8);
   });
 });

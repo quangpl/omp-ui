@@ -12,6 +12,9 @@
 // - Runs the server with OMP_UI_SUPERVISED=1 (the resource guard's graceful restart needs it). Exit
 //   code 75 (RESTART_EXIT_CODE) is a requested restart (resource guard, cluster role changes): it
 //   restarts the server after 1 s without counting as a crash.
+// - Tells every server it starts after the first why (OMP_UI_RESTART_REASON, e.g. "crashed (signal
+//   SIGKILL, up 42 s)", "unhealthy: 3 failed health checks (…)", "restart requested"); cluster mode
+//   reports it to the primary. The first server starts without it.
 // The first probe also boots the agent manager, which resumes interrupted and failed cards.
 //
 // Environment (milliseconds unless noted):
@@ -25,6 +28,7 @@
 //   AGENTMEMORY_ENABLED         auto (default) | true | false: keep the agentmemory memory server
 //                               running (bin/agentmemory.mjs) — checked at boot, then every
 //                               OMP_UI_MEMORY_CHECK_MS (default 300000; 0 = boot only). Never fatal.
+// Set on the server (not read): OMP_UI_SUPERVISED=1, OMP_UI_RESTART_REASON (see above).
 import { spawn } from "node:child_process";
 import { agentmemoryMode, ensureAgentmemory } from "./agentmemory.mjs";
 
@@ -52,6 +56,8 @@ const STABLE_UPTIME_MS = 60_000;
 const MAX_BACKOFF_MS = 30_000;
 /** Exit code the server uses to ask for a restart; must match lib/agent/resource-guard.ts. */
 const RESTART_EXIT_CODE = 75;
+/** Env var telling a restarted server why; must match RESTART_REASON_ENV in lib/cluster/types.ts. */
+const RESTART_REASON_ENV = "OMP_UI_RESTART_REASON";
 
 function healthUrl() {
   if (process.env.OMP_UI_HEALTH_URL) return process.env.OMP_UI_HEALTH_URL;
@@ -74,6 +80,10 @@ let failures = 0;
 /** Unexpected exits in a row within STABLE_UPTIME_MS of starting. */
 let crashStreak = 0;
 let stopping = false;
+/** Why the next server starts (null for the first one). */
+let restartReason = null;
+/** Set when the supervisor force-restarts the server: the reason its following exit gets. */
+let forcedReason = null;
 let probeTimer;
 let restartTimer;
 let killTimer;
@@ -108,11 +118,14 @@ function start() {
   startedAt = Date.now();
   healthyOnce = false;
   failures = 0;
+  const env = { ...process.env, OMP_UI_SUPERVISED: "1" };
+  if (restartReason) env[RESTART_REASON_ENV] = restartReason;
+  else delete env[RESTART_REASON_ENV];
   const proc = spawn(command, args, {
     stdio: "inherit",
     detached: !IS_WIN,
     windowsHide: true,
-    env: { ...process.env, OMP_UI_SUPERVISED: "1" },
+    env,
   });
   child = proc;
   say(`started server (pid ${proc.pid}): ${[command, ...args].join(" ")}`);
@@ -136,18 +149,21 @@ function onExit(proc, code, signal) {
     say("server stopped");
     process.exit(0);
   }
+  const uptime = Date.now() - startedAt;
+  const forced = forcedReason;
+  forcedReason = null;
   if (code === RESTART_EXIT_CODE) {
     say(`server exited with code ${RESTART_EXIT_CODE} (restart requested) — restarting it`);
+    restartReason = forced ?? "restart requested";
     crashStreak = 0;
     restartTimer = setTimeout(start, 1_000);
     return;
   }
-  const uptime = Date.now() - startedAt;
   crashStreak = uptime >= STABLE_UPTIME_MS ? 1 : crashStreak + 1;
   const delay = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** (crashStreak - 1));
-  say(
-    `server exited unexpectedly (${signal ? `signal ${signal}` : `code ${code}`}, up ${Math.round(uptime / 1000)}s) — restarting in ${delay / 1000}s`,
-  );
+  const how = signal ? `signal ${signal}` : `code ${code}`;
+  say(`server exited unexpectedly (${how}, up ${Math.round(uptime / 1000)}s) — restarting in ${delay / 1000}s`);
+  restartReason = forced ?? `crashed (${how}, up ${Math.round(uptime / 1000)} s)`;
   restartTimer = setTimeout(start, delay);
 }
 
@@ -181,6 +197,7 @@ async function probe() {
     say(`health check failed (${failures}/${HEALTH_FAILURES || "∞"}): ${problem}`);
     if (HEALTH_FAILURES > 0 && failures >= HEALTH_FAILURES) {
       say("server is unhealthy — force restarting it");
+      forcedReason = `unhealthy: ${failures} failed health checks (${problem})`;
       terminate(proc);
       return;
     }

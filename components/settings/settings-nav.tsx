@@ -16,17 +16,47 @@ export interface SettingsNavItem {
  */
 const SPY_SLACK = 16;
 
-/** Id of the section currently at the top of the viewport; the last one once scrolled to the end. */
+/**
+ * A nav jump counts as finished once no scroll event arrived for this long, in ms. Browsers scale a
+ * smooth scroll's duration with its distance (Chrome takes over a second across the whole page),
+ * so a fixed lock would expire mid-flight and the highlight would flicker through every section
+ * passed on the way.
+ */
+const JUMP_SETTLE_MS = 150;
+
+/** Keys that scroll the page, ending a nav jump in flight. */
+const SCROLL_KEYS: Record<string, true> = {
+  ArrowUp: true,
+  ArrowDown: true,
+  PageUp: true,
+  PageDown: true,
+  Home: true,
+  End: true,
+  " ": true,
+};
+
+/**
+ * Id of the section currently at the top of the viewport; the last one once scrolled to the end.
+ * A nav click holds its section until the user scrolls again: sections near the end can't reach
+ * the top, and the end-of-page rule would otherwise hand the highlight to the last one.
+ */
 function useScrollSpy(ids: string[]): [string, (id: string) => void] {
   const [active, setActive] = useState(ids[0] ?? "");
-  /** While a nav click scrolls smoothly, intermediate sections must not steal the highlight. */
-  const lockUntil = useRef(0);
+  /** True from a nav click until its scroll settles; the spy then leaves the clicked section be. */
+  const jumping = useRef(false);
+  const settleTimer = useRef(0);
+
+  const armSettle = useCallback(() => {
+    window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(() => {
+      jumping.current = false;
+    }, JUMP_SETTLE_MS);
+  }, []);
 
   useEffect(() => {
     let frame = 0;
     const update = () => {
       frame = 0;
-      if (Date.now() < lockUntil.current) return;
       const root = document.scrollingElement ?? document.documentElement;
       const scrollable = root.scrollHeight > window.innerHeight + 4;
       if (scrollable && root.scrollHeight - root.scrollTop - window.innerHeight < 4) {
@@ -42,29 +72,48 @@ function useScrollSpy(ids: string[]): [string, (id: string) => void] {
       }
       setActive(current);
     };
-    const schedule = () => {
-      if (!frame) frame = requestAnimationFrame(update);
+    const onScroll = () => {
+      if (jumping.current) armSettle();
+      else if (!frame) frame = requestAnimationFrame(update);
+    };
+    // Wheel, touch or scroll keys cancel a smooth scroll in flight: the user is steering again.
+    const onUserScroll = (e: Event) => {
+      if (!jumping.current || (e instanceof KeyboardEvent && !SCROLL_KEYS[e.key])) return;
+      jumping.current = false;
+      window.clearTimeout(settleTimer.current);
     };
     update();
     // Capture: scroll events don't bubble, and the scrolling element may be an inner container.
-    window.addEventListener("scroll", schedule, { capture: true, passive: true });
-    window.addEventListener("resize", schedule, { passive: true });
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    window.addEventListener("wheel", onUserScroll, { passive: true });
+    window.addEventListener("touchstart", onUserScroll, { passive: true });
+    window.addEventListener("keydown", onUserScroll);
     return () => {
       cancelAnimationFrame(frame);
-      window.removeEventListener("scroll", schedule, { capture: true });
-      window.removeEventListener("resize", schedule);
+      window.clearTimeout(settleTimer.current);
+      window.removeEventListener("scroll", onScroll, { capture: true });
+      window.removeEventListener("resize", onScroll);
+      window.removeEventListener("wheel", onUserScroll);
+      window.removeEventListener("touchstart", onUserScroll);
+      window.removeEventListener("keydown", onUserScroll);
     };
-  }, [ids]);
+  }, [ids, armSettle]);
 
-  const jumpTo = useCallback((id: string) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    lockUntil.current = Date.now() + (reduce ? 0 : 700);
-    setActive(id);
-    el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
-    history.replaceState(null, "", `#${id}`);
-  }, []);
+  const jumpTo = useCallback(
+    (id: string) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      jumping.current = true;
+      // Also ends the jump when the section is already in place and no scroll event follows.
+      armSettle();
+      setActive(id);
+      el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+      history.replaceState(null, "", `#${id}`);
+    },
+    [armSettle],
+  );
 
   return [active, jumpTo];
 }

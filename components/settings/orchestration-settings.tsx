@@ -25,7 +25,17 @@ const TELEMETRY_PLACEHOLDER = "http://localhost:4318/v1/traces";
 /** Same rule PATCH /settings applies to `telemetryEndpoint`. */
 const HTTP_URL = /^https?:\/\/\S+$/i;
 
-type ToggleKey = "runTimeLimit" | "stallWatchdog" | "runBudget" | "loopDetection" | "gitCheckpoints" | "telemetryExport" | "loadGuard";
+type ToggleKey =
+  | "runTimeLimit"
+  | "stallWatchdog"
+  | "runBudget"
+  | "wrapUpNudge"
+  | "loopDetection"
+  | "gitCheckpoints"
+  | "subagentLimits"
+  | "contextCompaction"
+  | "telemetryExport"
+  | "loadGuard";
 
 /** The form state: toggles as booleans, numbers as the raw text typed so invalid input can be shown and rejected. */
 type Draft = Record<ToggleKey, boolean> & Record<OrchestrationNumberKey, string> & { telemetryEndpoint: string };
@@ -34,8 +44,11 @@ const TOGGLE_KEYS: ToggleKey[] = [
   "runTimeLimit",
   "stallWatchdog",
   "runBudget",
+  "wrapUpNudge",
   "loopDetection",
   "gitCheckpoints",
+  "subagentLimits",
+  "contextCompaction",
   "telemetryExport",
   "loadGuard",
 ];
@@ -48,6 +61,11 @@ const NUMBER_TOGGLE: Record<OrchestrationNumberKey, ToggleKey> = {
   runBudgetUsd: "runBudget",
   runBudgetTokens: "runBudget",
   loadGuardPercent: "loadGuard",
+  subagentMaxConcurrency: "subagentLimits",
+  subagentMaxDepth: "subagentLimits",
+  subagentTimeoutMinutes: "subagentLimits",
+  contextCompactPercent: "contextCompaction",
+  wrapUpPercent: "wrapUpNudge",
 };
 
 function errorText(err: unknown, fallback: string): string {
@@ -127,9 +145,11 @@ function LimitField({
 }
 
 /**
- * Settings → Orchestration: opt-in guardrails (time limit, stall watchdog, budget, loop detection,
- * load guard), git checkpoints and OpenTelemetry export. Every switch is off by default; the
- * server re-reads them whenever it acts, so saved changes apply without a restart.
+ * Settings → Orchestration: opt-in guardrails (time limit, stall watchdog, budget, wrap-up nudge,
+ * loop detection, load guard), git checkpoints, subagent limits, early context compaction and
+ * OpenTelemetry export. Every switch is off by default; the server re-reads them whenever it
+ * acts, so saved changes apply without a restart (subagent limits and compaction: to runs
+ * started after saving).
  */
 export function OrchestrationSettingsSection() {
   const [saved, setSaved] = useState<AppSettings | null>(null);
@@ -237,7 +257,7 @@ export function OrchestrationSettingsSection() {
       ) : !draft ? (
         <SettingsPanel>
           <div aria-busy="true" className="divide-y">
-            {[3, 2, 1, 1].map((rows, group) => (
+            {[4, 2, 2, 1, 1].map((rows, group) => (
               <div key={group} className="space-y-5 p-4 sm:p-5">
                 <Skeleton className="h-3 w-20" />
                 {Array.from({ length: rows }, (_, i) => (
@@ -354,6 +374,35 @@ export function OrchestrationSettingsSection() {
                     </div>
                   )}
                 </div>
+
+                <div>
+                  <SettingsToggle
+                    htmlFor="wrap-up-nudge"
+                    title="Wrap-up nudge"
+                    description="Once a run has used most of its time limit or budget, the agent is told once to finish its current step, verify and write its summary, so the limit rarely cuts off unfinished work. Needs the run time limit or run budget."
+                  >
+                    <Switch
+                      id="wrap-up-nudge"
+                      checked={draft.wrapUpNudge}
+                      onCheckedChange={(checked) => set("wrapUpNudge", checked)}
+                      disabled={saving}
+                    />
+                  </SettingsToggle>
+                  {draft.wrapUpNudge && (
+                    <div className="animate-fade-in-soft pb-4 sm:max-w-xs sm:pb-5">
+                      <LimitField
+                        id="wrap-up-percent"
+                        label="Nudge at (% used)"
+                        hint={`Share of the time limit or budget used, whichever comes first (${ORCHESTRATION_LIMITS.wrapUpPercent.min}–${ORCHESTRATION_LIMITS.wrapUpPercent.max} %).`}
+                        numberKey="wrapUpPercent"
+                        draft={draft}
+                        error={errors.wrapUpPercent}
+                        disabled={saving}
+                        onChange={(value) => set("wrapUpPercent", value)}
+                      />
+                    </div>
+                  )}
+                </div>
               </SettingsRows>
             </SettingsGroup>
 
@@ -384,6 +433,88 @@ export function OrchestrationSettingsSection() {
                     disabled={saving}
                   />
                 </SettingsToggle>
+              </SettingsRows>
+            </SettingsGroup>
+
+            <SettingsGroup title="Subagents & context">
+              <SettingsRows>
+                <div>
+                  <SettingsToggle
+                    htmlFor="subagent-limits"
+                    title="Subagent limits"
+                    description="Caps the subagents each run delegates to: how many work at once (scaled down to the run's fair share of this machine's cores and memory), how deep they may nest, and how long each may take. Applies to runs started after saving."
+                  >
+                    <Switch
+                      id="subagent-limits"
+                      checked={draft.subagentLimits}
+                      onCheckedChange={(checked) => set("subagentLimits", checked)}
+                      disabled={saving}
+                    />
+                  </SettingsToggle>
+                  {draft.subagentLimits && (
+                    <div className="animate-fade-in-soft grid grid-cols-1 gap-5 pb-4 sm:grid-cols-3 sm:pb-5">
+                      <LimitField
+                        id="subagent-max-concurrency"
+                        label="Max at once"
+                        hint={`Per run (${ORCHESTRATION_LIMITS.subagentMaxConcurrency.min}–${ORCHESTRATION_LIMITS.subagentMaxConcurrency.max}).`}
+                        numberKey="subagentMaxConcurrency"
+                        draft={draft}
+                        error={errors.subagentMaxConcurrency}
+                        disabled={saving}
+                        onChange={(value) => set("subagentMaxConcurrency", value)}
+                      />
+                      <LimitField
+                        id="subagent-max-depth"
+                        label="Max depth"
+                        hint={`1 = subagents cannot delegate further (${ORCHESTRATION_LIMITS.subagentMaxDepth.min}–${ORCHESTRATION_LIMITS.subagentMaxDepth.max}).`}
+                        numberKey="subagentMaxDepth"
+                        draft={draft}
+                        error={errors.subagentMaxDepth}
+                        disabled={saving}
+                        onChange={(value) => set("subagentMaxDepth", value)}
+                      />
+                      <LimitField
+                        id="subagent-timeout-minutes"
+                        label="Time limit (minutes)"
+                        hint={`0 = no limit (${ORCHESTRATION_LIMITS.subagentTimeoutMinutes.min}–${ORCHESTRATION_LIMITS.subagentTimeoutMinutes.max} min).`}
+                        numberKey="subagentTimeoutMinutes"
+                        draft={draft}
+                        error={errors.subagentTimeoutMinutes}
+                        disabled={saving}
+                        onChange={(value) => set("subagentTimeoutMinutes", value)}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <SettingsToggle
+                    htmlFor="context-compaction"
+                    title="Early context compaction"
+                    description="Compacts an agent's context once it fills this share of the model's window, so every model request resends fewer tokens. Applies to runs started after saving."
+                  >
+                    <Switch
+                      id="context-compaction"
+                      checked={draft.contextCompaction}
+                      onCheckedChange={(checked) => set("contextCompaction", checked)}
+                      disabled={saving}
+                    />
+                  </SettingsToggle>
+                  {draft.contextCompaction && (
+                    <div className="animate-fade-in-soft pb-4 sm:max-w-xs sm:pb-5">
+                      <LimitField
+                        id="context-compact-percent"
+                        label="Compact at (% of window)"
+                        hint={`Share of the model's context window (${ORCHESTRATION_LIMITS.contextCompactPercent.min}–${ORCHESTRATION_LIMITS.contextCompactPercent.max} %).`}
+                        numberKey="contextCompactPercent"
+                        draft={draft}
+                        error={errors.contextCompactPercent}
+                        disabled={saving}
+                        onChange={(value) => set("contextCompactPercent", value)}
+                      />
+                    </div>
+                  )}
+                </div>
               </SettingsRows>
             </SettingsGroup>
 
