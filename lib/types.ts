@@ -805,8 +805,15 @@ export type ServerEvent =
   /**
    * The agent queue changed: running and queued task ids, queued in start order. `drafting`:
    * queued cards held while the card writer turns their free text into a title and brief.
+   * `nodes`: cluster mode, the machine each running card runs on (task id → node); `{}` otherwise.
    */
-  | { type: "queue.updated"; running: string[]; queued: string[]; drafting: string[] }
+  | {
+      type: "queue.updated";
+      running: string[];
+      queued: string[];
+      drafting: string[];
+      nodes: Record<string, { id: string; name: string }>;
+    }
   /** Live, NOT persisted: progress line of the card writer while it writes a queued card. */
   | { type: "task.activity"; taskId: string; boardId: string; text: string }
   /** Live, NOT persisted: subagent progress between its persisted `agent` events. */

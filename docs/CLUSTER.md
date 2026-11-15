@@ -45,8 +45,10 @@ database is backed up to `DATA_DIR/cluster/backups/` first) and it restarts as a
 The primary's queue limit becomes the cluster's: its own limit (when **Run cards on this machine too**
 is on) plus the slots of every online node that can run omp. A node's slots follow the same rule as a
 standalone server's limit (`maxConcurrentAgents`: `auto` from its cores and free memory, or the fixed
-number per node). When a card starts, it goes to the machine with the most free slots, preferring the
-node that ran the card's previous run.
+number per node). Cards are spread over all machines: each card goes to the machine that is least
+busy once it takes the card — the share of its agent slots in use plus a term for its CPU load per
+core — so machines fill in proportion to their capacity instead of one machine taking every card.
+The node that ran the card's previous run only wins a tie.
 
 A remote run is executed exactly like a local one: the primary keeps the whole run logic (prompt,
 board tools, advisor, run guards, comments, database) and only the `omp` process runs on the node.
@@ -65,8 +67,9 @@ The relay is light: on a loopback measurement an omp message takes about 0.1 ms 
 than over a local pipe, and file transfers run at well over 100 MiB/s, so a node's network link, not
 the protocol, sets the pace.
 
-The UI shows where each card runs: Visualize marks the node of every running agent, and a card's run
-report and details say which machine ran it.
+The UI shows where each card runs: while a card runs, its board card, its details and every agent on
+the Visualize page (control room, SDLC pipeline, factory floor, worksites) name the machine; a card's
+run report and details say which machine ran it.
 
 ## Failures and failover
 
@@ -119,7 +122,18 @@ primary until they see each other again, when the lower term steps down.
 | `PORT` (3000) | web UI and API; the join script downloads from it |
 | `OMP_UI_CLUSTER_PORT` (7790) | cluster channel (TCP), on every node |
 
-Both must be reachable between the machines.
+Nodes connect to the cluster port directly when they can (fastest). When it is not reachable — the
+primary is published through a reverse proxy or a tunnel such as Cloudflare Tunnel, which only pass
+HTTPS — they fall back to the same encrypted channel as a WebSocket on the web URL
+(`wss://<primary>/api/v1/cluster/ws`), automatically and without extra setup; the node remembers
+which way worked. The proxy must allow WebSockets (Cloudflare does).
+
+When a machine starts cluster mode (enable, join, or a restart in a cluster role) it opens its
+cluster port in an active host firewall with root rights: `ufw allow <port>/tcp` or
+`firewall-cmd --add-port=<port>/tcp` (runtime and permanent), run directly as root or through
+`sudo -n` (it never asks for a password). Without root rights it posts a notice with the command to
+run. Cloud firewalls and security groups are outside the machine: open the port there yourself, or
+rely on the WebSocket fallback.
 
 ## Limits
 

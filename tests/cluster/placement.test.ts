@@ -1,107 +1,157 @@
 import { describe, expect, it } from "vitest";
 
-import { choosePlacement, computeCapacity, type PlacementCandidate } from "@/lib/cluster/placement";
+import {
+  choosePlacement,
+  computeCapacity,
+  placementScore,
+  type PlacementCandidate,
+  type PlacementInput,
+} from "@/lib/cluster/placement";
 
-function local(free: number, loadPerCore = 0): PlacementCandidate {
-  return { nodeId: "primary", nodeName: "primary", local: true, free, loadPerCore };
+function local(slots: number, free = slots, loadPerCore = 0): PlacementCandidate {
+  return { nodeId: "primary", nodeName: "primary", local: true, slots, free, loadPerCore };
 }
 
-function replica(nodeId: string, free: number, loadPerCore = 0): PlacementCandidate {
-  return { nodeId, nodeName: nodeId, local: false, free, loadPerCore };
+function replica(nodeId: string, slots: number, free = slots, loadPerCore = 0): PlacementCandidate {
+  return { nodeId, nodeName: nodeId, local: false, slots, free, loadPerCore };
 }
+
+/** Place `cards` runs one after the other, taking a slot on the chosen machine each time; the chosen nodeIds in order. */
+function placeAll(input: PlacementInput, cards: number): string[] {
+  const order: string[] = [];
+  for (let i = 0; i < cards; i++) {
+    const choice = choosePlacement(input);
+    choice.free--;
+    order.push(choice.nodeId);
+  }
+  return order;
+}
+
+function countBy(order: string[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const nodeId of order) counts[nodeId] = (counts[nodeId] ?? 0) + 1;
+  return counts;
+}
+
+describe("placementScore", () => {
+  it("is the share of slots in use after taking the card plus the CPU pressure", () => {
+    expect(placementScore(replica("a", 8, 6))).toBe(3 / 8);
+    expect(placementScore(replica("a", 8, 6, 1))).toBe(3 / 8 + 0.5);
+  });
+
+  it("caps the CPU pressure at a load of 2 per core", () => {
+    expect(placementScore(replica("a", 4, 4, 10))).toBe(placementScore(replica("a", 4, 4, 2)));
+  });
+
+  it("treats a machine without slots as one slot", () => {
+    expect(placementScore(local(0, 0))).toBe(1);
+  });
+});
 
 describe("choosePlacement", () => {
-  it("prefers the card's previous node while it has a free slot", () => {
-    const choice = choosePlacement({
-      local: local(4),
-      replicas: [replica("a", 1), replica("b", 3)],
+  it("alternates between two equal machines", () => {
+    const order = placeAll({ local: local(8), replicas: [replica("a", 8)], runLocal: true, preferNodeId: null }, 6);
+    expect(order).toEqual(["primary", "a", "primary", "a", "primary", "a"]);
+  });
+
+  it("fills machines in proportion to their capacity", () => {
+    const order = placeAll({ local: local(16), replicas: [replica("a", 4)], runLocal: true, preferNodeId: null }, 10);
+    expect(countBy(order)).toEqual({ primary: 8, a: 2 });
+  });
+
+  it("gives fewer cards to a machine under heavy CPU load", () => {
+    const order = placeAll(
+      { local: local(8), replicas: [replica("a", 8), replica("b", 8, 8, 0.5)], runLocal: false, preferNodeId: null },
+      8,
+    );
+    expect(countBy(order)).toEqual({ a: 5, b: 3 });
+  });
+
+  it("prefers the card's previous node only on a tie", () => {
+    const idleOther = choosePlacement({
+      local: local(8, 0),
+      replicas: [replica("a", 8, 4), replica("b", 8)],
       runLocal: true,
       preferNodeId: "a",
     });
-    expect(choice.nodeId).toBe("a");
-  });
-
-  it("ignores the preferred node when it is full", () => {
-    const choice = choosePlacement({
-      local: local(1),
-      replicas: [replica("a", 0), replica("b", 3)],
-      runLocal: true,
-      preferNodeId: "a",
-    });
-    expect(choice.nodeId).toBe("b");
-  });
-
-  it("can prefer the primary itself", () => {
-    const choice = choosePlacement({
-      local: local(1),
-      replicas: [replica("a", 5)],
-      runLocal: true,
-      preferNodeId: "primary",
-    });
-    expect(choice.local).toBe(true);
-  });
-
-  it("picks the machine with the most free slots", () => {
-    const choice = choosePlacement({
-      local: local(1),
-      replicas: [replica("a", 2), replica("b", 4), replica("c", 3)],
-      runLocal: true,
-      preferNodeId: null,
-    });
-    expect(choice.nodeId).toBe("b");
-  });
-
-  it("breaks ties in favour of the primary, then the lowest load per core", () => {
-    const tiedWithLocal = choosePlacement({
-      local: local(2, 0.9),
-      replicas: [replica("a", 2, 0.1)],
-      runLocal: true,
-      preferNodeId: null,
-    });
-    expect(tiedWithLocal.local).toBe(true);
+    expect(idleOther.nodeId).toBe("b");
 
     const tiedReplicas = choosePlacement({
-      local: local(0),
-      replicas: [replica("a", 2, 0.8), replica("b", 2, 0.2), replica("c", 2, 0.5)],
-      runLocal: true,
-      preferNodeId: null,
+      local: local(8),
+      replicas: [replica("a", 8), replica("b", 8)],
+      runLocal: false,
+      preferNodeId: "b",
     });
     expect(tiedReplicas.nodeId).toBe("b");
+
+    const tiedWithPrimary = choosePlacement({
+      local: local(8),
+      replicas: [replica("a", 8)],
+      runLocal: true,
+      preferNodeId: "a",
+    });
+    expect(tiedWithPrimary.nodeId).toBe("a");
   });
 
-  it("never places on the primary by preference when it does not run cards", () => {
+  it("never places on the primary when it does not run cards and replicas exist", () => {
     const choice = choosePlacement({
-      local: local(8),
-      replicas: [replica("a", 1)],
+      local: local(16),
+      replicas: [replica("a", 4, 1, 1.5)],
       runLocal: false,
       preferNodeId: "primary",
     });
     expect(choice.nodeId).toBe("a");
   });
 
-  describe("lent slot (nobody has a free slot)", () => {
-    it("runs on the primary when it runs cards", () => {
-      const choice = choosePlacement({
-        local: local(0),
-        replicas: [replica("a", 0), replica("b", -1)],
-        runLocal: true,
-        preferNodeId: "a",
-      });
-      expect(choice.local).toBe(true);
+  it("breaks ties deterministically: primary, then more free slots, then nodeId", () => {
+    const withPrimary = choosePlacement({
+      local: local(4),
+      replicas: [replica("a", 4)],
+      runLocal: true,
+      preferNodeId: null,
     });
+    expect(withPrimary.local).toBe(true);
 
-    it("runs on the replica with the most free slots when the primary does not run cards", () => {
-      const choice = choosePlacement({
-        local: local(0),
-        replicas: [replica("a", -2), replica("b", 0), replica("c", -1)],
-        runLocal: false,
+    // 2 of 4 and 4 of 8 slots in use after the card: same score, b has more free slots.
+    const moreFree = choosePlacement({
+      local: local(0),
+      replicas: [replica("a", 4, 3), replica("b", 8, 5)],
+      runLocal: false,
+      preferNodeId: null,
+    });
+    expect(moreFree.nodeId).toBe("b");
+
+    const byNodeId = choosePlacement({
+      local: local(0),
+      replicas: [replica("c", 4), replica("a", 4), replica("b", 4)],
+      runLocal: false,
+      preferNodeId: null,
+    });
+    expect(byNodeId.nodeId).toBe("a");
+  });
+
+  describe("lent slot (nobody has a free slot)", () => {
+    // Scores: primary 9/8, a 5/4, b 2.
+    const full = { local: local(8, 0), replicas: [replica("a", 4, 0), replica("b", 2, -1)], preferNodeId: null };
+
+    it("runs on the least-loaded machine of the pool", () => {
+      expect(choosePlacement({ ...full, runLocal: true }).local).toBe(true);
+
+      const replicaWins = choosePlacement({
+        local: local(4, 0),
+        replicas: [replica("a", 4, -1), replica("b", 8, 0)],
+        runLocal: true,
         preferNodeId: null,
       });
-      expect(choice.nodeId).toBe("b");
+      expect(replicaWins.nodeId).toBe("b");
     });
 
-    it("falls back to the primary when there is no replica at all", () => {
-      const choice = choosePlacement({ local: local(0), replicas: [], runLocal: false, preferNodeId: null });
+    it("runs on the least-loaded replica when the primary does not run cards", () => {
+      expect(choosePlacement({ ...full, runLocal: false }).nodeId).toBe("a");
+    });
+
+    it("falls back to the primary when the pool is empty", () => {
+      const choice = choosePlacement({ local: local(0, 0), replicas: [], runLocal: false, preferNodeId: null });
       expect(choice.local).toBe(true);
     });
   });

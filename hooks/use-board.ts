@@ -36,6 +36,8 @@ export interface QueueIds {
   queued: string[];
   /** Queued cards the card writer is still writing (their run starts after). */
   drafting: string[];
+  /** Cluster mode: the machine each running card runs on (task id → node); `{}` otherwise. */
+  nodes: Record<string, { id: string; name: string }>;
 }
 
 // In-tab shared state. A board page opens one SSE connection (`useBoard`); other components
@@ -64,7 +66,15 @@ function sameIds(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((id, i) => id === b[i]);
 }
 
-const EMPTY_QUEUE: QueueIds = { running: [], queued: [], drafting: [] };
+function sameNodes(a: QueueIds["nodes"], b: QueueIds["nodes"]): boolean {
+  const ids = Object.keys(a);
+  return (
+    ids.length === Object.keys(b).length &&
+    ids.every((id) => b[id]?.id === a[id].id && b[id].name === a[id].name)
+  );
+}
+
+const EMPTY_QUEUE: QueueIds = { running: [], queued: [], drafting: [], nodes: {} };
 const queueStore = createStore<QueueIds>(EMPTY_QUEUE);
 
 /** Publish the latest agent queue (GET /queue or a `queue.updated` event) to every reader in this tab. */
@@ -75,13 +85,15 @@ export function publishQueue(queue: QueueIds | QueueSnapshot): void {
           running: queue.running.map((e) => e.taskId),
           queued: queue.queued.map((e) => e.taskId),
           drafting: queue.queued.filter((e) => e.drafting).map((e) => e.taskId),
+          nodes: Object.fromEntries(queue.running.flatMap((e) => (e.node ? [[e.taskId, e.node] as const] : []))),
         }
       : queue;
   const current = queueStore.get();
   if (
     sameIds(current.running, next.running) &&
     sameIds(current.queued, next.queued) &&
-    sameIds(current.drafting, next.drafting)
+    sameIds(current.drafting, next.drafting) &&
+    sameNodes(current.nodes, next.nodes)
   ) {
     return;
   }
@@ -108,6 +120,15 @@ export function useQueueDrafting(taskId: string): boolean {
     queueStore.subscribe,
     () => queueStore.get().drafting.includes(taskId),
     () => false,
+  );
+}
+
+/** Cluster mode: the machine this card's running agent runs on; null when not running or standalone. */
+export function useQueueNode(taskId: string): { id: string; name: string } | null {
+  return useSyncExternalStore(
+    queueStore.subscribe,
+    () => queueStore.get().nodes[taskId] ?? null,
+    () => null,
   );
 }
 
@@ -582,7 +603,7 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
             noteLiveResources(event);
             break;
           case "queue.updated":
-            publishQueue({ running: event.running, queued: event.queued, drafting: event.drafting });
+            publishQueue({ running: event.running, queued: event.queued, drafting: event.drafting, nodes: event.nodes });
             break;
         }
         emit(event);

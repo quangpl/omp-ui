@@ -7,6 +7,7 @@ import os from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { readLoadHold, readMachineResources, resolveConcurrency } from "@/lib/agent/concurrency";
+import { dialPeer } from "@/lib/cluster/dial";
 import { decideElection, rankCandidates, type Candidate } from "@/lib/cluster/election";
 import {
   clusterHttpUrl,
@@ -19,7 +20,7 @@ import {
 } from "@/lib/cluster/node";
 import { ensureOmpBinary, localOmpInfo } from "@/lib/cluster/omp-runtime";
 import { clusterPaths } from "@/lib/cluster/paths";
-import { connectChannel, type ClusterChannel } from "@/lib/cluster/protocol";
+import type { ClusterChannel } from "@/lib/cluster/protocol";
 import { replicatedSeq, startReplicationReceiver } from "@/lib/cluster/replication";
 import { runHost } from "@/lib/cluster/run-host";
 import { SyncEndpoint } from "@/lib/cluster/sync";
@@ -191,14 +192,16 @@ async function connectOnce(rt: ReplicaRuntime, attempt: number): Promise<Outcome
     return "failed";
   }
   let channel: ClusterChannel;
+  let via: "tcp" | "ws";
   try {
-    ({ channel } = await connectChannel({
-      host: target.host,
-      port: target.port,
-      token: state.token,
-      hello: { nodeId: state.nodeId, name: state.name, purpose: "member" },
-      timeoutMs: CONNECT_TIMEOUT_MS,
-    }));
+    ({ channel, via } = await dialPeer(
+      { host: target.host, port: target.port, httpUrl: target.httpUrl || null },
+      {
+        token: state.token,
+        hello: { nodeId: state.nodeId, name: state.name, purpose: "member" },
+        timeoutMs: CONNECT_TIMEOUT_MS,
+      },
+    ));
   } catch (err) {
     setConnection(rt, "connecting", `${target.name}: ${errorMessage(err)}`);
     return "failed";
@@ -207,17 +210,22 @@ async function connectOnce(rt: ReplicaRuntime, attempt: number): Promise<Outcome
     channel.close("replica stopped");
     return "failed";
   }
-  return runSession(rt, channel, target);
+  return runSession(rt, channel, target, via);
 }
 
-/** Register on `channel` and serve it until it closes. */
-async function runSession(rt: ReplicaRuntime, channel: ClusterChannel, target: PeerAddress): Promise<Outcome> {
+/** Register on `channel` (dialed `via` TCP or the web URL's WebSocket) and serve it until it closes. */
+async function runSession(
+  rt: ReplicaRuntime,
+  channel: ClusterChannel,
+  target: PeerAddress,
+  via: "tcp" | "ws",
+): Promise<Outcome> {
   const { promise, resolve } = Promise.withResolvers<Outcome>();
   let outcome: Outcome = "failed";
   const current = () => g.__ompUiReplica === rt;
   const offs = [
     channel.on("welcome", (msg) => {
-      if (current() && onWelcome(rt, channel, target, msg as WelcomeMsg)) outcome = "session";
+      if (current() && onWelcome(rt, channel, target, via, msg as WelcomeMsg)) outcome = "session";
     }),
     channel.on("redirect", (msg) => {
       if (!current()) return;
@@ -277,7 +285,13 @@ async function registerMessage(state: NodeState): Promise<RegisterMsg> {
 }
 
 /** Accept the primary: persist membership, start replication, runs and status reports. False when fenced. */
-function onWelcome(rt: ReplicaRuntime, channel: ClusterChannel, target: PeerAddress, msg: WelcomeMsg): boolean {
+function onWelcome(
+  rt: ReplicaRuntime,
+  channel: ClusterChannel,
+  target: PeerAddress,
+  via: "tcp" | "ws",
+  msg: WelcomeMsg,
+): boolean {
   const state = readNodeState();
   if (typeof msg.term !== "number" || msg.term < state.term) {
     setConnection(rt, "connecting", `${msg.primaryName} is a stale primary (term ${msg.term} < ${state.term})`);
@@ -323,7 +337,8 @@ function onWelcome(rt: ReplicaRuntime, channel: ClusterChannel, target: PeerAddr
   rt.membersAt = new Date().toISOString();
   rt.lostSince = Date.now();
   setConnection(rt, "connected", null);
-  clusterNotice("info", `Connected to the primary ${msg.primaryName} (term ${msg.term})`);
+  const over = via === "ws" ? " over the web URL (WebSocket)" : "";
+  clusterNotice("info", `Connected to the primary ${msg.primaryName} (term ${msg.term})${over}`);
   prefetchOmp(rt, session, msg, PREFETCH_RETRY_MIN_MS);
   return true;
 }
@@ -510,13 +525,14 @@ async function probe(target: ProbeTarget, state: NodeState): Promise<ProbeResult
   if (!state.token) return null;
   let channel: ClusterChannel | null = null;
   try {
-    ({ channel } = await connectChannel({
-      host: target.address.host,
-      port: target.address.port,
-      token: state.token,
-      hello: { nodeId: state.nodeId, name: state.name, purpose: "probe" },
-      timeoutMs: ELECTION_PROBE_TIMEOUT_MS,
-    }));
+    ({ channel } = await dialPeer(
+      { host: target.address.host, port: target.address.port, httpUrl: target.address.httpUrl || null },
+      {
+        token: state.token,
+        hello: { nodeId: state.nodeId, name: state.name, purpose: "probe" },
+        timeoutMs: ELECTION_PROBE_TIMEOUT_MS,
+      },
+    ));
     const reply = await channel.request<ProbeReplyMsg>({ t: "probe" }, ELECTION_PROBE_TIMEOUT_MS);
     return reply.t === "probe.reply" && reply.nodeId === target.address.nodeId ? { target, reply } : null;
   } catch {

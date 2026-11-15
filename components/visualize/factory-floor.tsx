@@ -21,6 +21,7 @@ import {
   LockIcon,
   MessagesSquareIcon,
   PackageCheckIcon,
+  ServerIcon,
   TerminalIcon,
   TriangleAlertIcon,
   UsersIcon,
@@ -233,6 +234,8 @@ interface TokenView {
   roleLabel: string;
   /** Model the agent runs on, drawn as a muted chip under the role tag; undefined draws none. */
   model?: string;
+  /** Cluster node the agent runs on, drawn as a muted chip under the model; undefined draws none. */
+  node?: string;
   /** Draws the "!" help bubble: the worker needs the user. */
   help?: boolean;
   /** Context window left (0..1, null unknown); undefined draws no mana bar. */
@@ -277,6 +280,12 @@ function Token({ id, origin, view }: { id: string; origin?: string; view: TokenV
               {view.model && (
                 <span className="max-w-full truncate font-mono text-[11px] leading-tight text-muted-foreground">
                   {modelLabel(view.model)}
+                </span>
+              )}
+              {view.node && (
+                <span className="inline-flex max-w-full min-w-0 items-center gap-0.5 rounded-[3px] border border-border px-1 font-mono text-[10px] leading-[14px] text-muted-foreground">
+                  <ServerIcon className="size-2.5 shrink-0" aria-hidden />
+                  <span className="truncate">{view.node}</span>
                 </span>
               )}
               <span
@@ -345,11 +354,12 @@ function viewOf(
         role: "lead",
         roleLabel: LEAD,
         model,
+        node: entry.node?.name,
         help: vitals.help !== null,
         mana: vitals.mana,
         hue,
         tone: moodTone(vitals.mood),
-        label: `${name} (${LEAD}), ${MOOD_LABEL[vitals.mood].toLowerCase()}: ${activity.label}, on ${entry.title} in ${entry.boardName}${model ? `, model ${modelLabel(model)}` : ""}`,
+        label: `${name} (${LEAD}), ${MOOD_LABEL[vitals.mood].toLowerCase()}: ${activity.label}, on ${entry.title} in ${entry.boardName}${model ? `, model ${modelLabel(model)}` : ""}${entry.node ? `, on node ${entry.node.name}` : ""}`,
         details: (
           <Details
             title={entry.title}
@@ -357,6 +367,7 @@ function viewOf(
               `${name} · ${LEAD} · ${entry.boardName}${Number.isNaN(started) ? "" : ` · ${formatDuration(now - started)} on this run`}`,
               `${activity.label}${activity.detail ? `: ${activity.detail}` : ""}`,
               model && `Model: ${model}`,
+              entry.node && `Running on cluster node ${entry.node.name}`,
               vitals.feeling,
               ...vitals.notes,
               vitals.help && `Needs help: ${vitals.help.text}`,

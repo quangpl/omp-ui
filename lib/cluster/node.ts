@@ -10,6 +10,8 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { activeRunCount, getAgentManager, holdNewRuns, resetAgentManager } from "@/lib/agent/manager";
+import { dialPeer } from "@/lib/cluster/dial";
+import { openFirewallPort } from "@/lib/cluster/firewall";
 import { clusterPaths } from "@/lib/cluster/paths";
 import {
   acceptMember,
@@ -28,7 +30,6 @@ import {
   type ClusterChannel,
   ClusterAuthError,
   type ChannelListener,
-  connectChannel,
   generateClusterToken,
   type HelloInfo,
   listenChannels,
@@ -51,6 +52,7 @@ import {
   type TestReplyMsg,
   type WireMessage,
 } from "@/lib/cluster/types";
+import { attachClusterUpgrade } from "@/lib/cluster/websocket";
 import { describeDatabase, getRepo } from "@/lib/db";
 import { publish } from "@/lib/events";
 import { HttpError } from "@/lib/server/http";
@@ -85,6 +87,8 @@ const g = globalThis as unknown as {
   __ompUiClusterDemotion?: Promise<void>;
   __ompUiClusterHandover?: Promise<void>;
   __ompUiClusterRestarting?: boolean;
+  /** Cluster ports this process already opened (or tried to open) in the host firewall. */
+  __ompUiClusterFirewall?: Set<number>;
   /** node.json path this process created (it did not exist at boot): a fresh node. */
   __ompUiClusterCreated?: string;
 };
@@ -489,7 +493,22 @@ function onAuthFailure(remote: { host: string; port: number }, reason: string): 
   });
 }
 
-/** Open this process's cluster listener (once; later calls share it). */
+/** Open the cluster port in the host firewall, once per process and port; the outcome as a notice. */
+function openClusterPort(port: number): void {
+  const opened = (g.__ompUiClusterFirewall ??= new Set());
+  if (opened.has(port)) return;
+  opened.add(port);
+  void openFirewallPort(port).then((result) => {
+    if (result.changed) clusterNotice("info", `Opened TCP ${port} in ${result.tool} for the cluster`);
+    else if (!result.ok) clusterNotice("warning", result.message);
+  });
+}
+
+/**
+ * Open this process's cluster listener (once; later calls share it): the TCP port, the same
+ * handshake over WebSockets on the web port (nodes behind an HTTPS-only proxy), and the port in
+ * the host firewall.
+ */
 async function openListener(): Promise<void> {
   if (!g.__ompUiClusterListener) {
     const pending = listenChannels({
@@ -501,6 +520,12 @@ async function openListener(): Promise<void> {
       },
       onChannel,
       onAuthFailure,
+    }).then((listener) => {
+      if (attachClusterUpgrade((stream, remote) => listener.accept(stream, remote)) === 0) {
+        console.warn("[cluster] no HTTP server found to carry cluster WebSockets; only the TCP port accepts nodes");
+      }
+      openClusterPort(listener.port);
+      return listener;
     });
     g.__ompUiClusterListener = pending;
     pending.catch(() => {
@@ -514,6 +539,7 @@ async function closeListener(): Promise<void> {
   const pending = g.__ompUiClusterListener;
   g.__ompUiClusterListener = undefined;
   if (!pending) return;
+  attachClusterUpgrade(null);
   try {
     await (await pending).close();
   } catch {
@@ -523,14 +549,12 @@ async function closeListener(): Promise<void> {
 
 // --- Probes -----------------------------------------------------------------------------------
 
-/** One request on a fresh probe channel to `peer`; null when it is unreachable or silent. */
+/** One request on a fresh probe channel to `peer` (TCP, else its web URL); null when it is unreachable or silent. */
 async function probePeer(peer: PeerAddress, msg: WireMessage): Promise<WireMessage | null> {
   const state = readNodeState();
   if (!state.token) return null;
   try {
-    const { channel } = await connectChannel({
-      host: peer.host,
-      port: peer.port,
+    const { channel } = await dialPeer(peer, {
       token: state.token,
       hello: { nodeId: state.nodeId, name: state.name, purpose: "probe" },
       timeoutMs: ELECTION_PROBE_TIMEOUT_MS,
@@ -714,13 +738,14 @@ async function testTarget(base: string, token: string): Promise<{ result: Cluste
   try {
     port = (await fetchClusterInfo(base)).port;
     const state = readNodeState();
-    const { channel } = await connectChannel({
-      host: hostOf(base),
-      port,
-      token,
-      hello: { nodeId: state.nodeId, name: state.name, purpose: "test" },
-      timeoutMs: TEST_TIMEOUT_MS,
-    });
+    const { channel } = await dialPeer(
+      { host: hostOf(base), port, httpUrl: base },
+      {
+        token,
+        hello: { nodeId: state.nodeId, name: state.name, purpose: "test" },
+        timeoutMs: TEST_TIMEOUT_MS,
+      },
+    );
     try {
       const started = performance.now();
       const reply = await channel.request<TestReplyMsg>({ t: "test" }, TEST_TIMEOUT_MS);

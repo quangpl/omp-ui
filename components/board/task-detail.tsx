@@ -69,7 +69,7 @@ import {
   type Run,
   type Task,
 } from "@/lib/types";
-import { type BoardStreamListener, useQueueDrafting } from "@/hooks/use-board";
+import { type BoardStreamListener, useQueueDrafting, useQueueNode } from "@/hooks/use-board";
 import { AgentLog } from "@/components/board/agent-log";
 import { TaskProgressIcon, TodoListSection } from "@/components/board/task-progress";
 import { CommentThread } from "@/components/board/comment-thread";
@@ -559,6 +559,7 @@ function TaskDetailBody({
     };
   }, [tab, isMobile]);
   const drafting = useQueueDrafting(taskId) && task?.agentState === "queued";
+  const liveNode = useQueueNode(taskId);
 
   if (!task) {
     return (
@@ -719,6 +720,11 @@ function TaskDetailBody({
     (latest, run) => (!latest || run.startedAt > latest.startedAt ? run : latest),
     null,
   );
+  // Cluster mode: the machine the agent runs on now (the live queue, else the open run's record).
+  const runningOn =
+    task.agentState === "running"
+      ? (liveNode?.name ?? (latestRun?.status === "running" ? latestRun.nodeName : null))
+      : null;
   const todos = todoProgress(task.todos, task.openCommentCount);
   const sdlcPhase = task.status === "done" ? null : (sdlcProgress(task.todos)?.current ?? null);
 
@@ -905,13 +911,22 @@ function TaskDetailBody({
                       · last {formatRelative(latestRun.startedAt)}
                     </span>
                   </span>
-                  {latestRun.nodeName && (
+                  {runningOn ? (
                     <span
                       className="block truncate text-xs font-normal text-muted-foreground"
-                      title={`Latest run ran on cluster node ${latestRun.nodeName}`}
+                      title={`The agent is running on cluster node ${runningOn}`}
                     >
-                      Ran on {latestRun.nodeName}
+                      Running on {runningOn}
                     </span>
+                  ) : (
+                    latestRun.nodeName && (
+                      <span
+                        className="block truncate text-xs font-normal text-muted-foreground"
+                        title={`Latest run ran on cluster node ${latestRun.nodeName}`}
+                      >
+                        Ran on {latestRun.nodeName}
+                      </span>
+                    )
                   )}
                 </>
               ) : (

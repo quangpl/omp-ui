@@ -56,8 +56,8 @@ function eventBoardId(event: ServerEvent): string | null {
 
 /**
  * Visibility filter of one non-admin stream: the event as the user may see it, or null to drop it.
- * Events of boards the user does not own are dropped; `queue.updated` and `cluster.updated` (each
- * node's runningTaskIds) keep only the user's task ids.
+ * Events of boards the user does not own are dropped; `queue.updated` (and its running cards'
+ * nodes) and `cluster.updated` (each node's runningTaskIds) keep only the user's task ids.
  * Ownership comes from the event's own `userId` when it carries the row, else from `repo` (scoped
  * to the user: foreign boards/tasks read as null), cached for the life of the stream.
  */
@@ -127,7 +127,8 @@ function visibilityFilter(repo: Repository, userId: string): (event: ServerEvent
           own(event.queued),
           own(event.drafting),
         ]);
-        return { ...event, running, queued, drafting };
+        const nodes = Object.fromEntries(Object.entries(event.nodes).filter(([id]) => running.includes(id)));
+        return { ...event, running, queued, drafting, nodes };
       }
       // The cluster's state concerns every signed-in user (replica banner, node notices); the
       // cards running on each node are narrowed to the user's own.

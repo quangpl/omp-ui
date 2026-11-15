@@ -12,13 +12,14 @@ import {
   MessageSquare,
   MessageSquareDot,
   RotateCw,
+  Server,
   Sparkles,
   Timer,
   TriangleAlert,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useBoardTasks, useQueueDrafting, useQueuePosition } from "@/hooks/use-board";
+import { useBoardTasks, useQueueDrafting, useQueueNode, useQueuePosition } from "@/hooks/use-board";
 import { isQuotaError } from "@/lib/quota";
 import { questionPreview } from "@/lib/question";
 import { formatDateTime } from "@/components/board/format";
@@ -314,6 +315,9 @@ export const TaskCard = memo(function TaskCard({
     .find(Boolean);
   const queuePosition = useQueuePosition(task.id);
   const drafting = useQueueDrafting(task.id) && task.agentState === "queued";
+  // Cluster mode: the machine the card's agent runs on.
+  const liveNode = useQueueNode(task.id);
+  const node = task.agentState === "running" ? liveNode : null;
   // Only cards with dependencies re-render when other cards change.
   const boardTasks = useBoardTasks(task.blockedBy.length > 0 && !done);
   const waitingFor = done
@@ -392,6 +396,16 @@ export const TaskCard = memo(function TaskCard({
               agentError={task.agentError}
               drafting={drafting}
             />
+            {node && (
+              <span
+                className="inline-flex h-5 max-w-32 min-w-0 items-center gap-1 rounded-full bg-muted px-1.5 text-[11px] font-medium text-muted-foreground"
+                title={`Running on ${node.name}`}
+              >
+                <Server className="size-3 shrink-0" aria-hidden />
+                <span className="truncate">{node.name}</span>
+                <span className="sr-only"> (machine running the agent)</span>
+              </span>
+            )}
             <SdlcTrack task={task} />
             {waitingFor.length > 0 && (
               <Tooltip>

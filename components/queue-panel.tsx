@@ -68,7 +68,7 @@ function useQueueSnapshot() {
     const unsubscribe = subscribeEvents(
       (event) => {
         if (event.type === "queue.updated") {
-          publishQueue({ running: event.running, queued: event.queued, drafting: event.drafting });
+          publishQueue({ running: event.running, queued: event.queued, drafting: event.drafting, nodes: event.nodes });
           schedule();
         } else if (event.type === "task.updated" || event.type === "task.deleted") {
           schedule();
