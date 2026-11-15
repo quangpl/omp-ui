@@ -39,12 +39,16 @@ export function SectionTitle({
   action?: ReactNode;
 }) {
   return (
-    <div className="mb-2.5 flex min-h-8 items-center gap-2">
-      <h2 id={id} className="text-sm font-semibold tracking-tight">
+    <div className="mb-3 flex min-h-8 items-center gap-2">
+      <h2
+        id={id}
+        tabIndex={-1}
+        className="scroll-mt-20 text-[13px] font-semibold tracking-tight text-foreground outline-none"
+      >
         {title}
       </h2>
       {count !== undefined && (
-        <span className="rounded-md bg-muted px-1.5 font-mono text-xs font-medium text-muted-foreground tabular-nums">
+        <span className="rounded-md bg-muted px-1.5 font-mono text-[11px] font-medium text-muted-foreground tabular-nums">
           {count}
         </span>
       )}
@@ -56,5 +60,47 @@ export function SectionTitle({
 
 /** The bordered surface for sections whose elevation carries meaning (actionable or live lists). */
 export function Panel({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn("rounded-xl border bg-card text-card-foreground", className)}>{children}</div>;
+  return (
+    <div className={cn("shadow-panel rounded-xl border bg-card text-card-foreground", className)}>{children}</div>
+  );
+}
+
+const EMPTY_TONE = {
+  muted: "bg-muted text-muted-foreground",
+  success: "bg-success/10 text-success",
+  primary: "bg-primary/10 text-primary",
+} as const;
+
+/** Consistent composed empty state: icon bubble, short title, optional hint and action. */
+export function EmptyState({
+  icon,
+  title,
+  hint,
+  action,
+  tone = "muted",
+}: {
+  icon: ReactNode;
+  title: string;
+  hint?: ReactNode;
+  action?: ReactNode;
+  tone?: keyof typeof EMPTY_TONE;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-dashed px-3 py-3">
+      <span
+        className={cn(
+          "flex size-9 shrink-0 items-center justify-center rounded-lg [&_svg]:size-4.5",
+          EMPTY_TONE[tone],
+        )}
+        aria-hidden="true"
+      >
+        {icon}
+      </span>
+      <div className="min-w-0">
+        <p className="text-sm font-medium break-words">{title}</p>
+        {hint && <p className="text-xs text-pretty text-muted-foreground">{hint}</p>}
+      </div>
+      {action && <div className="ml-auto shrink-0">{action}</div>}
+    </div>
+  );
 }

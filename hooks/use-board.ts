@@ -16,6 +16,7 @@ import { ApiRequestError, api, subscribeEvents } from "@/lib/api-client";
 import { SUBAGENT_STATUS_LABELS, parseSubagent } from "@/lib/subagents";
 import {
   TASK_STATUSES,
+  type AgentResources,
   type Board,
   type GitStatus,
   type QueueSnapshot,
@@ -122,6 +123,52 @@ export function useBoardTasks(enabled = true): ReadonlyMap<string, Task> {
     boardTasksStore.subscribe,
     () => (enabled ? boardTasksStore.get() : EMPTY_TASKS),
     () => EMPTY_TASKS,
+  );
+}
+
+/** A `run.resources` sample and the run it belongs to. */
+interface LiveResources {
+  runId: string;
+  resources: AgentResources;
+}
+
+const NO_RESOURCES: ReadonlyMap<string, LiveResources> = new Map();
+/**
+ * Latest `run.resources` sample per running card. Dropped when the run ends (the card then
+ * carries `Task.resources`) or a newer run starts, so a late sample never outlives its run.
+ */
+const liveResourcesStore = createStore<ReadonlyMap<string, LiveResources>>(NO_RESOURCES);
+
+function noteLiveResources(event: Extract<ServerEvent, { type: "run.resources" }>): void {
+  const next = new Map(liveResourcesStore.get());
+  next.set(event.taskId, { runId: event.runId, resources: event.resources });
+  liveResourcesStore.set(next);
+}
+
+/** Forget a card's live sample unless it belongs to `keepRunId`. */
+function dropLiveResources(taskId: string, keepRunId: string | null = null): void {
+  const current = liveResourcesStore.get();
+  const entry = current.get(taskId);
+  if (!entry || entry.runId === keepRunId) return;
+  const next = new Map(current);
+  next.delete(taskId);
+  liveResourcesStore.set(next);
+}
+
+/**
+ * Latest memory/CPU sample of `runId`'s agent on a card; null before that run's first sample,
+ * once it ended, or when the stored sample belongs to another run (e.g. a previous run's sample
+ * still held after leaving and returning to a board). A null `runId` always yields null.
+ */
+export function useLiveResources(taskId: string, runId: string | null): AgentResources | null {
+  return useSyncExternalStore(
+    liveResourcesStore.subscribe,
+    () => {
+      if (runId === null) return null;
+      const entry = liveResourcesStore.get().get(taskId);
+      return entry && entry.runId === runId ? entry.resources : null;
+    },
+    () => null,
   );
 }
 
@@ -504,9 +551,14 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
         switch (event.type) {
           case "task.updated":
             upsertTask(event.task);
+            dropLiveResources(
+              event.task.id,
+              event.task.agentState === "running" ? event.task.lastRunId : null,
+            );
             break;
           case "task.deleted":
             if (event.boardId === boardId) removeTask(event.taskId);
+            dropLiveResources(event.taskId);
             break;
           case "board.updated":
             if (event.board.id === boardId) setBoard(event.board);
@@ -525,6 +577,9 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
             break;
           case "task.activity":
             noteActivity(event.taskId, event.text);
+            break;
+          case "run.resources":
+            noteLiveResources(event);
             break;
           case "queue.updated":
             publishQueue({ running: event.running, queued: event.queued, drafting: event.drafting });

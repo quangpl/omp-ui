@@ -1,4 +1,6 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+// omp's RPC mode (`omp --mode rpc`): newline-delimited JSON over a transport, either a local child
+// process (spawnTransport) or a remote run on a cluster node (lib/cluster/remote-run.ts).
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 
 /** Any JSON object read from omp's stdout. */
@@ -43,6 +45,36 @@ export interface OmpRpcOptions {
   autoConfirm: boolean;
   /** Default timeout for non-prompt commands (ms). */
   commandTimeoutMs?: number;
+  /** Where omp runs; given → nothing is spawned (`command`/`args`/`cwd`/`env` are informational). */
+  transport?: RpcTransport;
+}
+
+/** Callbacks a transport reports omp's output and termination to. */
+export interface RpcTransportHandlers {
+  /** utf8 stdout text, arbitrary chunk boundaries. */
+  stdout(data: string): void;
+  /** stdout reached EOF. */
+  stdoutEnd(): void;
+  stderr(data: string): void;
+  /** Called once: omp exited, could not start, or the transport broke (`error`). */
+  exit(info: RpcExitInfo): void;
+}
+
+/** The pipes of one omp process, local or remote. */
+export interface RpcTransport {
+  /** OS pid of a local child; undefined for remote runs and before/without a successful spawn. */
+  readonly pid: number | undefined;
+  readonly stdinOpen: boolean;
+  /** Raw text for stdin (already newline-terminated by the caller). False once stdin is closed. */
+  write(data: string): boolean;
+  /** Close stdin. */
+  end(): void;
+  signal(signal: NodeJS.Signals): void;
+  setRef(ref: boolean): void;
+  /** Begin delivering output; called once, synchronously after the transport was created. */
+  start(handlers: RpcTransportHandlers): void;
+  /** Hold dispatch of this frame (and every later one, in order) until the promise settles. */
+  gate?(frame: RpcFrame): Promise<void> | null;
 }
 
 export interface SendOptions {
@@ -94,13 +126,14 @@ export class RpcCommandError extends Error {
 }
 
 /**
- * One `omp --mode rpc` subprocess speaking newline-delimited JSON on stdin/stdout.
+ * One `omp --mode rpc` process speaking newline-delimited JSON on stdin/stdout through an
+ * RpcTransport (a spawned child unless `options.transport` is given).
  * Handles response correlation, protocol v2 negotiation + `rpc_chunk` reassembly, and
  * auto-answers `extension_ui_request` dialogs (a headless host cannot show them).
  */
 export class OmpRpcProcess extends EventEmitter<RpcEvents> {
   readonly command: string;
-  private readonly child: ChildProcessWithoutNullStreams;
+  private readonly pipe: RpcTransport;
   private readonly autoConfirm: boolean;
   /** Timeout for non-prompt commands (ms); callers reuse it for prompts that must answer promptly. */
   readonly commandTimeoutMs: number;
@@ -117,6 +150,10 @@ export class OmpRpcProcess extends EventEmitter<RpcEvents> {
   private exitInfo: RpcExitInfo | null = null;
   private readonly exitPromise: Promise<RpcExitInfo>;
   private readonly resolveExit: (info: RpcExitInfo) => void;
+  /** Frames that arrived while a transport gate was pending; non-null exactly while one is. */
+  private held: RpcFrame[] | null = null;
+  /** Exit reported while frames were held: finished once they were dispatched. */
+  private heldExit: RpcExitInfo | null = null;
 
   constructor(options: OmpRpcOptions) {
     super();
@@ -133,35 +170,28 @@ export class OmpRpcProcess extends EventEmitter<RpcEvents> {
     this.exitPromise = exit.promise;
     this.resolveExit = exit.resolve;
 
-    this.child = spawn(options.command, options.args, {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    this.pipe =
+      options.transport ?? spawnTransport(options.command, options.args, options.cwd, options.env);
     liveProcesses().add(this);
     registerShutdownHooks();
 
-    this.child.stdout.setEncoding("utf8");
-    this.child.stdout.on("data", (data: string) => this.onStdout(data));
-    this.child.stdout.on("end", () => this.flushStdout());
-    this.child.stderr.setEncoding("utf8");
-    this.child.stderr.on("data", (data: string) => {
-      this.stderrTail = (this.stderrTail + data).slice(-STDERR_LIMIT);
-    });
-    // EPIPE after the child died is reported via 'close'; never crash the server on it.
-    this.child.stdin.on("error", () => undefined);
-    this.child.on("error", (error: NodeJS.ErrnoException) => {
-      if (this.child.pid === undefined) {
-        this.finish({ code: null, signal: null, error, stderr: this.stderrTail });
-      }
-    });
-    this.child.on("close", (code, signal) => {
-      this.finish({ code, signal, stderr: this.stderrTail });
+    this.pipe.start({
+      stdout: (data) => this.onStdout(data),
+      stdoutEnd: () => this.flushStdout(),
+      stderr: (data) => {
+        this.stderrTail = (this.stderrTail + data).slice(-STDERR_LIMIT);
+      },
+      exit: (info) => this.onTransportExit(info),
     });
   }
 
+  /** The transport omp runs over (remote runs expose extra details on it). */
+  get transport(): RpcTransport {
+    return this.pipe;
+  }
+
   get pid(): number | undefined {
-    return this.child.pid;
+    return this.pipe.pid;
   }
 
   get exited(): boolean {
@@ -234,7 +264,7 @@ export class OmpRpcProcess extends EventEmitter<RpcEvents> {
   /** Graceful shutdown: end stdin, wait 5s, SIGTERM, wait 3s, SIGKILL. */
   async close(): Promise<void> {
     if (this.exitInfo) return;
-    if (!this.child.stdin.writableEnded) this.child.stdin.end();
+    if (this.pipe.stdinOpen) this.pipe.end();
     if (await this.exitWithin(CLOSE_GRACE_MS)) return;
     this.signal("SIGTERM");
     if (await this.exitWithin(TERM_GRACE_MS)) return;
@@ -252,23 +282,12 @@ export class OmpRpcProcess extends EventEmitter<RpcEvents> {
    * are unref'd so they never hold the server, a CLI or a test runner open on their own.
    */
   setRef(ref: boolean): void {
-    const handles = [this.child, this.child.stdin, this.child.stdout, this.child.stderr] as unknown as {
-      ref?: () => void;
-      unref?: () => void;
-    }[];
-    for (const handle of handles) {
-      if (ref) handle.ref?.();
-      else handle.unref?.();
-    }
+    this.pipe.setRef(ref);
   }
 
   private signal(signal: NodeJS.Signals): void {
-    if (this.exitInfo || this.child.pid === undefined) return;
-    try {
-      this.child.kill(signal);
-    } catch {
-      // Already gone.
-    }
+    if (this.exitInfo) return;
+    this.pipe.signal(signal);
   }
 
   private exitWithin(ms: number): Promise<boolean> {
@@ -282,9 +301,8 @@ export class OmpRpcProcess extends EventEmitter<RpcEvents> {
   }
 
   private write(payload: object): boolean {
-    if (this.exitInfo || this.child.stdin.writableEnded || this.child.stdin.destroyed) return false;
-    this.child.stdin.write(`${JSON.stringify(payload)}\n`);
-    return true;
+    if (this.exitInfo || !this.pipe.stdinOpen) return false;
+    return this.pipe.write(`${JSON.stringify(payload)}\n`);
   }
 
   private onStdout(data: string): void {
@@ -325,7 +343,7 @@ export class OmpRpcProcess extends EventEmitter<RpcEvents> {
       );
       this.chunk = null;
     }
-    this.dispatch(frame);
+    this.deliver(frame);
   }
 
   private onChunk(frame: RpcFrame): void {
@@ -402,7 +420,51 @@ export class OmpRpcProcess extends EventEmitter<RpcEvents> {
       this.protocolError(`chunk sequence ${chunkId} is not a JSON object frame`);
       return;
     }
-    this.dispatch(parsed);
+    this.deliver(parsed);
+  }
+
+  /** Dispatch a parsed frame in arrival order, behind any frame a transport gate still holds. */
+  private deliver(frame: RpcFrame): void {
+    if (this.held) {
+      this.held.push(frame);
+      return;
+    }
+    const gate = this.pipe.gate?.(frame) ?? null;
+    if (!gate) {
+      this.dispatch(frame);
+      return;
+    }
+    this.held = [];
+    // A rejected gate (flush failed) must not swallow the frame: dispatch it all the same.
+    gate.then(
+      () => this.release(frame),
+      () => this.release(frame),
+    );
+  }
+
+  /**
+   * Dispatch the gated frame, then the held ones in order until another gate holds them again.
+   * `held` stays set while draining, so frames arriving meanwhile queue behind the rest.
+   */
+  private release(gated: RpcFrame): void {
+    const queue = this.held ?? [];
+    this.dispatch(gated);
+    for (let frame = queue.shift(); frame; frame = queue.shift()) {
+      const gate = this.pipe.gate?.(frame) ?? null;
+      if (gate) {
+        const next = frame;
+        gate.then(
+          () => this.release(next),
+          () => this.release(next),
+        );
+        return;
+      }
+      this.dispatch(frame);
+    }
+    this.held = null;
+    const exit = this.heldExit;
+    this.heldExit = null;
+    if (exit) this.finish(exit);
   }
 
   private dispatch(frame: RpcFrame): void {
@@ -484,9 +546,17 @@ export class OmpRpcProcess extends EventEmitter<RpcEvents> {
     this.emit("protocolError", message);
   }
 
+  /** The transport ended: finish once every held frame was dispatched, so exit always comes last. */
+  private onTransportExit(info: RpcExitInfo): void {
+    this.flushStdout();
+    if (this.held) this.heldExit = info;
+    else this.finish(info);
+  }
+
   private finish(info: RpcExitInfo): void {
     if (this.exitInfo) return;
     this.flushStdout();
+    info = { ...info, stderr: this.stderrTail || info.stderr };
     this.exitInfo = info;
     liveProcesses().delete(this);
     const error = new Error(`omp process exited (${describeExit(info)})`);
@@ -500,6 +570,70 @@ export class OmpRpcProcess extends EventEmitter<RpcEvents> {
     this.resolveExit(info);
     this.emit("exit", info);
   }
+}
+
+/**
+ * The local child-process transport: spawns `command` with piped stdio. Must be started in the
+ * same tick (spawn failures are reported asynchronously through `exit`).
+ */
+export function spawnTransport(
+  command: string,
+  args: string[],
+  cwd: string,
+  env?: NodeJS.ProcessEnv,
+): RpcTransport {
+  const child = spawn(command, args, {
+    cwd,
+    env: env ?? process.env,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  // EPIPE after the child died is reported via 'close'; never crash the server on it.
+  child.stdin.on("error", () => undefined);
+  return {
+    get pid() {
+      return child.pid;
+    },
+    get stdinOpen() {
+      return !child.stdin.writableEnded && !child.stdin.destroyed;
+    },
+    write(data) {
+      if (child.stdin.writableEnded || child.stdin.destroyed) return false;
+      child.stdin.write(data);
+      return true;
+    },
+    end() {
+      if (!child.stdin.writableEnded) child.stdin.end();
+    },
+    signal(signal) {
+      if (child.pid === undefined) return;
+      try {
+        child.kill(signal);
+      } catch {
+        // Already gone.
+      }
+    },
+    setRef(ref) {
+      const handles = [child, child.stdin, child.stdout, child.stderr] as unknown as {
+        ref?: () => void;
+        unref?: () => void;
+      }[];
+      for (const handle of handles) {
+        if (ref) handle.ref?.();
+        else handle.unref?.();
+      }
+    },
+    start(handlers) {
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", handlers.stdout);
+      child.stdout.on("end", handlers.stdoutEnd);
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", handlers.stderr);
+      child.on("error", (error: NodeJS.ErrnoException) => {
+        if (child.pid === undefined) handlers.exit({ code: null, signal: null, error, stderr: "" });
+      });
+      child.on("close", (code, signal) => handlers.exit({ code, signal, stderr: "" }));
+    },
+  };
 }
 
 /** Human-readable exit description including the stderr tail. */

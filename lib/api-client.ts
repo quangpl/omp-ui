@@ -13,6 +13,9 @@ import type {
   ChatStatusResponse,
   Comment,
   CleanupStatus,
+  ClusterJoinInfo,
+  ClusterStatus,
+  ClusterTestResult,
   AiStats,
   OmpSkill,
   OmpConfigSnapshot,
@@ -28,6 +31,7 @@ import type {
   GitActionResult,
   GitBranches,
   GitStatus,
+  GitSwitchResult,
   MaintenanceAction,
   MaintenanceReport,
   MaintenanceResult,
@@ -343,6 +347,29 @@ export const api = {
         json: { endpoint },
       }),
   },
+  /** Cluster mode (Settings → Cluster): this server's role, its nodes and membership (admins change it). */
+  cluster: {
+    status: () => request<ClusterStatus>("/cluster"),
+    /** Make this server the primary of a new cluster. */
+    enable: () => request<ClusterStatus>("/cluster/enable", { method: "POST" }),
+    /** Back to standalone (a primary drops its replicas, a replica keeps its copy of the data). */
+    disable: () => request<ClusterStatus>("/cluster/disable", { method: "POST" }),
+    /** Become a replica of the primary at `url`; this server's own data is replaced and it restarts. */
+    join: (url: string, token: string) =>
+      request<ClusterStatus>("/cluster/join", { method: "POST", json: { url, token } }),
+    /** Replica → standalone, keeping the replicated data as its own. */
+    leave: () => request<ClusterStatus>("/cluster/leave", { method: "POST" }),
+    /** Can this server reach and authenticate with the primary at `url`? */
+    test: (url: string, token: string) =>
+      request<ClusterTestResult>("/cluster/test", { method: "POST", json: { url, token } }),
+    /** Primary: the join token and the command that joins a new machine. */
+    token: () => request<ClusterJoinInfo>("/cluster/token"),
+    /** Primary: a new join token (connected nodes stay in). */
+    rotateToken: () => request<ClusterJoinInfo>("/cluster/token", { method: "POST" }),
+    /** Primary: drop a replica from the cluster (it becomes standalone). */
+    removeNode: (id: string) =>
+      request<{ ok: true }>(`/cluster/nodes/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  },
   /** Telegram / Discord bots that control AgentMan from chat (Settings → Chat integrations). */
   chat: {
     status: () => request<ChatStatusResponse>("/chat/status"),
@@ -495,6 +522,7 @@ export const api = {
       model?: string | null;
       autoRun?: boolean;
       worktrees?: boolean;
+      pushBranch?: string;
     }) =>
       request<Board>("/boards", { method: "POST", json: input }),
     update: (
@@ -506,10 +534,13 @@ export const api = {
         model: string | null;
         autoRun: boolean;
         worktrees: boolean;
+        pushBranch: string;
         pinned: boolean;
       }>,
     ) => request<Board>(`/boards/${id}`, { method: "PATCH", json: patch }),
     remove: (id: string) => request<{ ok: true }>(`/boards/${id}`, { method: "DELETE" }),
+    /** Record that the board was opened (stamps `lastAccessedAt`). */
+    access: (id: string) => request<Board>(`/boards/${id}/access`, { method: "POST" }),
     tasks: (id: string) => request<Task[]>(`/boards/${id}/tasks`),
     /** Delete these cards of the board (ids elsewhere are skipped); resolves with the deleted ids. */
     deleteTasks: (id: string, ids: string[]) =>
@@ -728,13 +759,13 @@ export const api = {
     /** Local + origin-only branches of one project folder. */
     branches: (boardId: string, folder: string) =>
       request<GitBranches>(`/boards/${boardId}/git/branches?folder=${encodeURIComponent(folder)}`),
-    /** Check out an existing branch in one project folder; returns its fresh status. */
+    /** Check out an existing branch in one project folder and pull it; returns its fresh status. */
     switchBranch: (boardId: string, input: { folder: string; branch: string }) =>
-      request<GitStatus>(`/boards/${boardId}/git/branches`, { method: "POST", json: input }),
-    /** Header quick push: commit every project repo's changes and push to its default branch. */
+      request<GitSwitchResult>(`/boards/${boardId}/git/branches`, { method: "POST", json: input }),
+    /** Header quick push: commit every project repo's changes and push to the project's push branch. */
     pushBoard: (boardId: string) =>
       request<BoardPushResult>(`/boards/${boardId}/git/push`, { method: "POST", json: {} }),
-    /** Commit the task's changes and push straight to the default branch (all changed folders). */
+    /** Commit the task's changes and push straight to the project's push branch (all changed folders). */
     push: (taskId: string, input: { message?: string; folders?: string[] } = {}) =>
       request<GitActionResult>(`/tasks/${taskId}/git/push`, { method: "POST", json: input }),
     /** Commit to a new branch, push, and open a PR (GitHub) / MR (GitLab). */

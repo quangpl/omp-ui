@@ -43,6 +43,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/lib/api-client";
+import { DEFAULT_PUSH_BRANCH, isValidBranchName, PUSH_BRANCH_MAX } from "@/lib/push-branch";
 import type { Board } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -51,7 +52,7 @@ type View = "source" | "clone" | "details";
 /** Which slot a picked or cloned folder fills. */
 type Target = "primary" | "extra";
 /** A form error; `field` places it under that input instead of above the actions. */
-type FormError = { message: string; field?: "name" | "workdir" };
+type FormError = { message: string; field?: "name" | "workdir" | "pushBranch" };
 
 function basename(path: string): string {
   return path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? "";
@@ -92,6 +93,7 @@ export function BoardFormDialog({
   const [workdir, setWorkdir] = useState("");
   const [extraFolders, setExtraFolders] = useState<string[]>([]);
   const [model, setModel] = useState("");
+  const [pushBranch, setPushBranch] = useState(DEFAULT_PUSH_BRANCH);
   const [worktrees, setWorktrees] = useState(false);
   const [autoRun, setAutoRun] = useState(true);
   const [showMore, setShowMore] = useState(false);
@@ -116,7 +118,13 @@ export function BoardFormDialog({
     setModel(board?.model ?? "");
     setAutoRun(board?.autoRun ?? true);
     setWorktrees(board?.worktrees ?? false);
-    setShowMore(Boolean(board?.model) || board?.autoRun === false || Boolean(board?.worktrees));
+    setPushBranch(board?.pushBranch ?? DEFAULT_PUSH_BRANCH);
+    setShowMore(
+      Boolean(board?.model) ||
+        board?.autoRun === false ||
+        Boolean(board?.worktrees) ||
+        (board != null && board.pushBranch !== DEFAULT_PUSH_BRANCH),
+    );
     setBusy(false);
     setSaving(false);
     setError(null);
@@ -192,6 +200,7 @@ export function BoardFormDialog({
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (saving) return;
+    const branch = pushBranch.trim();
     const input = {
       name: name.trim(),
       workdir: workdir.trim(),
@@ -199,6 +208,7 @@ export function BoardFormDialog({
       model: model.trim() || null,
       worktrees,
       autoRun,
+      pushBranch: branch,
     };
     if (!input.workdir) {
       setError({ message: "Choose the project folder first.", field: "workdir" });
@@ -206,6 +216,16 @@ export function BoardFormDialog({
     }
     if (!input.name) {
       setError({ message: "Give the project a name.", field: "name" });
+      return;
+    }
+    if (!isValidBranchName(branch)) {
+      setShowMore(true);
+      setError({
+        message: branch
+          ? `“${branch}” isn't a valid git branch name. Try something like main or release/1.x.`
+          : "Enter the branch Push to main should land on, e.g. main.",
+        field: "pushBranch",
+      });
       return;
     }
 
@@ -337,6 +357,7 @@ export function BoardFormDialog({
 
   const nameError = error?.field === "name" ? error.message : null;
   const folderError = error?.field === "workdir" ? error.message : null;
+  const pushBranchError = error?.field === "pushBranch" ? error.message : null;
   const formError = error && !error.field ? error.message : null;
 
   const detailsView = (
@@ -482,6 +503,36 @@ export function BoardFormDialog({
               <p className="text-xs text-muted-foreground">
                 Leave empty to auto-select per card (Settings → Auto-select model) or use the Settings
                 default.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor={`${formId}-push-branch`}>Push branch</Label>
+              <Input
+                id={`${formId}-push-branch`}
+                value={pushBranch}
+                onChange={(e) => {
+                  setPushBranch(e.target.value);
+                  if (pushBranchError) setError(null);
+                }}
+                placeholder={DEFAULT_PUSH_BRANCH}
+                autoComplete="off"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                maxLength={PUSH_BRANCH_MAX}
+                disabled={saving}
+                aria-invalid={pushBranchError ? true : undefined}
+                aria-describedby={pushBranchError ? `${formId}-push-branch-error` : undefined}
+                className="h-11 md:h-9"
+              />
+              {pushBranchError && (
+                <p id={`${formId}-push-branch-error`} role="alert" className="text-xs font-medium text-destructive">
+                  {pushBranchError}
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Push to main lands on this branch in every repo of the project (created on the remote if
+                missing). Create PR still targets each repo&apos;s default branch.
               </p>
             </div>
             <label

@@ -16,6 +16,7 @@ import {
   writeScript,
 } from "./helpers";
 
+import * as boardAccessRoute from "@/app/api/v1/boards/[id]/access/route";
 import * as boardRoute from "@/app/api/v1/boards/[id]/route";
 import * as boardTasksRoute from "@/app/api/v1/boards/[id]/tasks/route";
 import * as boardsRoute from "@/app/api/v1/boards/route";
@@ -42,7 +43,7 @@ import { DEFAULT_SETTINGS } from "@/lib/types";
 import { APP_VERSION } from "@/lib/version";
 import { getRepo } from "@/lib/db";
 
-/** Settings → Orchestration fields at their defaults (covered by settings-orchestration.test.ts). */
+/** Settings → Orchestration and Cluster fields at their defaults (covered by settings-orchestration.test.ts and cluster.test.ts). */
 const ORCHESTRATION_DEFAULTS = {
   runTimeLimit: DEFAULT_SETTINGS.runTimeLimit,
   runTimeLimitMinutes: DEFAULT_SETTINGS.runTimeLimitMinutes,
@@ -57,6 +58,8 @@ const ORCHESTRATION_DEFAULTS = {
   telemetryEndpoint: DEFAULT_SETTINGS.telemetryEndpoint,
   loadGuard: DEFAULT_SETTINGS.loadGuard,
   loadGuardPercent: DEFAULT_SETTINGS.loadGuardPercent,
+  clusterRunLocal: DEFAULT_SETTINGS.clusterRunLocal,
+  clusterFailoverSeconds: DEFAULT_SETTINGS.clusterFailoverSeconds,
 };
 
 interface TaskDetail {
@@ -362,6 +365,55 @@ describe("boards", () => {
     const invalid = await patchBoard(board.id, { pinned: "yes" });
     expect(invalid.status).toBe(400);
     expect(invalid.body.error).toBe("pinned must be a boolean");
+  });
+
+  it("creates and patches the push branch, validating it as a git branch name", async () => {
+    const board = await createBoard({ name: "Pushable", workdir: projectA });
+    expect(board.pushBranch).toBe("main");
+    const release = await createBoard({ name: "Released", workdir: projectA, pushBranch: " release/1.x " });
+    expect(release.pushBranch).toBe("release/1.x");
+
+    const invalidCreate = await postBoard({ name: "Bad push branch", workdir: projectA, pushBranch: "a..b" });
+    expect(invalidCreate.status).toBe(400);
+    expect(invalidCreate.body.error).toBe("pushBranch must be a valid git branch name");
+    const listed = await api<BoardWithCounts[]>(boardsRoute, "GET", "/boards");
+    expect(listed.body.some((b) => b.name === "Bad push branch")).toBe(false);
+
+    const patched = await patchBoard(board.id, { pushBranch: "develop" });
+    expect(patched.status).toBe(200);
+    expect(patched.body.pushBranch).toBe("develop");
+    const fetched = await api<Board>(boardRoute, "GET", `/boards/${board.id}`, { params: { id: board.id } });
+    expect(fetched.body.pushBranch).toBe("develop");
+
+    const cases: [unknown, string][] = [
+      ["", "pushBranch is required"],
+      [5, "pushBranch must be a string"],
+      [null, "pushBranch must be a string"],
+      ["--upload-pack=x", "pushBranch must be a valid git branch name"],
+      ["a..b", "pushBranch must be a valid git branch name"],
+    ];
+    for (const [pushBranch, error] of cases) {
+      const res = await patchBoard(board.id, { pushBranch });
+      expect(res.status, JSON.stringify(pushBranch)).toBe(400);
+      expect(res.body.error).toBe(error);
+    }
+    const unchanged = await api<Board>(boardRoute, "GET", `/boards/${board.id}`, { params: { id: board.id } });
+    expect(unchanged.body.pushBranch).toBe("develop");
+  });
+
+  it("records opening a board without bumping its updatedAt", async () => {
+    const board = await createBoard({ name: "Opened", workdir: projectA });
+    expect(board.lastAccessedAt).toBeNull();
+
+    const opened = await api<Board>(boardAccessRoute, "POST", `/boards/${board.id}/access`, { params: { id: board.id } });
+    expect(opened.status).toBe(200);
+    expect(opened.body).toMatchObject({ id: board.id, updatedAt: board.updatedAt });
+    expect(opened.body.lastAccessedAt).toMatch(ISO);
+    const listed = await api<BoardWithCounts[]>(boardsRoute, "GET", "/boards");
+    expect(listed.body.find((b) => b.id === board.id)?.lastAccessedAt).toBe(opened.body.lastAccessedAt);
+
+    const missing = await api(boardAccessRoute, "POST", `/boards/${MISSING_ID}/access`, { params: { id: MISSING_ID } });
+    expect(missing.status).toBe(404);
   });
 
   it("deletes a board and cascades to its tasks and comments", async () => {

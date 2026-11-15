@@ -1,4 +1,4 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   ADVISOR_FEEDBACK_PREFIX,
@@ -13,10 +13,12 @@ import {
 } from "@/lib/agent/advisor";
 import { BOARD_TOOLS, BOARD_TOOL_NAMES, runBoardTool, type BoardToolHost } from "@/lib/agent/board-tools";
 import { CONCURRENCY_SAMPLE_MS, readLoadHold, resolveConcurrency } from "@/lib/agent/concurrency";
+import { currentResourcePressure, startResourceGuard } from "@/lib/agent/resource-guard";
 import { LoopDetector, loopSteerMessage, type LoopDetection } from "@/lib/agent/loop-detector";
 import { chooseModel, readModelRoles } from "@/lib/agent/model-select";
 import { buildPrompt, buildSteerMessage } from "@/lib/agent/prompt";
 import { planQueue, type PlanCard, type QueuePlan } from "@/lib/agent/queue-planner";
+import { listProcesses, nextResources, treeTotals } from "@/lib/agent/resources";
 import { OmpRpcProcess, describeExit, type RpcExitInfo, type RpcFrame } from "@/lib/agent/rpc";
 import {
   evaluateBudget,
@@ -37,11 +39,25 @@ import {
   type SubagentPatch,
 } from "@/lib/agent/subagents";
 import type { AgentManager } from "@/lib/agent/types";
-import { childEnv } from "@/lib/child-env";
+import { childEnv, remoteChildEnv } from "@/lib/child-env";
 import { startCleanupScheduler } from "@/lib/cleanup";
+import { clusterRole, readNodeState, startCluster } from "@/lib/cluster/node";
+import { sessionDirFor } from "@/lib/cluster/paths";
+import {
+  cancelPlacement,
+  clusterCapacity,
+  isPrimaryActive,
+  openRemoteRun,
+  placeRun,
+  reportLocalRuns,
+  type RemoteRunInfo,
+  type RunPlacement,
+} from "@/lib/cluster/primary";
+import { NODE_LOST_CODE } from "@/lib/cluster/types";
 import { getRepo } from "@/lib/db";
 import type { Repository, UpdateTaskInput } from "@/lib/db/types";
 import { topPosition } from "@/lib/db/util";
+import { removeTaskDockerResources } from "@/lib/docker";
 import { publish } from "@/lib/events";
 import { dataDir, ensureFilesFolder } from "@/lib/files";
 import { extractQuestion } from "@/lib/question";
@@ -60,15 +76,19 @@ import { loadAiProviderEnv } from "@/lib/server/ai-providers";
 import { createCheckpoints } from "@/lib/server/checkpoints";
 import { startChatIntegrations } from "@/lib/server/chat/service";
 import { startCredentialHealthChecks } from "@/lib/server/credentials";
+import { HttpError } from "@/lib/server/http";
 import { startMcpSync } from "@/lib/server/mcp";
 import { mcpAgentEnv } from "@/lib/server/mcp-env";
+import { agentDir } from "@/lib/server/omp-config";
 import { startTelemetryExporter } from "@/lib/server/telemetry";
 import { getAppSettings } from "@/lib/settings";
 import { parseTodoPhases, stampTodos } from "@/lib/todos";
 import { ensureWorkspace } from "@/lib/workspaces";
 import type {
+  AgentResources,
   AppSettings,
   Comment,
+  ConcurrencyInfo,
   ContextUsage,
   QueueEntry,
   QueueSnapshot,
@@ -80,6 +100,8 @@ import type {
 } from "@/lib/types";
 
 const READY_TIMEOUT_MS = 60_000;
+/** Remote runs first sync the card's folders to the node (and the node may fetch the omp binary). */
+const REMOTE_READY_TIMEOUT_MS = 10 * 60_000;
 const ABORT_TIMEOUT_MS = 5_000;
 const SUMMARY_TIMEOUT_MS = 15_000;
 /** `get_session_stats` after an assistant message: best effort, never blocks frame handling. */
@@ -103,6 +125,10 @@ const PLAN_DEBOUNCE_MS = 1_500;
  */
 const RETRY_BASE_MS = 15_000;
 const RETRY_MAX_MS = 10 * 60_000;
+/** Memory/CPU sampling of the running agents' process trees (live `run.resources` events). */
+const RESOURCE_SAMPLE_MS = 5_000;
+/** A run's first resource sample waits until its process has run this long (see sampleResources). */
+const FIRST_SAMPLE_MIN_MS = 1_000;
 
 type DeltaKind = "text" | "thinking";
 
@@ -132,6 +158,12 @@ interface ActiveRun {
   runId: string | null;
   promptId: string;
   proc: OmpRpcProcess | null;
+  /** Cluster mode (primary): the node the run was placed on; null on a standalone server. */
+  placement: RunPlacement | null;
+  /** The placement's slot is still reserved: the process has not opened yet (cancelUnusedPlacement). */
+  placementPending: boolean;
+  /** Remote placement: the run's node-side details (resource totals); null for local runs. */
+  remote: RemoteRunInfo | null;
   /** Feedback comments this run addresses (prompt set + steered); resolved on success. */
   feedbackIds: Set<string>;
   promptSent: boolean;
@@ -177,6 +209,12 @@ interface ActiveRun {
   loopStrikes: number;
   /** SDLC violations (`phase:requires`) already steered back to the agent: each is steered once per run. */
   sdlcNudges: Set<string>;
+  /** When the run's omp process was spawned (ms epoch); 0 before. The first CPU rate counts from here. */
+  spawnedAt: number;
+  /** Latest memory/CPU sample of the omp process tree; persisted on the task when the run is released. */
+  resources: AgentResources | null;
+  /** Raw CPU total of the process tree at the latest sample (`nextResources`); 0 before the first. */
+  treeCpuSeconds: number;
   /** Serializes startup, frame handling and teardown so persistence stays ordered. */
   chain: Promise<void>;
 }
@@ -193,7 +231,7 @@ interface BoardPlan {
 
 type Json = Record<string, unknown>;
 
-class OmpAgentManager implements AgentManager {
+class OmpAgentManager implements AgentManager, RunControl {
   /** start() calls between their guard and the "queued" write. */
   private readonly claiming = new Set<string>();
   private readonly queue: string[] = [];
@@ -220,10 +258,22 @@ class OmpAgentManager implements AgentManager {
 
   /** Agents allowed at once, as of the latest pump (part of the `queue.updated` dedupe key). */
   private limit = 0;
+  /** What bounds the limit as of the latest pump (part of the dedupe key, so a hold/resume always republishes). */
+  private boundBy: ConcurrencyInfo["boundBy"] = null;
   /** Re-samples the machine (an automatic limit) while cards wait in the queue. */
   private sampler: NodeJS.Timeout | undefined;
   /** Run guards (lib/agent/run-guards.ts): ticks while any run is active. */
   private supervisor: NodeJS.Timeout | undefined;
+  /** Samples the active runs' memory/CPU (sampleResources): ticks while any run is active. */
+  private resourceSampler: NodeJS.Timeout | undefined;
+  /** A resource sample is in flight; overlapping ticks are skipped. */
+  private sampling = false;
+  /** Failback (lib/cluster/node.ts handOverPrimary): pump() launches nothing while set. */
+  private holding = false;
+  /** Cluster mode: this machine's own agent limit, as of the latest resolveLimit(). */
+  private localLimit = 0;
+  /** Last reportLocalRuns() payload (deduplicates). */
+  private lastLocalReport = "";
 
   constructor(private readonly repo: Repository) {}
 
@@ -234,6 +284,21 @@ class OmpAgentManager implements AgentManager {
   contextUsage(taskId: string): ContextUsage | null {
     const run = this.active.get(taskId);
     return run && !run.finished ? run.context : null;
+  }
+
+  holdNewRuns(hold: boolean): void {
+    if (this.holding === hold) return;
+    this.holding = hold;
+    if (!hold) void this.pump();
+  }
+
+  activeRunCount(): number {
+    return this.active.size;
+  }
+
+  /** Queued cards the card writer is still preparing; they live only in memory (a restart loses them). */
+  preparingCount(): number {
+    return this.preparing.size;
   }
 
   async queueSnapshot(): Promise<QueueSnapshot> {
@@ -260,6 +325,7 @@ class OmpAgentManager implements AgentManager {
         planNote: this.planNotes.get(taskId) ?? null,
         createdByTaskId: task.createdByTaskId ?? null,
         sdlc: sdlcProgress(task.todos),
+        node: state === "running" ? this.nodeOf(taskId) : null,
       };
     };
     const isEntry = (e: QueueEntry | null): e is QueueEntry => e !== null;
@@ -270,13 +336,68 @@ class OmpAgentManager implements AgentManager {
     const planning = await Promise.all(
       [...this.plans.keys()].map(async (boardId) => ({ boardId, boardName: await boardName(boardId) })),
     );
-    const concurrency = resolveConcurrency(
+    const concurrency = this.resolveLimit(settings);
+    return { limit: concurrency.limit, concurrency, running, queued, planning };
+  }
+
+  /** The node a running card was placed on (cluster mode); null on a standalone server. */
+  private nodeOf(taskId: string): QueueEntry["node"] {
+    const placement = this.active.get(taskId)?.placement;
+    return placement ? { id: placement.nodeId, name: placement.nodeName } : null;
+  }
+
+  /**
+   * The agent limit in effect: this machine's own, plus (cluster mode, primary) the slots of the
+   * replica nodes; the local part then counts only the runs on this machine. A local hold does not
+   * hold cards cluster-wide while replicas have slots.
+   */
+  private resolveLimit(settings: AppSettings): ConcurrencyInfo {
+    const cluster = clusterActive();
+    const local = resolveConcurrency(
       settings.maxConcurrentAgents,
-      this.active.size,
+      cluster ? this.localRuns().length : this.active.size,
       undefined,
       readLoadHold(settings),
+      currentResourcePressure(),
+      // A hold launches nothing, not even into lent slots. Cluster placement counts its own free local slots.
+      cluster ? 0 : this.lent,
     );
-    return { limit: concurrency.limit, concurrency, running, queued, planning };
+    if (!cluster) return local;
+    this.localLimit = local.limit;
+    const capacity = clusterCapacity(local.limit, settings.clusterRunLocal);
+    const held = local.boundBy === "resources" || local.boundBy === "load";
+    if (held && capacity.info.remoteSlots > 0) {
+      return {
+        ...local,
+        limit: capacity.limit,
+        cluster: capacity.info,
+        boundBy: null,
+        reason: `${local.reason} on this machine — new cards run on other nodes`,
+      };
+    }
+    return { ...local, limit: capacity.limit, cluster: capacity.info };
+  }
+
+  /** Active runs on this machine (no placement, or placed locally). */
+  private localRuns(): ActiveRun[] {
+    return [...this.active.values()].filter((run) => !run.placement || run.placement.local);
+  }
+
+  /** Cluster mode: tell the primary runtime which cards run on this machine and its own limit. */
+  private reportLocal(): void {
+    if (!clusterActive()) return;
+    const taskIds = this.localRuns().map((run) => run.taskId);
+    const key = JSON.stringify([taskIds, this.localLimit]);
+    if (key === this.lastLocalReport) return;
+    this.lastLocalReport = key;
+    reportLocalRuns(taskIds, this.localLimit);
+  }
+
+  /** Returns the slot reserved for a run that never opened its process (released or deleted first). */
+  private cancelUnusedPlacement(run: ActiveRun): void {
+    if (!run.placement || !run.placementPending) return;
+    run.placementPending = false;
+    cancelPlacement(run.placement);
   }
 
   moveInQueue(taskId: string, position: number): boolean {
@@ -494,7 +615,9 @@ class OmpAgentManager implements AgentManager {
     run.closing = true;
     this.active.delete(taskId);
     this.stopSupervisorIfIdle();
+    this.stopResourceSamplerIfIdle();
     if (run.proc) terminate(run.proc);
+    else this.cancelUnusedPlacement(run);
     void this.pump();
   }
 
@@ -781,8 +904,9 @@ class OmpAgentManager implements AgentManager {
     const drafting = queued.filter((id) => this.preparing.has(id));
     // Planning state is part of the key: the UI re-reads the snapshot when a plan starts or ends.
     const held = queued.filter((id) => this.isHeld(id));
-    // So is the limit: an automatic one changes with the machine's free resources.
-    const key = JSON.stringify([running, queued, drafting, [...this.plans.keys()], held, this.limit]);
+    // So are the limit and what bounds it: an automatic one changes with the machine's free
+    // resources, and a resource-guard hold/resume must reach the UI even when the limit stays.
+    const key = JSON.stringify([running, queued, drafting, [...this.plans.keys()], held, this.limit, this.boundBy]);
     if (key === this.lastQueue) return;
     this.lastQueue = key;
     publish({ type: "queue.updated", running, queued, drafting });
@@ -797,18 +921,20 @@ class OmpAgentManager implements AgentManager {
     try {
       do {
         this.pumpAgain = false;
-        if (this.queue.length === 0) break;
+        // Cluster mode reports this machine's limit even with an empty queue.
+        const cluster = clusterActive();
+        if (this.queue.length === 0 && !cluster) break;
         // Re-read every time a slot frees so settings changes apply without a restart, and
         // re-sample the machine so an automatic limit follows its free cores and memory, and a
-        // tripped load guard holds new runs until the sampler below sees the load drop. (A slot
-        // lent by a run idling in board_wait_for_cards is still free to its child cards.)
+        // tripped load guard holds new runs until the sampler below sees the load drop. The
+        // resource guard (lib/agent/resource-guard.ts) holds them under memory/CPU pressure and
+        // re-pumps on hold/resume. (A slot lent by a run idling in board_wait_for_cards is still
+        // free to its child cards.)
         const settings = await getAppSettings(this.repo);
-        this.limit = resolveConcurrency(
-          settings.maxConcurrentAgents,
-          this.active.size,
-          undefined,
-          readLoadHold(settings),
-        ).limit;
+        const concurrency = this.resolveLimit(settings);
+        this.limit = concurrency.limit;
+        this.boundBy = concurrency.boundBy;
+        if (this.queue.length === 0 || this.holding) break;
         if (this.active.size - this.lent >= this.limit) continue;
         // Start order, skipping cards that wait for unfinished cards (Task.blockedBy) or for their
         // board's smart-queue plan. The queued cards' blockers are read in parallel.
@@ -819,6 +945,8 @@ class OmpAgentManager implements AgentManager {
             return task !== null && (await this.pendingBlockers(task)).length > 0;
           }),
         );
+        // Cluster mode: a card goes back to the node of its last run when that node has room.
+        const lastNodes = cluster ? await Promise.all(candidates.map((taskId) => this.lastRunNode(taskId))) : [];
         for (const [index, taskId] of candidates.entries()) {
           if (this.active.size - this.lent >= this.limit) break;
           if (blocked[index]) continue;
@@ -826,7 +954,7 @@ class OmpAgentManager implements AgentManager {
           if (this.isHeld(taskId)) continue;
           if (this.removeFromQueue(taskId)) {
             this.leftQueue(taskId);
-            this.launch(taskId, settings);
+            this.launch(taskId, settings, lastNodes[index] ?? null);
           }
         }
       } while (this.pumpAgain);
@@ -845,11 +973,26 @@ class OmpAgentManager implements AgentManager {
         this.sampler = undefined;
       }
       this.publishQueue();
+      this.reportLocal();
     }
   }
 
-  private launch(taskId: string, settings: AppSettings): void {
+  /** Node id of the card's last run; null when it has none or ran on a standalone server. */
+  private async lastRunNode(taskId: string): Promise<string | null> {
+    const lastRunId = (await this.repo.getTask(taskId))?.lastRunId;
+    return lastRunId ? ((await this.repo.getRun(lastRunId))?.nodeId ?? null) : null;
+  }
+
+  private launch(taskId: string, settings: AppSettings, preferNodeId: string | null): void {
     const now = Date.now();
+    const placement = clusterActive()
+      ? placeRun({
+          taskId,
+          localFree: this.localLimit - this.localRuns().length,
+          runLocal: settings.clusterRunLocal,
+          preferNodeId,
+        })
+      : null;
     const run: ActiveRun = {
       taskId,
       boardId: "",
@@ -857,6 +1000,9 @@ class OmpAgentManager implements AgentManager {
       runId: null,
       promptId: "",
       proc: null,
+      placement,
+      placementPending: placement !== null,
+      remote: null,
       feedbackIds: new Set(),
       promptSent: false,
       finished: false,
@@ -881,11 +1027,16 @@ class OmpAgentManager implements AgentManager {
       loop: settings.loopDetection ? new LoopDetector() : null,
       loopStrikes: 0,
       sdlcNudges: new Set(),
+      spawnedAt: 0,
+      resources: null,
+      treeCpuSeconds: 0,
       chain: Promise.resolve(),
     };
     this.active.set(taskId, run);
     this.supervisor ??= setInterval(() => void this.superviseRuns(), guardTickMs());
     this.supervisor.unref();
+    this.resourceSampler ??= setInterval(() => void this.sampleResources(), RESOURCE_SAMPLE_MS);
+    this.resourceSampler.unref();
     this.enqueue(run, () => this.startRun(run, settings));
   }
 
@@ -893,6 +1044,12 @@ class OmpAgentManager implements AgentManager {
     run.chain = run.chain.then(step).catch(async (err: unknown) => {
       // After stop/delete the process is torn down on purpose; its rejections are expected.
       if (run.finished) return;
+      // A remote run whose node was lost (e.g. while it was starting) is rescheduled, not failed.
+      const exit = run.remote && run.proc?.exited ? await run.proc.waitExit() : null;
+      if (exit?.error?.code === NODE_LOST_CODE) {
+        await this.rescheduleLost(run, exit.error.message);
+        return;
+      }
       await this.fail(run, errorMessage(err, run.ompPath));
     });
   }
@@ -905,8 +1062,11 @@ class OmpAgentManager implements AgentManager {
     run.hostCalls.clear();
     if (this.active.get(run.taskId) === run) this.active.delete(run.taskId);
     this.stopSupervisorIfIdle();
+    this.stopResourceSamplerIfIdle();
+    void this.persistResources(run);
     // The agent may have written files or screenshots into the card's folder.
     if (run.boardId) publish({ type: "files.updated", boardId: run.boardId, taskId: run.taskId });
+    this.cancelUnusedPlacement(run);
     if (run.proc && !run.closing) {
       run.closing = true;
       void run.proc.close();
@@ -997,6 +1157,78 @@ class OmpAgentManager implements AgentManager {
     this.supervisor = undefined;
   }
 
+  // --- Resource sampling (lib/agent/resources.ts) ---------------------------------------
+
+  /**
+   * Sampler tick: one process-table read for all local runs, then each live run's process tree
+   * totals go out as a `run.resources` event; remote runs (cluster mode) use the totals their node
+   * reports. Unsupported platforms or a failed read skip the local part of the tick.
+   */
+  private async sampleResources(): Promise<void> {
+    if (this.sampling) return;
+    const live = [...this.active.values()].filter(
+      (run) => !run.finished && run.runId && run.proc && !run.proc.exited,
+    );
+    if (live.length === 0) return;
+    const runs = live.filter((run) => run.proc?.pid !== undefined);
+    this.sampling = true;
+    try {
+      for (const run of live) {
+        const total = run.remote?.totals();
+        if (total) this.recordResources(run, total, Date.now());
+      }
+      if (runs.length === 0) return;
+      const list = await listProcesses();
+      if (!list) return;
+      const totals = treeTotals(list, runs.map((run) => run.proc!.pid!));
+      const now = Date.now();
+      for (const run of runs) {
+        const total = run.proc?.pid === undefined ? undefined : totals.get(run.proc.pid);
+        // Released while the table was read: its last sample is already persisted.
+        if (!total || run.finished || !run.runId) continue;
+        this.recordResources(run, total, now);
+      }
+    } catch (err) {
+      console.error("[agent] resource sampling failed:", err);
+    } finally {
+      this.sampling = false;
+    }
+  }
+
+  /** Turn a process tree total into the run's next sample and publish it. */
+  private recordResources(run: ActiveRun, total: { memoryBytes: number; cpuSeconds: number }, now: number): void {
+    if (!run.runId) return;
+    // A first rate over a few ms since spawn would be all clock granularity (0 % or 200 %).
+    if (!run.resources && now - run.spawnedAt < FIRST_SAMPLE_MIN_MS) return;
+    run.resources = nextResources(run.resources, run.treeCpuSeconds, total, now, run.spawnedAt);
+    run.treeCpuSeconds = total.cpuSeconds;
+    publish({
+      type: "run.resources",
+      runId: run.runId,
+      taskId: run.taskId,
+      boardId: run.boardId,
+      resources: run.resources,
+    });
+  }
+
+  private stopResourceSamplerIfIdle(): void {
+    if (this.active.size > 0 || !this.resourceSampler) return;
+    clearInterval(this.resourceSampler);
+    this.resourceSampler = undefined;
+  }
+
+  /** Store the run's latest resource sample on the task once it ends (skipped before the first sample). */
+  private async persistResources(run: ActiveRun): Promise<void> {
+    const resources = run.resources;
+    if (!resources) return;
+    try {
+      const task = await this.repo.updateTask(run.taskId, { resources });
+      if (task) publish({ type: "task.updated", task });
+    } catch (err) {
+      console.error(`[agent] failed to store the resource usage of task ${run.taskId}:`, err);
+    }
+  }
+
   // --- Run lifecycle ---------------------------------------------------------------------
 
   private async startRun(run: ActiveRun, settings: AppSettings): Promise<void> {
@@ -1014,7 +1246,7 @@ class OmpAgentManager implements AgentManager {
     // Independent startup reads and folder setup run in parallel. Dedicated workspace: the
     // card's own worktrees stand in for the project folders.
     const sessionFile = task.sessionFile;
-    const [workspace, taskFiles, boardFiles, comments, resumeFile] = await Promise.all([
+    const [workspace, taskFiles, boardFiles, comments, foundSession] = await Promise.all([
       board.worktrees ? ensureWorkspace(board, task) : null,
       ensureFilesFolder("tasks", task.id),
       ensureFilesFolder("boards", board.id),
@@ -1031,6 +1263,22 @@ class OmpAgentManager implements AgentManager {
       workspaceNotes = workspace.notes;
     }
     if (run.finished) return;
+    // Cluster mode: every run keeps its omp session in the card's session dir, which travels to
+    // the node running it and is replicated to the others. Only a session file of omp's own
+    // session folders is resumed (copied in): the stored path may have come from a node.
+    const placement = run.placement;
+    const sessionDir = placement ? sessionDirFor(task.id) : null;
+    let resumeFile = foundSession;
+    if (sessionDir) {
+      await mkdir(sessionDir, { recursive: true });
+      if (foundSession) {
+        resumeFile = await resumeInSessionDir(foundSession, sessionDir, settings.ompPath);
+        if (!resumeFile) {
+          workspaceNotes = [...workspaceNotes, `Not resuming ${foundSession}: it is not an omp session file`];
+        }
+      }
+      if (run.finished) return;
+    }
 
     const feedback = comments.filter((c) => c.author === "user" && !c.resolved);
     const senderIds = [...new Set(feedback.map((c) => c.fromTaskId).filter((id): id is string => !!id))];
@@ -1049,7 +1297,11 @@ class OmpAgentManager implements AgentManager {
       browser: settings.browser,
       senders,
     });
-    const created = await repo.createRun({ taskId: task.id, prompt });
+    const created = await repo.createRun({
+      taskId: task.id,
+      prompt,
+      ...(placement ? { nodeId: placement.nodeId, nodeName: placement.nodeName } : {}),
+    });
     run.runId = created.id;
     run.promptId = `prompt-${created.id}`;
     for (const c of feedback) run.feedbackIds.add(c.id);
@@ -1063,6 +1315,7 @@ class OmpAgentManager implements AgentManager {
       agentState: "running",
       agentError: null,
       lastRunId: created.id,
+      resources: null,
     });
     if (running) publish({ type: "task.updated", task: running });
     if (run.finished) return;
@@ -1088,6 +1341,7 @@ class OmpAgentManager implements AgentManager {
       roles,
     });
     if (run.finished) return;
+    const remote = placement && !placement.local ? placement : null;
     const { model, thinking } = choice;
     const args = [
       "--mode",
@@ -1100,6 +1354,7 @@ class OmpAgentManager implements AgentManager {
       "--config",
       configFile,
     ];
+    if (sessionDir) args.push("--session-dir", sessionDir);
     for (const folder of [...extraFolders, taskFiles, boardFiles]) args.push("--add-dir", folder);
     if (model) args.push("--model", model);
     if (thinking) args.push("--thinking", thinking);
@@ -1115,7 +1370,12 @@ class OmpAgentManager implements AgentManager {
     await this.event(
       run,
       "status",
-      [resumeFile ? "Resuming agent session" : "Starting agent", `in ${workdir}`, modelNote && `(${modelNote})`]
+      [
+        resumeFile ? "Resuming agent session" : "Starting agent",
+        `in ${workdir}`,
+        remote && `on ${remote.nodeName}`,
+        modelNote && `(${modelNote})`,
+      ]
         .filter(Boolean)
         .join(" "),
     );
@@ -1139,14 +1399,37 @@ class OmpAgentManager implements AgentManager {
       if (run.finished) return;
     }
 
+    const runConfig = remote ? await readFile(configFile, "utf8") : "";
+    const agentEnv = { ...(await mcpAgentEnv()), AGENTMEMORY_PROJECT_NAME: memoryProject };
+    if (run.finished) return;
+    // Remote placement: omp runs on the node, over the cluster channel. Git checkpoints, model
+    // roles and the run config above stay on this primary.
+    const transport = remote
+      ? openRemoteRun(remote, {
+          runKey: created.id,
+          taskId: task.id,
+          args,
+          cwd: workdir,
+          env: remoteChildEnv(agentEnv),
+          folders: [
+            ...[workdir, ...extraFolders].map((folder) => ({ path: folder, kind: "tree" as const })),
+            ...[taskFiles, boardFiles, sessionDir!].map((folder) => ({ path: folder, kind: "raw" as const })),
+          ],
+          files: [{ path: configFile, content: runConfig }],
+        })
+      : undefined;
+    run.placementPending = false;
+    run.remote = transport?.remote ?? null;
     const proc = new OmpRpcProcess({
       command: settings.ompPath,
       args,
       cwd: workdir,
-      env: childEnv({ ...(await mcpAgentEnv()), AGENTMEMORY_PROJECT_NAME: memoryProject }),
+      env: childEnv(agentEnv),
       autoConfirm: settings.approvalMode === "yolo",
+      transport,
     });
     run.proc = proc;
+    run.spawnedAt = Date.now();
     proc.on("frame", (frame) => {
       run.lastActivityAt = Date.now();
       // Board tools run outside the chain: a wait can last minutes while frames keep flowing.
@@ -1160,8 +1443,10 @@ class OmpAgentManager implements AgentManager {
       this.enqueue(run, () => this.onTransportError(run, message, undefined)),
     );
     proc.on("exit", (info) => this.enqueue(run, () => this.onExit(run, info)));
+    // An exit reported while the process was being constructed reached no listener.
+    if (proc.exited) this.enqueue(run, async () => this.onExit(run, await proc.waitExit()));
 
-    await proc.waitReady(READY_TIMEOUT_MS);
+    await proc.waitReady(remote ? REMOTE_READY_TIMEOUT_MS : READY_TIMEOUT_MS);
     if (run.finished) return;
 
     try {
@@ -1169,8 +1454,13 @@ class OmpAgentManager implements AgentManager {
       const sessionFile = isObject(state.data) ? asString(state.data.sessionFile) : undefined;
       const sessionId = isObject(state.data) ? asString(state.data.sessionId) : undefined;
       if (sessionFile && sessionFile !== task.sessionFile) {
-        const updated = await repo.updateTask(task.id, { sessionFile });
-        if (updated) publish({ type: "task.updated", task: updated });
+        // A node answers for a remote run: only a file inside the card's session dir is trusted.
+        if (remote && !(path.isAbsolute(sessionFile) && isInside(sessionFile, sessionDir!))) {
+          await this.event(run, "error", `Ignored the session file reported by ${remote.nodeName}: ${sessionFile}`);
+        } else {
+          const updated = await repo.updateTask(task.id, { sessionFile });
+          if (updated) publish({ type: "task.updated", task: updated });
+        }
       }
       // Name the card's agentmemory session after the card (best effort, not awaited).
       if (sessionId && agentmemoryEnabled()) {
@@ -1431,12 +1721,41 @@ class OmpAgentManager implements AgentManager {
 
   private async onExit(run: ActiveRun, info: RpcExitInfo): Promise<void> {
     if (run.finished) return;
+    if (info.error?.code === NODE_LOST_CODE) {
+      await this.rescheduleLost(run, info.error.message);
+      return;
+    }
     await this.fail(
       run,
       info.error
         ? errorMessage(info.error, run.ompPath)
         : `omp exited unexpectedly (${describeExit(info)})`,
     );
+  }
+
+  /**
+   * Cluster mode: the node running the run is gone for good. The run fails, and the card is queued
+   * again at once (resuming its replicated session on whichever node gets it, possibly the same one
+   * once it is back) without using an automatic retry.
+   */
+  private async rescheduleLost(run: ActiveRun, reason: string): Promise<void> {
+    run.finished = true;
+    const message = `${reason}; rescheduled`;
+    try {
+      if (run.runId) {
+        const updated = await this.repo.updateRun(run.runId, { status: "failed", error: message, endedAt: nowIso() });
+        if (updated) publish({ type: "run.updated", run: updated, boardId: run.boardId });
+        await this.settleSubagents(run);
+        await this.event(run, "error", message);
+      }
+      const task = await this.repo.getTask(run.taskId);
+      if (task) await this.addAgentComment(task, `Agent run lost: ${message}.`);
+    } catch (err) {
+      console.error(`[agent] failed to record the lost run of task ${run.taskId}:`, err);
+    } finally {
+      this.release(run);
+      void this.queueRun(run.taskId, true).catch((err: unknown) => this.recordTaskError(run.taskId, err));
+    }
   }
 
   /**
@@ -1719,6 +2038,8 @@ class OmpAgentManager implements AgentManager {
         retryAt: null,
       });
       if (task) publish({ type: "task.updated", task });
+      // A run that restarts right away (feedback during wrap-up) cleans up at its own Done instead.
+      if (!sentBack && !run.restartAfter) void this.removeTaskDocker(run);
     } catch (err) {
       console.error(`[agent] failed to record the result for task ${run.taskId}:`, err);
       retryAt = await this.writeTaskError(run.taskId, `Failed to record the agent result: ${errorMessage(err, run.ompPath)}`);
@@ -1764,6 +2085,25 @@ class OmpAgentManager implements AgentManager {
   }
 
   // --- Persistence helpers ---------------------------------------------------------------
+
+  /** Removes Docker resources the agent marked as temporary for this card and left behind (docs/TASK-CLEANUP.md). */
+  private async removeTaskDocker(run: ActiveRun): Promise<void> {
+    try {
+      const result = await removeTaskDockerResources(run.taskId);
+      if (!result) return;
+      const counts: [number, string][] = [
+        [result.containers, "container"],
+        [result.networks, "network"],
+        [result.volumes, "volume"],
+        [result.images, "image"],
+      ];
+      const parts = counts.filter(([count]) => count > 0).map(([count, noun]) => `${count} ${noun}${count === 1 ? "" : "s"}`);
+      if (parts.length > 0) await this.event(run, "status", `Removed leftover Docker resources: ${parts.join(", ")}`);
+      for (const message of result.errors) await this.event(run, "error", `Docker cleanup: ${message}`);
+    } catch (err) {
+      console.error(`[agent] Docker cleanup failed for task ${run.taskId}:`, err);
+    }
+  }
 
   /** Persist + broadcast a run event. Never throws: a log write must not kill a run. */
   private async event(run: ActiveRun, kind: RunEventKind, text: string): Promise<void> {
@@ -2219,14 +2559,132 @@ function terminate(proc: OmpRpcProcess): void {
   void proc.close();
 }
 
+/** Cluster mode: this server is the active primary, so runs are placed across the cluster. */
+function clusterActive(): boolean {
+  return clusterRole() === "primary" && isPrimaryActive();
+}
+
+/**
+ * The resume file inside the card's session dir: copied in when omp left it in its own sessions
+ * folder (runs before cluster mode). Null for anything else (the stored path may have come from a
+ * node): only a regular file, symlinks resolved, inside one of those two folders is used.
+ */
+async function resumeInSessionDir(file: string, sessionDir: string, ompPath: string): Promise<string | null> {
+  const real = await realpath(file).catch(() => null);
+  const info = real ? await stat(real).catch(() => null) : null;
+  if (!real || !info?.isFile()) return null;
+  if (isInside(real, await realpath(sessionDir))) return real;
+  const ompSessions = await agentDir(ompPath).then(
+    (dir) => realpath(path.join(dir, "sessions")),
+    () => null,
+  );
+  if (!ompSessions || !isInside(real, ompSessions)) return null;
+  const copy = path.join(sessionDir, path.basename(real));
+  await copyFile(real, copy);
+  return copy;
+}
+
+/** `file` lies strictly below `dir` (both absolute). */
+function isInside(file: string, dir: string): boolean {
+  const relative = path.relative(dir, file);
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+/** What the cluster's failback (lib/cluster/node.ts handOverPrimary) needs from the manager. */
+interface RunControl {
+  /** While held, the queue launches nothing (queued cards stay queued); releasing pumps again. */
+  holdNewRuns(hold: boolean): void;
+  activeRunCount(): number;
+}
+
+/**
+ * The manager of a replica node (cluster mode): cards run on the primary, so every change is
+ * refused and nothing runs here. Replaced by a full manager when the node is promoted
+ * (resetAgentManager).
+ */
+class DormantAgentManager implements AgentManager, RunControl {
+  start(): Promise<Task> {
+    return Promise.reject(replicaError());
+  }
+
+  startPrepared(): Promise<Task> {
+    return Promise.reject(replicaError());
+  }
+
+  stop(): Promise<Task | null> {
+    return Promise.reject(replicaError());
+  }
+
+  onTaskMoved(): Promise<void> {
+    return Promise.reject(replicaError());
+  }
+
+  onComment(): Promise<void> {
+    return Promise.reject(replicaError());
+  }
+
+  async onTaskDeleted(): Promise<void> {}
+
+  stats(): { running: string[]; queued: string[] } {
+    return { running: [], queued: [] };
+  }
+
+  async queueSnapshot(): Promise<QueueSnapshot> {
+    const concurrency = { ...resolveConcurrency(0, 0), reason: "Replica: cards run on the primary" };
+    return { limit: 0, concurrency, running: [], queued: [], planning: [] };
+  }
+
+  moveInQueue(): boolean {
+    return false;
+  }
+
+  refreshQueue(): void {}
+
+  contextUsage(): ContextUsage | null {
+    return null;
+  }
+
+  holdNewRuns(): void {}
+
+  activeRunCount(): number {
+    return 0;
+  }
+}
+
+function replicaError(): HttpError {
+  const primary = readNodeState().primary;
+  const name = primary ? `${primary.name} (${primary.httpUrl})` : "another node";
+  return new HttpError(409, `This node is a replica of ${name}; use the primary`);
+}
+
 // --- Singleton -------------------------------------------------------------------------------
 
-const g = globalThis as unknown as { __ompUiAgentManager?: Promise<AgentManager> };
+const g = globalThis as unknown as {
+  __ompUiAgentManager?: Promise<AgentManager>;
+  /** The created manager (set once its creation passed the cluster boot), for the sync controls below. */
+  __ompUiAgentRuns?: RunControl;
+};
 
 async function createAgentManager(): Promise<AgentManager> {
+  // The node's cluster role decides what this server does; a failed cluster boot leaves it
+  // running on its own (the role stays as stored, the primary runtime inactive).
+  await startCluster().catch((err: unknown) => console.error("[cluster] failed to start:", err));
+  if (clusterRole() === "replica") {
+    const dormant = new DormantAgentManager();
+    g.__ompUiAgentRuns = dormant;
+    return dormant;
+  }
   const repo = await getRepo();
   await repo.abortRunningRuns("Server restarted");
   const manager = new OmpAgentManager(repo);
+  g.__ompUiAgentRuns = manager;
+  // Before recovery, so the first sample exists before recovered queued runs start.
+  startResourceGuard({
+    onChange: () => manager.refreshQueue(),
+    activeRunCount: () => manager.activeRunCount(),
+    preparingCount: () => manager.preparingCount(),
+    queuedCount: () => manager.stats().queued.length,
+  });
   // Before recovery, which may start queued runs: their traces must see the runs start.
   startTelemetryExporter(() => getAppSettings(repo));
   // Before recovery too: queued runs it starts spawn omp, which needs the saved provider keys.
@@ -2244,7 +2702,27 @@ async function createAgentManager(): Promise<AgentManager> {
 export async function getAgentManager(): Promise<AgentManager> {
   g.__ompUiAgentManager ??= createAgentManager().catch((err: unknown) => {
     g.__ompUiAgentManager = undefined;
+    g.__ompUiAgentRuns = undefined;
     throw err;
   });
   return g.__ompUiAgentManager;
+}
+
+/**
+ * Drops the process-wide manager: the next getAgentManager() creates a fresh one (cluster
+ * promotion: a replica's dormant manager, which has nothing to stop, makes way for a full one).
+ */
+export function resetAgentManager(): void {
+  g.__ompUiAgentManager = undefined;
+  g.__ompUiAgentRuns = undefined;
+}
+
+/** Failback: hold (or release) new launches of the manager; a no-op before it exists or on a replica. */
+export function holdNewRuns(hold: boolean): void {
+  g.__ompUiAgentRuns?.holdNewRuns(hold);
+}
+
+/** Runs the manager has active right now; 0 before it exists or on a replica. */
+export function activeRunCount(): number {
+  return g.__ompUiAgentRuns?.activeRunCount() ?? 0;
 }

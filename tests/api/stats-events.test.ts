@@ -437,8 +437,8 @@ describe("GET /events (SSE)", () => {
     expect(stream.text).not.toContain(elsewhere.id);
     expect(stream.text).not.toContain(boardA.id);
     for (const event of events) {
-      // queue.updated is global: every stream gets it.
-      if (event.type === "queue.updated") continue;
+      // queue.updated and cluster events are global: every stream gets them.
+      if (event.type === "queue.updated" || event.type === "cluster.updated" || event.type === "cluster.notice") continue;
       const boardId =
         event.type === "board.updated"
           ? event.board.id

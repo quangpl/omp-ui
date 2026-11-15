@@ -75,6 +75,7 @@ import { TaskProgressIcon, TodoListSection } from "@/components/board/task-progr
 import { CommentThread } from "@/components/board/comment-thread";
 import { DETAIL_HEADING_CLASS, DetailSection } from "@/components/board/detail-section";
 import { errorMessage, formatDateTime, formatRelative } from "@/components/board/format";
+import { DetailResources, useAgentResources } from "@/components/board/agent-resources";
 import { useTaskDiff } from "@/components/board/code-changes";
 import { CodeReview } from "@/components/board/code-review";
 import { quickActionForKey, quickActionsFor, type QuickActionId } from "@/components/board/quick-actions";
@@ -621,7 +622,7 @@ function TaskDetailBody({
   const canPush = canShip(gitStatuses);
 
   const pushToMain = async () => {
-    const outcome = await shipTask("push", task.id, shipLabels(gitStatuses ?? []));
+    const outcome = await shipTask("push", task.id, shipLabels(gitStatuses ?? [], board.pushBranch));
     if (!outcome) return;
     // Brand-new comment: the SSE copy, if it already arrived, wins. task.updated strikes the title.
     applyCommentResponse(outcome.comment, Number.NEGATIVE_INFINITY);
@@ -872,6 +873,7 @@ function TaskDetailBody({
             <ShipActions
               task={task}
               statuses={board.worktrees ? workspaceGit.statuses : gitStatuses}
+              pushBranch={board.pushBranch}
               fromWorkspace={board.worktrees}
               onShipped={(comment) => {
                 // Brand-new comment: the SSE copy, if it already arrived, wins.
@@ -895,17 +897,28 @@ function TaskDetailBody({
             </MetaItem>
             <MetaItem label="Agent runs">
               {latestRun ? (
-                <span className="font-mono tabular-nums">
-                  {runs.length}
-                  <span className="text-muted-foreground" title={formatDateTime(latestRun.startedAt)}>
-                    {" "}
-                    · last {formatRelative(latestRun.startedAt)}
+                <>
+                  <span className="font-mono tabular-nums">
+                    {runs.length}
+                    <span className="text-muted-foreground" title={formatDateTime(latestRun.startedAt)}>
+                      {" "}
+                      · last {formatRelative(latestRun.startedAt)}
+                    </span>
                   </span>
-                </span>
+                  {latestRun.nodeName && (
+                    <span
+                      className="block truncate text-xs font-normal text-muted-foreground"
+                      title={`Latest run ran on cluster node ${latestRun.nodeName}`}
+                    >
+                      Ran on {latestRun.nodeName}
+                    </span>
+                  )}
+                </>
               ) : (
                 <span className="text-muted-foreground">{detail ? "None yet" : "…"}</span>
               )}
             </MetaItem>
+            <ResourcesMetaItem task={task} />
             <MetaItem label="Pushed to main">
               {task.pushedAt ? (
                 <time dateTime={task.pushedAt} title={formatDateTime(task.pushedAt)}>
@@ -1121,8 +1134,22 @@ function MetaItem({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex min-w-0 items-baseline justify-between gap-3 py-2.5 md:flex-col md:items-start md:justify-start md:gap-0.5 md:py-0">
       <dt className="shrink-0 text-xs text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 truncate text-right font-medium tabular-nums md:text-left">{children}</dd>
+      <dd className="min-w-0 max-w-full truncate text-right font-medium tabular-nums md:text-left">{children}</dd>
     </div>
+  );
+}
+
+/**
+ * "Resources" row: the running agent's memory/CPU once its first sample arrives, else the last
+ * run's; absent while there is nothing to show (including hosts that never sample).
+ */
+function ResourcesMetaItem({ task }: { task: Task }) {
+  const view = useAgentResources(task);
+  if (!view) return null;
+  return (
+    <MetaItem label="Resources">
+      <DetailResources view={view} />
+    </MetaItem>
   );
 }
 

@@ -46,6 +46,8 @@ function eventBoardId(event: ServerEvent): string | null {
     case "scheduler.updated":
       return event.scheduler.boardId;
     case "queue.updated":
+    case "cluster.updated":
+    case "cluster.notice":
       return null;
     default:
       return event.boardId;
@@ -54,7 +56,8 @@ function eventBoardId(event: ServerEvent): string | null {
 
 /**
  * Visibility filter of one non-admin stream: the event as the user may see it, or null to drop it.
- * Events of boards the user does not own are dropped and `queue.updated` keeps only their task ids.
+ * Events of boards the user does not own are dropped; `queue.updated` and `cluster.updated` (each
+ * node's runningTaskIds) keep only the user's task ids.
  * Ownership comes from the event's own `userId` when it carries the row, else from `repo` (scoped
  * to the user: foreign boards/tasks read as null), cached for the life of the stream.
  */
@@ -75,6 +78,11 @@ function visibilityFilter(repo: Repository, userId: string): (event: ServerEvent
     const visible = (await repo.getTask(id)) !== null;
     tasks.set(id, visible);
     return visible;
+  };
+  /** The ids of `ids` that name the user's own cards. */
+  const own = async (ids: string[]) => {
+    const visible = await Promise.all(ids.map(taskVisible));
+    return ids.filter((_, i) => visible[i]);
   };
   const keepIf = (event: ServerEvent, visible: boolean) => (visible ? event : null);
 
@@ -114,10 +122,6 @@ function visibilityFilter(repo: Repository, userId: string): (event: ServerEvent
         return keepIf(event, event.run.userId === userId);
       case "queue.updated": {
         // Always forwarded (possibly empty) so the client clears entries that left the queue.
-        const own = async (ids: string[]) => {
-          const visible = await Promise.all(ids.map(taskVisible));
-          return ids.filter((_, i) => visible[i]);
-        };
         const [running, queued, drafting] = await Promise.all([
           own(event.running),
           own(event.queued),
@@ -125,6 +129,16 @@ function visibilityFilter(repo: Repository, userId: string): (event: ServerEvent
         ]);
         return { ...event, running, queued, drafting };
       }
+      // The cluster's state concerns every signed-in user (replica banner, node notices); the
+      // cards running on each node are narrowed to the user's own.
+      case "cluster.updated": {
+        const nodes = await Promise.all(
+          event.status.nodes.map(async (node) => ({ ...node, runningTaskIds: await own(node.runningTaskIds) })),
+        );
+        return { ...event, status: { ...event.status, nodes } };
+      }
+      case "cluster.notice":
+        return event;
       default:
         return keepIf(event, await boardVisible(event.boardId));
     }

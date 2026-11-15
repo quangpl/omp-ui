@@ -1,6 +1,7 @@
 import { MongoClient, type Collection } from "mongodb";
 
 import type {
+  AgentResources,
   AgentState,
   Board,
   BoardWithCounts,
@@ -47,10 +48,12 @@ import {
   normalizeLimit,
   normalizeRecentRunLimit,
   nowIso,
+  parseAgentResources,
   parseFolderList,
   parseTaskReview,
 } from "@/lib/db/util";
 import { parseTodoPhases } from "@/lib/todos";
+import { DEFAULT_PUSH_BRANCH } from "@/lib/push-branch";
 
 interface SettingDoc {
   _id: string;
@@ -79,8 +82,12 @@ interface BoardDoc {
   autoRun: boolean;
   /** Missing on documents created before dedicated workspaces. */
   worktrees?: boolean;
+  /** Missing on documents created before configurable push branches. */
+  pushBranch?: string | null;
   /** Missing on documents created before projects could be pinned. */
   pinned?: boolean;
+  /** Missing until the board is first opened. */
+  lastAccessedAt?: string | null;
   /** Owning user. Missing on documents created before multi-user support (read as null). */
   userId?: string | null;
   createdAt: string;
@@ -112,6 +119,8 @@ interface TaskDoc {
   todos?: TodoPhase[];
   /** Missing on documents created before code reviews. */
   review?: TaskReview | null;
+  /** Missing on documents created before agent resource tracking. */
+  resources?: AgentResources | null;
   /** Missing on documents created before schedulers. */
   schedulerId?: string | null;
   /** Copied from the board on create. Missing on documents created before multi-user support. */
@@ -146,6 +155,9 @@ interface RunDoc {
   endedAt: string | null;
   /** Copied from the task on create. Missing on documents created before multi-user support. */
   userId?: string | null;
+  /** Cluster node of the run. Missing on documents created before cluster mode. */
+  nodeId?: string | null;
+  nodeName?: string | null;
 }
 
 /** Run events are keyed by their sequence number (`_id` = seq). */
@@ -231,7 +243,9 @@ function toBoard(d: BoardDoc): Board {
     model: d.model ?? null,
     autoRun: d.autoRun,
     worktrees: d.worktrees ?? false,
+    pushBranch: d.pushBranch ?? DEFAULT_PUSH_BRANCH,
     pinned: d.pinned ?? false,
+    lastAccessedAt: d.lastAccessedAt ?? null,
     userId: d.userId ?? null,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
@@ -258,6 +272,7 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     retryAt: d.retryAt ?? null,
     todos: parseTodoPhases(d.todos),
     review: parseTaskReview(d.review),
+    resources: parseAgentResources(d.resources),
     schedulerId: d.schedulerId ?? null,
     userId: d.userId ?? null,
     createdAt: d.createdAt,
@@ -293,6 +308,8 @@ function toRun(d: RunDoc): Run {
     startedAt: d.startedAt,
     endedAt: d.endedAt ?? null,
     userId: d.userId ?? null,
+    nodeId: d.nodeId ?? null,
+    nodeName: d.nodeName ?? null,
   };
 }
 
@@ -351,7 +368,16 @@ function pickDefined<T extends object, K extends keyof T>(patch: T, keys: readon
   return out;
 }
 
-const BOARD_PATCH_KEYS = ["name", "workdir", "extraFolders", "model", "autoRun", "worktrees", "pinned"] as const satisfies readonly (keyof UpdateBoardInput)[];
+const BOARD_PATCH_KEYS = [
+  "name",
+  "workdir",
+  "extraFolders",
+  "model",
+  "autoRun",
+  "worktrees",
+  "pushBranch",
+  "pinned",
+] as const satisfies readonly (keyof UpdateBoardInput)[];
 const TASK_PATCH_KEYS = [
   "title",
   "description",
@@ -368,6 +394,7 @@ const TASK_PATCH_KEYS = [
   "retryAt",
   "todos",
   "review",
+  "resources",
 ] as const satisfies readonly (keyof UpdateTaskInput)[];
 const RUN_PATCH_KEYS = ["status", "summary", "error", "endedAt"] as const satisfies readonly (keyof UpdateRunInput)[];
 const SCHEDULER_PATCH_KEYS = [
@@ -629,7 +656,9 @@ export class MongoRepository implements Repository {
       model: input.model ?? null,
       autoRun: input.autoRun ?? true,
       worktrees: input.worktrees ?? false,
+      pushBranch: input.pushBranch ?? DEFAULT_PUSH_BRANCH,
       pinned: false,
+      lastAccessedAt: null,
       userId: input.userId ?? null,
       createdAt: now,
       updatedAt: now,
@@ -643,6 +672,15 @@ export class MongoRepository implements Repository {
     const doc = await this.boards.findOneAndUpdate(
       { _id: id },
       { $set: { ...pickDefined(patch, BOARD_PATCH_KEYS), ...(updatedAt && { updatedAt }) } },
+      { returnDocument: "after" },
+    );
+    return doc ? toBoard(doc) : null;
+  }
+
+  async markBoardAccessed(id: string): Promise<Board | null> {
+    const doc = await this.boards.findOneAndUpdate(
+      { _id: id },
+      { $set: { lastAccessedAt: nowIso() } },
       { returnDocument: "after" },
     );
     return doc ? toBoard(doc) : null;
@@ -721,6 +759,7 @@ export class MongoRepository implements Repository {
       retryAt: null,
       todos: [],
       review: null,
+      resources: null,
       schedulerId: input.schedulerId ?? null,
       userId: board.userId ?? null,
       createdAt: now,
@@ -860,6 +899,8 @@ export class MongoRepository implements Repository {
       startedAt: nowIso(),
       endedAt: null,
       userId: task.userId ?? null,
+      nodeId: input.nodeId ?? null,
+      nodeName: input.nodeName ?? null,
     };
     await this.runs.insertOne(doc);
     return toRun(doc);

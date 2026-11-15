@@ -10,12 +10,14 @@ import {
   FlaskConicalIcon,
   ImageOffIcon,
   MessageSquareQuoteIcon,
+  ServerIcon,
 } from "lucide-react";
 import { openAttachment } from "@/components/attachment-viewer";
 import { attachmentKind, isPlainClick, KIND_ICON, type Attachment } from "@/components/viewer/common";
 import { formatDuration } from "@/components/board/format";
 import { extractAttachments, RichText } from "@/components/board/rich-text";
 import { Button } from "@/components/ui/button";
+import { reportField, splitReport } from "@/lib/report";
 import { cn } from "@/lib/utils";
 import type { Comment, Run } from "@/lib/types";
 
@@ -32,6 +34,8 @@ export interface RunReportData {
   outcomeText: string | null;
   durationMs: number | null;
   model: string | null;
+  /** Cluster node that executed the run (Run.nodeName); null on a standalone server or without a matched run. */
+  nodeName: string | null;
   changes: { files: number | null; additions: number | null; deletions: number | null } | null;
   tests: TestSummary | null;
   screenshots: Attachment[];
@@ -41,14 +45,9 @@ export interface RunReportData {
   body: string;
 }
 
-/** `## Report` (any heading level) and the heading level that ends the section. */
-const REPORT_HEADING = /^[ \t]{0,3}(#{1,6})[ \t]+report\b[^\n]*$/im;
-const ANY_HEADING = /^[ \t]{0,3}(#{1,6})[ \t]+\S/;
-const FIELD = (name: string) =>
-  new RegExp(String.raw`^[ \t]*(?:[-*+][ \t]+)?\**(?:${name})\**[ \t]*:\**[ \t]*(.+?)[ \t]*$`, "im");
-const OUTCOME_FIELD = FIELD("outcome|result|status");
-const MODEL_FIELD = FIELD("model");
-const CHANGES_FIELD = FIELD("changes|changed files|diff");
+const OUTCOME_FIELD = reportField("outcome|result|status");
+const MODEL_FIELD = reportField("model");
+const CHANGES_FIELD = reportField("changes|changed files|diff");
 const FAILURE_WORDS = /\b(fail(?:ed|ing|s|ure)?|errors?|blocked|broken|not done|incomplete|aborted)\b/i;
 /** `git diff --shortstat`: "3 files changed, 120 insertions(+), 14 deletions(-)". */
 const SHORTSTAT = /(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/i;
@@ -59,32 +58,6 @@ const TESTS_LINE = /^[\W_]*(?:tests?|test results?)\b(?!\s*files)/i;
 const ALL_PASS = /\ball\s+(\d[\d,]*)\s+(?:tests?|specs?)\s+pass(?:ed|ing|es)?\b/i;
 
 const num = (value: string) => Number(value.replace(/,/g, ""));
-
-/** Split the `## Report` section off the text. */
-function splitReport(text: string): { body: string; report: string | null } {
-  const match = REPORT_HEADING.exec(text);
-  if (!match || match.index === undefined) return { body: text, report: null };
-  const level = match[1].length;
-  const start = match.index;
-  const afterHeading = start + match[0].length;
-  const rest = text.slice(afterHeading);
-  let end = text.length;
-  let offset = afterHeading;
-  let inFence = false;
-  for (const line of rest.split("\n")) {
-    if (/^[ \t]*(`{3,}|~{3,})/.test(line)) inFence = !inFence;
-    const heading = inFence ? null : ANY_HEADING.exec(line);
-    if (heading && heading[1].length <= level && offset > afterHeading) {
-      end = offset;
-      break;
-    }
-    offset += line.length + 1;
-  }
-  return {
-    body: `${text.slice(0, start)}${text.slice(end)}`.trim(),
-    report: text.slice(afterHeading, end).trim(),
-  };
-}
 
 /** Test counts from summaries like vitest, jest, pytest, playwright or "Tests: 42 passed, 0 failed". */
 export function parseTests(text: string, trusted = false): TestSummary | null {
@@ -175,6 +148,7 @@ export function parseRunReport(comment: Comment, runs: Run[] = []): RunReportDat
     outcomeText,
     durationMs: run?.endedAt ? Date.parse(run.endedAt) - Date.parse(run.startedAt) : null,
     model: report ? (MODEL_FIELD.exec(report)?.[1]?.replace(/`/g, "") ?? null) : null,
+    nodeName: run?.nodeName ?? null,
     changes: parseChanges(report, comment.body),
     tests,
     screenshots: attachments.filter((a) => attachmentKind(a) === "image"),
@@ -200,6 +174,7 @@ export function RunReport({
   const facts: { icon: typeof ClockIcon; label: string; title?: string }[] = [];
   if (report.durationMs !== null) facts.push({ icon: ClockIcon, label: formatDuration(report.durationMs), title: "Run duration" });
   if (report.model) facts.push({ icon: CpuIcon, label: report.model, title: "Model" });
+  if (report.nodeName) facts.push({ icon: ServerIcon, label: `Ran on ${report.nodeName}`, title: "Cluster node" });
   /** Screenshots then artifacts: ←/→ in the viewer steps through every file of the report. */
   const files = [...report.screenshots, ...report.artifacts];
 

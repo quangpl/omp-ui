@@ -53,10 +53,12 @@ import {
   normalizeLimit,
   normalizeRecentRunLimit,
   nowIso,
+  parseAgentResources,
   parseFolderList,
   parseTaskReview,
 } from "@/lib/db/util";
 import { parseTodoPhases } from "@/lib/todos";
+import { DEFAULT_PUSH_BRANCH } from "@/lib/push-branch";
 
 type Row = Record<string, SQLOutputValue>;
 
@@ -86,7 +88,9 @@ CREATE TABLE IF NOT EXISTS boards (
   model TEXT,
   auto_run INTEGER NOT NULL DEFAULT 1,
   worktrees INTEGER NOT NULL DEFAULT 0,
+  push_branch TEXT NOT NULL DEFAULT 'main',
   pinned INTEGER NOT NULL DEFAULT 0,
+  last_accessed_at TEXT,
   user_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -111,6 +115,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   retry_at TEXT,
   todos TEXT NOT NULL DEFAULT '[]',
   review TEXT,
+  resources TEXT,
   scheduler_id TEXT,
   user_id TEXT,
   created_at TEXT NOT NULL,
@@ -142,7 +147,9 @@ CREATE TABLE IF NOT EXISTS runs (
   error TEXT,
   started_at TEXT NOT NULL,
   ended_at TEXT,
-  user_id TEXT
+  user_id TEXT,
+  node_id TEXT,
+  node_name TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_task_started ON runs (task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (status);
@@ -223,7 +230,9 @@ function toBoard(r: Row): Board {
     model: strOrNull(r.model),
     autoRun: num(r.auto_run) !== 0,
     worktrees: num(r.worktrees) !== 0,
+    pushBranch: strOrNull(r.push_branch) ?? DEFAULT_PUSH_BRANCH,
     pinned: num(r.pinned) !== 0,
+    lastAccessedAt: strOrNull(r.last_accessed_at),
     userId: strOrNull(r.user_id),
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
@@ -250,6 +259,7 @@ function toTask(r: Row): Task {
     retryAt: strOrNull(r.retry_at),
     todos: parseTodoPhases(r.todos),
     review: parseTaskReview(r.review),
+    resources: parseAgentResources(r.resources),
     schedulerId: strOrNull(r.scheduler_id),
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
@@ -285,6 +295,8 @@ function toRun(r: Row): Run {
     startedAt: str(r.started_at),
     endedAt: strOrNull(r.ended_at),
     userId: strOrNull(r.user_id),
+    nodeId: strOrNull(r.node_id),
+    nodeName: strOrNull(r.node_name),
   };
 }
 
@@ -411,7 +423,9 @@ export class SqliteRepository implements Repository {
     this.addMissingColumns("boards", [
       ["extra_folders", "TEXT NOT NULL DEFAULT '[]'"],
       ["worktrees", "INTEGER NOT NULL DEFAULT 0"],
+      ["push_branch", "TEXT NOT NULL DEFAULT 'main'"],
       ["pinned", "INTEGER NOT NULL DEFAULT 0"],
+      ["last_accessed_at", "TEXT"],
       ["user_id", "TEXT"],
     ]);
     this.addMissingColumns("tasks", [
@@ -422,6 +436,7 @@ export class SqliteRepository implements Repository {
       ["auto_retries", "INTEGER NOT NULL DEFAULT 0"],
       ["todos", "TEXT NOT NULL DEFAULT '[]'"],
       ["review", "TEXT"],
+      ["resources", "TEXT"],
       ["scheduler_id", "TEXT"],
       ["user_id", "TEXT"],
     ]);
@@ -429,7 +444,11 @@ export class SqliteRepository implements Repository {
       ["from_task_id", "TEXT"],
       ["user_id", "TEXT"],
     ]);
-    this.addMissingColumns("runs", [["user_id", "TEXT"]]);
+    this.addMissingColumns("runs", [
+      ["user_id", "TEXT"],
+      ["node_id", "TEXT"],
+      ["node_name", "TEXT"],
+    ]);
     this.addMissingColumns("schedulers", [["user_id", "TEXT"]]);
     // After the migrations: older databases only now have these columns.
     this.db.exec(`
@@ -649,13 +668,15 @@ export class SqliteRepository implements Repository {
       model: input.model ?? null,
       autoRun: input.autoRun ?? true,
       worktrees: input.worktrees ?? false,
+      pushBranch: input.pushBranch ?? DEFAULT_PUSH_BRANCH,
       pinned: false,
+      lastAccessedAt: null,
       userId: input.userId ?? null,
       createdAt: now,
       updatedAt: now,
     };
     this.stmt(
-      "INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, push_branch, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       board.id,
       board.name,
@@ -664,6 +685,7 @@ export class SqliteRepository implements Repository {
       board.model,
       board.autoRun ? 1 : 0,
       board.worktrees ? 1 : 0,
+      board.pushBranch,
       board.userId,
       board.createdAt,
       board.updatedAt,
@@ -679,10 +701,17 @@ export class SqliteRepository implements Repository {
       ["model", patch.model],
       ["auto_run", patch.autoRun === undefined ? undefined : patch.autoRun ? 1 : 0],
       ["worktrees", patch.worktrees === undefined ? undefined : patch.worktrees ? 1 : 0],
+      ["push_branch", patch.pushBranch],
       ["pinned", patch.pinned === undefined ? undefined : patch.pinned ? 1 : 0],
       ["updated_at", boardPatchUpdatedAt(patch)],
     ]);
     const res = this.db.prepare(`UPDATE boards SET ${sql} WHERE id = ?`).run(...params, id);
+    if (Number(res.changes) === 0) return null;
+    return this.getBoard(id);
+  }
+
+  async markBoardAccessed(id: string): Promise<Board | null> {
+    const res = this.stmt("UPDATE boards SET last_accessed_at = ? WHERE id = ?").run(nowIso(), id);
     if (Number(res.changes) === 0) return null;
     return this.getBoard(id);
   }
@@ -776,6 +805,10 @@ export class SqliteRepository implements Repository {
       ["retry_at", patch.retryAt],
       ["todos", patch.todos === undefined ? undefined : JSON.stringify(patch.todos)],
       ["review", patch.review === undefined ? undefined : patch.review === null ? null : JSON.stringify(patch.review)],
+      [
+        "resources",
+        patch.resources === undefined ? undefined : patch.resources === null ? null : JSON.stringify(patch.resources),
+      ],
       ["updated_at", nowIso()],
     ]);
     const res = this.db.prepare(`UPDATE tasks SET ${sql} WHERE id = ?`).run(...params, id);
@@ -911,11 +944,13 @@ export class SqliteRepository implements Repository {
       startedAt: nowIso(),
       endedAt: null,
       userId: this.ownerOf("tasks", input.taskId),
+      nodeId: input.nodeId ?? null,
+      nodeName: input.nodeName ?? null,
     };
     this.stmt(
-      `INSERT INTO runs (id, task_id, status, prompt, summary, error, started_at, ended_at, user_id)
-       VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, ?)`,
-    ).run(run.id, run.taskId, run.status, run.prompt, run.startedAt, run.userId);
+      `INSERT INTO runs (id, task_id, status, prompt, summary, error, started_at, ended_at, user_id, node_id, node_name)
+       VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?, ?)`,
+    ).run(run.id, run.taskId, run.status, run.prompt, run.startedAt, run.userId, run.nodeId, run.nodeName);
     return run;
   }
 

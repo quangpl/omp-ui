@@ -3,6 +3,7 @@ import { isPrimaryColorId } from "@/lib/primary-colors";
 import {
   BROWSER_MODES,
   CLEANUP_SCHEDULES,
+  CLUSTER_FAILOVER_LIMITS,
   DASHBOARD_MENU_IDS,
   DEFAULT_SETTINGS,
   ORCHESTRATION_LIMITS,
@@ -129,6 +130,8 @@ function sanitize(s: AppSettings, knownMenus: readonly unknown[]): AppSettings {
     telemetryEndpoint: typeof s.telemetryEndpoint === "string" ? s.telemetryEndpoint.trim() : "",
     loadGuard: bool(s, "loadGuard"),
     loadGuardPercent: orchestrationNumber(s.loadGuardPercent, "loadGuardPercent"),
+    clusterRunLocal: bool(s, "clusterRunLocal"),
+    clusterFailoverSeconds: failoverSeconds(s.clusterFailoverSeconds),
   };
 }
 
@@ -149,6 +152,15 @@ export function orchestrationNumber(value: unknown, key: OrchestrationNumberKey)
   const { min, max } = ORCHESTRATION_LIMITS[key];
   const rounded = key === "runBudgetUsd" ? Math.round(n * 100) / 100 : Math.floor(n);
   return Math.min(max, Math.max(min, rounded));
+}
+
+/** Whole seconds clamped into CLUSTER_FAILOVER_LIMITS; the default when not a finite number. */
+function failoverSeconds(value: unknown): number {
+  const n = Number(value);
+  if (value === null || value === "" || typeof value === "boolean" || !Number.isFinite(n)) {
+    return DEFAULT_SETTINGS.clusterFailoverSeconds;
+  }
+  return Math.min(CLUSTER_FAILOVER_LIMITS.max, Math.max(CLUSTER_FAILOVER_LIMITS.min, Math.floor(n)));
 }
 
 /** Whether `value` names a navigation menu section the user may hide. */

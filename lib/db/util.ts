@@ -1,6 +1,6 @@
 import type { DbDriver, Repository, UpdateBoardInput } from "@/lib/db/types";
 import { logEvent } from "@/lib/server/log-store";
-import { TASK_STATUSES, type Task, type TaskReview, type TaskStatus } from "@/lib/types";
+import { TASK_STATUSES, type AgentResources, type Task, type TaskReview, type TaskStatus } from "@/lib/types";
 
 /** Gap between consecutive card positions; new cards go to `max + POSITION_STEP`. */
 export const POSITION_STEP = 1024;
@@ -136,6 +136,35 @@ export function parseTaskReview(value: unknown): TaskReview | null {
     hash: typeof r.hash === "string" ? r.hash : null,
     note: typeof r.note === "string" ? r.note : null,
     at: r.at,
+  };
+}
+
+/**
+ * A stored agent resource sample: a JSON object string (SQL drivers) or an object (MongoDB).
+ * Anything missing, malformed, or with a negative or non-finite figure yields null.
+ */
+export function parseAgentResources(value: unknown): AgentResources | null {
+  let raw = value;
+  if (typeof value === "string") {
+    try {
+      raw = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const figure = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+  if (!figure(r.memoryBytes) || !figure(r.peakMemoryBytes) || !figure(r.cpuPercent) || !figure(r.cpuSeconds)) {
+    return null;
+  }
+  if (typeof r.sampledAt !== "string") return null;
+  return {
+    memoryBytes: r.memoryBytes,
+    peakMemoryBytes: r.peakMemoryBytes,
+    cpuPercent: r.cpuPercent,
+    cpuSeconds: r.cpuSeconds,
+    sampledAt: r.sampledAt,
   };
 }
 

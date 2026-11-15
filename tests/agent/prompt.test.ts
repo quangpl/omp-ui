@@ -14,7 +14,9 @@ const board: Board = {
   model: null,
   autoRun: true,
   worktrees: false,
+  pushBranch: "main",
   pinned: false,
+  lastAccessedAt: null,
   userId: null,
   createdAt: NOW,
   updatedAt: NOW,
@@ -41,6 +43,7 @@ const task: Task = {
   retryAt: null,
   todos: [],
   review: null,
+  resources: null,
   createdAt: NOW,
   updatedAt: NOW,
   commentCount: 0,
@@ -72,7 +75,9 @@ describe("buildPrompt (first run)", () => {
     expect(prompt).toContain("# Task: Add a cart page\n\nShow the items in the cart.\nAllow removing items.");
     expect(prompt).toContain("## Instructions");
     expect(prompt).toContain("- Work in this repository (/work/shop) and make the change described above.");
-    expect(prompt).toMatch(/concise summary/);
+    expect(prompt).toMatch(/short, scannable summary/);
+    expect(prompt).toMatch(/at most 5 bullets/);
+    expect(prompt).toContain("holding only these lines");
     expect(prompt).toMatch(/do not stop to ask/);
     expect(prompt).not.toContain("## Feedback from the user");
     expect(prompt).not.toContain("Project folders");
@@ -128,7 +133,7 @@ describe("buildPrompt (resumed session)", () => {
     expect(prompt).toContain("Address all of the feedback above in this repository (/work/shop).");
     expect(prompt).not.toContain("# Task:");
     expect(prompt).not.toContain("Shop\" board");
-    expect(prompt).toMatch(/concise summary/);
+    expect(prompt).toMatch(/short, scannable summary/);
   });
 
   it("includes extra folders when resuming with feedback", () => {
@@ -203,7 +208,7 @@ describe("buildSteerMessage", () => {
 
     expect(message).toContain("New feedback from the user on this task:");
     expect(message).toContain("\n\nPlease also handle errors\nfrom the API\n\n");
-    expect(message).toMatch(/mention how you addressed it in your final summary/);
+    expect(message).toMatch(/mention briefly how you addressed it in your final summary/);
   });
 
   it("names the sending card for a message from another card's agent", () => {
@@ -302,5 +307,32 @@ describe("buildPrompt SDLC workflow", () => {
       expect(prompt).not.toMatch(KEYWORD);
       expect(prompt).not.toMatch(/\b(?:ultrathink|chillax|workflowz|jevify)\b/);
     }
+  });
+});
+
+describe("buildPrompt cleanup policy", () => {
+  it("asks every run to clean up its temporary artifacts before pushing and before the summary", () => {
+    const CLEANUP = "clean up everything you created only to do this task";
+    for (const prompt of [
+      buildPrompt(task, board, [], false),
+      buildPrompt(task, board, [], true),
+      buildPrompt(task, board, [comment("Fix it")], true),
+    ]) {
+      expect(prompt).toContain(CLEANUP);
+      expect(prompt).toContain("Never delete or remove anything you did not create");
+      expect(prompt).toContain("before you commit or push anything");
+      expect(prompt.indexOf(CLEANUP)).toBeLessThan(prompt.indexOf("Do not push on your own"));
+      expect(prompt.indexOf(CLEANUP)).toBeLessThan(prompt.indexOf("short, scannable summary"));
+      expect(prompt).toContain("--label agentman.task=t1");
+      expect(prompt).toContain("docker compose -p task-t1");
+      expect(prompt).toContain("AgentMan also removes marked leftovers when a run moves the card to Done or the card is deleted");
+      expect(prompt).toContain("do not mark it or the image it runs from");
+    }
+  });
+
+  it("names the card's Docker label and compose project after the card id", () => {
+    const prompt = buildPrompt({ ...task, id: "AB_9" }, board, [], false);
+    expect(prompt).toContain("docker compose -p task-ab_9");
+    expect(prompt).toContain("--label agentman.task=AB_9");
   });
 });

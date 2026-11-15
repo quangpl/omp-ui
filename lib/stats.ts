@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { currentResourcePressure } from "@/lib/agent/resource-guard";
 import type { AgentManager } from "@/lib/agent/types";
 import { childEnv } from "@/lib/child-env";
 import type { Repository } from "@/lib/db/types";
@@ -106,6 +107,7 @@ export async function getSystemStats(repo: Repository, manager: AgentManager): P
       agentsRunning: agents.running.length,
       agentsQueued: agents.queued.length,
     },
+    resourceGuard: currentResourcePressure(),
   };
 }
 

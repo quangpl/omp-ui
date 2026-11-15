@@ -11,6 +11,7 @@ import {
   ChevronsUpDownIcon,
   KeyboardIcon,
   LogOutIcon,
+  PinIcon,
   PinOffIcon,
   PlusIcon,
   RotateCwIcon,
@@ -21,6 +22,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { LogoMark } from "@/components/app-header";
+import { BOARD_ACCESS_EVENT } from "@/components/boards/board-access";
 import { BOARD_PIN_EVENT, setBoardPinned } from "@/components/boards/pin-board";
 import { TOP_TABS } from "@/components/bottom-tabs";
 import { RunningContainersButton, RunningCountBadge } from "@/components/containers/running-containers-button";
@@ -66,12 +68,11 @@ import { useCurrentUser } from "@/hooks/use-current-user";
 import { GO_SHORTCUTS } from "@/hooks/use-go-hotkeys";
 import { api } from "@/lib/api-client";
 import { isMenuHrefVisible, useVisibleDashboardMenus } from "@/lib/dashboard-menus";
+import { recentProjects } from "@/lib/recent-projects";
 import type { BoardWithCounts } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const BOARDS_REFRESH_MS = 30_000;
-/** Projects listed before the "All projects" overflow link. */
-const MAX_LISTED_BOARDS = 8;
 
 /** Phone-sized (sheet) rows get 44px touch targets, slightly larger text and icons, and press feedback. */
 const ROW = "max-md:pressable max-md:h-11 max-md:gap-3 max-md:px-3 max-md:text-[0.95rem] max-md:[&_svg]:size-5";
@@ -94,7 +95,7 @@ function isActivePath(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-/** All projects with live counts; refreshed on navigation, focus, (un)pinning, and every 30 s while visible. */
+/** All projects with live counts; refreshed on navigation, focus, (un)pinning, opening a board, and every 30 s while visible. */
 function useSidebarBoards(refreshKey: unknown): BoardWithCounts[] | null {
   const [boards, setBoards] = useState<BoardWithCounts[] | null>(null);
 
@@ -119,11 +120,13 @@ function useSidebarBoards(refreshKey: unknown): BoardWithCounts[] | null {
     const timer = window.setInterval(onVisibility, BOARDS_REFRESH_MS);
     window.addEventListener("focus", onFocus);
     window.addEventListener(BOARD_PIN_EVENT, onFocus);
+    window.addEventListener(BOARD_ACCESS_EVENT, onFocus);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener("focus", onFocus);
       window.removeEventListener(BOARD_PIN_EVENT, onFocus);
+      window.removeEventListener(BOARD_ACCESS_EVENT, onFocus);
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [load]);
@@ -215,14 +218,8 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
   // Opening the phone sheet refreshes too, so it never shows a stale list.
   const boards = useSidebarBoards(`${pathname}|${openMobile}`);
 
-  // Only pinned projects are listed; "All projects" leads to the rest on the dashboard.
-  const pinned = boards?.filter((board) => board.pinned) ?? [];
-  let listed = pinned;
-  if (listed.length > MAX_LISTED_BOARDS) {
-    const active = listed.find((board) => pathname === `/b/${board.id}`);
-    listed = listed.slice(0, MAX_LISTED_BOARDS);
-    if (active && !listed.includes(active)) listed = [...listed.slice(0, -1), active];
-  }
+  // The most recently opened projects; "All projects" leads to the rest on the dashboard.
+  const listed = boards ? recentProjects(boards, pathname.startsWith("/b/") ? pathname.split("/")[2] : undefined) : [];
   const overflow = boards ? boards.length - listed.length : 0;
 
   return (
@@ -232,7 +229,9 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
         <SidebarGroupLabel asChild>
           <Collapsible.Trigger className="w-full gap-1 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground max-md:h-11 max-md:px-3">
             Your projects
-            {pinned.length > 0 && <span className="ml-1 text-sidebar-foreground/50 tabular-nums">{pinned.length}</span>}
+            {boards && boards.length > 0 && (
+              <span className="ml-1 text-sidebar-foreground/50 tabular-nums">{boards.length}</span>
+            )}
             <ChevronRightIcon className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90 motion-reduce:transition-none" />
           </Collapsible.Trigger>
         </SidebarGroupLabel>
@@ -247,11 +246,6 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
                 ))}
               {boards?.length === 0 && (
                 <li className="px-2 py-1.5 text-xs text-sidebar-foreground/60 max-md:px-3">No projects yet.</li>
-              )}
-              {boards && boards.length > 0 && pinned.length === 0 && (
-                <li className="px-2 py-1.5 text-xs text-pretty text-sidebar-foreground/60 max-md:px-3">
-                  No pinned projects. Pin one from its ⋯ menu on the Projects page.
-                </li>
               )}
               {listed.map((board) => {
                 const href = `/b/${board.id}`;
@@ -292,9 +286,9 @@ function ProjectsGroup({ pathname, onNavigate }: { pathname: string; onNavigate:
                         </SidebarMenuButton>
                       </ContextMenuTrigger>
                       <ContextMenuContent className="w-56">
-                        <ContextMenuItem onSelect={() => void setBoardPinned(board, false)}>
-                          <PinOffIcon />
-                          Unpin from dashboard
+                        <ContextMenuItem onSelect={() => void setBoardPinned(board, !board.pinned)}>
+                          {board.pinned ? <PinOffIcon /> : <PinIcon />}
+                          {board.pinned ? "Unpin from dashboard" : "Pin to dashboard"}
                         </ContextMenuItem>
                       </ContextMenuContent>
                     </ContextMenu>

@@ -1,17 +1,21 @@
 "use client";
 
-// Stats → Optimize: analyze what uses CPU, memory and disk on the server, then free it (end
-// leftover processes, close idle helper agents, clean AgentMan leftovers and Docker caches).
+// Stats → Optimize: the live resource guard (memory/CPU holds on queued cards), then analyze what
+// uses CPU, memory and disk on the server and free it (end leftover processes, close idle helper
+// agents, clean AgentMan leftovers and Docker caches).
 import { useState } from "react";
 import Link from "next/link";
 import {
   CircleCheckIcon,
   CpuIcon,
+  GaugeIcon,
   HardDriveIcon,
   InfoIcon,
   Loader2Icon,
   MemoryStickIcon,
   OctagonAlertIcon,
+  PauseIcon,
+  RotateCwIcon,
   ScanSearchIcon,
   SquareIcon,
   TriangleAlertIcon,
@@ -20,9 +24,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmDialog, type ConfirmRequest } from "@/components/containers/dialogs";
-import { RadialGauge } from "@/components/stats/charts";
+import { AnimatedNumber, RadialGauge } from "@/components/stats/charts";
 import {
   EmptyState,
+  Meter,
   Notice,
   PANEL,
   PanelHeader,
@@ -48,6 +53,7 @@ import type {
   MaintenanceReport,
   ProcessInfo,
   ProcessTag,
+  ResourcePressure,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -111,7 +117,12 @@ function itemList(items: CleanupItem[]) {
   );
 }
 
-export function OptimizeSection() {
+export function OptimizeSection({
+  resourceGuard,
+}: {
+  /** Latest resource-guard sample; null where the guard does not run, undefined while system stats load. */
+  resourceGuard: ResourcePressure | null | undefined;
+}) {
   const [report, setReport] = useState<MaintenanceReport | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -255,6 +266,8 @@ export function OptimizeSection() {
         }
       />
 
+      <ResourceGuardPanel pressure={resourceGuard} />
+
       {!report ? (
         analyzing ? (
           <OptimizeSkeleton />
@@ -307,6 +320,216 @@ export function OptimizeSection() {
 
 
 // ---------------------------------------------------------------------------------------------
+
+/** Panel header shared by the resource guard panel and its loading / unavailable variants. */
+function GuardHeader({ status }: { status?: React.ReactNode }) {
+  return (
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-foreground/[0.06] px-4 py-3 sm:px-5">
+      <h3 className="flex min-w-0 items-center gap-2 text-sm font-medium tracking-tight">
+        <GaugeIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+        Resource guard
+      </h3>
+      {status}
+    </div>
+  );
+}
+
+/** Two gauges (memory, CPU): stacked when narrow, side by side once the panel is wide enough. */
+const GUARD_GRID = "grid divide-y @md:grid-cols-2 @md:divide-x @md:divide-y-0";
+const GUARD_TILE = "flex min-w-0 flex-col gap-3 px-4 py-4 sm:px-5";
+const GUARD_NUMBER = "font-mono text-3xl leading-none font-semibold tracking-tighter";
+
+/** `heldSince` → "14:03:12" (24-hour clock). */
+function formatClockTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+/**
+ * Live memory/CPU guard (polled with the system stats, no Analyze needed): usage against each hold %,
+ * whether queued cards are held right now, and the graceful-restart setting.
+ */
+function ResourceGuardPanel({ pressure }: { pressure: ResourcePressure | null | undefined }) {
+  if (pressure === undefined) return <ResourceGuardSkeleton />;
+  if (pressure === null) {
+    return (
+      <div className={PANEL}>
+        <GuardHeader />
+        <p className="px-4 py-3.5 text-sm text-pretty text-muted-foreground sm:px-5">
+          The resource guard does not run on this server.
+        </p>
+      </div>
+    );
+  }
+  const held = new Set(pressure.holding);
+  return (
+    <div className={cn(PANEL, "@container")}>
+      <GuardHeader status={<GuardStatus pressure={pressure} />} />
+      <div className={GUARD_GRID}>
+        <GuardGauge
+          icon={<MemoryStickIcon />}
+          label="Memory"
+          note="in use"
+          percent={pressure.memoryPercent}
+          held={held.has("memory")}
+          hold={pressure.memoryHoldPct}
+          resume={pressure.memoryResumePct}
+        />
+        <GuardGauge
+          icon={<CpuIcon />}
+          label="CPU"
+          note={`avg over ${pressure.cpuWindowSec} s`}
+          percent={pressure.cpuPercent}
+          held={held.has("cpu")}
+          hold={pressure.cpuHoldPct}
+          resume={pressure.cpuResumePct}
+        />
+      </div>
+      <div className="space-y-1.5 rounded-b-2xl border-t bg-muted/30 px-4 py-3 text-xs sm:px-5">
+        <p className="flex items-start gap-1.5 text-pretty text-muted-foreground">
+          <RotateCwIcon className="mt-px size-3.5 shrink-0" aria-hidden />
+          {pressure.restartAfterMin > 0
+            ? `Graceful restart after ${pressure.restartAfterMin} min of memory pressure (waits for running agents)`
+            : "Graceful restart off"}
+        </p>
+        {pressure.restartPending && (
+          <p role="status" className="flex items-start gap-1.5 font-medium text-pretty text-amber-700 dark:text-amber-400">
+            <TriangleAlertIcon className="mt-px size-3.5 shrink-0" aria-hidden />
+            Restart pending: restarts once no agent runs
+          </p>
+        )}
+        <p className="text-pretty text-muted-foreground">
+          Thresholds: <code className="font-mono text-[11px] break-all">OMP_UI_MEMORY_HOLD_PCT</code>,{" "}
+          <code className="font-mono text-[11px] break-all">OMP_UI_CPU_HOLD_PCT</code> in{" "}
+          <code className="font-mono text-[11px]">.env</code> — changes apply within 5 s.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** Amber while queued cards are held (which resources, since when), green otherwise. */
+function GuardStatus({ pressure }: { pressure: ResourcePressure }) {
+  if (pressure.holding.length === 0) {
+    return (
+      <p
+        role="status"
+        className="inline-flex items-center gap-1.5 rounded-lg bg-success/10 px-2.5 py-1 text-xs font-medium text-success"
+      >
+        <CircleCheckIcon className="size-3.5 shrink-0" aria-hidden />
+        Queued cards start normally
+      </p>
+    );
+  }
+  const resources = pressure.holding.map((r) => (r === "cpu" ? "CPU" : "memory")).join(" + ");
+  return (
+    <p
+      role="status"
+      className="inline-flex max-w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-lg bg-amber-500/15 px-2.5 py-1 text-xs font-medium text-amber-700 dark:text-amber-400"
+    >
+      <PauseIcon className="size-3.5 shrink-0" aria-hidden />
+      Holding queued cards
+      <span className="font-normal tabular-nums">
+        · {resources}
+        {pressure.heldSince && ` · since ${formatClockTime(pressure.heldSince)}`}
+      </span>
+    </p>
+  );
+}
+
+function GuardGauge({
+  icon,
+  label,
+  note,
+  percent,
+  held,
+  hold,
+  resume,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  note: string;
+  /** null: no reading yet (CPU needs two samples). */
+  percent: number | null;
+  held: boolean;
+  /** Hold %; 0 = this guard is off. */
+  hold: number;
+  resume: number;
+}) {
+  const fraction = percent === null ? 0 : percent / 100;
+  const usage = toneForFraction(fraction);
+  // A held resource reads amber even below the usage colour's own 75% threshold.
+  const tone: Tone = percent === null ? "muted" : held && usage === "primary" ? "warning" : usage;
+  return (
+    <div className={GUARD_TILE}>
+      <div className="flex h-5 items-center justify-between gap-2">
+        <span className={cn(MICRO, "flex min-w-0 items-center gap-1.5 [&_svg]:size-3.5 [&_svg]:shrink-0")}>
+          {icon}
+          <span className="truncate">{label}</span>
+        </span>
+        <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{note}</span>
+      </div>
+      <div className="flex h-8 items-end">
+        {percent === null ? (
+          <span className={cn(GUARD_NUMBER, "text-muted-foreground/50")}>n/a</span>
+        ) : (
+          <AnimatedNumber
+            value={fraction}
+            format={formatPercent}
+            className={cn(
+              GUARD_NUMBER,
+              "transition-colors duration-500 motion-reduce:transition-none",
+              tone === "primary" ? "text-foreground" : TONE_TEXT[tone],
+            )}
+          />
+        )}
+      </div>
+      <div className="relative">
+        <Meter fraction={fraction} label={`${label} usage`} tone={tone} />
+        {hold > 0 && (
+          // Hold threshold tick on the usage bar.
+          <span
+            aria-hidden
+            className="absolute -top-0.5 h-2.5 w-px -translate-x-1/2 bg-foreground/40"
+            style={{ left: `${Math.min(100, hold)}%` }}
+          />
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground tabular-nums">
+        {hold > 0 ? `Hold ≥ ${hold}% · resume < ${resume}%` : "Off"}
+      </p>
+    </div>
+  );
+}
+
+function ResourceGuardSkeleton() {
+  return (
+    <div className={cn(PANEL, "@container")} aria-busy="true">
+      <GuardHeader status={<Skeleton className="h-6 w-44 rounded-lg" />} />
+      <div className={GUARD_GRID}>
+        {[0, 1].map((i) => (
+          <div key={i} className={GUARD_TILE}>
+            <div className="flex h-5 items-center justify-between gap-2">
+              <Skeleton className="h-3 w-16" />
+              <Skeleton className="h-3 w-20" />
+            </div>
+            <Skeleton className="h-8 w-20" />
+            <Skeleton className="h-1.5 w-full rounded-full" />
+            <Skeleton className="h-3 w-40 max-w-full" />
+          </div>
+        ))}
+      </div>
+      <div className="space-y-2 rounded-b-2xl border-t bg-muted/30 px-4 py-3 sm:px-5">
+        <Skeleton className="h-3 w-56 max-w-full" />
+        <Skeleton className="h-3 w-72 max-w-full" />
+      </div>
+    </div>
+  );
+}
 
 function Vital({
   icon,

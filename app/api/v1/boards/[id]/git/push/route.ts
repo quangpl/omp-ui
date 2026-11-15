@@ -1,4 +1,4 @@
-import { gitStatus, pushToDefault } from "@/lib/git";
+import { gitStatus, pushToBranch } from "@/lib/git";
 import { HttpError, json, withApi } from "@/lib/server/http";
 import { requireBoard } from "@/lib/server/validate";
 import type { BoardPushResult, GitRepoActionResult } from "@/lib/types";
@@ -6,8 +6,8 @@ import type { BoardPushResult, GitRepoActionResult } from "@/lib/types";
 export const dynamic = "force-dynamic";
 
 /**
- * Header "quick push": commit every project folder's changes and push each repo straight to its
- * default branch. Not tied to a card, so no comment is posted.
+ * Header "quick push": commit every project folder's changes and push each repo straight to the
+ * project's push branch (Board.pushBranch). Not tied to a card, so no comment is posted.
  */
 export const POST = withApi<{ id: string }>(async ({ repo, params }) => {
   const board = await requireBoard(repo, params.id);
@@ -30,7 +30,7 @@ export const POST = withApi<{ id: string }>(async ({ repo, params }) => {
   const results: GitRepoActionResult[] = [];
   for (const { folder } of repos) {
     try {
-      results.push((await pushToDefault(folder, message)).result);
+      results.push((await pushToBranch(folder, board.pushBranch, message)).result);
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       results.push({ folder, branch: null, commit: null, url: null, output: "", error, skipped: false });

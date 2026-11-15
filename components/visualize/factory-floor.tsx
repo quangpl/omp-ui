@@ -40,7 +40,7 @@ import {
 } from "@/components/visualize/agent-map";
 import { workerIdentity } from "@/components/visualize/game";
 import { agentVitals, moodTone, subagentVitals } from "@/components/visualize/mood";
-import { type AgentRole, ROLE_INFO, roleOf, subagentName } from "@/components/visualize/roles";
+import { type AgentRole, modelLabel, ROLE_INFO, roleOf, subagentName } from "@/components/visualize/roles";
 import type { LiveAgent } from "@/components/visualize/use-live-agents";
 import { ManaBar, MOOD_LABEL, RoleTag, WorkerAvatar, type WorkerMood } from "@/components/visualize/worker-avatar";
 import type { ContextUsage, Dashboard } from "@/lib/types";
@@ -231,6 +231,8 @@ interface TokenView {
   role: AgentRole;
   /** The role's human label, drawn as a tag under the name. */
   roleLabel: string;
+  /** Model the agent runs on, drawn as a muted chip under the role tag; undefined draws none. */
+  model?: string;
   /** Draws the "!" help bubble: the worker needs the user. */
   help?: boolean;
   /** Context window left (0..1, null unknown); undefined draws no mana bar. */
@@ -243,7 +245,7 @@ interface TokenView {
   tone?: "error" | "strain";
 }
 
-/** A worker standing in a room: robot, name, role tag and what it is doing; hover for the details. */
+/** A worker standing in a room: robot, name, role tag, model and what it is doing; hover for the details. */
 function Token({ id, origin, view }: { id: string; origin?: string; view: TokenView }) {
   const { outer, inner } = useWalk(id, origin);
   return (
@@ -271,6 +273,12 @@ function Token({ id, origin, view }: { id: string; origin?: string; view: TokenV
               {view.mana !== undefined && <ManaBar value={view.mana} className={view.small ? "w-7" : "w-9"} />}
               <span className="max-w-full truncate font-mono text-[11px] leading-tight font-medium">{view.name}</span>
               <RoleTag hue={view.hue}>{view.roleLabel}</RoleTag>
+              {/* Full id is in the hover card's details; a native title would stack a second tooltip on it. */}
+              {view.model && (
+                <span className="max-w-full truncate font-mono text-[11px] leading-tight text-muted-foreground">
+                  {modelLabel(view.model)}
+                </span>
+              )}
               <span
                 className={cn(
                   "max-w-full truncate text-[10px] leading-tight",
@@ -312,6 +320,7 @@ function viewOf(
   worker: FloorWorker,
   live: Record<string, LiveAgent>,
   contexts: ReadonlyMap<string, ContextUsage | null>,
+  models: ReadonlyMap<string, string | null>,
   links: Map<string, CardLink[]>,
   titleOf: TitleOf,
   now: number,
@@ -327,6 +336,7 @@ function viewOf(
         (s) => s.status === "running" || s.status === "pending",
       ).length;
       const vitals = agentVitals(agent, now, contexts.get(entry.taskId));
+      const model = models.get(entry.taskId) ?? undefined;
       return {
         href: cardHref({ boardId: entry.boardId, id: entry.taskId }),
         name,
@@ -334,17 +344,19 @@ function viewOf(
         mood: vitals.mood,
         role: "lead",
         roleLabel: LEAD,
+        model,
         help: vitals.help !== null,
         mana: vitals.mana,
         hue,
         tone: moodTone(vitals.mood),
-        label: `${name} (${LEAD}), ${MOOD_LABEL[vitals.mood].toLowerCase()}: ${activity.label}, on ${entry.title} in ${entry.boardName}`,
+        label: `${name} (${LEAD}), ${MOOD_LABEL[vitals.mood].toLowerCase()}: ${activity.label}, on ${entry.title} in ${entry.boardName}${model ? `, model ${modelLabel(model)}` : ""}`,
         details: (
           <Details
             title={entry.title}
             lines={[
               `${name} · ${LEAD} · ${entry.boardName}${Number.isNaN(started) ? "" : ` · ${formatDuration(now - started)} on this run`}`,
               `${activity.label}${activity.detail ? `: ${activity.detail}` : ""}`,
+              model && `Model: ${model}`,
               vitals.feeling,
               ...vitals.notes,
               vitals.help && `Needs help: ${vitals.help.text}`,
@@ -371,18 +383,20 @@ function viewOf(
         mood: vitals.mood,
         role,
         roleLabel: info.label,
+        model: subagent.model,
         help: vitals.help !== null,
         mana: vitals.mana,
         hue: workerIdentity(`${entry.taskId}:${subagent.id}`).hue,
         small: true,
         tone: moodTone(vitals.mood),
-        label: `${name}, ${parent}'s ${info.label.toLowerCase()} (${subagent.agent} agent), ${MOOD_LABEL[vitals.mood].toLowerCase()}${subagent.currentTool ? `, using ${subagent.currentTool}` : ""}`,
+        label: `${name}, ${parent}'s ${info.label.toLowerCase()} (${subagent.agent} agent), ${MOOD_LABEL[vitals.mood].toLowerCase()}${subagent.currentTool ? `, using ${subagent.currentTool}` : ""}${subagent.model ? `, model ${modelLabel(subagent.model)}` : ""}`,
         details: (
           <Details
             title={name}
             lines={[
               `${info.label} · ${subagent.agent} agent · working for ${parent}`,
               info.description,
+              subagent.model && `Model: ${subagent.model}`,
               task !== subagent.agent && task,
               subagent.currentTool && `Using ${subagent.currentTool}`,
               vitals.feeling,
@@ -586,6 +600,10 @@ export function FactoryFloor({
     () => new Map(dashboard.live.map((agent) => [agent.taskId, agent.context])),
     [dashboard.live],
   );
+  const models = useMemo(
+    () => new Map(dashboard.live.map((agent) => [agent.taskId, agent.model])),
+    [dashboard.live],
+  );
 
   // Runs after every token's layout effect: the first paint has been measured, walks may start.
   useLayoutEffect(() => {
@@ -632,7 +650,7 @@ export function FactoryFloor({
                   key={worker.id}
                   id={worker.id}
                   origin={worker.kind === "subagent" ? `card:${worker.entry.taskId}` : undefined}
-                  view={viewOf(worker, live, contexts, linksByTask, titleOf, now)}
+                  view={viewOf(worker, live, contexts, models, linksByTask, titleOf, now)}
                 />
               )}
             />

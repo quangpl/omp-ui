@@ -263,6 +263,8 @@ export function runRepositoryContract(
           model: null,
           autoRun: true,
           worktrees: false,
+          pushBranch: "main",
+          lastAccessedAt: null,
         });
         expect(typeof board.id).toBe("string");
         expect(board.id.length).toBeGreaterThan(0);
@@ -271,7 +273,7 @@ export function runRepositoryContract(
         expect(await repo.getBoard(board.id)).toEqual(board);
       });
 
-      it("round-trips explicit fields including extraFolders and worktrees", async () => {
+      it("round-trips explicit fields including extraFolders, worktrees and pushBranch", async () => {
         const board = await repo.createBoard({
           name: "Full",
           workdir: "/work/front",
@@ -279,6 +281,7 @@ export function runRepositoryContract(
           model: "sonnet",
           autoRun: false,
           worktrees: true,
+          pushBranch: "release/1.x",
         });
 
         expect(board).toMatchObject({
@@ -286,12 +289,23 @@ export function runRepositoryContract(
           model: "sonnet",
           autoRun: false,
           worktrees: true,
+          pushBranch: "release/1.x",
         });
         expect(await repo.getBoard(board.id)).toEqual(board);
 
         const off = await repo.updateBoard(board.id, { worktrees: false });
-        expect(off).toMatchObject({ worktrees: false, autoRun: false });
+        expect(off).toMatchObject({ worktrees: false, autoRun: false, pushBranch: "release/1.x" });
         expect(await repo.getBoard(board.id)).toEqual(off);
+
+        const develop = await repo.updateBoard(board.id, { pushBranch: "develop" });
+        expect(develop).toMatchObject({
+          pushBranch: "develop",
+          extraFolders: ["/work/back", "/work/shared lib"],
+          model: "sonnet",
+          autoRun: false,
+          worktrees: false,
+        });
+        expect(await repo.getBoard(board.id)).toEqual(develop);
       });
 
       it("assigns distinct ids", async () => {
@@ -339,6 +353,20 @@ export function runRepositoryContract(
         const cleared = await repo.updateBoard(board.id, { extraFolders: [], autoRun: true });
         expect(cleared).toMatchObject({ extraFolders: [], autoRun: true });
         expect(await repo.getBoard(board.id)).toEqual(cleared);
+      });
+
+      it("stamps lastAccessedAt on access without touching updatedAt", async () => {
+        const board = await newBoard("opened");
+
+        const opened = await repo.markBoardAccessed(board.id);
+        expect(opened).toMatchObject({ id: board.id, updatedAt: board.updatedAt });
+        expect(opened!.lastAccessedAt! >= board.updatedAt).toBe(true);
+        expect(await repo.getBoard(board.id)).toEqual(opened);
+        expect((await repo.listBoards()).find((b) => b.id === board.id)?.lastAccessedAt).toBe(opened!.lastAccessedAt);
+
+        const again = await repo.markBoardAccessed(board.id);
+        expect(again!.lastAccessedAt! > opened!.lastAccessedAt!).toBe(true);
+        expect(await repo.markBoardAccessed("no-such-board")).toBeNull();
       });
 
       it("returns null / false for unknown ids", async () => {
@@ -427,6 +455,7 @@ export function runRepositoryContract(
           schedulerId: null,
           todos: [],
           review: null,
+          resources: null,
           commentCount: 0,
           openCommentCount: 0,
         });
@@ -488,6 +517,26 @@ export function runRepositoryContract(
         expect(await repo.getTask(task.id)).toEqual(updated);
         expect((await repo.listTasks(board.id))[0]).toEqual(updated);
         expect((await repo.updateTask(task.id, { review: null }))!.review).toBeNull();
+      });
+
+      it("round-trips the agent's resource sample", async () => {
+        const board = await newBoard();
+        const task = await repo.createTask({ boardId: board.id, title: "Measure me" });
+        expect(task.resources).toBeNull();
+        const resources = {
+          memoryBytes: 268_435_456,
+          peakMemoryBytes: 536_870_912,
+          cpuPercent: 142.5,
+          cpuSeconds: 37.25,
+          sampledAt: "2026-01-02T03:04:05.000Z",
+        };
+
+        const updated = await repo.updateTask(task.id, { resources });
+        expect(updated!.resources).toEqual(resources);
+        expect(await repo.getTask(task.id)).toEqual(updated);
+        expect((await repo.listTasks(board.id))[0]).toEqual(updated);
+        expect((await repo.updateTask(task.id, { resources: null }))!.resources).toBeNull();
+        expect((await repo.getTask(task.id))!.resources).toBeNull();
       });
 
       it("appends to the end of each column by default (step 1024, per board and status)", async () => {
@@ -852,6 +901,21 @@ export function runRepositoryContract(
         });
         expect(Number.isNaN(Date.parse(run.startedAt))).toBe(false);
         expect(await repo.getRun(run.id)).toEqual(run);
+      });
+
+      it("stores the cluster node of a run", async () => {
+        const task = await setupTask();
+        const placed = await repo.createRun({ taskId: task.id, prompt: "p", nodeId: "node-1", nodeName: "worker-a" });
+        expect(placed).toMatchObject({ nodeId: "node-1", nodeName: "worker-a" });
+        expect(await repo.getRun(placed.id)).toEqual(placed);
+        expect(await repo.updateRun(placed.id, { status: "succeeded" })).toMatchObject({
+          nodeId: "node-1",
+          nodeName: "worker-a",
+        });
+
+        const local = await repo.createRun({ taskId: task.id, prompt: "p" });
+        expect(local).toMatchObject({ nodeId: null, nodeName: null });
+        expect(await repo.getRun(local.id)).toEqual(local);
       });
 
       it("updates patched fields only", async () => {

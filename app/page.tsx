@@ -153,11 +153,13 @@ export default function HomePage() {
               <EntranceContext.Provider value={entering}>
                 {/*
                   One grid, three shapes (container widths, so the sidebar's share is accounted for).
-                  Every shape opens with the greeting, then the projects list across the full width.
-                  - narrow: then a single column ordered by urgency — needs you, live agents, quick actions,
-                    stats, activity (unfinished steps first, finished ones last);
-                  - medium: quick actions move up under the projects, stats and activity pair up;
-                  - wide: an asymmetric 2:1 split, the work column beside a side rail (live agents, stats, activity).
+                  Every shape opens with the overview pulse, then what needs the user comes before the
+                  project catalogue — attention first, browsing second.
+                  - narrow: a single column ordered by urgency — setup (while unfinished), needs you,
+                    live agents, projects, quick actions, stats, activity (finished setup drops last);
+                  - medium: the same order, with stats and activity pairing up side by side;
+                  - wide: an asymmetric 2:1 split — the work column (needs you, projects, quick actions)
+                    beside a side rail (live agents, stats, activity).
                   The column wrappers are `display: contents` until wide, so `order` reaches every section.
                 */}
                 <div className="grid grid-cols-1 items-start gap-6 @2xl/home:grid-cols-2 @2xl/home:gap-x-8 @5xl/home:grid-cols-[minmax(0,2fr)_minmax(19rem,1fr)] @5xl/home:gap-x-10">
@@ -169,20 +171,8 @@ export default function HomePage() {
                   <div className="col-span-full min-w-0">
                     <Overview dashboard={dashboard} now={now} />
                   </div>
-                  <div className="col-span-full min-w-0">
-                    <ProjectsSection
-                      boards={dashboard.boards}
-                      now={now}
-                      onEdit={(b) => setForm({ open: true, board: b })}
-                      onDelete={setDeleting}
-                      onTogglePin={(b) => void togglePin(b)}
-                    />
-                  </div>
-                  <div className="order-4 col-span-full min-w-0 @xl/home:order-none">
-                    <QuickActions onCreateProject={openCreate} />
-                  </div>
 
-                  <div className="contents @5xl/home:order-1 @5xl/home:flex @5xl/home:min-w-0 @5xl/home:flex-col @5xl/home:gap-8">
+                  <div className="contents @5xl/home:flex @5xl/home:min-w-0 @5xl/home:flex-col @5xl/home:gap-8">
                     {!setupComplete && steps && <div className="order-1 col-span-full min-w-0">{steps}</div>}
                     <div className="order-2 col-span-full min-w-0">
                       <NeedsYouList
@@ -192,19 +182,31 @@ export default function HomePage() {
                         now={now}
                       />
                     </div>
-                    {setupComplete && steps && <div className="order-8 col-span-full min-w-0">{steps}</div>}
+                    <div className="order-5 col-span-full min-w-0">
+                      <ProjectsSection
+                        boards={dashboard.boards}
+                        now={now}
+                        onEdit={(b) => setForm({ open: true, board: b })}
+                        onDelete={setDeleting}
+                        onTogglePin={(b) => void togglePin(b)}
+                      />
+                    </div>
+                    <div className="order-6 col-span-full min-w-0">
+                      <QuickActions onCreateProject={openCreate} />
+                    </div>
                   </div>
 
-                  <div className="contents @5xl/home:order-1 @5xl/home:flex @5xl/home:min-w-0 @5xl/home:flex-col @5xl/home:gap-8">
-                    <div className="order-3 col-span-full min-w-0">
+                  <div className="contents @5xl/home:flex @5xl/home:min-w-0 @5xl/home:flex-col @5xl/home:gap-8">
+                    <div className="order-3 col-span-full min-w-0 @5xl/home:order-none">
                       <LiveAgents queue={dashboard.queue} live={dashboard.live} liveActivity={liveActivity} />
                     </div>
-                    <div className="order-6 min-w-0">
+                    <div className="order-7 min-w-0">
                       <StatsPanel stats={dashboard.stats} />
                     </div>
-                    <div className="order-7 min-w-0">
+                    <div className="order-8 min-w-0">
                       <ActivityFeed items={dashboard.activity} now={now} />
                     </div>
+                    {setupComplete && steps && <div className="order-9 col-span-full min-w-0">{steps}</div>}
                   </div>
                 </div>
               </EntranceContext.Provider>

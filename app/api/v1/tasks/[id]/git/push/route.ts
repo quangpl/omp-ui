@@ -3,5 +3,5 @@ import { withApi } from "@/lib/server/http";
 
 export const dynamic = "force-dynamic";
 
-/** Commit the task's changes and push straight to each repo's default branch. */
+/** Commit the task's changes and push straight to the project's push branch (Board.pushBranch). */
 export const POST = withApi<{ id: string }>((ctx) => runTaskGitAction(ctx, "push"));

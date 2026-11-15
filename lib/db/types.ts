@@ -49,11 +49,13 @@ export interface CreateBoardInput {
   autoRun?: boolean;
   /** Default false. */
   worktrees?: boolean;
+  /** Default "main" (DEFAULT_PUSH_BRANCH). Must already be a valid branch name. */
+  pushBranch?: string;
   /** Owning user (users.id). Default null (unowned: only admins see it until boot assigns it). */
   userId?: string | null;
 }
 export type UpdateBoardInput = Partial<
-  Pick<Board, "name" | "workdir" | "extraFolders" | "model" | "autoRun" | "worktrees" | "pinned">
+  Pick<Board, "name" | "workdir" | "extraFolders" | "model" | "autoRun" | "worktrees" | "pinned" | "pushBranch">
 >;
 
 export interface CreateTaskInput {
@@ -88,6 +90,7 @@ export type UpdateTaskInput = Partial<
     | "retryAt"
     | "todos"
     | "review"
+    | "resources"
   >
 >;
 
@@ -146,6 +149,9 @@ export interface CreateCommentInput {
 export interface CreateRunInput {
   taskId: string;
   prompt: string;
+  /** Cluster node that executes the run (Run.nodeId/nodeName); default null (standalone). */
+  nodeId?: string | null;
+  nodeName?: string | null;
 }
 export type UpdateRunInput = Partial<Pick<Run, "status" | "summary" | "error" | "endedAt">>;
 
@@ -209,6 +215,8 @@ export interface Repository {
   getBoard(id: string): Promise<Board | null>;
   createBoard(input: CreateBoardInput): Promise<Board>;
   updateBoard(id: string, patch: UpdateBoardInput): Promise<Board | null>;
+  /** Stamps `lastAccessedAt` with now; leaves `updatedAt` alone. Null when the board doesn't exist. */
+  markBoardAccessed(id: string): Promise<Board | null>;
   /** Cascades: tasks, comments, runs, run events, schedulers and their scheduler runs. */
   deleteBoard(id: string): Promise<boolean>;
 

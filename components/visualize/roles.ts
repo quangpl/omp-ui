@@ -49,6 +49,15 @@ export function subagentName(id: string, agentName: string): string {
   return id.slice(id.lastIndexOf(".") + 1).trim() || agentName;
 }
 
+/**
+ * Compact model name for chips: the model id without its provider prefix
+ * ("anthropic/claude-sonnet-4-5" → "claude-sonnet-4-5"). The full id belongs in the tooltip.
+ */
+export function modelLabel(model: string): string {
+  const trimmed = model.trim();
+  return trimmed.slice(trimmed.lastIndexOf("/") + 1).trim() || trimmed;
+}
+
 /** Human name and one-line job description per role. Card agents are always "lead". */
 export const ROLE_INFO: Record<AgentRole, { label: string; description: string }> = {
   lead: { label: "Lead", description: "Card agent: owns the card, plans and delegates" },

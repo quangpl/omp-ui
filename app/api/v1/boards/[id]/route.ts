@@ -8,6 +8,7 @@ import {
   parseBoolean,
   parseExtraFolders,
   parseModel,
+  parsePushBranch,
   parseWorkdir,
   requireBoard,
 } from "@/lib/server/validate";
@@ -40,6 +41,7 @@ export const PATCH = withApi<Params>(async ({ req, repo, params, user }) => {
   if (body.model !== undefined) patch.model = parseModel(body.model);
   if (body.autoRun !== undefined) patch.autoRun = parseBoolean(body.autoRun, "autoRun");
   if (body.worktrees !== undefined) patch.worktrees = parseBoolean(body.worktrees, "worktrees");
+  if (body.pushBranch !== undefined) patch.pushBranch = parsePushBranch(body.pushBranch);
   if (body.pinned !== undefined) patch.pinned = parseBoolean(body.pinned, "pinned");
   if (Object.keys(patch).length === 0) return json(current);
   const board = await repo.updateBoard(params.id, patch);

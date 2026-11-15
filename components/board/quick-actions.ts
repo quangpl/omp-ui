@@ -5,7 +5,7 @@ import type { Task } from "@/lib/types";
  * A card's column follows its agent; the user never picks a status directly. These quick actions
  * are the only ways to change it: Start/Resume/Retry run the agent (card goes to In progress),
  * Stop halts it in place, Revert sends the card back to To do (stopping the agent first).
- * Push ships a finished card: commits its changes and pushes them to the default branch.
+ * Push ships a finished card: commits its changes and pushes them to the project's push branch.
  */
 export type QuickActionId = "start" | "resume" | "retry" | "stop" | "revert" | "push";
 
@@ -45,7 +45,7 @@ const ACTIONS: Record<QuickActionId, QuickAction> = {
   push: {
     id: "push",
     label: "Push to main",
-    hint: "Commit this card's changes and push to the default branch",
+    hint: "Commit this card's changes and push to the project's push branch",
     icon: Upload,
     shortcut: "P",
     filled: false,

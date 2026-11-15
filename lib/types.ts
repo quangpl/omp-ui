@@ -91,8 +91,16 @@ export interface Board {
    * working tree. Non-git folders stay shared. Default false.
    */
   worktrees: boolean;
-  /** Pinned projects lead the home dashboard and fill the sidebar; the rest follow under "Other projects". Default false. */
+  /**
+   * Branch "Push to main" lands on in every project repo (`git push origin HEAD:<pushBranch>`),
+   * created on the remote when missing. Create PR still targets each repo's own default branch.
+   * A valid git branch name (`isValidBranchName` in lib/push-branch.ts). Default "main".
+   */
+  pushBranch: string;
+  /** Pinned projects lead the home dashboard; the rest follow under "Other projects". Default false. */
   pinned: boolean;
+  /** When the project's board was last opened (ISO); null until first opened. Orders the sidebar's "Your projects". */
+  lastAccessedAt: string | null;
   /**
    * Owning user (users.id). Null only for rows created before users existed, until boot assigns
    * them to the first admin. Tasks, comments, runs and schedulers inherit it from their board.
@@ -133,7 +141,7 @@ export interface Task {
   /** Card whose agent created this card (agent-to-agent delegation); null when a person did. */
   createdByTaskId: string | null;
   /**
-   * When "Push to main" last landed this card's changes on the default branch; null if never.
+   * When "Push to main" last landed this card's changes on the project's push branch; null if never.
    * Cards with it set show a struck-through title.
    */
   pushedAt: string | null;
@@ -152,6 +160,12 @@ export interface Task {
   todos: TodoPhase[];
   /** Latest code review decision; null until the card is reviewed. Never cleared by runs: compare `hash` with the diff. */
   review: TaskReview | null;
+  /**
+   * Memory and CPU of the card's latest agent run, as of its last sample: stored when the run
+   * ends, cleared when the next run starts. While a run is going, live samples arrive as
+   * `run.resources` events instead. Null when the card never ran (or ran before tracking).
+   */
+  resources: AgentResources | null;
   createdAt: string;
   updatedAt: string;
   /** Derived: total comments. */
@@ -239,6 +253,12 @@ export interface Run {
   endedAt: string | null;
   /** Owning user, inherited from the task's board (see Board.userId). */
   userId: string | null;
+  /**
+   * Cluster node that executed the run (lib/cluster); null for runs of a standalone server.
+   * `nodeName` is kept as it was at run time, so it still reads after the node left.
+   */
+  nodeId: string | null;
+  nodeName: string | null;
 }
 
 /**
@@ -300,6 +320,23 @@ export interface ContextUsage {
   tokens: number;
   /** Model's context window in tokens; 0 when unknown. */
   contextWindow: number;
+}
+
+/**
+ * Memory and CPU of a card's agent: its omp process plus every process it started (subagents,
+ * tools, shells). Sampled every few seconds while the run is going.
+ */
+export interface AgentResources {
+  /** Resident memory (RSS) of the process tree at the latest sample, bytes. */
+  memoryBytes: number;
+  /** Highest `memoryBytes` sampled during the run. */
+  peakMemoryBytes: number;
+  /** CPU use since the previous sample, percent of one core (200 = two cores busy). */
+  cpuPercent: number;
+  /** CPU time (user + system) the process tree used since the run started, seconds. */
+  cpuSeconds: number;
+  /** When the latest sample was taken (ISO). */
+  sampledAt: string;
 }
 
 export interface RunEvent {
@@ -496,6 +533,16 @@ export interface AppSettings {
    */
   loadGuard: boolean;
   loadGuardPercent: number;
+  /**
+   * Cluster mode (lib/cluster): the primary also runs cards on its own machine. Off = the
+   * primary only coordinates and every card runs on a replica node. Ignored outside cluster mode.
+   */
+  clusterRunLocal: boolean;
+  /**
+   * Cluster mode: seconds replicas wait after losing the primary before they elect and promote
+   * a new one (CLUSTER_FAILOVER_LIMITS).
+   */
+  clusterFailoverSeconds: number;
 }
 
 /**
@@ -510,6 +557,9 @@ export const ORCHESTRATION_LIMITS = {
   loadGuardPercent: { min: 10, max: 1000 },
 } as const;
 export type OrchestrationNumberKey = keyof typeof ORCHESTRATION_LIMITS;
+
+/** Bounds of `AppSettings.clusterFailoverSeconds`. */
+export const CLUSTER_FAILOVER_LIMITS = { min: 5, max: 600 } as const;
 
 /** What GET /settings answers for a stored secret (chat bot tokens). */
 export const REDACTED_SECRET = "********";
@@ -679,6 +729,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   telemetryEndpoint: "",
   loadGuard: false,
   loadGuardPercent: 150,
+  clusterRunLocal: true,
+  clusterFailoverSeconds: 20,
 };
 
 /** An installed omp skill (from `omp skill list`): pickable with "/" when composing a card. */
@@ -774,6 +826,11 @@ export type ServerEvent =
       usage?: { costUsd: number; tokens: number };
     }
   /**
+   * Live, NOT persisted: memory and CPU of the run's process tree, every few seconds while it
+   * runs. The last sample is stored as `Task.resources` when the run ends.
+   */
+  | { type: "run.resources"; runId: string; taskId: string; boardId: string; resources: AgentResources }
+  /**
    * Live, NOT persisted: streaming assistant output while a message is being generated.
    * `text` is the accumulated content of the current message so far (not just the delta), so a
    * client that missed frames still renders correctly. Superseded by the persisted `run.event`
@@ -786,7 +843,11 @@ export type ServerEvent =
       boardId: string;
       kind: "text" | "thinking";
       text: string;
-    };
+    }
+  /** Cluster membership, roles or node resources changed (lib/cluster); the full status. */
+  | { type: "cluster.updated"; status: ClusterStatus }
+  /** Something happened in the cluster a person should see (node offline, promotion, …). */
+  | { type: "cluster.notice"; notice: ClusterNotice };
 
 export interface ApiError {
   error: string;
@@ -860,6 +921,8 @@ export interface QueueEntry {
   createdByTaskId: string | null;
   /** SDLC progress derived from the card's todo list (lib/sdlc.ts); null until the agent keeps one. */
   sdlc: SdlcProgress | null;
+  /** Cluster node running the card (running entries in cluster mode); null otherwise. */
+  node: { id: string; name: string } | null;
 }
 
 /** The agent limit in effect and where it comes from (GET /queue). */
@@ -871,14 +934,23 @@ export interface ConcurrencyInfo {
   /**
    * What bounds an automatic limit (logical cores, free memory, or the hard cap); null when manual.
    * `load`: the load guard holds new runs (either mode); the limit is then the agents running.
+   * `resources`: the resource guard (memory/CPU %, see ResourcePressure) holds new runs (either
+   * mode, wins over `load`); the limit is then the agents running.
    */
-  boundBy: "cpu" | "memory" | "max" | "load" | null;
+  boundBy: "cpu" | "memory" | "max" | "load" | "resources" | null;
   /** Logical cores available to the server. */
   cpus: number;
   freeMemoryBytes: number;
   totalMemoryBytes: number;
   /** One line for the UI, e.g. "Auto: 12 parallel (16 cores, 28 GB free)". */
   reason: string;
+  /**
+   * Cluster mode (primary): `limit` = `localLimit` (this machine's own limit; 0 when
+   * `clusterRunLocal` is off) + `remoteSlots` (the slots of the online replica nodes that can run omp).
+   */
+  cluster?: { localLimit: number; nodes: number; remoteSlots: number };
+  /** Latest resource-guard sample; null before the first one or where the guard does not run (replica). */
+  pressure?: ResourcePressure | null;
 }
 
 export interface QueueSnapshot {
@@ -890,6 +962,183 @@ export interface QueueSnapshot {
   queued: QueueEntry[];
   /** Projects whose queued cards the smart-queue planner is ordering right now. */
   planning: { boardId: string; boardName: string }[];
+}
+
+/** A machine resource the resource guard watches. */
+export type PressureResource = "memory" | "cpu";
+
+/**
+ * System-wide memory/CPU guard (lib/agent/resource-guard.ts), sampled every 5 s: holds queued cards
+ * (starts no new runs; running agents are never touched) while memory or sustained CPU is at or
+ * above its hold %, and releases them once each held resource is below its resume % (hysteresis).
+ * Thresholds come from OMP_UI_* variables, re-read live from `.env`.
+ */
+export interface ResourcePressure {
+  /** Memory in use, % of the total (container limit included), as of `sampledAt`. */
+  memoryPercent: number;
+  /** Host CPU busy %, averaged over `cpuWindowSec`; null until two samples exist. */
+  cpuPercent: number | null;
+  /** Seconds the CPU average spans: the sustain window, or less shortly after start. */
+  cpuWindowSec: number;
+  /** OMP_UI_MEMORY_HOLD_PCT (default 75; 0 = memory guard off). */
+  memoryHoldPct: number;
+  /** OMP_UI_MEMORY_RESUME_PCT (default hold − 10, i.e. 65). */
+  memoryResumePct: number;
+  /** OMP_UI_CPU_HOLD_PCT (default 75; 0 = CPU guard off). */
+  cpuHoldPct: number;
+  /** OMP_UI_CPU_RESUME_PCT (default hold − 10, i.e. 65). */
+  cpuResumePct: number;
+  /** OMP_UI_CPU_SUSTAIN_SEC: the CPU average must stay at/above the hold % over this window (default 30). */
+  cpuSustainSec: number;
+  /** Resources holding new runs right now; empty = not holding. */
+  holding: PressureResource[];
+  /** When the current hold began (ISO); null while not holding. */
+  heldSince: string | null;
+  /**
+   * OMP_UI_RESOURCE_RESTART_MIN: graceful restart after this many minutes of memory pressure; 0 = off
+   * (default, and always when the server does not run under bin/supervisor.mjs).
+   */
+  restartAfterMin: number;
+  /**
+   * The memory hold outlasted `restartAfterMin`: the server restarts once no agent runs or is being
+   * prepared, provided cards are queued (CPU pressure never restarts).
+   */
+  restartPending: boolean;
+  sampledAt: string;
+}
+
+// --- Cluster mode (lib/cluster) ---------------------------------------------------------------
+
+/**
+ * Role of this omp-ui server. `standalone`: no cluster (default). `primary`: coordinates the
+ * cluster, owns the database and dispatches runs to nodes. `replica`: a joined node that runs
+ * cards for the primary, keeps a replicated copy of its state and can be promoted to primary.
+ */
+export type ClusterRole = "standalone" | "primary" | "replica";
+
+/** A node's machine, as it reports it every few seconds. */
+export interface NodeResources {
+  hostname: string;
+  platform: string;
+  arch: string;
+  cpus: number;
+  /** 1-minute load average (0 on Windows). */
+  loadAvg1: number;
+  totalMemoryBytes: number;
+  freeMemoryBytes: number;
+  sampledAt: string;
+}
+
+/** Whether a node can start omp, and with which binary. */
+export interface NodeOmpInfo {
+  ready: boolean;
+  version: string | null;
+  /** `primary`: the primary's binary, shared automatically; `local`: omp installed on the node. */
+  source: "primary" | "local" | null;
+  /** Why it is not ready (downloading, unsupported platform, …); null when ready. */
+  reason: string | null;
+}
+
+export interface ClusterNodeStatus {
+  nodeId: string;
+  name: string;
+  role: "primary" | "replica";
+  /** This entry is the server answering the request. */
+  self: boolean;
+  online: boolean;
+  /** `host:port` of the node's cluster channel. */
+  address: string;
+  /** The node's own web UI, e.g. http://10.0.0.7:3000; null when unknown. */
+  httpUrl: string | null;
+  version: string;
+  joinedAt: string;
+  lastSeenAt: string;
+  resources: NodeResources | null;
+  /** Agents allowed at once on the node (its automatic or manual limit). */
+  slots: number;
+  /** Cards running on the node now. */
+  runningTaskIds: string[];
+  omp: NodeOmpInfo;
+  /** Replicas: how far the replicated copy of the primary's state is behind; null for the primary. */
+  replication: { seq: number; at: string | null; lagSeconds: number | null } | null;
+  latencyMs: number | null;
+}
+
+export interface ClusterNotice {
+  id: string;
+  level: "info" | "warning" | "error";
+  message: string;
+  at: string;
+}
+
+/** GET /cluster: this server's view of the cluster. */
+export interface ClusterStatus {
+  role: ClusterRole;
+  nodeId: string;
+  nodeName: string;
+  /** Election term of the current primary (bumped by every promotion); 0 when standalone. */
+  term: number;
+  /**
+   * The cluster's home primary (the node that enabled cluster mode). After a failover it is
+   * promoted back automatically once it returns and has caught up (failback); null when standalone.
+   */
+  preferredPrimaryId: string | null;
+  /** TCP port of this server's cluster channel. */
+  port: number;
+  /** Replicas: the primary they follow; null otherwise. */
+  primary: { nodeId: string | null; name: string; httpUrl: string } | null;
+  /** Replicas: the link to the primary; null otherwise. */
+  connection: {
+    state: "connected" | "connecting" | "electing";
+    since: string;
+    error: string | null;
+    latencyMs: number | null;
+  } | null;
+  /** `AppSettings.clusterRunLocal`. */
+  runLocal: boolean;
+  /** Every known node, this one included (empty when standalone). */
+  nodes: ClusterNodeStatus[];
+  totals: {
+    nodes: number;
+    online: number;
+    cpus: number;
+    totalMemoryBytes: number;
+    freeMemoryBytes: number;
+    slots: number;
+    running: number;
+  };
+  /** Latest notices, newest first (at most 20). */
+  notices: ClusterNotice[];
+}
+
+/** GET /cluster/token (admins): what a new machine needs to join. */
+export interface ClusterJoinInfo {
+  token: string;
+  /** The primary's base URL the command uses. */
+  url: string;
+  /** One line to paste on the new machine, e.g. `curl -fsSL <url>/api/v1/cluster/join | sh -s -- <token>`. */
+  joinCommand: string;
+}
+
+/** POST /cluster/test: can this server reach (and authenticate with) the given primary? */
+export interface ClusterTestResult {
+  ok: boolean;
+  latencyMs: number | null;
+  node: { nodeId: string; name: string; role: ClusterRole; term: number; version: string } | null;
+  error: string | null;
+}
+
+/** GET /cluster/info (public): what a joining machine needs before it authenticates. */
+export interface ClusterInfo {
+  version: string;
+  protocol: number;
+  role: ClusterRole;
+  /** TCP port of the cluster channel. */
+  port: number;
+  platform: string;
+  arch: string;
+  nodeVersion: string;
+  omp: { available: boolean; version: string | null };
 }
 
 /** A card with its project's name, for cross-project lists on the home dashboard. */
@@ -965,7 +1214,7 @@ export interface DashboardStatsWindow {
   failed: number;
   /** Mean wall time of succeeded + failed runs; null when there were none. */
   avgDurationMs: number | null;
-  /** Cards pushed to the default branch (Task.pushedAt). */
+  /** Cards pushed to the project's push branch (Task.pushedAt). */
   shipped: number;
   /** Cards created. */
   created: number;
@@ -1024,7 +1273,7 @@ export interface Dashboard {
     hasCard: boolean;
     hasRun: boolean;
     hasDone: boolean;
-    /** A card was pushed to the default branch at least once. */
+    /** A card was pushed to the project's push branch at least once. */
     hasPush: boolean;
     /** The settings were saved at least once. */
     settingsSaved: boolean;
@@ -1091,6 +1340,14 @@ export interface GitBranches {
   branches: GitBranch[];
 }
 
+/** POST /boards/:id/git/branches: the folder's status after switching, then pulling (fast-forward only). */
+export interface GitSwitchResult extends GitStatus {
+  /** Commits fast-forwarded from the upstream after the switch (0: up to date, no upstream, or failed). */
+  pulled: number;
+  /** Why the pull failed (the switch itself still happened); null when it succeeded or was skipped. */
+  pullError: string | null;
+}
+
 /** Outcome for one folder of a push / PR action. */
 export interface GitRepoActionResult {
   folder: string;
@@ -1119,7 +1376,7 @@ export interface GitActionResult {
   comment: Comment;
 }
 
-/** POST /boards/:id/git/push — header quick push of every project repo to its default branch. */
+/** POST /boards/:id/git/push — header quick push of every project repo to the project's push branch. */
 export interface BoardPushResult {
   results: GitRepoActionResult[];
 }
@@ -1169,6 +1426,8 @@ export interface SystemStats {
     agentsRunning: number;
     agentsQueued: number;
   };
+  /** Resource guard: latest memory/CPU % against its thresholds; null where it does not run (replica, before boot). */
+  resourceGuard: ResourcePressure | null;
 }
 
 // ---------------------------------------------------------------------------------------------

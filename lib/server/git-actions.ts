@@ -2,7 +2,8 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { publish } from "@/lib/events";
-import { createPullRequest, isGitRepo, pushToDefault, type GitFolderOutcome } from "@/lib/git";
+import { createPullRequest, isGitRepo, pushToBranch, type GitFolderOutcome } from "@/lib/git";
+import { buildPrBody } from "@/lib/pr-body";
 import { HttpError, json, readJson, type ApiContext } from "@/lib/server/http";
 import { requireBoard, requireTask } from "@/lib/server/validate";
 import type { GitActionResult, Task } from "@/lib/types";
@@ -31,16 +32,15 @@ function branchNameFor(task: Task): string {
 
 async function defaultPrBody(ctx: ApiContext<{ id: string }>, task: Task): Promise<string> {
   const runs = await ctx.repo.listRuns(task.id);
-  const summary = runs.find((r) => r.status === "succeeded" && r.summary?.trim())?.summary?.trim();
-  const parts = [task.description.trim(), summary ? `## Agent summary\n\n${summary}` : ""].filter(Boolean);
-  parts.push("---\nCreated from AgentMan");
-  const body = parts.join("\n\n");
+  const summary = runs.find((r) => r.status === "succeeded" && r.summary?.trim())?.summary;
+  const body = buildPrBody(task.description, summary ?? null);
   return body.length > MAX_PR_BODY ? `${body.slice(0, MAX_PR_BODY - 1)}…` : body;
 }
 
 /**
- * Push (to each repo's default branch) or open PR/MRs for the task's project folders, one folder
- * at a time, then post one resolved agent comment summarising what happened.
+ * Push (to the project's push branch, Board.pushBranch) or open PR/MRs (against each repo's default
+ * branch) for the task's project folders, one folder at a time, then post one resolved agent
+ * comment summarising what happened.
  */
 export async function runTaskGitAction(
   ctx: ApiContext<{ id: string }>,
@@ -81,7 +81,7 @@ export async function runTaskGitAction(
   let run: (folder: string) => Promise<GitFolderOutcome>;
   if (action === "push") {
     const message = optionalText(body.message, "message", 5000) ?? task.title;
-    run = (folder) => pushToDefault(folder, message);
+    run = (folder) => pushToBranch(folder, board.pushBranch, message);
   } else {
     const title = optionalText(body.title, "title", 200) ?? task.title;
     const prBody = optionalText(body.body, "body", MAX_PR_BODY) ?? (await defaultPrBody(ctx, task));
@@ -103,7 +103,7 @@ export async function runTaskGitAction(
   }
 
   const results = outcomes.map((o) => o.result);
-  const heading = action === "push" ? "**Push to main**" : "**Create PR**";
+  const heading = action === "push" ? `**Push to ${board.pushBranch}**` : "**Create PR**";
   const lines = results.every((r) => r.skipped)
     ? [action === "push" ? "Nothing to push — there are no changes." : "Nothing to put in a pull request — there are no changes."]
     : outcomes.filter((_, i) => repoFlags[i]).map((o) => `- ${o.summary}`);

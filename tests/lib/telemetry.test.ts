@@ -90,6 +90,8 @@ function run(status: Run["status"], extra: Partial<Run> = {}): Run {
     startedAt: iso(0),
     endedAt: null,
     userId: null,
+    nodeId: null,
+    nodeName: null,
     ...extra,
   };
 }
