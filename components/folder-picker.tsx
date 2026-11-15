@@ -406,7 +406,7 @@ export function FolderPicker({
           className="data-[vaul-drawer-direction=bottom]:max-h-[92dvh]"
           onEscapeKeyDown={handleEscape}
         >
-          <DrawerHeader className="text-left">
+          <DrawerHeader>
             <DrawerTitle className="text-lg">{title}</DrawerTitle>
             <DrawerDescription>{description}</DrawerDescription>
           </DrawerHeader>

@@ -85,7 +85,7 @@ export function FileActionsDrawer({
         onPointerDown={(event) => event.stopPropagation()}
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
-        <DrawerHeader className="pb-2 text-left">
+        <DrawerHeader className="pb-2">
           <DrawerTitle className="truncate text-lg">{title}</DrawerTitle>
           <DrawerDescription className="truncate font-mono text-xs">{description}</DrawerDescription>
         </DrawerHeader>

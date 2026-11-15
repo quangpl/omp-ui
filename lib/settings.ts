@@ -5,6 +5,7 @@ import {
   CLEANUP_SCHEDULES,
   CLUSTER_FAILOVER_LIMITS,
   CLUSTER_HEAL_LIMITS,
+  CLUSTER_RESTART_LIMITS,
   DASHBOARD_MENU_IDS,
   DEFAULT_SETTINGS,
   ORCHESTRATION_LIMITS,
@@ -58,7 +59,9 @@ export function setOmpPathResolver(fn: ((stored: string) => string) | null): voi
  * OMP_PATH, MAX_AGENTS, and auto-healing's OMP_UI_CLUSTER_AUTO_HEAL (true/1/yes/on or
  * false/0/no/off), OMP_UI_CLUSTER_HEAL_INTERVAL_SEC, OMP_UI_CLUSTER_HEAL_TIMEOUT_SEC,
  * OMP_UI_CLUSTER_HEAL_FAILURES, OMP_UI_CLUSTER_HEAL_OFFLINE_SEC and OMP_UI_CLUSTER_HEAL_MAX_RESTARTS
- * (clamped into CLUSTER_HEAL_LIMITS; anything unparsable keeps the built-in default).
+ * (clamped into CLUSTER_HEAL_LIMITS; anything unparsable keeps the built-in default), and the
+ * replica disconnect watchdog's OMP_UI_CLUSTER_AUTO_RESTART (same switch values) and
+ * OMP_UI_CLUSTER_RESTART_AFTER_SEC (clamped into CLUSTER_RESTART_LIMITS, same fallback).
  * MAX_AGENTS: a number is an explicit limit; `auto` or unset derives it from the machine.
  * `ompPath` is the command to run on this machine (see setOmpPathResolver).
  */
@@ -89,6 +92,8 @@ async function storedAppSettings(repo: Repository): Promise<AppSettings> {
     clusterHealFailures: healNumber(process.env.OMP_UI_CLUSTER_HEAL_FAILURES, "clusterHealFailures"),
     clusterHealOfflineSeconds: healNumber(process.env.OMP_UI_CLUSTER_HEAL_OFFLINE_SEC, "clusterHealOfflineSeconds"),
     clusterHealMaxRestarts: healNumber(process.env.OMP_UI_CLUSTER_HEAL_MAX_RESTARTS, "clusterHealMaxRestarts"),
+    clusterAutoRestart: envFlag(process.env.OMP_UI_CLUSTER_AUTO_RESTART) ?? DEFAULT_SETTINGS.clusterAutoRestart,
+    clusterRestartAfterSeconds: restartAfterSeconds(process.env.OMP_UI_CLUSTER_RESTART_AFTER_SEC),
   };
   const raw = await repo.getSetting(KEY);
   if (!raw) return base;
@@ -181,6 +186,8 @@ function sanitize(s: AppSettings, knownMenus: readonly unknown[]): AppSettings {
     clusterHealFailures: healNumber(s.clusterHealFailures, "clusterHealFailures"),
     clusterHealOfflineSeconds: healNumber(s.clusterHealOfflineSeconds, "clusterHealOfflineSeconds"),
     clusterHealMaxRestarts: healNumber(s.clusterHealMaxRestarts, "clusterHealMaxRestarts"),
+    clusterAutoRestart: bool(s, "clusterAutoRestart"),
+    clusterRestartAfterSeconds: restartAfterSeconds(s.clusterRestartAfterSeconds),
   };
 }
 
@@ -220,6 +227,19 @@ function healNumber(value: unknown, key: ClusterHealNumberKey): number {
   }
   const { min, max } = CLUSTER_HEAL_LIMITS[key];
   return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+/**
+ * Whole seconds clamped into CLUSTER_RESTART_LIMITS; the default when not a finite number. The
+ * failover floor (clusterFailoverSeconds + 60 s) is applied at runtime, not here, so a later shorter
+ * failover delay does not leave a raised value behind.
+ */
+function restartAfterSeconds(value: unknown): number {
+  const n = Number(value);
+  if (value === undefined || value === null || value === "" || typeof value === "boolean" || !Number.isFinite(n)) {
+    return DEFAULT_SETTINGS.clusterRestartAfterSeconds;
+  }
+  return Math.min(CLUSTER_RESTART_LIMITS.max, Math.max(CLUSTER_RESTART_LIMITS.min, Math.floor(n)));
 }
 
 /** An env var switch: true/1/yes/on or false/0/no/off (any case); null when unset or anything else. */

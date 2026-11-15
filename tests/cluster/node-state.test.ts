@@ -102,6 +102,7 @@ describe("readNodeState", () => {
       joinedAt: null,
       envJoinId: null,
       secrets: { authSecret: null, databaseUrl: null, credentialsKey: null },
+      autoRestarts: 0,
     });
     expect(state.nodeId).toMatch(/\S/);
     expect(JSON.parse(fs.readFileSync(nodeFile(), "utf8"))).toEqual(state);
@@ -151,6 +152,18 @@ describe("readNodeState", () => {
 
     expect(readNodeState()).toMatchObject({ nodeId: "node-1", envJoinId: null });
   });
+
+  it.each([
+    ["missing", undefined],
+    ["negative", -1],
+    ["fractional", 2.5],
+    ["a string", "3"],
+  ])("reads autoRestarts as 0 when it is %s", (_label, autoRestarts) => {
+    fs.mkdirSync(path.dirname(nodeFile()), { recursive: true });
+    fs.writeFileSync(nodeFile(), JSON.stringify({ nodeId: "node-1", role: "replica", autoRestarts }));
+
+    expect(readNodeState()).toMatchObject({ nodeId: "node-1", role: "replica", autoRestarts: 0 });
+  });
 });
 
 describe("updateNodeState", () => {
@@ -177,6 +190,13 @@ describe("updateNodeState", () => {
     updateNodeState({ term: 4 });
 
     expect(reloadFromDisk()).toMatchObject({ term: 4, envJoinId: "run-1" });
+  });
+
+  it("keeps autoRestarts across reloads", () => {
+    updateNodeState({ autoRestarts: 2 });
+    updateNodeState({ term: 5 });
+
+    expect(reloadFromDisk()).toMatchObject({ term: 5, autoRestarts: 2 });
   });
 
   it("leaves no temp files behind", () => {

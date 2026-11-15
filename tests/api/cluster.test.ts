@@ -13,6 +13,7 @@ import * as disableRoute from "@/app/api/v1/cluster/disable/route";
 import * as enableRoute from "@/app/api/v1/cluster/enable/route";
 import * as infoRoute from "@/app/api/v1/cluster/info/route";
 import * as joinRoute from "@/app/api/v1/cluster/join/route";
+import * as restoreRoute from "@/app/api/v1/cluster/restore/route";
 import * as testRoute from "@/app/api/v1/cluster/test/route";
 import * as tokenRoute from "@/app/api/v1/cluster/token/route";
 import * as settingsRoute from "@/app/api/v1/settings/route";
@@ -259,6 +260,12 @@ describe("/cluster", () => {
       { clusterHealOfflineSeconds: 9 },
       { clusterHealMaxRestarts: 0 },
       { clusterHealMaxRestarts: null },
+      { clusterAutoRestart: "yes" },
+      { clusterAutoRestart: 1 },
+      { clusterRestartAfterSeconds: 59 },
+      { clusterRestartAfterSeconds: 86_401 },
+      { clusterRestartAfterSeconds: 90.5 },
+      { clusterRestartAfterSeconds: "300" },
     ]) {
       const res = await api(settingsRoute, "PATCH", "/settings", { body });
       expect(res.status, JSON.stringify(body)).toBe(400);
@@ -272,6 +279,14 @@ describe("/cluster", () => {
       body: { clusterAutoHeal: 1 },
     });
     expect(invalidSwitch.body.error).toBe("clusterAutoHeal must be a boolean");
+    const invalidRestartSwitch = await api<{ error: string }>(settingsRoute, "PATCH", "/settings", {
+      body: { clusterAutoRestart: "yes" },
+    });
+    expect(invalidRestartSwitch.body.error).toBe("clusterAutoRestart must be a boolean");
+    const invalidRestartWait = await api<{ error: string }>(settingsRoute, "PATCH", "/settings", {
+      body: { clusterRestartAfterSeconds: 59 },
+    });
+    expect(invalidRestartWait.body.error).toBe("clusterRestartAfterSeconds must be an integer between 60 and 86400");
 
     const res = await api<AppSettings>(settingsRoute, "PATCH", "/settings", {
       body: { clusterFailoverSeconds: 45, clusterRunLocal: false },
@@ -292,6 +307,12 @@ describe("/cluster", () => {
     expect(healed.status, JSON.stringify(healed.body)).toBe(200);
     expect(healed.body).toMatchObject(heal);
     expect((await api<AppSettings>(settingsRoute, "GET", "/settings")).body).toMatchObject(heal);
+
+    const restart = { clusterAutoRestart: false, clusterRestartAfterSeconds: 600 };
+    const restarted = await api<AppSettings>(settingsRoute, "PATCH", "/settings", { body: restart });
+    expect(restarted.status, JSON.stringify(restarted.body)).toBe(200);
+    expect(restarted.body).toMatchObject(restart);
+    expect((await api<AppSettings>(settingsRoute, "GET", "/settings")).body).toMatchObject(restart);
   });
 
   it("takes the auto-healing defaults from the environment until Settings saves them", async () => {
@@ -333,6 +354,47 @@ describe("/cluster", () => {
     }
   });
 
+  it("takes the auto-restart defaults from the environment until Settings saves them", async () => {
+    const keys = ["OMP_UI_CLUSTER_AUTO_RESTART", "OMP_UI_CLUSTER_RESTART_AFTER_SEC"];
+    const saved = keys.map((key) => process.env[key]);
+    process.env.OMP_UI_CLUSTER_AUTO_RESTART = "false";
+    process.env.OMP_UI_CLUSTER_RESTART_AFTER_SEC = "900";
+    try {
+      /** A database without stored settings (a fresh install), or with `stored` saved. */
+      const repo = (stored: string | null) => ({ getSetting: async () => stored }) as unknown as Repository;
+      expect(await getAppSettings(repo(null))).toMatchObject({
+        clusterAutoRestart: false,
+        clusterRestartAfterSeconds: 900,
+      });
+      // Settings saved before auto-restart existed keep the env defaults; saved values win.
+      expect(await getAppSettings(repo(JSON.stringify({ clusterRunLocal: true })))).toMatchObject({
+        clusterAutoRestart: false,
+        clusterRestartAfterSeconds: 900,
+      });
+      expect(
+        await getAppSettings(repo(JSON.stringify({ clusterAutoRestart: true, clusterRestartAfterSeconds: 120 }))),
+      ).toMatchObject({ clusterAutoRestart: true, clusterRestartAfterSeconds: 120 });
+
+      // Clamped into CLUSTER_RESTART_LIMITS (60–86400).
+      process.env.OMP_UI_CLUSTER_RESTART_AFTER_SEC = "10";
+      expect((await getAppSettings(repo(null))).clusterRestartAfterSeconds).toBe(60);
+      process.env.OMP_UI_CLUSTER_RESTART_AFTER_SEC = "100000";
+      expect((await getAppSettings(repo(null))).clusterRestartAfterSeconds).toBe(86_400);
+
+      process.env.OMP_UI_CLUSTER_AUTO_RESTART = "maybe";
+      process.env.OMP_UI_CLUSTER_RESTART_AFTER_SEC = "soon";
+      expect(await getAppSettings(repo(null))).toMatchObject({
+        clusterAutoRestart: DEFAULT_SETTINGS.clusterAutoRestart,
+        clusterRestartAfterSeconds: DEFAULT_SETTINGS.clusterRestartAfterSeconds,
+      });
+    } finally {
+      keys.forEach((key, i) => {
+        if (saved[i] === undefined) delete process.env[key];
+        else process.env[key] = saved[i];
+      });
+    }
+  });
+
   it("disable returns to standalone", async () => {
     expect((await api(disableRoute, "POST", "/cluster/disable", { token: userToken })).status).toBe(403);
     const res = await api<ClusterStatus>(disableRoute, "POST", "/cluster/disable");
@@ -340,6 +402,23 @@ describe("/cluster", () => {
     expect(res.body.role).toBe("standalone");
     expect((await status()).role).toBe("standalone");
     expect((await api(tokenRoute, "GET", "/cluster/token")).status).toBe(409);
+  });
+
+  it("restore is admin-only, validates its body and needs a replica", async () => {
+    expect((await api(restoreRoute, "POST", "/cluster/restore", { token: userToken })).status).toBe(403);
+
+    const invalid = await api<{ error: string }>(restoreRoute, "POST", "/cluster/restore", {
+      body: { restart: "yes" },
+    });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toBe("restart must be a boolean");
+
+    for (const body of [undefined, { restart: false }, { restart: true }]) {
+      const res = await api<{ error: string }>(restoreRoute, "POST", "/cluster/restore", { body });
+      expect(res.status, JSON.stringify(body)).toBe(409);
+      expect(res.body.error).toBe("This node is not a replica");
+    }
+    expect((await status()).role).toBe("standalone");
   });
 
   it("a replica refuses writes except sign-in/out and its own cluster membership", async () => {

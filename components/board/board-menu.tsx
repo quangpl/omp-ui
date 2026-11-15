@@ -61,7 +61,7 @@ function SharedFilesDialog({
     return (
       <Drawer open={open} onOpenChange={onOpenChange}>
         <DrawerContent className="data-[vaul-drawer-direction=bottom]:max-h-[92dvh]">
-          <DrawerHeader className="text-left">
+          <DrawerHeader>
             <DrawerTitle className="text-lg">{SHARED_FILES_TITLE}</DrawerTitle>
             <DrawerDescription>{SHARED_FILES_DESCRIPTION}</DrawerDescription>
           </DrawerHeader>

@@ -4,7 +4,20 @@
 // of a replica after a failover, demotion of a returning primary (fencing) and the failback
 // handover to the cluster's home primary. The runtimes themselves live in primary.ts / replica.ts.
 import { randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -36,7 +49,7 @@ import {
   type HelloInfo,
   listenChannels,
 } from "@/lib/cluster/protocol";
-import { replicaConnection, replicaNodeStatuses, startReplica, stopReplica } from "@/lib/cluster/replica";
+import { reconnectReplica, replicaConnection, replicaNodeStatuses, startReplica, stopReplica } from "@/lib/cluster/replica";
 import { replicatedSeq, resetReplicatedSeq } from "@/lib/cluster/replication";
 import { snapshotSqlite } from "@/lib/cluster/sync";
 import {
@@ -54,6 +67,7 @@ import {
   type ProbeReplyMsg,
   type RedirectMsg,
   RESTART_REASON_ENV,
+  RESTART_REASON_FILE_ENV,
   type TestReplyMsg,
   type WireMessage,
 } from "@/lib/cluster/types";
@@ -172,6 +186,7 @@ function defaultState(): NodeState {
     joinedAt: null,
     envJoinId: null,
     secrets: { authSecret: null, databaseUrl: null, credentialsKey: null },
+    autoRestarts: 0,
   };
 }
 
@@ -182,6 +197,8 @@ function normalizeState(raw: unknown): NodeState | null {
   if (!nodeId) return null;
   const secrets = isRecord(raw.secrets) ? raw.secrets : {};
   const term = typeof raw.term === "number" && Number.isInteger(raw.term) && raw.term > 0 ? raw.term : 0;
+  const autoRestarts =
+    typeof raw.autoRestarts === "number" && Number.isInteger(raw.autoRestarts) && raw.autoRestarts > 0 ? raw.autoRestarts : 0;
   return {
     nodeId,
     name: text(raw.name) ?? os.hostname(),
@@ -201,6 +218,7 @@ function normalizeState(raw: unknown): NodeState | null {
       databaseUrl: text(secrets.databaseUrl),
       credentialsKey: text(secrets.credentialsKey),
     },
+    autoRestarts,
   };
 }
 
@@ -299,6 +317,7 @@ const STANDALONE: Partial<NodeState> = {
   members: [],
   preferredPrimaryId: null,
   joinedAt: null,
+  autoRestarts: 0,
 };
 
 // --- Notices and status ---------------------------------------------------------------------
@@ -845,6 +864,37 @@ export function answerHealRestart(channel: ClusterChannel, msg: WireMessage, req
   return ack;
 }
 
+/**
+ * Restart this server with `reason` for the next one: written to the file bin/supervisor.mjs names
+ * in RESTART_REASON_FILE_ENV (it passes it on as RESTART_REASON_ENV, so the primary's notice says
+ * why), then exit like restartProcess. The file is best effort: a write error is only logged, the
+ * restart happens anyway. Created exclusively without following symlinks (the supervisor deletes it
+ * before each start): whatever already sits at the path — file, FIFO, symlink — is never opened,
+ * so it can neither block this exit nor redirect the write.
+ */
+export function restartWithReason(reason: string): void {
+  const file = process.env[RESTART_REASON_FILE_ENV]?.trim();
+  if (file) {
+    const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0);
+    const text = reason
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: strip control characters (ESC sequences) from log lines
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    try {
+      const fd = openSync(file, flags, 0o600);
+      try {
+        writeSync(fd, `${text}\n`);
+      } finally {
+        closeSync(fd);
+      }
+    } catch (err) {
+      console.warn(`[cluster] could not write the restart reason to ${file}: ${errorText(err)}`);
+    }
+  }
+  restartProcess(reason);
+}
+
 /** Timestamped copy of the SQLite database before the primary's data replaces it (other drivers: nothing). */
 async function backupDatabase(label: string): Promise<void> {
   const { driver, target } = describeDatabase();
@@ -1079,6 +1129,24 @@ export async function leaveCluster(): Promise<ClusterStatus> {
       clusterNotice("error", `Could not set the primary's running and queued cards idle: ${errorText(err)}`);
     }
     resetAgentManager();
+  }
+  return getClusterStatus();
+}
+
+/**
+ * Replica: restore the link to the primary by hand. `restart: false` reconnects now (the backoff
+ * starts over; the replica runtime is started when it is not running); `restart: true` restarts
+ * this server through bin/supervisor.mjs, refused on a node the supervisor would not bring back.
+ */
+export async function restoreCluster(options: { restart: boolean }): Promise<ClusterStatus> {
+  if (readNodeState().role !== "replica") throw new HttpError(409, "This node is not a replica");
+  if (options.restart) {
+    if (!isSupervised()) throw new HttpError(409, `Cannot restart: ${UNSUPERVISED_ERROR}`);
+    clusterNotice("warning", "Restarting this node to restore the link to the primary (requested by an admin)");
+    restartWithReason("restore requested by an admin");
+  } else {
+    if (!reconnectReplica("reconnect requested by an admin")) await startReplica();
+    clusterNotice("info", "Reconnecting to the primary (requested by an admin)");
   }
   return getClusterStatus();
 }

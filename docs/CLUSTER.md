@@ -151,6 +151,28 @@ run report and details say which machine ran it.
   attempt with its reason (`[cluster] connecting to the primary failed (attempt 3): …; retrying in
   4 s`), at most once a minute while the reason stays the same. The link state (`connected`,
   `connecting`, `electing`) is also on the public `GET /api/v1/cluster/info`.
+- **Auto-restart** (a replica stays cut off): every replica runs a disconnect watchdog that checks
+  its link every 5 s. Once it has had no session with its primary for **Restart after** seconds
+  (Settings → Cluster on the primary, group **Replica auto-restart**; default 300, 60–86400, never
+  less than the failover timeout + 60 s) it restarts its server through `bin/supervisor.mjs` (exit
+  code 75), which starts it again to connect from a fresh process. Every further restart in a row
+  without a session doubles the wait, up to 1 hour unless the setting is longer; the count is kept in
+  `node.json` (`autoRestarts`) and a session resets it. The clock runs apart from the failover: the
+  election always comes first, and following another primary after it does not reset the clock —
+  only a session does. The restarted server reports why to the primary, which posts "Node X was
+  restarted on its machine (auto-restart: no connection to the primary p1 for 5 min (last error: …))
+  and is back online" (the server writes the reason to the file named by `OMP_UI_RESTART_REASON_FILE`
+  in a private 0700 temp dir per supervisor; the supervisor passes it on as `OMP_UI_RESTART_REASON`).
+  A node running without the supervisor (nodes started by the join command run under it) never exits:
+  it posts one warning notice per disconnect episode and keeps reconnecting. The watchdog also starts
+  a connect loop that has stopped again (one notice, then with backoff). The switch and the wait
+  default to the server's `OMP_UI_CLUSTER_AUTO_RESTART` (`true`/`1`/`yes`/`on`, `false`/`0`/`no`/
+  `off`) and `OMP_UI_CLUSTER_RESTART_AFTER_SEC`. This is apart from the primary's auto-healing, which
+  asks an unhealthy node to restart.
+- **Restoring a replica by hand**: Settings → Cluster on a replica has **Reconnect** (connect to the
+  primary now, the retry backoff starts over) and **Restart node** (restart the server through the
+  supervisor; refused on a node without it). The primary's notice then names "restore requested by an
+  admin". Both are `POST /api/v1/cluster/restore` (admin) with `{ restart: false | true }`.
 
 Replication is asynchronous: the database is shipped every 15 s when it changed, project and card
 files every 60 s. A promotion can therefore lose up to that much work; interrupted cards are resumed.

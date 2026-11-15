@@ -193,6 +193,11 @@ export function BoardFormDialog({
     setView("clone");
   }
 
+  /** Leave the clone form: back to the project form once a folder is set, else to the source choice. */
+  function leaveClone() {
+    setView(workdir ? "details" : "source");
+  }
+
   const close = (next: boolean) => {
     if (!saving && !busy) onOpenChange(next);
   };
@@ -263,7 +268,7 @@ export function BoardFormDialog({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
       {/* Don't pull focus back to the trigger: the picked action opens another dialog or view. */}
-      <DropdownMenuContent align="end" className="w-60" onCloseAutoFocus={(e) => e.preventDefault()}>
+      <DropdownMenuContent align="end" className="w-60 max-md:w-72" onCloseAutoFocus={(e) => e.preventDefault()}>
         <DropdownMenuItem
           onSelect={() => setPicker({ open: true, target })}
           className="min-h-11 gap-2.5 px-2.5 md:min-h-9"
@@ -314,19 +319,26 @@ export function BoardFormDialog({
     </div>
   );
 
-  const cloneView = (
+  const cloneForm = (
+    <CloneRepoForm onCloned={(path) => applyFolder(path, cloneTarget, true)} onBusyChange={setBusy} />
+  );
+
+  // Phones get Back in the sheet header (see below); the dialog keeps it above the form.
+  const cloneView = isMobile ? (
+    cloneForm
+  ) : (
     <div className="space-y-4">
       <Button
         type="button"
         variant="ghost"
         disabled={busy}
-        onClick={() => setView(workdir ? "details" : "source")}
-        className="-ml-2 h-11 px-2 text-muted-foreground md:h-8"
+        onClick={leaveClone}
+        className="-ml-2 h-8 px-2 text-muted-foreground"
       >
         <ChevronLeftIcon />
         Back
       </Button>
-      <CloneRepoForm onCloned={(path) => applyFolder(path, cloneTarget, true)} onBusyChange={setBusy} />
+      {cloneForm}
     </div>
   );
 
@@ -611,9 +623,24 @@ export function BoardFormDialog({
       <>
         <Drawer open={open} onOpenChange={close}>
           <DrawerContent className="data-[vaul-drawer-direction=bottom]:max-h-[92dvh]">
-            <DrawerHeader className="text-left">
-              <DrawerTitle className="text-lg">{header.title}</DrawerTitle>
-              <DrawerDescription>{header.description}</DrawerDescription>
+            <DrawerHeader className={cn(view === "clone" && "flex-row items-start gap-1 pl-2")}>
+              {view === "clone" && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  disabled={busy}
+                  onClick={leaveClone}
+                  aria-label="Back"
+                  className="-mt-2 size-11 shrink-0 text-muted-foreground"
+                >
+                  <ChevronLeftIcon className="size-5" />
+                </Button>
+              )}
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <DrawerTitle className="text-lg">{header.title}</DrawerTitle>
+                <DrawerDescription>{header.description}</DrawerDescription>
+              </div>
             </DrawerHeader>
             <div
               className={cn(
