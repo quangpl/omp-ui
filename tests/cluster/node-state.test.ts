@@ -8,15 +8,22 @@ vi.mock("@/lib/agent/manager", () => ({}));
 vi.mock("@/lib/cluster/primary", () => ({}));
 vi.mock("@/lib/cluster/replica", () => ({}));
 vi.mock("@/lib/cluster/replication", () => ({}));
-vi.mock("@/lib/cluster/protocol", () => ({}));
+vi.mock("@/lib/cluster/protocol", () => ({ ClusterAuthError: class ClusterAuthError extends Error {} }));
 vi.mock("@/lib/cluster/sync", () => ({}));
 vi.mock("@/lib/cluster/promote", () => ({}));
 
-import { clusterRole, readNodeState, updateNodeState } from "@/lib/cluster/node";
+import { clusterRole, readNodeState, startCluster, updateNodeState } from "@/lib/cluster/node";
 import { DEFAULT_CLUSTER_PORT } from "@/lib/cluster/types";
 
 const savedDataDir = process.env.DATA_DIR;
 const savedPort = process.env.OMP_UI_CLUSTER_PORT;
+const JOIN_ENV = ["OMP_UI_CLUSTER_JOIN", "OMP_UI_CLUSTER_TOKEN", "OMP_UI_CLUSTER_JOIN_ID"] as const;
+const savedJoinEnv = new Map(JOIN_ENV.map((key) => [key, process.env[key]]));
+const g = globalThis as unknown as {
+  __ompUiClusterStart?: Promise<void>;
+  __ompUiClusterEnvJoin?: NodeJS.Timeout;
+  __ompUiClusterPublish?: NodeJS.Timeout;
+};
 let dir: string;
 
 function nodeFile(dataDir = dir): string {
@@ -45,6 +52,10 @@ afterEach(() => {
   process.env.DATA_DIR = savedDataDir;
   if (savedPort === undefined) delete process.env.OMP_UI_CLUSTER_PORT;
   else process.env.OMP_UI_CLUSTER_PORT = savedPort;
+  for (const [key, value] of savedJoinEnv) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
 });
 
 describe("readNodeState", () => {
@@ -61,6 +72,7 @@ describe("readNodeState", () => {
       members: [],
       preferredPrimaryId: null,
       joinedAt: null,
+      envJoinId: null,
       secrets: { authSecret: null, databaseUrl: null, credentialsKey: null },
     });
     expect(state.nodeId).toMatch(/\S/);
@@ -104,6 +116,13 @@ describe("readNodeState", () => {
     expect(readNodeState()).toMatchObject({ role: "standalone", term: 0 });
     expect(fs.existsSync(`${nodeFile()}.corrupt`)).toBe(true);
   });
+
+  it("defaults a missing envJoinId to null", () => {
+    fs.mkdirSync(path.dirname(nodeFile()), { recursive: true });
+    fs.writeFileSync(nodeFile(), JSON.stringify({ nodeId: "node-1", role: "standalone" }));
+
+    expect(readNodeState()).toMatchObject({ nodeId: "node-1", envJoinId: null });
+  });
 });
 
 describe("updateNodeState", () => {
@@ -125,6 +144,13 @@ describe("updateNodeState", () => {
     expect(reloadFromDisk()).toMatchObject({ term: 2, joinedAt: "2026-01-01T00:00:00.000Z" });
   });
 
+  it("keeps envJoinId across updates and reloads", () => {
+    updateNodeState({ envJoinId: "run-1" });
+    updateNodeState({ term: 4 });
+
+    expect(reloadFromDisk()).toMatchObject({ term: 4, envJoinId: "run-1" });
+  });
+
   it("leaves no temp files behind", () => {
     updateNodeState({ term: 1 });
     expect(fs.readdirSync(path.dirname(nodeFile()))).toEqual(["node.json"]);
@@ -138,5 +164,62 @@ describe("clusterRole", () => {
     expect(clusterRole()).toBe("replica");
     updateNodeState({ role: "standalone" });
     expect(clusterRole()).toBe("standalone");
+  });
+});
+
+describe("joining from the environment at boot", () => {
+  const url = "http://127.0.0.1:9";
+
+  /** Boot cluster mode afresh; the (failing) join is answered by a stubbed fetch. */
+  async function boot() {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    g.__ompUiClusterStart = undefined;
+    await startCluster();
+    return fetch;
+  }
+
+  beforeEach(() => {
+    process.env.OMP_UI_CLUSTER_JOIN = url;
+    process.env.OMP_UI_CLUSTER_TOKEN = "omc_test";
+  });
+
+  afterEach(() => {
+    clearTimeout(g.__ompUiClusterEnvJoin);
+    clearTimeout(g.__ompUiClusterPublish);
+    g.__ompUiClusterEnvJoin = undefined;
+    g.__ompUiClusterPublish = undefined;
+    g.__ompUiClusterStart = undefined;
+  });
+
+  it("joins (and keeps retrying) while the join id differs from the consumed one", async () => {
+    process.env.OMP_UI_CLUSTER_JOIN_ID = "run-2";
+    updateNodeState({ envJoinId: "run-1" });
+
+    const fetch = await boot();
+
+    expect(fetch).toHaveBeenCalledWith(`${url}/api/v1/cluster/info`, expect.anything());
+    expect(g.__ompUiClusterEnvJoin).toBeDefined();
+    expect(readNodeState()).toMatchObject({ role: "standalone", envJoinId: "run-1" });
+  });
+
+  it("does not join again once the join id was consumed", async () => {
+    process.env.OMP_UI_CLUSTER_JOIN_ID = "run-2";
+    updateNodeState({ envJoinId: "run-2" });
+
+    const fetch = await boot();
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(g.__ompUiClusterEnvJoin).toBeUndefined();
+  });
+
+  it("without a join id only joins from a node.json created on this boot", async () => {
+    delete process.env.OMP_UI_CLUSTER_JOIN_ID;
+    fs.mkdirSync(path.dirname(nodeFile()), { recursive: true });
+    fs.writeFileSync(nodeFile(), JSON.stringify({ nodeId: "node-1", role: "standalone" }));
+
+    const fetch = await boot();
+
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

@@ -20,7 +20,7 @@ export const GET = withApi(
       platform: process.platform,
       arch: process.arch,
       nodeVersion: process.version,
-      omp: { available: omp !== null, version: omp?.version ?? null },
+      omp: { available: omp !== null, version: omp?.version ?? null, sha256: omp?.sha256 ?? null },
     };
     return json(info);
   },

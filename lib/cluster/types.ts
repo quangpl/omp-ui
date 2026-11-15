@@ -72,6 +72,12 @@ export interface NodeState {
   preferredPrimaryId: string | null;
   joinedAt: string | null;
   /**
+   * `OMP_UI_CLUSTER_JOIN_ID` of the join-script run whose join succeeded. The server joins from the
+   * environment (retrying until it works) only while the env id differs from this, so a restart
+   * never re-joins a cluster an admin left, and re-running the join script joins again.
+   */
+  envJoinId: string | null;
+  /**
    * Secrets replicated from the primary that this server needs from boot on (applied to
    * process.env AUTH_SECRET / CREDENTIALS_KEY before use, so replicated tokens and sealed values
    * keep working here and after a promotion); `databaseUrl` for a shared postgres/mongo database.

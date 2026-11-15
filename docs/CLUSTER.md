@@ -16,22 +16,51 @@ it (`standalone`) behaves exactly as before.
    curl -fsSL http://<primary>:3000/api/v1/cluster/join | sh -s -- <token>
    ```
 
-   Add `--service` to install it as a systemd user service (starts on boot, restarts on failure), or
-   `--background` to keep it running after you log out. Without a flag it runs in the foreground.
+   Once the node has joined it keeps running in the background (log `~/.omp-ui-node/omp-ui-node.log`,
+   pid file next to it) and the command exits with a summary; if the node does not become ready it
+   is stopped again and the command shows the error and the end of the log. Add `--service` to install
+   it as a systemd user service instead (starts on boot, restarts on failure), or `--foreground` to keep
+   it attached to the terminal. Output is colored on a terminal (`NO_COLOR=1` turns that off); package
+   manager and download output goes to `~/.omp-ui-node/join.log`.
 
-Nothing else has to be installed or configured on the new machine (besides `curl` or `wget`):
+The command makes a bare machine ready in one go (only `curl` or `wget` must exist to run it). It
+prints each step and stops with a clear message when something cannot be fixed:
+
+1. checks the OS and CPU (Linux or macOS; glibc — Alpine/musl is not supported) and whether it has
+   root rights (root, or `sudo` without a password);
+2. installs missing system packages in one call with the system package manager (apt, dnf, yum,
+   zypper, pacman; Homebrew on macOS): `tar`, `gzip`, `ca-certificates` and `git`;
+3. checks that the primary answers and has cluster mode on;
+4. installs Node.js with `npm`/`npx`/`corepack` (the official build of the primary's Node version,
+   or the primary's own Node binary when nodejs.org is unreachable) and enables `pnpm`/`yarn` shims;
+5. downloads the primary's omp binary (checksum-verified) where the node's server runs it from;
+6. installs the primary's omp-ui build, writes the node's settings (mode 600) and starts it;
+7. waits until the node has joined and reports what it installed — or shows the node's log.
 
 | Needed on the node | Where it comes from |
 | --- | --- |
-| Node.js | the primary's own Node binary when OS/architecture match, else nodejs.org |
+| git, tar, gzip, CA certificates | installed by the join command with root rights |
+| Node.js, npm, npx, pnpm/yarn (corepack) | nodejs.org (the primary's version), else the primary's Node binary |
 | omp-ui | the primary's build (`/api/v1/cluster/bundle`) |
-| omp | the primary's omp binary (same OS/architecture), verified by SHA-256 |
+| omp | the primary's omp binary (same OS/architecture), verified by SHA-256, on the node's `PATH` |
 | omp configuration, credentials, skills, extensions, rules, MCP servers | a copy of the primary's omp agent dir (`~/.omp/agent`), refreshed before every run |
 | AI provider keys and MCP secrets | passed with every run (Settings → AI Providers on the primary) |
+| git identity and HTTPS credentials, GitHub/GitLab/npm tokens, `.npmrc` | the primary's auth pack (below) |
+| omp-ui sign-ins | replicated users and session secret: the primary's accounts work on the node |
 | Project files, card files, worktrees, omp sessions | synced before the run, changes streamed back while it runs |
 
-Project toolchains the agents use (git, language runtimes, package managers, Docker) still have to
-exist on the node, like on any development machine.
+**Auth pack.** The primary bundles what agents need to authenticate and ships it over the encrypted
+channel into the node's `DATA_DIR/cluster/auth` (mode 700, files 600; the node's own home directory
+is never touched): a git config with the primary's `user.name`/`user.email` (after the node's own
+`~/.gitconfig`, which stays in effect) and a credential store holding the primary's
+`~/.git-credentials` plus its GitHub token (from `GH_TOKEN`/`GITHUB_TOKEN` or `gh auth token`), and a
+copy of `~/.npmrc`. Agents on the node get `GIT_CONFIG_GLOBAL`, `NPM_CONFIG_USERCONFIG`, `GH_TOKEN`/
+`GITHUB_TOKEN`, `GITLAB_TOKEN`/`GL_TOKEN` and `NPM_TOKEN` accordingly, so commits carry the same author
+as on the primary and HTTPS pushes and private packages work. SSH private keys are never copied: git
+over SSH on a node uses the node's own keys.
+
+Language runtimes other than Node.js and tools such as Docker are not installed: add them on the node
+when your projects need them.
 
 Environment variables of the join script: `OMP_UI_NODE_DIR` (default `~/.omp-ui-node`),
 `OMP_UI_PORT` (the node's web port, default 3000), `OMP_UI_CLUSTER_PORT` (cluster port, default 7790).

@@ -5,7 +5,7 @@
 // run with (localOmpInfo) in register / node.status.
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, createWriteStream, type Stats } from "node:fs";
+import { accessSync, constants as fsConstants, createReadStream, createWriteStream, statSync, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -86,18 +86,20 @@ async function describeBinary(file: string, size: number): Promise<OmpBinaryInfo
   return { path: file, version, sha256, size, platform: process.platform, arch: process.arch };
 }
 
+/** Where `command` may live: with a path separator it is a path, else every PATH entry is a candidate. */
+function executableCandidates(command: string): string[] {
+  const name = command.trim();
+  if (!name) return [];
+  if (path.isAbsolute(name) || name.includes("/") || name.includes(path.sep)) return [path.resolve(name)];
+  return (process.env.PATH ?? "")
+    .split(path.delimiter)
+    .filter(Boolean)
+    .map((dir) => path.join(dir, name));
+}
+
 /** Real path of an executable: `command` with a path separator is taken as a path, else looked up on PATH. */
 async function resolveExecutable(command: string): Promise<string | null> {
-  const name = command.trim();
-  if (!name) return null;
-  const candidates =
-    path.isAbsolute(name) || name.includes("/") || name.includes(path.sep)
-      ? [path.resolve(name)]
-      : (process.env.PATH ?? "")
-          .split(path.delimiter)
-          .filter(Boolean)
-          .map((dir) => path.join(dir, name));
-  for (const candidate of candidates) {
+  for (const candidate of executableCandidates(command)) {
     try {
       await fs.access(candidate, fs.constants.X_OK);
       const real = await fs.realpath(candidate);
@@ -107,6 +109,16 @@ async function resolveExecutable(command: string): Promise<string | null> {
     }
   }
   return null;
+}
+
+/** Whether `file` is an executable file (symlinks followed). */
+function isExecutableFile(file: string): boolean {
+  try {
+    accessSync(file, fsConstants.X_OK);
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /** First non-empty line of `<file> --version`, or null when it fails. */
@@ -301,7 +313,8 @@ async function installBinary(
   const target = path.join(dir, `omp-${want.sha256.slice(0, 12)}`);
   try {
     const installed = await fs.stat(target).catch(() => null);
-    if (!installed?.isFile() || (want.size > 0 && installed.size !== want.size)) {
+    const missing = !installed?.isFile() || (want.size > 0 && installed.size !== want.size);
+    if (missing) {
       await fs.mkdir(dir, { recursive: true, mode: 0o700 });
       const temp = path.join(dir, `.omp-${want.sha256.slice(0, 12)}.${randomBytes(6).toString("hex")}.tmp`);
       try {
@@ -317,8 +330,12 @@ async function installBinary(
       } finally {
         await fs.rm(temp, { force: true });
       }
-      await pruneBinaries(dir);
     }
+    // Runs use `target` directly; the `omp` command is for everything else this node spawns.
+    await installOmpCommand(target).catch((err: unknown) => {
+      console.warn(`[cluster] cannot make ${target} this node's omp command:`, err instanceof Error ? err.message : err);
+    });
+    if (missing) await pruneBinaries(dir);
   } catch (err) {
     state.status = "failed";
     state.error = err instanceof Error && err.message ? err.message : String(err);
@@ -385,14 +402,78 @@ async function* gunzipWhenCompressed(source: AsyncIterable<Buffer>): AsyncGenera
   }
 }
 
-/** Delete all but the KEPT_BINARIES newest `omp-*` binaries. */
+/** Delete all but the KEPT_BINARIES newest `omp-*` binaries; the one the `omp` command points at stays. */
 async function pruneBinaries(dir: string): Promise<void> {
+  const linked = await fs.readlink(path.join(dir, "omp")).then(
+    (target) => path.resolve(dir, target),
+    () => null,
+  );
   const names = (await fs.readdir(dir)).filter((name) => name.startsWith("omp-"));
   const dated = await Promise.all(
     names.map(async (name) => ({ name, mtime: (await fs.stat(path.join(dir, name)).catch(() => null))?.mtimeMs ?? 0 })),
   );
   dated.sort((a, b) => b.mtime - a.mtime);
-  for (const { name } of dated.slice(KEPT_BINARIES)) await fs.rm(path.join(dir, name), { force: true });
+  for (const { name } of dated.slice(KEPT_BINARIES)) {
+    if (path.resolve(dir, name) !== linked) await fs.rm(path.join(dir, name), { force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Nodes: the `omp` command
+
+/**
+ * DATA_DIR/cluster/bin/omp (absolute): this node's `omp` command, a symlink to the current
+ * omp-<sha256 prefix> binary (made by the join script, and by replicas when they download one).
+ */
+function ompCommandFile(): string {
+  return path.resolve(clusterPaths().bin, "omp");
+}
+
+/** Put `dir` (absolute) in front of process.env.PATH unless it is on it already. */
+function prependToPath(dir: string): void {
+  const current = process.env.PATH ?? "";
+  if (current.split(path.delimiter).some((entry) => entry !== "" && path.resolve(entry) === dir)) return;
+  process.env.PATH = current ? `${dir}${path.delimiter}${current}` : dir;
+}
+
+/**
+ * Make `binary` this node's `omp` command: DATA_DIR/cluster/bin/omp is pointed at it atomically
+ * (temp symlink + rename; relative when the binary lives next to it) and the bin dir is put on
+ * process.env.PATH, so everything this server spawns finds `omp`.
+ */
+export async function installOmpCommand(binary: string): Promise<void> {
+  const link = ompCommandFile();
+  const dir = path.dirname(link);
+  const file = path.resolve(binary);
+  const target = path.dirname(file) === dir ? path.basename(file) : file;
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  if ((await fs.readlink(link).catch(() => null)) !== target) {
+    const temp = path.join(dir, `.omp.${randomBytes(6).toString("hex")}.tmp`);
+    try {
+      await fs.symlink(target, temp);
+      await fs.rename(temp, link);
+    } finally {
+      await fs.rm(temp, { force: true });
+    }
+  }
+  prependToPath(dir);
+}
+
+/** Boot: put DATA_DIR/cluster/bin on process.env.PATH when it holds an `omp` command and is not on PATH yet. */
+export function ensureOmpCommandOnPath(): void {
+  const command = ompCommandFile();
+  if (isExecutableFile(command)) prependToPath(path.dirname(command));
+}
+
+/**
+ * The omp command this machine runs for the configured ompPath `stored` (settings are shared by
+ * the whole cluster): a path that is not executable here, or a bare name not found on PATH, maps
+ * to DATA_DIR/cluster/bin/omp when that exists; anything else is returned unchanged.
+ */
+export function localOmpCommand(stored: string): string {
+  if (executableCandidates(stored).some(isExecutableFile)) return stored;
+  const command = ompCommandFile();
+  return isExecutableFile(command) ? command : stored;
 }
 
 // ---------------------------------------------------------------------------------------------

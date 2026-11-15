@@ -4,6 +4,7 @@
 // short node disconnect (NODE_LOST_GRACE_MS): stdout is replayed and unacknowledged stdin resent.
 import path from "node:path";
 import type { RpcExitInfo, RpcFrame, RpcTransport, RpcTransportHandlers } from "@/lib/agent/rpc";
+import { authRunEnv, buildAuthPack, nodeAuthDir } from "@/lib/cluster/auth-pack";
 import { buildOmpAgentPack } from "@/lib/cluster/omp-runtime";
 import { canonicalPath, mirrorPath } from "@/lib/cluster/paths";
 import type { ClusterChannel } from "@/lib/cluster/protocol";
@@ -243,17 +244,20 @@ export class RemoteRunTransport implements RpcTransport {
 
   /** The run.start message, its sync folders and the path map, for a node with `paths`. */
   private async prepare(paths: NodePaths): Promise<{ start: RunStartMsg; folders: SyncFolderSpec[]; map: PathMap }> {
-    const [pack, omp, gitDirs] = await Promise.all([
+    const [pack, auth, omp, gitDirs] = await Promise.all([
       buildOmpAgentPack(),
+      buildAuthPack(),
       this.link.ompBinary(),
       gitCommonDirs(this.spec.folders.map((f) => path.resolve(f.path))),
     ]);
+    const authDir = nodeAuthDir(paths.dataDir);
     // A primary promoted from a replica runs on its mirror copies: the node's copy is keyed by the canonical path.
     const toMirror = (p: string): [string, string] => [path.resolve(p), mirrorPath(canonicalPath(p), paths.mirrorRoot)];
     const folders: SyncFolderSpec[] = [
       ...this.spec.folders.map((f, i) => folderSpec(`folder-${i}`, toMirror(f.path), f.kind, true)),
       ...gitDirs.map((dir, i) => folderSpec(`git-${i}`, toMirror(dir), "raw", true)),
       folderSpec("omp-agent", [path.resolve(pack), paths.ompAgentDir], "raw", false),
+      folderSpec("auth", [path.resolve(auth.dir), authDir], "raw", false),
     ];
     // The node's copy of this server's data dir (replicated card/board files, workspaces) is the
     // shortest pair, so every more specific folder above wins the longest-prefix mapping.
@@ -269,7 +273,7 @@ export class RemoteRunTransport implements RpcTransport {
       taskId: this.taskId,
       args: this.spec.args.map((arg) => map.toNode(arg)),
       cwd: map.pathToNode(path.resolve(this.spec.cwd)),
-      env: { ...env, PI_CODING_AGENT_DIR: paths.ompAgentDir },
+      env: { ...env, ...authRunEnv(authDir, auth), PI_CODING_AGENT_DIR: paths.ompAgentDir },
       files: this.spec.files.map((f) => ({ path: map.pathToNode(path.resolve(f.path)), content: map.toNode(f.content) })),
       folders,
       omp,
