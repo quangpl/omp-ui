@@ -3,6 +3,7 @@
 // parallel and dependent ones wait. It runs on a warm `omp --mode rpc` helper worker in the
 // project with read-only tools, so it can look at the files each card touches.
 import { readModelRoles } from "@/lib/agent/model-select";
+import { chooseHelperModel } from "@/lib/agent/provider-quota";
 import { existingFolders, extractJsonObject, isDirectory, runOmpHelper } from "@/lib/agent/omp-helper";
 import { clip } from "@/lib/card-draft";
 import { childEnv } from "@/lib/child-env";
@@ -63,8 +64,8 @@ export async function planQueue(options: PlanQueueOptions): Promise<QueuePlan> {
   ]);
   if (!found) throw new Error(`Project folder not found: ${workdir}`);
   // The fast `smol` role when configured; otherwise the usual model, thinking briefly.
-  const model = roles?.smol ? "@smol" : board.model?.trim() || settings.defaultModel.trim() || null;
-  const thinking = roles?.smol ? null : "low";
+  const { model, role, config } = await chooseHelperModel({ settings, pinned: board.model, roles: [["smol", roles?.smol]] });
+  const thinking = role ? null : "low";
   signal.throwIfAborted();
 
   const prompt = buildPlanPrompt({ board: { ...board, extraFolders: extras }, queued, running });
@@ -74,6 +75,7 @@ export async function planQueue(options: PlanQueueOptions): Promise<QueuePlan> {
     addDirs: extras,
     model,
     thinking,
+    config,
     timeoutSeconds: TIMEOUT_SECONDS,
     env,
     prompt,

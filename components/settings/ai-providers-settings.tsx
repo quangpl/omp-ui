@@ -25,6 +25,7 @@ import { formatDateTime, formatRelative, useNow } from "@/components/board/forma
 import { formatLatency } from "@/components/credentials/health-badge";
 import { ProviderTile } from "@/components/credentials/provider-tile";
 import { PasswordInput } from "@/components/password-input";
+import { AiProviderPriority } from "@/components/settings/ai-provider-priority";
 import { SettingsField, SettingsGroup, SettingsPanel, SettingsSection } from "@/components/settings/settings-section";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -293,6 +294,8 @@ export function AiProvidersSettingsSection() {
               </AlertDescription>
             </Alert>
           )}
+
+          <AiProviderPriority data={data} />
 
           <SettingsPanel>
             <ul className="divide-y divide-border/70">

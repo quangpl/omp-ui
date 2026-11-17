@@ -6,6 +6,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { runOmpHelper } from "@/lib/agent/omp-helper";
+import { chooseHelperModel } from "@/lib/agent/provider-quota";
 import { clip } from "@/lib/card-draft";
 import { childEnv } from "@/lib/child-env";
 import type { Repository } from "@/lib/db/types";
@@ -133,12 +134,14 @@ export async function runSchedulerAssistant(options: {
   const cwd = path.join(dataDir(), "scheduler-assistant");
   await mkdir(cwd, { recursive: true });
   let draft: SchedulerDraft | null = null;
+  const { model, config } = await chooseHelperModel({ settings, pinned: null, roles: [] });
   const reply = await runOmpHelper({
     command: settings.ompPath,
     cwd,
     addDirs: [],
-    model: settings.defaultModel.trim() || null,
+    model,
     thinking: null,
+    config,
     timeoutSeconds: TIMEOUT_SECONDS,
     env: childEnv(await mcpAgentEnv()),
     prompt: buildPrompt(request, boards, defaultBoard),

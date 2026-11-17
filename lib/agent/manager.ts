@@ -24,6 +24,7 @@ import {
 import { currentResourcePressure, startResourceGuard } from "@/lib/agent/resource-guard";
 import { LoopDetector, loopSteerMessage, type LoopDetection } from "@/lib/agent/loop-detector";
 import { chooseModel, readModelRoles } from "@/lib/agent/model-select";
+import { chooseProvider, markOutOfQuota } from "@/lib/agent/provider-quota";
 import { buildPrompt, buildSteerMessage } from "@/lib/agent/prompt";
 import { planQueue, type PlanCard, type QueuePlan } from "@/lib/agent/queue-planner";
 import { listProcesses, nextResources, treeTotals } from "@/lib/agent/resources";
@@ -81,6 +82,7 @@ import { removeTaskDockerResources } from "@/lib/docker";
 import { publish } from "@/lib/events";
 import { dataDir, ensureFilesFolder } from "@/lib/files";
 import { extractQuestion } from "@/lib/question";
+import { fallbackRetryConfig, selectorProvider, type ProviderPick } from "@/lib/provider-priority";
 import { isQuotaError, QUOTA_RETRY_STEPS_MS } from "@/lib/quota";
 import { startSchedulerService } from "@/lib/scheduler";
 import {
@@ -305,6 +307,11 @@ interface ActiveRun {
   undeliveredSteers: Map<string, string>;
   /** The "waiting for background work" status was logged for this stretch of the run (reset by `agent_start`). */
   waitingLogged: boolean;
+  /**
+   * omp provider of the model the run is on (omp's `get_state`, then each `retry_fallback_applied`);
+   * a quota failure puts it on cooldown for the provider priority. Null until omp reports it.
+   */
+  provider: string | null;
   /** Serializes startup, frame handling and teardown so persistence stays ordered. */
   chain: Promise<void>;
 }
@@ -1172,6 +1179,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       queuedSteering: [],
       undeliveredSteers: new Map(),
       waitingLogged: false,
+      provider: null,
       chain: Promise.resolve(),
     };
     this.active.set(taskId, run);
@@ -1512,14 +1520,16 @@ class OmpAgentManager implements AgentManager, RunControl {
     const sessionFile = task.sessionFile;
     // An automatic retry after a failed run: the prompt tells the agent what went wrong.
     const retriedRunId = task.autoRetries > 0 ? task.lastRunId : null;
-    const [workspace, taskFiles, boardFiles, comments, foundSession, retriedRun] = await Promise.all([
+    const [workspace, taskFiles, boardFiles, comments, foundSession, retriedRun, providerPick] = await Promise.all([
       board.worktrees ? ensureWorkspace(board, task) : null,
       ensureFilesFolder("tasks", task.id),
       ensureFilesFolder("boards", board.id),
       repo.listComments(task.id),
       sessionFile ? stat(sessionFile).then(() => sessionFile, () => null) : null,
       retriedRunId ? repo.getRun(retriedRunId) : null,
+      chooseProvider(settings, board.model),
     ]);
+    const quotaRetry = retriedRun?.status === "failed" && isQuotaError(retriedRun.error);
     // Only the agent's own failures: a quota error or a lost node is not something it can fix.
     const previousFailure =
       retriedRun?.status === "failed" &&
@@ -1611,12 +1621,13 @@ class OmpAgentManager implements AgentManager, RunControl {
         : null;
     // Memory off for this card: the run config drops agentmemory's extension and MCP server.
     const memoryOff = task.ignoreMemory ? memoryOffOverlay(settings.ompPath, workdir) : null;
+    const overlay = runConfigOverlay(settings, taskFiles, subagents, providerPick);
     const [workdirFound, roles, configFile, memoryProject, memoryOffSettings] = await Promise.all([
       isDirectory(workdir),
       autoSelect && resumeFile === null ? readModelRoles(settings.ompPath, workdir, childEnv()) : null,
       memoryOff
-        ? memoryOff.then((off) => writeRunConfig(task.id, { ...runConfigOverlay(settings, taskFiles, subagents), ...off }))
-        : writeRunConfig(task.id, runConfigOverlay(settings, taskFiles, subagents)),
+        ? memoryOff.then((off) => writeRunConfig(task.id, { ...overlay, ...off }))
+        : writeRunConfig(task.id, overlay),
       // Cards in worktrees remember under the board's project, like omp sessions in its folder.
       memoryOff ? "" : memoryProjectName(board.workdir),
       memoryOff,
@@ -1631,6 +1642,8 @@ class OmpAgentManager implements AgentManager, RunControl {
       feedback,
       isResume: resumeFile !== null,
       roles,
+      provider: providerPick,
+      quotaRetry,
     });
     if (run.finished) return;
     const { model, thinking } = choice;
@@ -1662,6 +1675,10 @@ class OmpAgentManager implements AgentManager, RunControl {
       if (run.finished) return;
     }
 
+    if (providerPick) {
+      await this.event(run, "status", providerNote(providerPick));
+      if (run.finished) return;
+    }
     if (choice.source === "auto") {
       await this.event(run, "status", `Model auto-selected: ${model ?? "omp default"} (${choice.reason})`);
       if (run.finished) return;
@@ -1758,9 +1775,11 @@ class OmpAgentManager implements AgentManager, RunControl {
       const state = await proc.send({ type: "get_state" });
       const sessionFile = isObject(state.data) ? asString(state.data.sessionFile) : undefined;
       const sessionId = isObject(state.data) ? asString(state.data.sessionId) : undefined;
-      if (choice.source === "session" && isObject(state.data) && isObject(state.data.model)) {
-        const provider = asString(state.data.model.provider);
-        const id = asString(state.data.model.id);
+      const stateModel = isObject(state.data) && isObject(state.data.model) ? state.data.model : null;
+      run.provider = (stateModel && asString(stateModel.provider)) ?? null;
+      if (choice.source === "session" && isObject(state.data) && stateModel) {
+        const provider = run.provider;
+        const id = asString(stateModel.id);
         const level = asString(state.data.thinkingLevel);
         if (id) {
           await this.event(
@@ -1964,13 +1983,12 @@ class OmpAgentManager implements AgentManager, RunControl {
       case "manual_compaction_end":
         await this.onCompactionEnd(run, frame);
         break;
-      case "retry_fallback_applied":
-        await this.event(
-          run,
-          "status",
-          `Switched model after an error: ${asString(frame.from) ?? "unknown model"} → ${asString(frame.to) ?? "unknown model"}`,
-        );
+      case "retry_fallback_applied": {
+        const to = asString(frame.to);
+        if (to) run.provider = selectorProvider(to) ?? run.provider;
+        await this.event(run, "status", `Switched model after an error: ${asString(frame.from) ?? "unknown model"} → ${to ?? "unknown model"}`);
         break;
+      }
       case "extension_ui_request":
         await this.onUiRequest(run, frame);
         break;
@@ -2576,6 +2594,8 @@ class OmpAgentManager implements AgentManager, RunControl {
         await this.settleSubagents(run);
         await this.event(run, "error", message);
       }
+      // Provider priority: the provider ran out of quota, so the next runs use the next provider.
+      if (run.provider && isQuotaError(message)) markOutOfQuota(run.provider);
       // Feedback that arrived meanwhile starts a fresh run once this one is released.
       const failure = await this.recordFailure(run.taskId, message, !run.restartAfter && options.retry !== false);
       retryAt = failure.retryAt;
@@ -3050,11 +3070,14 @@ export type RunConfigSettings = Pick<
  * depth, runtime of each) and context compaction once the context fills a share of the model's
  * window. `subagents` is the run's subagent cap (lib/agent/concurrency.ts subagentConcurrency);
  * null uses the ceiling `subagentMaxConcurrency` (a remote node's machine is not sampled here).
+ * `pick` (provider priority): when its provider's model hits a usage limit mid-run, omp switches
+ * to the backup providers' models (fallbackRetryConfig); other errors keep retrying the same model.
  */
 export function runConfigOverlay(
   settings: RunConfigSettings,
   taskFiles: string,
   subagents: number | null,
+  pick: ProviderPick | null = null,
 ): Record<string, unknown> {
   const browser =
     settings.browser === "off"
@@ -3075,7 +3098,22 @@ export function runConfigOverlay(
     };
   }
   if (settings.contextCompaction) overlay.compaction = { thresholdPercent: settings.contextCompactPercent };
+  const retry = fallbackRetryConfig(pick);
+  if (retry) overlay.retry = retry;
   return overlay;
+}
+
+/** Run-log line for the provider priority's pick: which provider the run uses, and why. */
+function providerNote(pick: ProviderPick): string {
+  const { entry } = pick;
+  const until = (ms: number) => `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  const using = `${entry.provider} (${entry.model})`;
+  const head = pick.allOut
+    ? `Provider priority: every provider is out of quota, using Main ${using}`
+    : pick.index === 0
+      ? `Provider priority: using Main ${using}`
+      : `Provider priority: ${pick.skipped.map((s) => `${s.provider} out of quota until ${until(s.until)}`).join(", ")} → using ${using}`;
+  return pick.fallbacks.length > 0 ? `${head}; if it runs out of quota: ${pick.fallbacks.join(" → ")}` : head;
 }
 
 /** Status lines for the run's log: the orchestration limits its config overlay applies. */

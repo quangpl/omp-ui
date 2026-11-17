@@ -4,6 +4,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { runOmpHelper } from "@/lib/agent/omp-helper";
+import { chooseHelperModel } from "@/lib/agent/provider-quota";
 import { childEnv } from "@/lib/child-env";
 import { publish } from "@/lib/events";
 import { dataDir } from "@/lib/files";
@@ -181,12 +182,14 @@ async function ask(
   const cwd = path.join(dataDir(), "chat-assistant");
   await mkdir(cwd, { recursive: true });
   const ctx: ChatToolContext = { platform: msg.platform, chatId: msg.chatId, userId: msg.userId };
+  const { model, config } = await chooseHelperModel({ settings, pinned: null, roles: [] });
   return runOmpHelper({
     command: settings.ompPath,
     cwd,
     addDirs: [],
-    model: settings.defaultModel.trim() || null,
+    model,
     thinking: null,
+    config,
     timeoutSeconds: TIMEOUT_SECONDS,
     env: childEnv(await mcpAgentEnv()),
     prompt: await buildPrompt(env, msg),

@@ -7,6 +7,7 @@
 // It runs on a warm `omp --mode rpc` helper worker in the project with read-only tools, like the
 // other helpers.
 import { readModelRoles } from "@/lib/agent/model-select";
+import { chooseHelperModel } from "@/lib/agent/provider-quota";
 import { existingFolders, extractJsonObject, runOmpHelper } from "@/lib/agent/omp-helper";
 import { clip } from "@/lib/card-draft";
 import { childEnv } from "@/lib/child-env";
@@ -238,15 +239,23 @@ async function runAdvisor(scope: AdvisorScope, prompt: string): Promise<string> 
     existingFolders(scope.extraFolders, workdir),
     readModelRoles(settings.ompPath, workdir, env),
   ]);
-  signal.throwIfAborted();
   // omp's own `advisor` role, else the reasoning `slow` role, else the usual model thinking harder.
-  const role = roles?.advisor ? "@advisor" : roles?.slow ? "@slow" : null;
+  const { model, role, config } = await chooseHelperModel({
+    settings,
+    pinned: board.model,
+    roles: [
+      ["advisor", roles?.advisor],
+      ["slow", roles?.slow],
+    ],
+  });
+  signal.throwIfAborted();
   return runOmpHelper({
     command: settings.ompPath,
     cwd: workdir,
     addDirs,
-    model: role ?? (board.model?.trim() || settings.defaultModel.trim() || null),
+    model,
     thinking: role ? null : "high",
+    config,
     timeoutSeconds: TIMEOUT_SECONDS,
     env,
     prompt,

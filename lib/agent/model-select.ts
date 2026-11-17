@@ -4,6 +4,7 @@
 // always wins; anything else falls back to the default model.
 import { execFile } from "node:child_process";
 import { needsOrchestration } from "@/lib/agent/prompt";
+import { selectorProvider, type ProviderPick } from "@/lib/provider-priority";
 import type { AppSettings, Board, Comment, Task } from "@/lib/types";
 
 /**
@@ -25,9 +26,10 @@ export interface ModelChoice {
   thinking: ThinkingLevel | null;
   /**
    * `board`: pinned on the board; `auto`: picked for this task; `default`: settings default;
-   * `session`: a resumed session keeps the model and thinking level it saved.
+   * `provider`: the provider priority's active entry (lib/provider-priority.ts); `session`: a
+   * resumed session keeps the model and thinking level it saved.
    */
-  source: "board" | "auto" | "default" | "session";
+  source: "board" | "auto" | "default" | "provider" | "session";
   /** Null unless `source` is `auto`. */
   profile: TaskProfile | null;
   /** Human-readable why, for the run log. */
@@ -141,11 +143,16 @@ export function classifyTask(task: Task, feedback: Comment[]): { profile: TaskPr
  * that role is not configured); then the settings default. `roles` null means the configured roles
  * are unknown, so auto selection only adjusts thinking.
  *
+ * `provider` (the provider priority's pick, lib/provider-priority.ts pickProvider) replaces the
+ * settings default with its entry's model, and a role counts only when its model runs on that
+ * entry's provider: the run stays on the provider that has quota.
+ *
  * A resumed run with `autoModel` on and no pinned model passes neither `--model` nor `--thinking`:
  * omp restores the session's saved model and thinking level, like continuing a direct omp chat.
  * Switching models there (e.g. `@smol` for a short feedback comment) would re-send the whole cached
  * history to another model, a full prompt-cache miss. A pinned board model and the autoModel-off
- * default stay explicit user choices and still apply.
+ * default stay explicit user choices and still apply, and so does the provider's model when the
+ * retried run ran out of quota (`quotaRetry`): its saved model is the one without quota.
  */
 export function chooseModel(input: {
   board: Pick<Board, "model">;
@@ -154,33 +161,43 @@ export function chooseModel(input: {
   feedback: Comment[];
   isResume: boolean;
   roles: ModelRoles | null;
+  provider?: ProviderPick | null;
+  quotaRetry?: boolean;
 }): ModelChoice {
   const { board, settings, task, feedback, isResume, roles } = input;
   const pinned = board.model?.trim();
   if (pinned) return { model: pinned, thinking: null, source: "board", profile: null, reason: "set on the board" };
 
-  const fallback = settings.defaultModel.trim() || null;
+  const active = input.provider?.entry ?? null;
+  const fallback = active?.model ?? (settings.defaultModel.trim() || null);
+  const fallbackLabel = active ? `${active.provider} provider` : "default model";
   if (!settings.autoModel) {
-    return { model: fallback, thinking: null, source: "default", profile: null, reason: "default model" };
+    return { model: fallback, thinking: null, source: active ? "provider" : "default", profile: null, reason: fallbackLabel };
   }
 
   if (isResume) {
+    if (active && input.quotaRetry) {
+      return { model: active.model, thinking: null, source: "provider", profile: null, reason: "the retried run ran out of quota" };
+    }
     return { model: null, thinking: null, source: "session", profile: null, reason: "resumed session keeps its model" };
   }
 
   const { profile, cues } = classifyTask(task, feedback);
   const why = `${PROFILE_LABEL[profile]}${cues.length > 0 ? `: ${cues.join(", ")}` : ""}`;
   const role = profile === "standard" ? null : PROFILE_ROLE[profile];
-  if (role && roles?.[role]?.trim()) {
-    return { model: `@${role}`, thinking: null, source: "auto", profile, reason: `${why} → ${role} role (${roles[role]})` };
+  const roleModel = role ? roles?.[role]?.trim() : undefined;
+  const offProvider = !!roleModel && !!active && selectorProvider(roleModel) !== active.provider;
+  if (role && roleModel && !offProvider) {
+    return { model: `@${role}`, thinking: null, source: "auto", profile, reason: `${why} → ${role} role (${roleModel})` };
   }
   const thinking = PROFILE_THINKING[profile];
+  const missing = offProvider ? `${role} role is not on the ${active!.provider} provider` : `no ${role} role configured`;
   return {
     model: fallback,
     thinking,
     source: "auto",
     profile,
-    reason: role ? `${why} → no ${role} role configured, default model${thinking ? ` with ${thinking} thinking` : ""}` : why,
+    reason: role ? `${why} → ${missing}, ${fallbackLabel}${thinking ? ` with ${thinking} thinking` : ""}` : why,
   };
 }
 
