@@ -83,7 +83,13 @@ import {
   sdlcProgress,
   type SdlcViolation,
 } from "@/lib/sdlc";
-import { agentmemoryEnabled, memoryProjectName, tagMemorySession } from "@/lib/server/agentmemory";
+import {
+  agentmemoryEnabled,
+  MEMORY_OFF_ENV,
+  memoryOffOverlay,
+  memoryProjectName,
+  tagMemorySession,
+} from "@/lib/server/agentmemory";
 import { loadAiProviderEnv } from "@/lib/server/ai-providers";
 import { createCheckpoints } from "@/lib/server/checkpoints";
 import { startChatIntegrations } from "@/lib/server/chat/service";
@@ -99,6 +105,7 @@ import { ensureWorkspace } from "@/lib/workspaces";
 import type {
   AgentResources,
   AppSettings,
+  ApprovalMode,
   Comment,
   ConcurrencyInfo,
   ContextUsage,
@@ -124,6 +131,8 @@ const MAX_THINKING_TEXT = 2_000;
 const MAX_TOOL_TEXT = 300;
 const MAX_TOOL_INTENT_TEXT = 160;
 const MAX_TOOL_ERROR_TEXT = 1_000;
+/** Text quoted inside a status line (a delivered steer, a declined omp dialog's title). */
+const MAX_QUOTED_TEXT = 120;
 /** Live `run.delta` events: at most one per run+kind per window (leading + trailing). */
 const DELTA_THROTTLE_MS = 120;
 const MAX_THINKING_DELTA = 4_000;
@@ -247,6 +256,23 @@ interface ActiveRun {
   resources: AgentResources | null;
   /** Raw CPU total of the process tree at the latest sample (`nextResources`); 0 before the first. */
   treeCpuSeconds: number;
+  /** Approval mode the run's omp was started with (settings `approvalMode` at launch). */
+  approvalMode: ApprovalMode;
+  /** omp's `confirm` dialogs are approved (yolo); otherwise lib/agent/rpc.ts declines them. */
+  autoConfirm: boolean;
+  /**
+   * Ids of steers sent as `prompt` with streamingBehavior "steer" (sendSteer) whose `prompt_result`
+   * has not arrived: such a steer may still start another turn, so the run cannot complete yet.
+   */
+  pendingSteers: Set<string>;
+  /** The agent yielded: a terminal `agent_end` from an omp that reports `yielded`; reset by `agent_start`. */
+  yielded: boolean;
+  /** omp reported the session settled (nothing queued or in the background can wake it) since the last `agent_start`. */
+  settled: boolean;
+  /** Steering texts omp last reported queued (`queue_update`); a text that leaves the queue reached the agent. */
+  queuedSteering: string[];
+  /** The "waiting for background work" status was logged for this stretch of the run (reset by `agent_start`). */
+  waitingLogged: boolean;
   /** Serializes startup, frame handling and teardown so persistence stays ordered. */
   chain: Promise<void>;
 }
@@ -285,8 +311,6 @@ class OmpAgentManager implements AgentManager, RunControl {
   private readonly planNotes = new Map<string, string>();
   /** Failed cards waiting for their automatic retry → its timer. */
   private readonly retryTimers = new Map<string, NodeJS.Timeout>();
-  /** Queued cards held until their preparation (the card writer) settles → its abort. */
-  private readonly preparing = new Map<string, AbortController>();
 
   /** Agents allowed at once, as of the latest pump (part of the `queue.updated` dedupe key). */
   private limit = 0;
@@ -335,11 +359,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     return this.active.size;
   }
 
-  /** Queued cards the card writer is still preparing; they live only in memory (a restart loses them). */
-  preparingCount(): number {
-    return this.preparing.size;
-  }
-
   async queueSnapshot(): Promise<QueueSnapshot> {
     const settings = await getAppSettings(this.repo);
     const boardNames = new Map<string, string>();
@@ -360,7 +379,6 @@ class OmpAgentManager implements AgentManager, RunControl {
         state,
         waitingFor: state === "queued" ? await this.pendingBlockers(task) : [],
         planning: state === "queued" && this.awaitsPlan(taskId),
-        drafting: state === "queued" && this.preparing.has(taskId),
         planNote: this.planNotes.get(taskId) ?? null,
         createdByTaskId: task.createdByTaskId ?? null,
         sdlc: sdlcProgress(task.todos),
@@ -480,37 +498,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     return this.queueRun(taskId, false);
   }
 
-  async startPrepared(taskId: string, prepare: (signal: AbortSignal) => Promise<void>): Promise<Task> {
-    if (this.isTracked(taskId)) return this.start(taskId);
-    const controller = new AbortController();
-    this.preparing.set(taskId, controller);
-    let task: Task;
-    try {
-      task = await this.start(taskId);
-    } catch (err) {
-      this.endPreparing(taskId, controller);
-      throw err;
-    }
-    // Stopped or deleted while it was being queued.
-    if (controller.signal.aborted) return task;
-    void prepare(controller.signal)
-      .catch((err: unknown) => {
-        if (!controller.signal.aborted) console.error(`[agent] preparing task ${taskId} failed; running it as it is:`, err);
-      })
-      .finally(() => this.endPreparing(taskId, controller));
-    return task;
-  }
-
-  /** Releases the card's preparation hold (aborting `prepare` when it is still running). */
-  private endPreparing(taskId: string, controller?: AbortController): void {
-    const current = this.preparing.get(taskId);
-    if (!current || (controller && current !== controller)) return;
-    this.preparing.delete(taskId);
-    current.abort();
-    this.publishQueue();
-    void this.pump();
-  }
-
   /** `auto`: an automatic retry or a restart resume, which keeps counting the card's retries. */
   private async queueRun(taskId: string, auto: boolean): Promise<Task> {
     if (this.isTracked(taskId)) {
@@ -559,7 +546,6 @@ class OmpAgentManager implements AgentManager, RunControl {
   }
 
   async stop(taskId: string): Promise<Task | null> {
-    this.endPreparing(taskId);
     this.cancelRetry(taskId);
     const wasClaiming = this.claiming.delete(taskId);
     if (this.removeFromQueue(taskId) || wasClaiming) {
@@ -657,7 +643,6 @@ class OmpAgentManager implements AgentManager, RunControl {
   }
 
   async onTaskDeleted(taskId: string): Promise<void> {
-    this.endPreparing(taskId);
     this.cancelRetry(taskId);
     this.claiming.delete(taskId);
     if (this.removeFromQueue(taskId)) this.leftQueue(taskId);
@@ -858,9 +843,9 @@ class OmpAgentManager implements AgentManager, RunControl {
     this.dropIdlePlan(boardId);
   }
 
-  /** The card waits for its preparation or its board's smart-queue plan before it may launch. */
+  /** The card waits for its board's smart-queue plan before it may launch. */
   private isHeld(taskId: string): boolean {
-    return this.preparing.has(taskId) || this.awaitsPlan(taskId);
+    return this.awaitsPlan(taskId);
   }
 
   /** The card waits for its board's pending or in-flight plan. */
@@ -982,7 +967,6 @@ class OmpAgentManager implements AgentManager, RunControl {
   private publishQueue(): void {
     const running = [...this.active.keys()];
     const queued = [...this.claiming, ...this.queue];
-    const drafting = queued.filter((id) => this.preparing.has(id));
     // Cluster mode: the machine each running card runs on (a card's placement is set at launch).
     const nodes: Record<string, { id: string; name: string }> = {};
     for (const taskId of running) {
@@ -996,7 +980,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     const key = JSON.stringify([
       running,
       queued,
-      drafting,
       nodes,
       [...this.plans.keys()],
       held,
@@ -1005,7 +988,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     ]);
     if (key === this.lastQueue) return;
     this.lastQueue = key;
-    publish({ type: "queue.updated", running, queued, drafting, nodes });
+    publish({ type: "queue.updated", running, queued, nodes });
   }
 
   private async pump(): Promise<void> {
@@ -1141,6 +1124,13 @@ class OmpAgentManager implements AgentManager, RunControl {
       spawnedAt: 0,
       resources: null,
       treeCpuSeconds: 0,
+      approvalMode: settings.approvalMode,
+      autoConfirm: settings.approvalMode === "yolo",
+      pendingSteers: new Set(),
+      yielded: false,
+      settled: false,
+      queuedSteering: [],
+      waitingLogged: false,
       chain: Promise.resolve(),
     };
     this.active.set(taskId, run);
@@ -1297,10 +1287,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     );
     try {
       // Steered like the loop detector's nudge (see onLoop); its own id keeps the response apart from the run's prompt.
-      await run.proc?.send(
-        { id: `wrapup-${run.runId}`, type: "prompt", message: wrapUpSteerMessage(hit), streamingBehavior: "steer" },
-        { timeoutMs: run.proc.commandTimeoutMs },
-      );
+      await this.sendSteer(run, `wrapup-${run.runId}`, wrapUpSteerMessage(hit));
     } catch (err) {
       // The hard guard still stops a run that does not wrap up.
       console.error(`[agent] failed to steer the wrap-up nudge for task ${run.taskId}:`, err);
@@ -1513,12 +1500,17 @@ class OmpAgentManager implements AgentManager, RunControl {
             runningAgents: this.localRuns().length,
           })
         : null;
-    const [workdirFound, roles, configFile, memoryProject] = await Promise.all([
+    // Memory off for this card: the run config drops agentmemory's extension and MCP server.
+    const memoryOff = task.ignoreMemory ? memoryOffOverlay(settings.ompPath, workdir) : null;
+    const [workdirFound, roles, configFile, memoryProject, memoryOffSettings] = await Promise.all([
       isDirectory(workdir),
-      autoSelect ? readModelRoles(settings.ompPath, workdir, childEnv()) : null,
-      writeRunConfig(task.id, runConfigOverlay(settings, taskFiles, subagents)),
+      autoSelect && resumeFile === null ? readModelRoles(settings.ompPath, workdir, childEnv()) : null,
+      memoryOff
+        ? memoryOff.then((off) => writeRunConfig(task.id, { ...runConfigOverlay(settings, taskFiles, subagents), ...off }))
+        : writeRunConfig(task.id, runConfigOverlay(settings, taskFiles, subagents)),
       // Cards in worktrees remember under the board's project, like omp sessions in its folder.
-      memoryProjectName(board.workdir),
+      memoryOff ? "" : memoryProjectName(board.workdir),
+      memoryOff,
     ]);
     if (!workdirFound) {
       throw new Error(`Board directory not found: ${workdir}`);
@@ -1549,8 +1541,17 @@ class OmpAgentManager implements AgentManager, RunControl {
     if (model) args.push("--model", model);
     if (thinking) args.push("--thinking", thinking);
     if (resumeFile) args.push("--resume", resumeFile);
+    if (memoryOff && !memoryOffSettings) args.push("--no-extensions");
     const extra = process.env.OMP_EXTRA_ARGS?.trim();
     if (extra) args.push(...extra.split(/\s+/));
+
+    if (memoryOff) {
+      await this.event(run, "status", "Agent memory off for this card: no recall, no capture, no memory tools");
+      if (!memoryOffSettings) {
+        await this.event(run, "status", "Couldn't read omp's extension settings; all extensions are off for this run");
+      }
+      if (run.finished) return;
+    }
 
     if (choice.source === "auto") {
       await this.event(run, "status", `Model auto-selected: ${model ?? "omp default"} (${choice.reason})`);
@@ -1592,7 +1593,10 @@ class OmpAgentManager implements AgentManager, RunControl {
     }
 
     const runConfig = remote ? await readFile(configFile, "utf8") : "";
-    const agentEnv = { ...(await mcpAgentEnv()), AGENTMEMORY_PROJECT_NAME: memoryProject };
+    const agentEnv = {
+      ...(await mcpAgentEnv()),
+      ...(memoryOff ? MEMORY_OFF_ENV : { AGENTMEMORY_PROJECT_NAME: memoryProject }),
+    };
     if (run.finished) return;
     // Remote placement: omp runs on the node, over the cluster channel. Git checkpoints, model
     // roles and the run config above stay on this primary.
@@ -1617,7 +1621,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       args,
       cwd: workdir,
       env: childEnv(agentEnv),
-      autoConfirm: settings.approvalMode === "yolo",
+      autoConfirm: run.autoConfirm,
       transport,
     });
     run.proc = proc;
@@ -1645,6 +1649,19 @@ class OmpAgentManager implements AgentManager, RunControl {
       const state = await proc.send({ type: "get_state" });
       const sessionFile = isObject(state.data) ? asString(state.data.sessionFile) : undefined;
       const sessionId = isObject(state.data) ? asString(state.data.sessionId) : undefined;
+      if (choice.source === "session" && isObject(state.data) && isObject(state.data.model)) {
+        const provider = asString(state.data.model.provider);
+        const id = asString(state.data.model.id);
+        const level = asString(state.data.thinkingLevel);
+        if (id) {
+          await this.event(
+            run,
+            "status",
+            `Model kept from the resumed session: ${provider ? `${provider}/${id}` : id}${level ? ` (thinking ${level})` : ""}`,
+          );
+          if (run.finished) return;
+        }
+      }
       if (sessionFile && sessionFile !== task.sessionFile) {
         // A node answers for a remote run: only a file inside the card's session dir is trusted.
         if (remote && !(path.isAbsolute(sessionFile) && isInside(sessionFile, sessionDir!))) {
@@ -1655,7 +1672,7 @@ class OmpAgentManager implements AgentManager, RunControl {
         }
       }
       // Name the card's agentmemory session after the card (best effort, not awaited).
-      if (sessionId && agentmemoryEnabled()) {
+      if (sessionId && !memoryOff && agentmemoryEnabled()) {
         void tagMemorySession({ sessionId, project: memoryProject, cwd: workdir, title: `${task.title} (card ${task.id})` });
       }
     } catch (err) {
@@ -1730,8 +1747,22 @@ class OmpAgentManager implements AgentManager, RunControl {
         }
         if (run.loop) await this.onLoop(run, run.loop.end(frame.toolCallId, frame.isError, frame.result));
         break;
+      case "agent_start":
+        // A new stretch of work (also a steer admitted right after the agent yielded): completion
+        // waits for its own yield and settlement.
+        run.yielded = false;
+        run.settled = false;
+        run.waitingLogged = false;
+        break;
       case "agent_end": {
-        if (frame.isTerminal === false) break;
+        if (frame.isTerminal === false) {
+          // Background work (async subagents, auto-backgrounded bash) wakes the agent again when it ends.
+          if (frame.awaitingAsyncWork === true && !run.waitingLogged) {
+            run.waitingLogged = true;
+            await this.event(run, "status", "Waiting for background work (subagents, background jobs) before finishing");
+          }
+          break;
+        }
         const messages = Array.isArray(frame.messages) ? frame.messages : [];
         const last = messages.findLast((m): m is Json => isObject(m) && m.role === "assistant");
         if (last) {
@@ -1739,13 +1770,41 @@ class OmpAgentManager implements AgentManager, RunControl {
           run.lastError = assistantError(last) ?? run.lastError;
           if (!run.lastText) run.lastText = blockText(last.content, "text");
         }
-        await this.complete(run);
+        if (typeof frame.yielded === "boolean") {
+          // omp also reports prompt_result and session_settled: a steer sent right as the agent
+          // yielded may still start another turn (maybeComplete).
+          run.yielded = true;
+          await this.maybeComplete(run);
+        } else {
+          // An older omp: its terminal agent_end is the end of the run.
+          await this.complete(run);
+        }
         break;
       }
       case "prompt_result":
         if (frame.agentInvoked === false && (frame.id === undefined || frame.id === run.promptId)) {
           await this.complete(run);
+          break;
         }
+        // omp could not run the prompt (e.g. refused at its cost cap): no agent_end will follow.
+        if (frame.id === run.promptId && (frame.status === "error" || frame.status === "aborted")) {
+          if (!run.finished) {
+            const message = isObject(frame.error) ? asString(frame.error.message) : undefined;
+            await this.fail(run, frame.status === "aborted" ? "The agent run was aborted" : (message ?? "omp could not run the prompt"));
+          }
+          break;
+        }
+        // A steer's message left omp's queue and the turn it joined has yielded.
+        if (typeof frame.id === "string") run.pendingSteers.delete(frame.id);
+        if (frame.sessionSettled === true) run.settled = true;
+        await this.maybeComplete(run);
+        break;
+      case "session_settled":
+        run.settled = true;
+        await this.maybeComplete(run);
+        break;
+      case "queue_update":
+        await this.onQueueUpdate(run, frame);
         break;
       case "response":
         // A scheduled prompt can be acknowledged and later fail asynchronously with the same id.
@@ -1769,15 +1828,33 @@ class OmpAgentManager implements AgentManager, RunControl {
         if (frame.success === true) await this.event(run, "status", "Retry succeeded");
         else await this.event(run, "error", `Retries exhausted${asString(frame.finalError) ? `: ${asString(frame.finalError)}` : ""}`);
         break;
-      case "auto_compaction_start":
-        await this.event(run, "status", "Compacting conversation context");
-        break;
-      case "auto_compaction_end": {
-        const failure = asString(frame.errorMessage);
-        if (failure) await this.event(run, "error", `Context compaction failed: ${failure}`);
-        this.refreshContext(run);
+      case "auto_compaction_start": {
+        const reason = asString(frame.reason);
+        const action = asString(frame.action);
+        await this.event(
+          run,
+          "status",
+          `Compacting conversation context${reason ? ` (${[reason, action].filter(Boolean).join(", ")})` : ""}`,
+        );
         break;
       }
+      case "manual_compaction_start":
+        await this.event(run, "status", "Compacting conversation context (manual)");
+        break;
+      case "auto_compaction_end":
+      case "manual_compaction_end":
+        await this.onCompactionEnd(run, frame);
+        break;
+      case "retry_fallback_applied":
+        await this.event(
+          run,
+          "status",
+          `Switched model after an error: ${asString(frame.from) ?? "unknown model"} → ${asString(frame.to) ?? "unknown model"}`,
+        );
+        break;
+      case "extension_ui_request":
+        await this.onUiRequest(run, frame);
+        break;
       case "notice": {
         const message = asString(frame.message);
         if (message) await this.event(run, frame.level === "error" ? "error" : "status", message);
@@ -1808,6 +1885,69 @@ class OmpAgentManager implements AgentManager, RunControl {
         );
         break;
     }
+  }
+
+  /**
+   * `queue_update`: omp lists the steering messages still waiting for a turn boundary. A message
+   * that left the list was delivered into the agent's transcript (compared as a multiset, so a
+   * repeated text counts once per copy).
+   */
+  private async onQueueUpdate(run: ActiveRun, frame: RpcFrame): Promise<void> {
+    if (!Array.isArray(frame.steering)) return;
+    const steering = frame.steering.filter((text): text is string => typeof text === "string");
+    const remaining = [...steering];
+    const delivered: string[] = [];
+    for (const text of run.queuedSteering) {
+      const index = remaining.indexOf(text);
+      if (index === -1) delivered.push(text);
+      else remaining.splice(index, 1);
+    }
+    run.queuedSteering = steering;
+    for (const text of delivered) {
+      await this.event(run, "status", `Steering delivered to the agent: "${truncate(oneLineTrim(text), MAX_QUOTED_TEXT)}"`);
+    }
+  }
+
+  /** `auto_compaction_end` / `manual_compaction_end`: what became of the compaction, then the new context fill. */
+  private async onCompactionEnd(run: ActiveRun, frame: RpcFrame): Promise<void> {
+    const failure = asString(frame.errorMessage);
+    const result = isObject(frame.result) ? frame.result : null;
+    if (frame.skipped === true) {
+      await this.event(run, "status", `Context compaction skipped${failure ? `: ${failure}` : ""}`);
+    } else if (failure) {
+      await this.event(run, "error", `Context compaction failed: ${failure}${frame.willRetry === true ? "; retrying" : ""}`);
+    } else if (frame.aborted === true) {
+      await this.event(run, "status", "Context compaction aborted");
+    } else if (result) {
+      const before = asNumber(result.tokensBefore);
+      const summary = oneLineTrim(asString(result.shortSummary) ?? "");
+      await this.event(
+        run,
+        "status",
+        `Context compacted${before !== undefined ? ` (${before.toLocaleString("en-US")} tokens before)` : ""}${summary ? `: ${summary}` : ""}`,
+      );
+    }
+    this.refreshContext(run);
+  }
+
+  /**
+   * An `extension_ui_request` omp sent: lib/agent/rpc.ts already answered it (a card run has no one
+   * to show a dialog to), so a declined question or tool approval is logged where the user can see
+   * why the agent was refused. Presentation methods (notify, setStatus, setWidget, …) are ignored.
+   */
+  private async onUiRequest(run: ActiveRun, frame: RpcFrame): Promise<void> {
+    const method = asString(frame.method) ?? "";
+    const declined =
+      method === "select" || method === "input" || method === "editor" || (method === "confirm" && !run.autoConfirm);
+    if (!declined) return;
+    const title = truncate(oneLineTrim(asString(frame.title)?.split("\n")[0] ?? ""), MAX_QUOTED_TEXT) || method;
+    // In yolo mode omp asks no tool approvals: what is left are the agent's own questions.
+    const hint = run.approvalMode === "yolo" ? "" : " Use approval mode yolo for unattended tool use.";
+    await this.event(
+      run,
+      "error",
+      `Declined omp's request "${title}": card runs cannot answer prompts (approval mode ${run.approvalMode}).${hint}`,
+    );
   }
 
   private async onAssistantMessage(run: ActiveRun, message: Json): Promise<void> {
@@ -1969,10 +2109,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     await this.event(run, "error", `Loop detected: ${detection.summary}. Asked the agent to change approach.`);
     try {
       // Steered like user feedback (see steer()); its own id keeps the response apart from the run's prompt.
-      await run.proc?.send(
-        { id: `loop-${run.runId}-${run.loopStrikes}`, type: "prompt", message: loopSteerMessage(detection), streamingBehavior: "steer" },
-        { timeoutMs: run.proc.commandTimeoutMs },
-      );
+      await this.sendSteer(run, `loop-${run.runId}-${run.loopStrikes}`, loopSteerMessage(detection));
     } catch (err) {
       // The second strike still stops a run that keeps looping.
       console.error(`[agent] failed to steer a looping agent for task ${run.taskId}:`, err);
@@ -1990,20 +2127,21 @@ class OmpAgentManager implements AgentManager, RunControl {
       // Already part of this run's prompt.
       if (run.feedbackIds.has(comment.id)) return;
       try {
-        const sender = comment.fromTaskId ? await this.repo.getTask(comment.fromTaskId) : null;
-        // Steered like typing into the omp CLI mid-run: a `prompt` with streamingBehavior "steer" runs
-        // magic-keyword detection (`orchestrate`, `ultrathink`, …), which the RPC `steer` command skips.
-        // Its own id keeps it apart from run.promptId, so its response cannot complete or fail the run;
-        // unlike the run's prompt it is answered right away, so it gets the normal command timeout.
-        await run.proc.send(
-          {
-            id: `steer-${comment.id}`,
-            type: "prompt",
-            message: buildSteerMessage(comment, sender?.title),
-            streamingBehavior: "steer",
-          },
-          { timeoutMs: run.proc.commandTimeoutMs },
+        const [task, sender] = await Promise.all([
+          this.repo.getTask(run.taskId),
+          comment.fromTaskId ? this.repo.getTask(comment.fromTaskId) : null,
+        ]);
+        // Its own id keeps it apart from run.promptId, so its response cannot complete or fail the run.
+        const taken = await this.sendSteer(
+          run,
+          `steer-${comment.id}`,
+          buildSteerMessage(comment, sender?.title, task?.parallelize !== false),
         );
+        if (!taken) {
+          run.restartAfter = true;
+          await this.event(run, "status", "The agent did not take the feedback mid-run; it will be picked up by the next run");
+          return;
+        }
       } catch (err) {
         if (run.finished) {
           const task = await this.repo.getTask(run.taskId);
@@ -2019,10 +2157,45 @@ class OmpAgentManager implements AgentManager, RunControl {
         return;
       }
       run.feedbackIds.add(comment.id);
-      await this.event(run, "status", "Feedback sent to agent");
+      await this.event(run, "status", "Feedback queued for the running agent (steering)");
     } catch (err) {
       console.error(`[agent] failed to steer feedback for task ${run.taskId}:`, err);
     }
+  }
+
+  /**
+   * Steers a message into the running agent like typing into the omp CLI mid-run: a `prompt` with
+   * streamingBehavior "steer" runs magic-keyword detection (`orchestrate`, `ultrathink`, …), which
+   * the RPC `steer` command skips. Unlike the run's prompt it is answered right away, so it gets
+   * the normal command timeout. Its id stays in run.pendingSteers until omp's `prompt_result` for
+   * it: a steer admitted right as the agent yields starts another turn, which the run must not cut
+   * short (maybeComplete). The id is added before sending, since that result can arrive before
+   * the send's response is handled. Returns false when omp handled the message itself
+   * (`agentInvoked: false`): no prompt_result follows, and the agent never saw it.
+   */
+  private async sendSteer(run: ActiveRun, id: string, message: string): Promise<boolean> {
+    const proc = run.proc;
+    if (!proc) return false;
+    run.pendingSteers.add(id);
+    let response;
+    try {
+      response = await proc.send(
+        { id, type: "prompt", message, streamingBehavior: "steer" },
+        { timeoutMs: proc.commandTimeoutMs },
+      );
+    } catch (err) {
+      // A rejected steer gets no prompt_result: it must not hold the run open. The agent may have
+      // yielded and settled meanwhile, so completion is re-checked after the caller's handling.
+      run.pendingSteers.delete(id);
+      this.enqueue(run, () => this.maybeComplete(run));
+      throw err;
+    }
+    if (isObject(response.data) && response.data.agentInvoked === false) {
+      run.pendingSteers.delete(id);
+      this.enqueue(run, () => this.maybeComplete(run));
+      return false;
+    }
+    return true;
   }
 
   // --- Board tools (agent-to-agent collaboration) ----------------------------------------
@@ -2121,6 +2294,17 @@ class OmpAgentManager implements AgentManager, RunControl {
       await this.event(run, "error", `Advisor could not review the questions: ${errorMessage(err, run.ompPath)}`);
       return null;
     }
+  }
+
+  /**
+   * Completion with an omp that reports `yielded` on agent_end: the agent yielded, omp reported the
+   * session settled (no queued steer or background job can wake it) and every steer sent with
+   * sendSteer got its prompt_result. A steer admitted right as the agent yields starts another turn;
+   * completing on the earlier agent_end would kill that turn and mark its feedback resolved.
+   */
+  private async maybeComplete(run: ActiveRun): Promise<void> {
+    if (run.finished || !run.yielded || !run.settled || run.pendingSteers.size > 0) return;
+    await this.complete(run);
   }
 
   private async complete(run: ActiveRun): Promise<void> {
@@ -2364,15 +2548,7 @@ class OmpAgentManager implements AgentManager, RunControl {
         run.sdlcNudges.add(key);
         try {
           // Steered like the loop detector's nudge (see onLoop); its own id keeps the response apart from the run's prompt.
-          await run.proc?.send(
-            {
-              id: `sdlc-${run.runId}-${run.sdlcNudges.size}`,
-              type: "prompt",
-              message: sdlcSteerMessage(violation),
-              streamingBehavior: "steer",
-            },
-            { timeoutMs: run.proc.commandTimeoutMs },
-          );
+          await this.sendSteer(run, `sdlc-${run.runId}-${run.sdlcNudges.size}`, sdlcSteerMessage(violation));
         } catch (err) {
           console.error(`[agent] failed to steer an SDLC quality gate for task ${run.taskId}:`, err);
         }
@@ -2849,10 +3025,6 @@ class DormantAgentManager implements AgentManager, RunControl {
     return Promise.reject(replicaError());
   }
 
-  startPrepared(): Promise<Task> {
-    return Promise.reject(replicaError());
-  }
-
   stop(): Promise<Task | null> {
     return Promise.reject(replicaError());
   }
@@ -2924,7 +3096,6 @@ async function createAgentManager(): Promise<AgentManager> {
   startResourceGuard({
     onChange: () => manager.refreshQueue(),
     activeRunCount: () => manager.activeRunCount(),
-    preparingCount: () => manager.preparingCount(),
     queuedCount: () => manager.stats().queued.length,
   });
   // Before recovery, which may start queued runs: their traces must see the runs start.

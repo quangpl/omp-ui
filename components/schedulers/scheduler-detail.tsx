@@ -269,7 +269,7 @@ export function SchedulerDetail({ id }: { id: string }) {
       if (run.status === "created" && taskId) {
         const cardBoardId = scheduler.boardId;
         toast.success("Card created", {
-          description: run.task?.title || "The agent is writing its title and brief.",
+          description: run.task?.title || "Its agent has started.",
           action: { label: "Open", onClick: () => router.push(schedulerCardHref(cardBoardId, taskId)) },
         });
       } else {
@@ -615,7 +615,9 @@ function SchedulerConfig({
         initialText={scheduler.prompt}
         boardId={draft.boardId}
         label="What should the agent do each time?"
-        hint="Each run creates a card from this text in the project, like the New task form: an agent writes its title and brief, then starts work."
+        hint="Each run creates a card from this text in the project, like the New task form: it goes to In progress and its agent starts with the text as its brief."
+        parallelizeToggle={false}
+        memoryToggle={false}
         submitLabel="Save changes"
         busyLabel="Saving…"
         resetOnSubmit={false}

@@ -190,8 +190,13 @@ function dockerAvailable(now: number): Promise<boolean> {
   return promise;
 }
 
-/** Starting/auto-select status lines name the model: "… (model X, thinking Y)", "Model auto-selected: X (…)". */
+/**
+ * Starting/auto-select/resume status lines name the model: "… (model X, thinking Y)",
+ * "Model auto-selected: X (…)", "Model kept from the resumed session: X[ (thinking Y)]".
+ */
 function modelFromStatus(text: string): string | null | undefined {
+  const kept = /^Model kept from the resumed session: (\S+)/.exec(text);
+  if (kept) return kept[1];
   const auto = /^Model auto-selected: (.+?) \(/.exec(text);
   if (auto) return auto[1] === "omp default" ? null : auto[1];
   const started = /\(model ([^,)]+)[,)]/.exec(text);

@@ -33,7 +33,7 @@ test("a card added in To do on an auto-run board moves to In progress and its ag
   await expect(todo.getByText("No cards yet.")).toBeVisible();
 
   // Inline composer: Enter adds the card and keeps the composer open for the next one. A short
-  // line is the title as typed (no card agent).
+  // line is the title as typed.
   await todo.getByRole("button", { name: "Add a task", exact: true }).click();
   const composer = todo.getByLabel("Card title", { exact: true });
   await composer.fill(title);
@@ -48,54 +48,31 @@ test("a card added in To do on an auto-run board moves to In progress and its ag
   await expect(todo.getByText("No cards yet.")).toBeVisible();
 });
 
-test("new card from free text: it lands in In progress at once, the card agent writes it in the background", async ({
+test("new card from free text: it lands in In progress at once with the text as typed, and its agent runs", async ({
   page,
   request,
 }) => {
-  const board = await createProjectViaApi(request, uniqueName("writer"));
-  const blocker = await createTaskViaApi(request, board.id, { title: uniqueName("Build the API"), status: "todo" });
+  const board = await createProjectViaApi(request, uniqueName("freetext"));
   const firstLine = uniqueName("the stats page overflows on phones");
-  const text = [
-    firstLine,
-    "and the numbers don't refresh until I reload.",
-    `Do it after ${blocker.title} (${blocker.id}) is finished.`,
-    "Split it in parallel if useful.",
-  ].join("\n");
+  const text = [firstLine, "and the numbers don't refresh until I reload."].join("\n");
 
   await page.goto(`/b/${board.id}`);
   await page.getByRole("button", { name: "Add task", exact: true }).click();
   const newCard = page.getByRole("dialog", { name: "New task" });
-  // No switches to set: every new card starts, and the card agent decides on parallel subagents.
-  await expect(newCard.getByRole("switch")).toHaveCount(0);
   await newCard.getByLabel("What should the agent do?", { exact: true }).fill(text);
   await newCard.getByRole("button", { name: "Create task" }).click();
   await expect(newCard).toBeHidden();
 
-  // The card agent's card: the brief, parallel subagents, and the card it waits for.
-  const inProgress = column(page, "In progress");
-  await expect(cardButton(inProgress, firstLine)).toContainText("Waiting for 1", { timeout: AGENT_TIMEOUT });
+  // Titled with the first line, the text as typed as its description, and its run started.
   const tasks = (await (
     await request.get(`/api/v1/boards/${board.id}/tasks`, {
       headers: { authorization: `Bearer ${await apiToken(request)}` },
     })
   ).json()) as Task[];
   const created = tasks.find((t) => t.title === firstLine);
-  expect(created?.status).toBe("in_progress");
-  expect(created?.blockedBy).toEqual([blocker.id]);
-  expect(created?.description).toContain(`## Goal\n\n${text}`);
-  expect(created?.description).toContain("orchestrate: split this work into parallel subagent tasks");
-
-  // When the card agent fails, the text as typed runs anyway, with a note on the card.
-  await page.getByRole("button", { name: "Add task", exact: true }).click();
-  const failing = uniqueName("[fake-draft:fail] fix the login redirect");
-  await newCard.getByLabel("What should the agent do?", { exact: true }).fill(`${failing}\nIt loops forever.`);
-  await newCard.getByRole("button", { name: "Create task" }).click();
-  await expect(newCard).toBeHidden();
-  const done = column(page, "Done");
-  await expect(cardButton(done, failing)).toBeVisible({ timeout: AGENT_TIMEOUT });
-  await cardButton(done, failing).click();
-  const detail = page.getByRole("dialog", { name: failing });
-  await expect(detail.getByText(/The card agent couldn't write this card/)).toBeVisible();
+  expect(["in_progress", "done"]).toContain(created?.status);
+  expect(created?.description).toBe(text);
+  await expect(cardButton(column(page, "Done"), firstLine)).toBeVisible({ timeout: AGENT_TIMEOUT });
 });
 
 test("card lifecycle: edit, feedback, agent run to Done, log, reopen by comment", async ({

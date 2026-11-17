@@ -29,7 +29,6 @@ function entry(taskId: string, state: QueueEntry["state"], extra: Partial<QueueE
     state,
     waitingFor: [],
     planning: false,
-    drafting: false,
     planNote: null,
     createdByTaskId: null,
     sdlc: null,

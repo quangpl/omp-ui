@@ -196,7 +196,6 @@ export async function startReplica(): Promise<void> {
       if (live?.session) void sendStatus(live, live.session.channel);
     },
     activeRunCount: () => runHost().activeCount(),
-    preparingCount: () => 0,
     queuedCount: () => 0,
   });
   publishClusterStatus();

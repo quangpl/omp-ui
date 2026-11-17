@@ -265,7 +265,7 @@ function createdId(result: ToolResult): string {
   return (JSON.parse(result.text) as { card: { id: string } }).card.id;
 }
 
-/** Prompts of the fake omp's helper workers (card writer, advisor, chat assistant…), in order. */
+/** Prompts of the fake omp's helper workers (advisor, chat assistant…), in order. */
 function helperPrompts(): string[] {
   return readOmpLog().flatMap((e) => (e.kind === "helper" && e.prompt ? [e.prompt] : []));
 }

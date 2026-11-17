@@ -21,6 +21,8 @@ function card(title: string, description = ""): Task {
     blockedBy: [],
     createdByTaskId: null,
     schedulerId: null,
+    parallelize: null,
+    ignoreMemory: false,
     userId: null,
     pushedAt: null,
     autoRetries: 0,
@@ -65,22 +67,21 @@ describe("classifyTask", () => {
     // A single bug hint is not enough for deep reasoning.
     ["Fix the broken link in the footer", "", "standard"],
   ] as const)("%s → %s", (title, description, profile) => {
-    expect(classifyTask(card(title, description), [], false).profile).toBe(profile);
+    expect(classifyTask(card(title, description), []).profile).toBe(profile);
   });
 
   it("does not treat a typo fix as quick when it also asks for hard work", () => {
-    expect(classifyTask(card("Fix typo and the race condition in the worker"), [], false).profile).toBe("deep");
+    expect(classifyTask(card("Fix typo and the race condition in the worker"), []).profile).toBe("deep");
   });
 
   it("does not treat a long brief as quick", () => {
     const long = Array.from({ length: 80 }, (_, i) => `word${i}`).join(" ");
-    expect(classifyTask(card("Fix typo", long), [], false).profile).toBe("standard");
+    expect(classifyTask(card("Fix typo", long), []).profile).toBe("standard");
   });
 
-  it("judges a resumed run with feedback by the feedback alone", () => {
+  it("judges a run with feedback by the task and the feedback together", () => {
     const hard = card("Debug the deadlock in the scheduler");
-    expect(classifyTask(hard, [comment("Fix the typo in the log message")], true).profile).toBe("quick");
-    expect(classifyTask(hard, [comment("Fix the typo in the log message")], false).profile).toBe("deep");
+    expect(classifyTask(hard, [comment("Fix the typo in the log message")]).profile).toBe("deep");
   });
 });
 
@@ -121,5 +122,18 @@ describe("chooseModel", () => {
     expect(
       chooseModel(input("Debug the deadlock", { settings: { defaultModel: "", autoModel: false } })),
     ).toMatchObject({ model: null, thinking: null, source: "default" });
+  });
+
+  it("keeps the resumed session's model instead of auto-selecting one", () => {
+    const resumed = input("Debug the deadlock", { isResume: true, feedback: [comment("Fix the typo in the log message")] });
+    expect(chooseModel(resumed)).toEqual({
+      model: null,
+      thinking: null,
+      source: "session",
+      profile: null,
+      reason: "resumed session keeps its model",
+    });
+    expect(chooseModel({ ...resumed, board: { model: "pinned" } })).toMatchObject({ model: "pinned", source: "board" });
+    expect(chooseModel(input("Fix the typo in the log message"))).toMatchObject({ model: "@smol", source: "auto" });
   });
 });

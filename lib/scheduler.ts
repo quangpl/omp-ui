@@ -72,8 +72,8 @@ export function computeNextRunAt(
 }
 
 /**
- * Fire `scheduler` once: create its card from the prompt (the "New task" flow, so the card writer
- * drafts it and its agent starts), record the run, and update the scheduler (run count, last
+ * Fire `scheduler` once: create its card from the prompt (the "New task" flow, so its agent
+ * starts right away), record the run, and update the scheduler (run count, last
  * outcome, next fire time; disabled once `maxRuns` is reached). A missing board or a failure to
  * create the card is recorded as a failed run, never thrown. `now` is when it fired.
  */

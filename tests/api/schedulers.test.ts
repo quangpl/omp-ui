@@ -16,7 +16,7 @@ import { runDueSchedulers } from "@/lib/scheduler";
 import type { Board, Scheduler, SchedulerLogEntry, SchedulerRunView, ServerEvent, Task } from "@/lib/types";
 
 const UNKNOWN_ID = "deadbeef-0000-4000-8000-0000000000aa";
-/** A short single line: the card starts right away, without the card writer. */
+/** A short single line: the card starts right away, titled as typed. */
 const PROMPT = "Rename the save button";
 /**
  * Every test schedule fires on January 1st only, so the background due check (real time) never

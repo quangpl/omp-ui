@@ -37,6 +37,8 @@ const task: Task = {
   blockedBy: [],
   createdByTaskId: null,
   schedulerId: null,
+  parallelize: null,
+  ignoreMemory: false,
   userId: null,
   pushedAt: null,
   autoRetries: 0,
@@ -202,9 +204,11 @@ describe("buildPrompt orchestration keyword", () => {
   });
 });
 
+const PARALLEL = "You may split independent parts of this work across parallel subagents when that helps.";
+
 describe("buildSteerMessage", () => {
   it("wraps the trimmed comment body with steering instructions", () => {
-    const message = buildSteerMessage(comment("  Please also handle errors\nfrom the API  "));
+    const message = buildSteerMessage(comment("  Please also handle errors\nfrom the API  "), null, true);
 
     expect(message).toContain("New feedback from the user on this task:");
     expect(message).toContain("\n\nPlease also handle errors\nfrom the API\n\n");
@@ -212,27 +216,73 @@ describe("buildSteerMessage", () => {
   });
 
   it("names the sending card for a message from another card's agent", () => {
-    const message = buildSteerMessage(comment("API is ready", { fromTaskId: "t9" }), "Build the API");
+    const message = buildSteerMessage(comment("API is ready", { fromTaskId: "t9" }), "Build the API", true);
 
     expect(message).toContain('New message from the agent working on card "Build the API" (t9):');
   });
 
   it("asks for orchestration on large user feedback only", () => {
-    const list = buildSteerMessage(comment("Also:\n- Cart page\n- Checkout flow\n- Order history\n- Admin dashboard"));
+    const list = buildSteerMessage(
+      comment("Also:\n- Cart page\n- Checkout flow\n- Order history\n- Admin dashboard"),
+      null,
+      true,
+    );
     expect(list).toMatch(KEYWORD);
     expect(list).toContain("\nThis task spans several pieces of work: orchestrate it");
-    expect(buildSteerMessage(comment("Do the remaining fixes in parallel."))).toMatch(KEYWORD);
-    expect(buildSteerMessage(comment("Use the brand colors"))).not.toMatch(KEYWORD);
+    expect(buildSteerMessage(comment("Do the remaining fixes in parallel."), null, true)).toMatch(KEYWORD);
+    expect(buildSteerMessage(comment("Use the brand colors"), null, true)).not.toMatch(KEYWORD);
   });
 
   it("defuses magic keywords in another card's agent message", () => {
     const body = "Please orchestrate the API work and ultrathink about edge cases.\n- a\n- b\n- c\n- d";
-    const message = buildSteerMessage(comment(body, { fromTaskId: "t9" }), "Build the API");
+    const message = buildSteerMessage(comment(body, { fromTaskId: "t9" }), "Build the API", true);
 
     expect(message).not.toMatch(KEYWORD);
     expect(message).not.toMatch(/(?<![\p{L}\p{N}_./\\-])ultrathink(?![\p{L}\p{N}_/\\-])/u);
     expect(message).not.toContain("This task spans several pieces of work");
     expect(message.replaceAll("\u200b", "")).toContain(body);
+    expect(message).not.toContain(PARALLEL);
+  });
+
+  it("adds the parallel permission to user feedback only when Parallelize is on", () => {
+    const body = "Also:\n- Cart page\n- Checkout flow\n- Order history\n- Admin dashboard";
+    const on = buildSteerMessage(comment(body), null, true);
+    expect(on).toContain(PARALLEL);
+    expect(on).toMatch(KEYWORD);
+
+    const off = buildSteerMessage(comment(body), null, false);
+    expect(off).not.toContain(PARALLEL);
+    expect(off).not.toMatch(/orchestrate/);
+  });
+});
+
+describe("Parallelize toggle", () => {
+  const large = { ...task, description: "Build:\n- Cart page\n- Checkout flow\n- Order history\n- Admin dashboard" };
+  const feedback = [comment("Also:\n- Wishlist\n- Reviews\n- Search\n- Filters")];
+
+  it("gates the first-run instructions", () => {
+    expect(buildPrompt({ ...task, parallelize: true }, board, [], false)).toContain(`- ${PARALLEL}`);
+    expect(buildPrompt({ ...task, parallelize: null }, board, [], false)).toContain(`- ${PARALLEL}`);
+    expect(buildPrompt(large, board, [], false)).toMatch(KEYWORD);
+    const off = buildPrompt({ ...large, parallelize: false }, board, [], false);
+    expect(off).not.toContain(PARALLEL);
+    expect(off).not.toMatch(/orchestrate/);
+  });
+
+  it("gates resume with feedback", () => {
+    expect(buildPrompt({ ...task, parallelize: true }, board, feedback, true)).toContain(PARALLEL);
+    expect(buildPrompt(task, board, feedback, true)).toContain(PARALLEL);
+    const off = buildPrompt({ ...task, parallelize: false }, board, feedback, true);
+    expect(off).not.toContain(PARALLEL);
+    expect(off).not.toMatch(/orchestrate/);
+  });
+
+  it("gates resume without feedback", () => {
+    expect(buildPrompt({ ...large, parallelize: true }, board, [], true)).toContain(PARALLEL);
+    expect(buildPrompt(large, board, [], true)).toContain(PARALLEL);
+    const off = buildPrompt({ ...large, parallelize: false }, board, [], true);
+    expect(off).not.toContain(PARALLEL);
+    expect(off).not.toMatch(/orchestrate/);
   });
 });
 

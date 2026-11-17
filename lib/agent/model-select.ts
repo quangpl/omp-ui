@@ -23,8 +23,11 @@ export interface ModelChoice {
   model: string | null;
   /** `--thinking` value; set only when no role covers the profile. */
   thinking: ThinkingLevel | null;
-  /** `board`: pinned on the board; `auto`: picked for this task; `default`: settings default. */
-  source: "board" | "auto" | "default";
+  /**
+   * `board`: pinned on the board; `auto`: picked for this task; `default`: settings default;
+   * `session`: a resumed session keeps the model and thinking level it saved.
+   */
+  source: "board" | "auto" | "default" | "session";
   /** Null unless `source` is `auto`. */
   profile: TaskProfile | null;
   /** Human-readable why, for the run log. */
@@ -105,21 +108,13 @@ const QUICK_MAX_WORDS = 60;
 /** Brief length (words) from which a task counts one point towards `deep`. */
 const DEEP_LONG_WORDS = 150;
 
-/**
- * Profile for the work a run is asked to do: the task and its feedback, or only the feedback when
- * resuming with new comments (that is what the prompt asks for then).
- */
-export function classifyTask(
-  task: Task,
-  feedback: Comment[],
-  isResume: boolean,
-): { profile: TaskProfile; cues: string[] } {
-  const scoped = isResume && feedback.length > 0 ? null : task;
+/** Profile for the work a run is asked to do: the task and its feedback. */
+export function classifyTask(task: Task, feedback: Comment[]): { profile: TaskProfile; cues: string[] } {
   const texts = feedback.map((c) => c.body);
-  if (scoped) texts.push(scoped.title, scoped.description);
+  texts.push(task.title, task.description);
   const text = texts.join("\n");
   const words = text.split(/\s+/).filter(Boolean).length;
-  const large = needsOrchestration(scoped, feedback);
+  const large = needsOrchestration(task, feedback);
 
   const matches = (cues: Cue[]) => cues.filter((c) => c.pattern.test(text)).map((c) => c.label);
   const strong = matches(DEEP_STRONG);
@@ -145,6 +140,12 @@ export function classifyTask(
  * configured for the task's profile (or the default model with a thinking level suited to it when
  * that role is not configured); then the settings default. `roles` null means the configured roles
  * are unknown, so auto selection only adjusts thinking.
+ *
+ * A resumed run with `autoModel` on and no pinned model passes neither `--model` nor `--thinking`:
+ * omp restores the session's saved model and thinking level, like continuing a direct omp chat.
+ * Switching models there (e.g. `@smol` for a short feedback comment) would re-send the whole cached
+ * history to another model, a full prompt-cache miss. A pinned board model and the autoModel-off
+ * default stay explicit user choices and still apply.
  */
 export function chooseModel(input: {
   board: Pick<Board, "model">;
@@ -163,7 +164,11 @@ export function chooseModel(input: {
     return { model: fallback, thinking: null, source: "default", profile: null, reason: "default model" };
   }
 
-  const { profile, cues } = classifyTask(task, feedback, isResume);
+  if (isResume) {
+    return { model: null, thinking: null, source: "session", profile: null, reason: "resumed session keeps its model" };
+  }
+
+  const { profile, cues } = classifyTask(task, feedback);
   const why = `${PROFILE_LABEL[profile]}${cues.length > 0 ? `: ${cues.join(", ")}` : ""}`;
   const role = profile === "standard" ? null : PROFILE_ROLE[profile];
   if (role && roles?.[role]?.trim()) {

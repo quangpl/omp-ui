@@ -63,6 +63,13 @@ const HEADLESS_INSTRUCTION =
   "Nobody can answer questions during this run, so do not stop to ask. When you or one of your subagents are unsure which way to go (approach, library, design or behavior choice, unclear scope), call the ask_advisor tool and follow its decision. Leave a question for the user (at the end of your summary) only when it needs their own judgment: personal preference or taste, private information, business/legal/money decisions, or destructive actions the task does not ask for; meanwhile make the most reasonable, easily reversible assumption and mention it in your summary.";
 
 /**
+ * Tells omp it may use parallel subagents when the task's Parallelize toggle is on. Deliberately
+ * avoids the `orchestrate` keyword so it grants permission without forcing omp's orchestration mode.
+ */
+export const PARALLEL_INSTRUCTION =
+  "You may split independent parts of this work across parallel subagents when that helps.";
+
+/**
  * Contains omp's `orchestrate` magic keyword (standalone, lowercase, in prose — not in backticks),
  * which makes omp attach its multi-agent orchestration contract to the message.
  */
@@ -139,6 +146,12 @@ export function buildPrompt(
   const where = folders ? "this project (any of the folders above)" : `this repository (${board.workdir})`;
 
   const failure = previousFailureNote(context);
+  // Parallelize off (false) drops both the permission and the orchestration push; null counts as on.
+  const parallel = task.parallelize !== false;
+  const parallelLines = (orchestrate: boolean): string[] =>
+    parallel
+      ? [PARALLEL_INSTRUCTION, ...(orchestrate ? [ORCHESTRATE_INSTRUCTION, SDLC_STAFFING_INSTRUCTION] : [])]
+      : [];
 
   if (isResume && feedback.length > 0) {
     return [
@@ -151,7 +164,7 @@ export function buildPrompt(
       `Address all of the feedback above in ${where}. Make the changes and verify them.`,
       SDLC_INSTRUCTION,
       feedbackSdlcInstruction(task),
-      ...(needsOrchestration(null, feedback) ? [ORCHESTRATE_INSTRUCTION, SDLC_STAFFING_INSTRUCTION] : []),
+      ...parallelLines(needsOrchestration(null, feedback)),
       HEADLESS_INSTRUCTION,
       cleanupInstruction(task),
       PUSH_INSTRUCTION,
@@ -171,7 +184,7 @@ export function buildPrompt(
       `Check the current state of ${where}, finish any remaining work, and verify it.`,
       SDLC_INSTRUCTION,
       "Continue from the SDLC phase your todo list shows.",
-      ...(needsOrchestration(task, []) ? [ORCHESTRATE_INSTRUCTION, SDLC_STAFFING_INSTRUCTION] : []),
+      ...parallelLines(needsOrchestration(task, [])),
       HEADLESS_INSTRUCTION,
       cleanupInstruction(task),
       PUSH_INSTRUCTION,
@@ -201,7 +214,7 @@ export function buildPrompt(
     "",
     `- Work in ${where} and make the change described above${feedback.length > 0 ? ", taking all of the feedback into account" : ""}.`,
     `- ${SDLC_INSTRUCTION}`,
-    ...(needsOrchestration(task, feedback) ? [`- ${ORCHESTRATE_INSTRUCTION}`, `- ${SDLC_STAFFING_INSTRUCTION}`] : []),
+    ...parallelLines(needsOrchestration(task, feedback)).map((line) => `- ${line}`),
     "- Verify it: run the relevant build, tests, or a quick check as appropriate.",
     `- ${HEADLESS_INSTRUCTION}`,
     `- ${cleanupInstruction(task)}`,
@@ -266,11 +279,12 @@ function projectFolders(board: Board): string | null {
 
 /**
  * Message steered into a live session when the user (or another card's agent) comments while the
- * agent runs. omp handles it like chat input, so its magic keywords apply: large user feedback asks
- * for orchestration, while keywords in another agent's message are defused so they can't switch
- * modes on the receiving agent.
+ * agent runs. omp handles it like chat input, so its magic keywords apply: with Parallelize on, user
+ * feedback gets the parallel-subagent permission and large feedback asks for orchestration; with it
+ * off neither is added. Keywords in another agent's message are defused so they can't switch modes
+ * on the receiving agent.
  */
-export function buildSteerMessage(comment: Comment, senderTitle?: string | null): string {
+export function buildSteerMessage(comment: Comment, senderTitle: string | null | undefined, parallelize: boolean): string {
   const fromAgent = Boolean(comment.fromTaskId);
   const lines = [
     fromAgent
@@ -281,7 +295,10 @@ export function buildSteerMessage(comment: Comment, senderTitle?: string | null)
     "",
     "Take it into account in your current work and mention briefly how you addressed it in your final summary.",
   ];
-  if (!fromAgent && needsOrchestration(null, [comment])) lines.push(ORCHESTRATE_INSTRUCTION);
+  if (!fromAgent && parallelize) {
+    lines.push(PARALLEL_INSTRUCTION);
+    if (needsOrchestration(null, [comment])) lines.push(ORCHESTRATE_INSTRUCTION);
+  }
   return lines.join("\n");
 }
 

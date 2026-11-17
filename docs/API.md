@@ -169,7 +169,7 @@ A board is one project. `workdir` is the main folder (omp runs there); `extraFol
 | DELETE | `/boards/:id` | – | `{ ok: true }` (stops its agents, cascades, removes its shared files and every card's files, workspace and marked Docker resources) |
 | POST | `/boards/:id/access` | – | `Board` with `lastAccessedAt` set to now; `updatedAt` stays as it was. The board page calls it on open; the sidebar's **Your projects** lists the 10 most recently opened projects (then never-opened ones, newest first). 404 for a project you can't see |
 | GET | `/boards/:id/tasks` | – | `Task[]` |
-| POST | `/boards/:id/tasks` | `{ title, description?, status?, position?, blockedBy? }` or `{ text, position? }` | `Task` (201). Creating directly in `in_progress` with autoRun starts the agent. `text`: a card from free text, see [Card writer](#card-writer) |
+| POST | `/boards/:id/tasks` | `{ title, description?, status?, position?, blockedBy?, parallelize?, ignoreMemory? }` or `{ text, position?, parallelize?, ignoreMemory? }` | `Task` (201). Creating directly in `in_progress` with autoRun starts the agent. `text`: a card from free text, see [New cards from text](#new-cards-from-text). `parallelize` (boolean; `null` allowed with `title`) is stored as `Task.parallelize` (`boolean \| null`, `null` = on; not patchable): on, every run prompt and every comment steered into a running run tells omp it may split independent parts of the work across parallel subagents, and large or broad work still gets omp's `orchestrate` keyword; off, neither is added (your own text is still sent verbatim, so an `orchestrate` you typed applies). `ignoreMemory` (boolean; omitted/`null` = `false`) is stored as `Task.ignoreMemory` (patchable): when `true`, the card's runs start omp without agentmemory — no recall from past sessions, nothing captured to memory, no memory tools or skills. Duplicating a card keeps both values |
 | GET | `/boards/:id/files` | – | `SharedFiles` of the board (shared with every card's agent) |
 | POST | `/boards/:id/files?name=<file>` | raw file bytes | `SharedFiles` (201); replaces a file of the same name; max 100 MB |
 | GET | `/boards/:id/files/<name>` | – | the file, served like `/tasks/:id/files/<name>` (`?download=1` forces a download) |
@@ -209,7 +209,7 @@ Git never prompts: commands run without a terminal (`GIT_TERMINAL_PROMPT=0`, SSH
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
 | GET | `/tasks/:id` | – | `{ task: Task, comments: Comment[], runs: Run[] }` |
-| PATCH | `/tasks/:id` | `Partial<{ title, description, status, position, blockedBy, question }>` | `Task`. Status change triggers agent rules below. `blockedBy`: ids of other cards on the same board; 400 for the card itself, unknown cards, or a cycle. `question` accepts only `null` (dismiss the agent's question; the agent sets it) |
+| PATCH | `/tasks/:id` | `Partial<{ title, description, status, position, blockedBy, question, ignoreMemory }>` | `Task`. Status change triggers agent rules below. `blockedBy`: ids of other cards on the same board; 400 for the card itself, unknown cards, or a cycle. `question` accepts only `null` (dismiss the agent's question; the agent sets it). `ignoreMemory` (boolean, default `false`): run omp without agentmemory (no recall, no capture, no memory tools/skills); takes effect from the card's next run, a running run keeps its setting |
 | DELETE | `/tasks/:id` | – | `{ ok: true }` (also removes the card's files, workspace and marked Docker resources; Docker in the background) |
 | POST | `/tasks/:id/run` | – | `Task` (starts/queues agent, moves to In progress) |
 | POST | `/tasks/:id/stop` | – | `Task` |
@@ -234,14 +234,11 @@ Git never prompts: commands run without a terminal (`GIT_TERMINAL_PROMPT=0`, SSH
 | POST | `/tasks/:id/review` | `{ decision: "approve"\|"request_changes", note?, hash? }` | `{ task: Task, comment: Comment \| null }` – code review decision. See [Code review](#code-review) |
 | GET | `/tasks/:id/trajectory?runId=&compress=1&maxTokens=` | – | One-line NDJSON download `trajectory-<taskId>.jsonl`: the card's agent session (or run `runId`) as a ShareGPT trajectory. See [Trajectories](#trajectories) |
 
-### Card writer
+### New cards from text
 
-Cards from free text are written by a read-only `omp --mode rpc` agent (steered to answer after 8 lookups, 16 for long requests) in the background; nobody waits for it.
-
-- `POST /boards/:id/tasks` with `{ text, position? }` (`text`: 1–2,000,000 characters) → `Task` (201) at once: in `in_progress` with its run queued (whatever the board's `autoRun`), titled from the text's first line with the text as its description. Text of 2,000+ characters is also saved as the card file `brief.md`, and the description gets a line pointing the agent to it.
-- A short single line (up to 100 characters) is the title as typed: its run starts without the card writer.
-- Otherwise the run is held (`QueueEntry.drafting`, `queue.updated.drafting`) while the card writer works; its progress lines are sent live as `task.activity` events. When it is done, the card gets the written title and Markdown brief (plus the orchestration line that makes omp split the work across parallel subagents, when the work calls for it) and `blockedBy` gains the open cards it must wait for; a title or description changed meanwhile is kept. Then the run starts.
-- If the card writer fails, the card keeps the text as typed, gets an agent comment saying so, and runs. Stopping or deleting the card stops its card writer. Up to half the server's logical cores (at least 4, at most 16) cards are written at once; more wait their turn. After a server restart a card still being written runs as it is.
+- `POST /boards/:id/tasks` with `{ text, position?, parallelize?, ignoreMemory? }` (`text`: 1–2,000,000 characters) → `Task` (201) in `in_progress` with its agent started right away (whatever the board's `autoRun`); no agent rewrites the text.
+- A single line of up to 100 characters is the title as typed, with an empty description. Otherwise the title is the first line (Markdown list and heading markers stripped; its first sentence when over 80 characters; clipped to 80) and the description is the text verbatim.
+- Text over 20,000 characters is also saved word for word as the card file `brief.md`; the description is clipped and gets a line pointing the agent to it.
 
 ### Code changes
 
@@ -275,7 +272,7 @@ Either way `task.updated` is published with the final card.
 
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
-| GET | `/queue` | – | `QueueSnapshot`: `limit` (the effective limit, `concurrency.limit`), `concurrency` (see below), `running` and `queued` (start order) `QueueEntry`s, each with the blocking cards that are not Done yet (`waitingFor`), `planning` (held until the planner has ordered its project's queued cards), `drafting` (held while the card writer writes the card), `planNote` (the planner's one-line reason, or `null`), `createdByTaskId` (the card whose agent created it, or `null`) and `sdlc` (derived SDLC progress, `SdlcProgress | null`; see [SDLC phases and quality gates](#sdlc-phases-and-quality-gates)); `planning` lists the projects being planned right now (`{ boardId, boardName }[]`) |
+| GET | `/queue` | – | `QueueSnapshot`: `limit` (the effective limit, `concurrency.limit`), `concurrency` (see below), `running` and `queued` (start order) `QueueEntry`s, each with the blocking cards that are not Done yet (`waitingFor`), `planning` (held until the planner has ordered its project's queued cards), `planNote` (the planner's one-line reason, or `null`), `createdByTaskId` (the card whose agent created it, or `null`) and `sdlc` (derived SDLC progress, `SdlcProgress | null`; see [SDLC phases and quality gates](#sdlc-phases-and-quality-gates)); `planning` lists the projects being planned right now (`{ boardId, boardName }[]`) |
 | POST | `/queue` | `{ taskId, position }` | `QueueSnapshot` after moving a queued card (`position` 0 starts next); 409 if the card is not queued |
 
 Queued cards start in queue order as slots free up, skipping cards whose `blockedBy` cards are not all Done; a card reaching Done re-checks the queue.
@@ -446,7 +443,7 @@ Errors: invalid fields of a new credential answer `400 { error, fields }` as for
 
 ## Schedulers
 
-Recurring cards (the `/schedulers` page). On every match of its cron expression, evaluated in its IANA time zone, a scheduler creates a regular card on its project from its `prompt`, through the same free-text flow as `POST /boards/:id/tasks` with `text` (a short single line is the title and starts right away; anything longer goes through the [card writer](#card-writer)). The card starts its agent even when the project has `autoRun` off, and carries `Task.schedulerId` (the scheduler's id; `null` for cards a person or an agent created, and once the scheduler is deleted). Logic in [`lib/scheduler.ts`](../lib/scheduler.ts), cron parsing in [`lib/cron.ts`](../lib/cron.ts).
+Recurring cards (the `/schedulers` page). On every match of its cron expression, evaluated in its IANA time zone, a scheduler creates a regular card on its project from its `prompt`, through the same [free-text flow](#new-cards-from-text) as `POST /boards/:id/tasks` with `text` (with `parallelize` on). The card starts its agent even when the project has `autoRun` off, and carries `Task.schedulerId` (the scheduler's id; `null` for cards a person or an agent created, and once the scheduler is deleted). Logic in [`lib/scheduler.ts`](../lib/scheduler.ts), cron parsing in [`lib/cron.ts`](../lib/cron.ts).
 
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |

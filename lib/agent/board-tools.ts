@@ -225,6 +225,7 @@ async function createCard(host: BoardToolHost, caller: BoardToolCaller, args: Re
     status: start ? "in_progress" : "todo",
     blockedBy,
     createdByTaskId: caller.taskId,
+    ignoreMemory: byId.get(caller.taskId)?.ignoreMemory ?? false,
   });
   publish({ type: "task.updated", task });
   const result = start ? await host.start(task.id) : task;

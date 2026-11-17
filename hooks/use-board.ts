@@ -34,8 +34,6 @@ export type TasksByStatus = Record<TaskStatus, Task[]>;
 export interface QueueIds {
   running: string[];
   queued: string[];
-  /** Queued cards the card writer is still writing (their run starts after). */
-  drafting: string[];
   /** Cluster mode: the machine each running card runs on (task id → node); `{}` otherwise. */
   nodes: Record<string, { id: string; name: string }>;
 }
@@ -74,7 +72,7 @@ function sameNodes(a: QueueIds["nodes"], b: QueueIds["nodes"]): boolean {
   );
 }
 
-const EMPTY_QUEUE: QueueIds = { running: [], queued: [], drafting: [], nodes: {} };
+const EMPTY_QUEUE: QueueIds = { running: [], queued: [], nodes: {} };
 const queueStore = createStore<QueueIds>(EMPTY_QUEUE);
 
 /** Publish the latest agent queue (GET /queue or a `queue.updated` event) to every reader in this tab. */
@@ -84,7 +82,6 @@ export function publishQueue(queue: QueueIds | QueueSnapshot): void {
       ? {
           running: queue.running.map((e) => e.taskId),
           queued: queue.queued.map((e) => e.taskId),
-          drafting: queue.queued.filter((e) => e.drafting).map((e) => e.taskId),
           nodes: Object.fromEntries(queue.running.flatMap((e) => (e.node ? [[e.taskId, e.node] as const] : []))),
         }
       : queue;
@@ -92,7 +89,6 @@ export function publishQueue(queue: QueueIds | QueueSnapshot): void {
   if (
     sameIds(current.running, next.running) &&
     sameIds(current.queued, next.queued) &&
-    sameIds(current.drafting, next.drafting) &&
     sameNodes(current.nodes, next.nodes)
   ) {
     return;
@@ -111,15 +107,6 @@ export function useQueuePosition(taskId: string): number {
     queueStore.subscribe,
     () => queueStore.get().queued.indexOf(taskId),
     () => -1,
-  );
-}
-
-/** True while the card writer is still writing this queued card. */
-export function useQueueDrafting(taskId: string): boolean {
-  return useSyncExternalStore(
-    queueStore.subscribe,
-    () => queueStore.get().drafting.includes(taskId),
-    () => false,
   );
 }
 
@@ -249,6 +236,10 @@ export interface NewCardInput {
   start?: boolean;
   /** Cards this one waits for ("Run after"). */
   blockedBy?: string[];
+  /** Whether the run prompt invites parallel subagents; null/omitted = on. */
+  parallelize?: boolean | null;
+  /** Whether the card's runs start omp without agentmemory; omitted = false. */
+  ignoreMemory?: boolean;
 }
 
 /**
@@ -268,6 +259,8 @@ export async function createCard(
       title: input.title,
       description: input.description || undefined,
       blockedBy: input.blockedBy?.length ? input.blockedBy : undefined,
+      parallelize: input.parallelize,
+      ignoreMemory: input.ignoreMemory,
       status: start ? "in_progress" : "todo",
       position: options.position,
     });
@@ -289,17 +282,26 @@ export async function createCard(
 }
 
 /**
- * Create a card from free text: it lands in In progress right away and its agent starts once the
- * card writer has written its title and brief (in the background). Toasts and resolves `null`
- * when the card couldn't be created.
+ * Create a card from free text: it lands in In progress with the text as typed and its agent starts
+ * right away. Toasts and resolves `null` when the card couldn't be created.
  */
 export async function createCardFromText(
   boardId: string,
   text: string,
-  options: { position?: number; onCreated?: (task: Task) => void } = {},
+  options: {
+    position?: number;
+    onCreated?: (task: Task) => void;
+    parallelize?: boolean;
+    ignoreMemory?: boolean;
+  } = {},
 ): Promise<Task | null> {
   try {
-    const task = await api.tasks.createFromText(boardId, { text, position: options.position });
+    const task = await api.tasks.createFromText(boardId, {
+      text,
+      position: options.position,
+      parallelize: options.parallelize,
+      ignoreMemory: options.ignoreMemory,
+    });
     options.onCreated?.(task);
     return task;
   } catch (err) {
@@ -340,10 +342,10 @@ export interface BoardController {
   /** Create a card; toasts and resolves `null` on failure, calls `onCardAdded` on success. */
   createTask: (input: NewCardInput) => Promise<Task | null>;
   /**
-   * A card from free text, in In progress with its agent started; the card writer writes its title
-   * and brief in the background. Toasts and resolves `null` on failure.
+   * A card from free text, in In progress with its agent started. Toasts and resolves `null` on
+   * failure.
    */
-  createFromText: (text: string) => Promise<Task | null>;
+  createFromText: (text: string, options?: { parallelize?: boolean; ignoreMemory?: boolean }) => Promise<Task | null>;
   /** Start / stop a card's agent; toasts on failure. */
   runAgent: (taskId: string) => Promise<void>;
   stopAgent: (taskId: string) => Promise<void>;
@@ -596,14 +598,11 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
           case "run.delta":
             noteActivity(event.taskId, activityLine(event.kind, event.text));
             break;
-          case "task.activity":
-            noteActivity(event.taskId, event.text);
-            break;
           case "run.resources":
             noteLiveResources(event);
             break;
           case "queue.updated":
-            publishQueue({ running: event.running, queued: event.queued, drafting: event.drafting, nodes: event.nodes });
+            publishQueue({ running: event.running, queued: event.queued, nodes: event.nodes });
             break;
         }
         emit(event);
@@ -726,9 +725,11 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
   );
 
   const createFromText = useCallback(
-    async (text: string): Promise<Task | null> => {
+    async (text: string, options: { parallelize?: boolean; ignoreMemory?: boolean } = {}): Promise<Task | null> => {
       const task = await createCardFromText(boardId, text, {
         position: endPosition("in_progress"),
+        parallelize: options.parallelize,
+        ignoreMemory: options.ignoreMemory,
         onCreated: upsertTask,
       });
       if (task) onCardAddedRef.current?.(task);

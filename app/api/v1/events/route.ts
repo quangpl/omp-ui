@@ -122,13 +122,9 @@ function visibilityFilter(repo: Repository, userId: string): (event: ServerEvent
         return keepIf(event, event.run.userId === userId);
       case "queue.updated": {
         // Always forwarded (possibly empty) so the client clears entries that left the queue.
-        const [running, queued, drafting] = await Promise.all([
-          own(event.running),
-          own(event.queued),
-          own(event.drafting),
-        ]);
+        const [running, queued] = await Promise.all([own(event.running), own(event.queued)]);
         const nodes = Object.fromEntries(Object.entries(event.nodes).filter(([id]) => running.includes(id)));
-        return { ...event, running, queued, drafting, nodes };
+        return { ...event, running, queued, nodes };
       }
       // The cluster's state concerns every signed-in user (replica banner, node notices); the
       // cards running on each node are narrowed to the user's own.

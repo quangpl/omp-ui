@@ -117,6 +117,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   review TEXT,
   resources TEXT,
   scheduler_id TEXT,
+  parallelize INTEGER,
+  ignore_memory INTEGER NOT NULL DEFAULT 0,
   user_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -261,6 +263,8 @@ function toTask(r: Row): Task {
     review: parseTaskReview(r.review),
     resources: parseAgentResources(r.resources),
     schedulerId: strOrNull(r.scheduler_id),
+    parallelize: r.parallelize == null ? null : num(r.parallelize) !== 0,
+    ignoreMemory: r.ignore_memory != null && num(r.ignore_memory) !== 0,
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
     commentCount: num(r.comment_count),
@@ -438,6 +442,8 @@ export class SqliteRepository implements Repository {
       ["review", "TEXT"],
       ["resources", "TEXT"],
       ["scheduler_id", "TEXT"],
+      ["parallelize", "INTEGER"],
+      ["ignore_memory", "INTEGER NOT NULL DEFAULT 0"],
       ["user_id", "TEXT"],
     ]);
     this.addMissingColumns("comments", [
@@ -766,8 +772,8 @@ export class SqliteRepository implements Repository {
       }
       // The card inherits its board's owner.
       this.stmt(
-        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, blocked_by, created_by_task_id, scheduler_id, user_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, blocked_by, created_by_task_id, scheduler_id, parallelize, ignore_memory, user_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         id,
         input.boardId,
@@ -778,6 +784,8 @@ export class SqliteRepository implements Repository {
         JSON.stringify(input.blockedBy ?? []),
         input.createdByTaskId ?? null,
         input.schedulerId ?? null,
+        input.parallelize == null ? null : input.parallelize ? 1 : 0,
+        input.ignoreMemory ? 1 : 0,
         this.ownerOf("boards", input.boardId),
         now,
         now,
@@ -805,6 +813,7 @@ export class SqliteRepository implements Repository {
       ["retry_at", patch.retryAt],
       ["todos", patch.todos === undefined ? undefined : JSON.stringify(patch.todos)],
       ["review", patch.review === undefined ? undefined : patch.review === null ? null : JSON.stringify(patch.review)],
+      ["ignore_memory", patch.ignoreMemory === undefined ? undefined : patch.ignoreMemory ? 1 : 0],
       [
         "resources",
         patch.resources === undefined ? undefined : patch.resources === null ? null : JSON.stringify(patch.resources),
