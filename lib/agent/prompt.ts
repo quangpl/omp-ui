@@ -279,26 +279,26 @@ function projectFolders(board: Board): string | null {
 
 /**
  * Message steered into a live session when the user (or another card's agent) comments while the
- * agent runs. omp handles it like chat input, so its magic keywords apply: with Parallelize on, user
- * feedback gets the parallel-subagent permission and large feedback asks for orchestration; with it
- * off neither is added. Keywords in another agent's message are defused so they can't switch modes
- * on the receiving agent.
+ * agent runs. omp handles it like chat input, so its magic keywords apply. User feedback goes in
+ * word for word, like typing into omp mid-run, so the agent acts on it right away; with
+ * Parallelize on it gets the parallel-subagent permission and large feedback asks for
+ * orchestration, with it off nothing is added. Another agent's message is introduced with its
+ * sender, and its keywords are defused so they can't switch modes on the receiving agent.
  */
 export function buildSteerMessage(comment: Comment, senderTitle: string | null | undefined, parallelize: boolean): string {
-  const fromAgent = Boolean(comment.fromTaskId);
-  const lines = [
-    fromAgent
-      ? `New message from the agent working on card "${senderTitle ?? comment.fromTaskId}" (${comment.fromTaskId}):`
-      : "New feedback from the user on this task:",
-    "",
-    fromAgent ? defuseMagicKeywords(comment.body.trim()) : comment.body.trim(),
-    "",
-    "Take it into account in your current work and mention briefly how you addressed it in your final summary.",
-  ];
-  if (!fromAgent && parallelize) {
-    lines.push(PARALLEL_INSTRUCTION);
-    if (needsOrchestration(null, [comment])) lines.push(ORCHESTRATE_INSTRUCTION);
+  const body = comment.body.trim();
+  if (comment.fromTaskId) {
+    return [
+      `New message from the agent working on card "${senderTitle ?? comment.fromTaskId}" (${comment.fromTaskId}):`,
+      "",
+      defuseMagicKeywords(body),
+      "",
+      "Take it into account in your current work and mention briefly how you addressed it in your final summary.",
+    ].join("\n");
   }
+  if (!parallelize) return body;
+  const lines = [body, "", PARALLEL_INSTRUCTION];
+  if (needsOrchestration(null, [comment])) lines.push(ORCHESTRATE_INSTRUCTION);
   return lines.join("\n");
 }
 

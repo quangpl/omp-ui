@@ -249,6 +249,9 @@ export interface Comment {
   createdAt: string;
 }
 
+/** Live delivery state of a comment steered into a running agent (`comment.steer` events). */
+export type SteerState = "sent" | "delivered" | "deferred";
+
 export type RunStatus = "running" | "succeeded" | "failed" | "aborted";
 
 export interface Run {
@@ -897,6 +900,12 @@ export type ServerEvent =
   | { type: "comment.added"; comment: Comment; boardId: string }
   | { type: "comment.updated"; comment: Comment; boardId: string }
   | { type: "comment.deleted"; commentId: string; taskId: string; boardId: string }
+  /**
+   * Live, NOT persisted: what became of a comment steered into the card's running agent. `sent`:
+   * omp took it mid-run (it reaches the agent at its next step); `delivered`: it reached the agent;
+   * `deferred`: the run could not take it (wrapping up, or omp declined), the next run picks it up.
+   */
+  | { type: "comment.steer"; commentId: string; taskId: string; boardId: string; state: SteerState }
   | { type: "run.updated"; run: Run; boardId: string }
   | { type: "run.event"; event: RunEvent; boardId: string }
   /** Files of a card (`taskId`) or the board's shared files (`taskId` null) changed. */
