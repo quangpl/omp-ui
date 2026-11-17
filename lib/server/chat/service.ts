@@ -325,3 +325,12 @@ export function startChatIntegrations(repo: Repository, manager: AgentManager): 
       console.error("[chat] startup failed:", errorMessage(err));
     });
 }
+
+/** The stored settings were replaced (data import): stop every bot, then start those of the new tokens. */
+export async function restartChatIntegrations(repo: Repository, manager: AgentManager): Promise<void> {
+  await serialized(async () => {
+    for (const platform of CHAT_PLATFORMS) await stopAdapter(platform);
+  });
+  registry.booted = false;
+  startChatIntegrations(repo, manager);
+}

@@ -13,6 +13,8 @@ import type {
   ChatStatusResponse,
   Comment,
   CleanupStatus,
+  DataImportResult,
+  DataTransferStatus,
   ClusterJoinInfo,
   ClusterStatus,
   ClusterTestResult,
@@ -392,6 +394,20 @@ export const api = {
     /** Clean up now (default: the saved targets); 409 while a cleanup is running. */
     run: (ids?: ScheduledCleanupId[]) =>
       request<CleanupStatus>("/settings/cleanup", { method: "POST", json: ids ? { ids } : {} }),
+  },
+  /** Settings → Data transfer: move every project, card, user, setting and shared file to another server. */
+  dataTransfer: {
+    status: () => request<DataTransferStatus>("/data-transfer"),
+    /** Download URL of a fresh export (cookie-authenticated; the archive is built before the download starts). */
+    exportUrl: `${BASE}/data-transfer/export`,
+    backupUrl: (name: string) => `${BASE}/data-transfer/backups/${encodeURIComponent(name)}`,
+    /** Replace all data on this server with an export; 409 while agents run, 400 for an invalid archive. */
+    import: (archive: Blob) =>
+      request<DataImportResult>("/data-transfer/import?confirm=replace", {
+        method: "POST",
+        body: archive,
+        headers: { "content-type": "application/gzip" },
+      }),
   },
   /** omp's user config.yml (Settings → OMP); changes apply to the next agent run. */
   ompConfig: {

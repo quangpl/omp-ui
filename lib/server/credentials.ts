@@ -9,7 +9,7 @@
 // NOTE: lib/server/http.ts imports lib/agent/manager.ts, which imports this module: never use an
 // import from lib/server/http.ts at module evaluation time (e.g. `class … extends HttpError`).
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import {
@@ -164,6 +164,19 @@ function encryptionKey(): Buffer {
     cache.set(file, key);
   }
   return key;
+}
+
+/**
+ * Install `content` (a credentials.key file from another server) as DATA_DIR/credentials.key and
+ * use it from now on. Throws when it is not a base64 32-byte key.
+ */
+export function replaceCredentialsKeyFile(content: string): void {
+  const file = path.join(dataDir(), KEY_FILE);
+  const key = parseKeyFile(content, KEY_FILE);
+  const temp = `${file}.${randomUUID()}.tmp`;
+  writeFileSync(temp, `${key.toString("base64")}\n`, { mode: 0o600 });
+  renameSync(temp, file);
+  g.__ompUiCredentialKeys?.delete(file);
 }
 
 /** Reading only: an unusable key makes every secret unreadable instead of failing the request. */

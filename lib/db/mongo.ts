@@ -1,4 +1,4 @@
-import { MongoClient, type Collection } from "mongodb";
+import { MongoClient, type Collection, type Document, type Filter, type OptionalUnlessRequiredId } from "mongodb";
 
 import type {
   AgentResources,
@@ -38,7 +38,12 @@ import type {
   UpdateTaskInput,
   UpdateUserInput,
   UserAuthRecord,
+  DataRows,
+  DataSnapshot,
+  DataTable,
+  TaskRow,
 } from "@/lib/db/types";
+import { DATA_TABLES } from "@/lib/db/types";
 import {
   POSITION_STEP,
   boardPatchUpdatedAt,
@@ -520,6 +525,79 @@ export class MongoRepository implements Repository {
       .toArray();
     for (const row of rows) stats.set(row._id, { total: row.total, open: row.open });
     return stats;
+  }
+
+  /** Domain mapper and collection of each data table, used by export/import. */
+  private dataCollection<T extends DataTable>(
+    table: T,
+  ): { coll: Collection<Document>; toRow: (doc: Document) => DataRows[T] } {
+    const toTaskRow = (d: TaskDoc): TaskRow => {
+      const { commentCount: _c, openCommentCount: _o, ...row } = toTask(d, undefined);
+      return row;
+    };
+    const map = {
+      settings: [this.settings, (d: SettingDoc) => ({ key: d._id, value: d.value })],
+      users: [this.users, toUserAuth],
+      boards: [this.boards, toBoard],
+      tasks: [this.tasks, toTaskRow],
+      comments: [this.comments, toComment],
+      runs: [this.runs, toRun],
+      run_events: [this.runEvents, toRunEvent],
+      schedulers: [this.schedulers, toScheduler],
+      scheduler_runs: [this.schedulerRuns, toSchedulerRun],
+    } as const;
+    const [coll, toRow] = map[table];
+    return {
+      coll: coll as unknown as Collection<Document>,
+      toRow: toRow as unknown as (doc: Document) => DataRows[T],
+    };
+  }
+
+  async *exportRows<T extends DataTable>(table: T): AsyncIterable<DataRows[T][]> {
+    const { coll, toRow } = this.dataCollection(table);
+    let last: Document["_id"];
+    for (;;) {
+      const filter = (last === undefined ? {} : { _id: { $gt: last } }) as Filter<Document>;
+      const docs = await coll.find(filter).sort({ _id: 1 }).limit(500).toArray();
+      if (docs.length === 0) return;
+      yield docs.map(toRow);
+      if (docs.length < 500) return;
+      last = docs[docs.length - 1]._id;
+    }
+  }
+
+  /**
+   * Not transactional (standalone servers lack transactions). Documents keep the domain field
+   * names; JSON fields (todos, review, resources, usage, blockedBy, extraFolders) stay native
+   * BSON values exactly as createTask/updateTask store them.
+   */
+  async replaceAllData(data: DataSnapshot): Promise<void> {
+    for (const table of [...DATA_TABLES].reverse()) await this.dataCollection(table).coll.deleteMany({});
+    const toDoc = (table: DataTable, row: object): Document => {
+      if (table === "settings") {
+        const { key, value } = row as DataRows["settings"];
+        return { _id: key, value };
+      }
+      if (table === "run_events") {
+        const { seq, ...rest } = row as DataRows["run_events"];
+        return { _id: seq, ...rest };
+      }
+      const { id, ...rest } = row as { id: string };
+      return { _id: id, ...rest };
+    };
+    for (const table of DATA_TABLES) {
+      const rows = data[table] as object[];
+      if (rows.length === 0) continue;
+      const docs = rows.map((row) => toDoc(table, row)) as OptionalUnlessRequiredId<Document>[];
+      await this.dataCollection(table).coll.insertMany(docs, { ordered: true });
+    }
+    // appendRunEvent $inc's this counter, so the next event gets max + 1 (or 1 after the delete).
+    const maxSeq = data.run_events.reduce((max, e) => Math.max(max, e.seq), 0);
+    if (maxSeq > 0) {
+      await this.counters.updateOne({ _id: RUN_EVENTS_COUNTER }, { $set: { seq: maxSeq } }, { upsert: true });
+    } else {
+      await this.counters.deleteOne({ _id: RUN_EVENTS_COUNTER });
+    }
   }
 
   private async withCommentStats(docs: TaskDoc[]): Promise<Task[]> {

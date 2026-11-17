@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { CreateUserInput, Repository } from "@/lib/db/types";
+import { DATA_TABLES, type CreateUserInput, type DataSnapshot, type DataTable, type Repository } from "@/lib/db/types";
 import type { Board, Comment, Run, RunEvent, Scheduler, Task } from "@/lib/types";
 
 /** One task with a comment, a run and a run event, used by the cascade tests. */
@@ -1747,6 +1747,131 @@ export function runRepositoryContract(
         expect(ids(await repo.listBoards(admin.id))).toEqual([legacy2.board.id, legacy1.board.id]);
 
         expect(await repo.reassignUserData(null, admin.id)).toBe(0);
+      });
+    });
+
+    // ---------------------------------------------------------- export/import
+
+    describe("data export and import", () => {
+      const dump = async (source: Repository): Promise<DataSnapshot> => {
+        const snapshot = {} as Record<DataTable, unknown[]>;
+        for (const table of DATA_TABLES) {
+          const rows: unknown[] = [];
+          for await (const batch of source.exportRows(table)) rows.push(...batch);
+          snapshot[table] = rows;
+        }
+        return snapshot as DataSnapshot;
+      };
+      const empty = () => Object.fromEntries(DATA_TABLES.map((table) => [table, []])) as unknown as DataSnapshot;
+
+      it("round-trips every table into another repository, keeping ids, seqs, timestamps and JSON fields", async () => {
+        const owner = await newUser("owner", { email: "owner@example.com" });
+        await repo.setSetting("app_settings", '{"maxAgents":3}');
+        const board = await repo.createBoard({ name: "Exported", workdir: "/work/exported", userId: owner.id });
+        await repo.updateBoard(board.id, { extraFolders: ["/work/api"], pinned: true, worktrees: true });
+        const parent = await repo.createTask({ boardId: board.id, title: "parent" });
+        const task = await repo.createTask({
+          boardId: board.id,
+          title: "child",
+          status: "in_progress",
+          blockedBy: [parent.id],
+          createdByTaskId: parent.id,
+          parallelize: false,
+          ignoreMemory: true,
+        });
+        await repo.updateTask(task.id, {
+          todos: [{ name: "Testing", tasks: [{ content: "Run tests", status: "completed" }] }],
+          review: { decision: "approved", hash: "abc", note: null, at: "2026-01-01T00:00:00.000Z" },
+          resources: {
+            memoryBytes: 1,
+            peakMemoryBytes: 2,
+            cpuPercent: 3,
+            cpuSeconds: 4,
+            sampledAt: "2026-01-01T00:00:00.000Z",
+          },
+          usage: {
+            costUsd: 0.5,
+            totalTokens: 10,
+            inputTokens: 4,
+            outputTokens: 3,
+            cacheReadTokens: 2,
+            cacheWriteTokens: 1,
+            requests: 2,
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        });
+        const comment = await repo.addComment({ taskId: task.id, author: "user", body: "fix it" });
+        const run = await repo.createRun({ taskId: task.id, prompt: "go", nodeId: "n1", nodeName: "node 1" });
+        await repo.setCommentResolved(comment.id, true, run.id);
+        await repo.updateRun(run.id, { status: "succeeded", summary: "done", endedAt: "2026-01-01T00:01:00.000Z" });
+        await repo.appendRunEvent({ runId: run.id, taskId: task.id, kind: "text", text: "one" });
+        const last = await repo.appendRunEvent({ runId: run.id, taskId: task.id, kind: "tool", text: "two" });
+        const scheduler = await repo.createScheduler({
+          boardId: board.id,
+          name: "nightly",
+          prompt: "check",
+          cron: "0 3 * * *",
+          timezone: "UTC",
+          maxRuns: 5,
+          nextRunAt: "2026-01-02T03:00:00.000Z",
+        });
+        await repo.createSchedulerRun({
+          schedulerId: scheduler.id,
+          taskId: task.id,
+          trigger: "manual",
+          scheduledFor: "2026-01-01T00:00:00.000Z",
+          status: "created",
+        });
+        const snapshot = await dump(repo);
+
+        const target = await makeRepo();
+        try {
+          const stale = await target.createBoard({ name: "replaced", workdir: "/work/replaced" });
+          await target.setSetting("stale", "x");
+          await target.replaceAllData(snapshot);
+
+          expect(await dump(target)).toEqual(snapshot);
+          expect(await target.getBoard(stale.id)).toBeNull();
+          expect(await target.getSetting("stale")).toBeNull();
+          expect(await target.getTask(task.id)).toEqual(await repo.getTask(task.id));
+          expect(await target.getUserAuth(owner.id)).toEqual(await repo.getUserAuth(owner.id));
+          expect(await target.getScheduler(scheduler.id)).toEqual(await repo.getScheduler(scheduler.id));
+          expect(await target.listComments(task.id)).toEqual(await repo.listComments(task.id));
+          expect(await target.listBoards()).toEqual(await repo.listBoards());
+          // New run events continue after the imported ones.
+          const next = await target.appendRunEvent({ runId: run.id, taskId: task.id, kind: "text", text: "three" });
+          expect(next.seq).toBeGreaterThan(last.seq);
+        } finally {
+          await cleanup(target);
+        }
+      });
+
+      it("exports tables larger than one batch completely", async () => {
+        const keys = Array.from({ length: 1234 }, (_, i) => `k${String(i).padStart(4, "0")}`);
+        for (const key of keys) await repo.setSetting(key, key);
+        const batches: number[] = [];
+        const seen: string[] = [];
+        for await (const batch of repo.exportRows("settings")) {
+          batches.push(batch.length);
+          seen.push(...batch.map((s) => s.key));
+        }
+        expect(batches.length).toBeGreaterThan(1);
+        expect(seen.sort()).toEqual(keys);
+      });
+
+      it("importing an empty snapshot clears everything; run event seqs start over", async () => {
+        const board = await newBoard();
+        const task = await repo.createTask({ boardId: board.id, title: "gone" });
+        const run = await repo.createRun({ taskId: task.id, prompt: "p" });
+        await repo.appendRunEvent({ runId: run.id, taskId: task.id, kind: "text", text: "old" });
+
+        await repo.replaceAllData(empty());
+
+        expect(await dump(repo)).toEqual(empty());
+        const fresh = await repo.createTask({ boardId: (await newBoard("2")).id, title: "t" });
+        const freshRun = await repo.createRun({ taskId: fresh.id, prompt: "p" });
+        const event = await repo.appendRunEvent({ runId: freshRun.id, taskId: fresh.id, kind: "text", text: "x" });
+        expect(event.seq).toBe(1);
       });
     });
   });

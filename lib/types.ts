@@ -1774,6 +1774,58 @@ export interface CleanupStatus {
   running: boolean;
 }
 
+/** A `.tar.gz` of this server's data: an automatic backup taken before an import (DATA_DIR/backups). */
+export interface DataBackup {
+  name: string;
+  size: number;
+  /** ISO. */
+  createdAt: string;
+}
+
+/** GET /api/v1/data-transfer: what an export of this server holds, and whether an import may run. */
+export interface DataTransferStatus {
+  driver: "sqlite" | "mongodb" | "postgres";
+  users: number;
+  projects: number;
+  cards: number;
+  schedulers: number;
+  /** Bytes of card and project shared files (DATA_DIR/files). */
+  filesBytes: number;
+  /** "env": CREDENTIALS_KEY seals the saved secrets, so exports leave the key out. */
+  credentialsKey: "env" | "file";
+  /** Agents running or queued: an import waits until there are none. */
+  activeAgents: number;
+  /** An import is in progress. */
+  importing: boolean;
+  /** Newest first. */
+  backups: DataBackup[];
+}
+
+/**
+ * How the imported secrets can be opened. "restored": the archive's credentials key is installed;
+ * "ignored": installed, but this server's CREDENTIALS_KEY takes precedence; "set-env": the source
+ * server used CREDENTIALS_KEY, so set the same value here; "none": the source had no key.
+ */
+export type ImportedCredentialsKey = "restored" | "ignored" | "set-env" | "none";
+
+/** POST /api/v1/data-transfer/import. */
+export interface DataImportResult {
+  source: { appVersion: string; createdAt: string; driver: string };
+  /** Rows imported per table (settings, users, boards, tasks, comments, runs, run_events, schedulers, scheduler_runs). */
+  counts: Record<string, number>;
+  /** Rows left out because what they belong to (project, card, run, scheduler) is not in the archive. */
+  skipped: number;
+  /** Shared files restored. */
+  files: number;
+  credentialsKey: ImportedCredentialsKey;
+  /** Cards whose agent was running or queued in the source: stopped (Resume continues them). */
+  interrupted: number;
+  /** The data this server held before the import. */
+  backup: DataBackup;
+  /** The caller's session ended (the import replaced the accounts or the token secret): sign in again. */
+  signedOut: boolean;
+}
+
 export interface AiQuotaLimit {
   id: string;
   label: string;

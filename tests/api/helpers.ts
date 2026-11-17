@@ -42,7 +42,7 @@ export interface CallOptions {
   /** JSON-encoded request body. */
   body?: unknown;
   /** Raw request body (sent as-is). */
-  rawBody?: string;
+  rawBody?: string | Uint8Array<ArrayBuffer>;
   /** Bearer token; `undefined` = the token from the last setupAdmin(), `null` = none. */
   token?: string | null;
   /** Raw Cookie header. */
@@ -240,7 +240,7 @@ export function call(
   const token = options.token === undefined ? defaultToken : options.token;
   if (token) headers.set("authorization", `Bearer ${token}`);
   if (options.cookie) headers.set("cookie", options.cookie);
-  let body: string | undefined;
+  let body: string | Uint8Array<ArrayBuffer> | undefined;
   if (options.rawBody !== undefined) {
     body = options.rawBody;
   } else if (options.body !== undefined) {

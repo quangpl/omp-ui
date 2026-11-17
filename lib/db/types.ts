@@ -170,6 +170,47 @@ export interface AppendRunEventInput {
 }
 
 /**
+ * Tables of a full data export (Settings → Data transfer), parents before children: importing
+ * them in this order satisfies every foreign key.
+ */
+export const DATA_TABLES = [
+  "settings",
+  "users",
+  "boards",
+  "tasks",
+  "comments",
+  "runs",
+  "run_events",
+  "schedulers",
+  "scheduler_runs",
+] as const;
+export type DataTable = (typeof DATA_TABLES)[number];
+
+export interface SettingRow {
+  key: string;
+  value: string;
+}
+
+/** A card as stored: Task without the counts derived from its comments. */
+export type TaskRow = Omit<Task, "commentCount" | "openCommentCount">;
+
+/** The row of each data table, as driver-independent domain records (the export format). */
+export interface DataRows {
+  settings: SettingRow;
+  users: UserAuthRecord;
+  boards: Board;
+  tasks: TaskRow;
+  comments: Comment;
+  runs: Run;
+  run_events: RunEvent;
+  schedulers: Scheduler;
+  scheduler_runs: SchedulerRun;
+}
+
+/** Every row of every data table. */
+export type DataSnapshot = { [T in DataTable]: DataRows[T][] };
+
+/**
  * Storage abstraction. Implemented by SqliteRepository (node:sqlite, default), MongoRepository
  * and PostgresRepository (pg).
  * Every method returns fully-populated domain objects (including Task.commentCount /
@@ -278,6 +319,20 @@ export interface Repository {
   listSchedulerRuns(schedulerId: string, limit?: number): Promise<SchedulerRun[]>;
   /** createdAt now. */
   createSchedulerRun(input: CreateSchedulerRunInput): Promise<SchedulerRun>;
+
+  /**
+   * Every row of `table` as a domain record, in batches of at most a few hundred rows, ordered by
+   * primary key (run events by seq). For exports; rows written meanwhile may or may not appear.
+   */
+  exportRows<T extends DataTable>(table: T): AsyncIterable<DataRows[T][]>;
+  /**
+   * Delete every row of every data table, then insert `data` verbatim: ids, run event seqs,
+   * timestamps and owners are kept, and new run events continue after the highest imported seq.
+   * `data` must be consistent (every referenced board, task, run and scheduler present). SQLite and
+   * PostgreSQL do it in one transaction; MongoDB (no multi-document transactions on a standalone
+   * server) clears and fills collection by collection.
+   */
+  replaceAllData(data: DataSnapshot): Promise<void>;
 }
 
 export type { RunStatus };

@@ -229,6 +229,11 @@ function getSecret(): Promise<string> {
   return g.__ompUiAuthSecret;
 }
 
+/** Read the token secret from the database again (it was replaced by a data import). */
+export function forgetAuthSecret(): void {
+  g.__ompUiAuthSecret = undefined;
+}
+
 /**
  * Global session token epoch: bumping it revokes every user's tokens and chat logins at once (each
  * user also has a tokenEpoch for their own sessions). Read from the DB every time so a change made
