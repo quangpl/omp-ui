@@ -314,8 +314,8 @@ describe("sdlcPipeline", () => {
 
   it("lists visible phases: the required ones plus when-needed phases a card includes or a subagent executes", () => {
     // No running cards: only the required phases.
-    expect(sdlcPipeline(queue([]), {}).visible).toEqual(["planning", "implementation", "testing"]);
-    // A minimal plan (and a card without a plan) adds nothing.
+    expect(sdlcPipeline(queue([]), {}).visible).toEqual(["implementation", "testing"]);
+    // A plan that includes Planning, or a card without a plan (standing at Planning), reveals it.
     const minimal = queue([
       entry(A, "running", { sdlc: progress({ planning: "done", implementation: "active", testing: "pending" }, "implementation") }),
       entry(B, "running"),

@@ -1,6 +1,13 @@
-import type { DbDriver, Repository, UpdateBoardInput } from "@/lib/db/types";
+import type { DbDriver, Repository, UpdateBoardInput, UpdateTaskInput } from "@/lib/db/types";
 import { logEvent } from "@/lib/server/log-store";
-import { TASK_STATUSES, type AgentResources, type Task, type TaskReview, type TaskStatus } from "@/lib/types";
+import {
+  TASK_STATUSES,
+  type AgentResources,
+  type Task,
+  type TaskReview,
+  type TaskStatus,
+  type TaskUsage,
+} from "@/lib/types";
 
 /** Gap between consecutive card positions; new cards go to `max + POSITION_STEP`. */
 export const POSITION_STEP = 1024;
@@ -166,6 +173,50 @@ export function parseAgentResources(value: unknown): AgentResources | null {
     cpuSeconds: r.cpuSeconds,
     sampledAt: r.sampledAt,
   };
+}
+
+const USAGE_FIGURES = [
+  "costUsd",
+  "totalTokens",
+  "inputTokens",
+  "outputTokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "requests",
+] as const;
+
+/**
+ * Stored session usage: a JSON object string (SQL drivers) or an object (MongoDB). Anything
+ * missing, malformed, or with a negative or non-finite figure yields null.
+ */
+export function parseTaskUsage(value: unknown): TaskUsage | null {
+  let raw = value;
+  if (typeof value === "string") {
+    try {
+      raw = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const figures = {} as Record<(typeof USAGE_FIGURES)[number], number>;
+  for (const key of USAGE_FIGURES) {
+    const v = r[key];
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return null;
+    figures[key] = v;
+  }
+  if (typeof r.updatedAt !== "string") return null;
+  return { ...figures, updatedAt: r.updatedAt };
+}
+
+/**
+ * Whether a task patch bumps `updatedAt`: every patch does except one that only sets `usage`
+ * (spend bookkeeping refreshed during and after runs is not a change to the card).
+ */
+export function touchesTask(patch: UpdateTaskInput): boolean {
+  if (patch.usage === undefined) return true;
+  return Object.entries(patch).some(([key, value]) => key !== "usage" && value !== undefined);
 }
 
 export function emptyStatusCounts(): Record<TaskStatus, number> {

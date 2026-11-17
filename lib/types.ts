@@ -166,6 +166,12 @@ export interface Task {
    * `run.resources` events instead. Null when the card never ran (or ran before tracking).
    */
   resources: AgentResources | null;
+  /**
+   * Estimated model spend of the card's omp session: every model request its agent and subagents
+   * made, over all runs, as priced by omp. Refreshed while a run goes and stored when it ends.
+   * Null until the card's session reported any usage.
+   */
+  usage: TaskUsage | null;
   createdAt: string;
   updatedAt: string;
   /** Derived: total comments. */
@@ -334,6 +340,25 @@ export interface ContextUsage {
   tokens: number;
   /** Model's context window in tokens; 0 when unknown. */
   contextWindow: number;
+}
+
+/**
+ * Model usage of a card's omp session (main agent plus subagents, all runs), summed from the
+ * `usage` omp records on each model response in the session files. `costUsd` is omp's estimate
+ * from the model's list prices.
+ */
+export interface TaskUsage {
+  costUsd: number;
+  /** input + output + cacheRead + cacheWrite, as omp counts `totalTokens`. */
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** Model responses counted. */
+  requests: number;
+  /** When it was computed (ISO). */
+  updatedAt: string;
 }
 
 /**

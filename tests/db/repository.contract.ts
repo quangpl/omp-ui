@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { CreateUserInput, Repository } from "@/lib/db/types";
@@ -458,6 +459,7 @@ export function runRepositoryContract(
           todos: [],
           review: null,
           resources: null,
+          usage: null,
           commentCount: 0,
           openCommentCount: 0,
         });
@@ -539,6 +541,31 @@ export function runRepositoryContract(
         expect((await repo.listTasks(board.id))[0]).toEqual(updated);
         expect((await repo.updateTask(task.id, { resources: null }))!.resources).toBeNull();
         expect((await repo.getTask(task.id))!.resources).toBeNull();
+      });
+
+      it("round-trips the session usage without touching updatedAt", async () => {
+        const board = await newBoard();
+        const task = await repo.createTask({ boardId: board.id, title: "Spend" });
+        expect(task.usage).toBeNull();
+        const usage = {
+          costUsd: 1.2345,
+          totalTokens: 1_500_000,
+          inputTokens: 1_000,
+          outputTokens: 20_000,
+          cacheReadTokens: 1_400_000,
+          cacheWriteTokens: 79_000,
+          requests: 42,
+          updatedAt: "2026-01-02T03:04:05.000Z",
+        };
+        await sleep(5);
+
+        const updated = await repo.updateTask(task.id, { usage });
+        expect(updated!.usage).toEqual(usage);
+        expect(updated!.updatedAt).toBe(task.updatedAt);
+        expect(await repo.getTask(task.id)).toEqual(updated);
+        const titled = await repo.updateTask(task.id, { title: "Spend more", usage });
+        expect(titled!.updatedAt).not.toBe(task.updatedAt);
+        expect((await repo.updateTask(task.id, { usage: null }))!.usage).toBeNull();
       });
 
       it("appends to the end of each column by default (step 1024, per board and status)", async () => {

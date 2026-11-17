@@ -34,7 +34,7 @@ const SUMMARY_INSTRUCTION =
  */
 function reportInstruction(task: Task, context?: RunContext): string {
   const folder = context ? `this card's shared files folder (${context.taskFiles})` : "this card's shared files folder";
-  return `When the work involves a UI or tests, save screenshots of the result and test result files (reports, logs) to ${folder}. End the summary, after any question for the user, with a short \`## Report\` section holding only these lines (no extra prose): an \`Outcome:\` line (one sentence: done, partly done or failed, and why); a \`Tests:\` line with the counts you observed (e.g. \`Tests: 42 passed, 0 failed\`, or \`Tests: not run\`); a \`Changes:\` line with \`git diff --shortstat\` of your work when code changed; and one markdown image per saved screenshot, linked by its path inside that folder as \`![what it shows](/api/v1/tasks/${task.id}/files/<path>)\` (e.g. \`![cart page](/api/v1/tasks/${task.id}/files/screenshots/cart.png)\`), with other saved files linked the same way as \`[name](/api/v1/tasks/${task.id}/files/<path>)\`.`;
+  return `When the work changes a UI, save a screenshot of the result, and save the test result files (reports, logs) your checks produced, to ${folder}. End the summary, after any question for the user, with a short \`## Report\` section holding only these lines (no extra prose): an \`Outcome:\` line (one sentence: done, partly done or failed, and why); a \`Tests:\` line with the counts you observed (e.g. \`Tests: 42 passed, 0 failed\`, or \`Tests: not run\`); a \`Changes:\` line with \`git diff --shortstat\` of your work when code changed; and one markdown image per saved screenshot, linked by its path inside that folder as \`![what it shows](/api/v1/tasks/${task.id}/files/<path>)\` (e.g. \`![cart page](/api/v1/tasks/${task.id}/files/screenshots/cart.png)\`), with other saved files linked the same way as \`[name](/api/v1/tasks/${task.id}/files/<path>)\`.`;
 }
 
 /**
@@ -84,14 +84,15 @@ const SDLC_LABELS = SDLC_PHASES.map((id) => SDLC_PHASE_INFO[id].label);
  */
 const SDLC_INSTRUCTION = [
   `Work through the software development lifecycle like an enterprise software team, scaled to the task. Keep your todo list with the todo tool and name its phases exactly after the SDLC phases you use, in this order: ${SDLC_LABELS.join(", ")}.`,
-  "Planning, Implementation and Testing are always included; add Feasibility only for real risks or unknowns, Design when architecture, APIs, data shapes or UI change, Deployment for release work (docs, changelog, report; commit/PR only when asked).",
+  "Skip Planning: analyse the task and the relevant code until you understand the requirement, then start right away. Implementation and Testing are always included; add Feasibility only for real risks or unknowns, Design when architecture, APIs, data shapes or UI change, Deployment for release work (docs, changelog, report; commit/PR only when asked).",
   `Finish (or drop) every item of a phase before starting the next; each phase's exit criteria are its quality gate: ${SDLC_PHASES.map((id) => `${SDLC_PHASE_INFO[id].label}: ${SDLC_PHASE_INFO[id].gate}`).join("; ")}.`,
+  "Keep Testing fast and targeted: type-check, run only the tests covering the changed code (by file or test name, not whole suites) and check the changed behavior once; no full production builds, complete or end-to-end suites, repeated runs or extra audits unless the change specifically needs them, since broad testing is left to the quality gatekeeper.",
   "Testing must pass before Deployment. A small fix needs one or two items per phase, not ceremony.",
 ].join(" ");
 
 /** Who does the work in each SDLC phase of an orchestrated run. */
 const SDLC_STAFFING_INSTRUCTION =
-  "Staff each SDLC phase: Planning and Feasibility → read-only scout subagents in parallel; Design → you (the lead) fix the shared contracts (types, APIs, schemas, UI) before fanning out; Implementation → parallel task subagents on disjoint files (sonic for mechanical edits); Testing → you run the gates plus a reviewer subagent (security-reviewer when auth, input handling or secrets change); Deployment → docs, changelog and report.";
+  "Staff each SDLC phase: Feasibility → read-only scout subagents in parallel; Design → you (the lead) fix the shared contracts (types, APIs, schemas, UI) before fanning out; Implementation → parallel task subagents on disjoint files (sonic for mechanical edits); Testing → you run the targeted checks yourself (plus a security-reviewer subagent only when auth, input handling or secrets change); Deployment → docs, changelog and report.";
 
 /** Where a feedback round sits in the SDLC: Maintenance once every included phase is done, else the current phase. */
 function feedbackSdlcInstruction(task: Task): string {
@@ -215,7 +216,7 @@ export function buildPrompt(
     `- Work in ${where} and make the change described above${feedback.length > 0 ? ", taking all of the feedback into account" : ""}.`,
     `- ${SDLC_INSTRUCTION}`,
     ...parallelLines(needsOrchestration(task, feedback)).map((line) => `- ${line}`),
-    "- Verify it: run the relevant build, tests, or a quick check as appropriate.",
+    "- Verify it with the narrowest checks that cover the change.",
     `- ${HEADLESS_INSTRUCTION}`,
     `- ${cleanupInstruction(task)}`,
     `- ${PUSH_INSTRUCTION}`,

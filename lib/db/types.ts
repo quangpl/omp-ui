@@ -76,6 +76,7 @@ export interface CreateTaskInput {
   /** Default false. Whether the agent runs without agentmemory (see Task.ignoreMemory). */
   ignoreMemory?: boolean;
 }
+/** A patch of only `usage` leaves `updatedAt` unchanged (see `touchesTask`). */
 export type UpdateTaskInput = Partial<
   Pick<
     Task,
@@ -95,6 +96,7 @@ export type UpdateTaskInput = Partial<
     | "todos"
     | "review"
     | "resources"
+    | "usage"
     | "ignoreMemory"
   >
 >;

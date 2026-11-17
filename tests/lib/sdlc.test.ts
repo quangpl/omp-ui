@@ -43,7 +43,7 @@ const skipped = (id: SdlcPhaseId): SdlcPhaseProgress => ({
 });
 
 describe("SDLC_PHASE_INFO", () => {
-  it("describes the seven phases in order, with Planning, Implementation and Testing required", () => {
+  it("describes the seven phases in order, with only Implementation and Testing required", () => {
     expect(SDLC_PHASES.map((id) => [SDLC_PHASE_INFO[id].step, SDLC_PHASE_INFO[id].label])).toEqual([
       [1, "Planning"],
       [2, "Feasibility"],
@@ -53,10 +53,7 @@ describe("SDLC_PHASE_INFO", () => {
       [6, "Deployment"],
       [7, "Maintenance"],
     ]);
-    expect(SDLC_PHASES.filter((id) => SDLC_PHASE_INFO[id].required)).toEqual(["planning", "implementation", "testing"]);
-    expect(SDLC_PHASE_INFO.testing.gate).toBe(
-      "build, type checks and the relevant tests pass and the change was verified end to end",
-    );
+    expect(SDLC_PHASES.filter((id) => SDLC_PHASE_INFO[id].required)).toEqual(["implementation", "testing"]);
   });
 });
 

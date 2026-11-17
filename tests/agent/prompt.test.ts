@@ -46,6 +46,7 @@ const task: Task = {
   todos: [],
   review: null,
   resources: null,
+  usage: null,
   createdAt: NOW,
   updatedAt: NOW,
   commentCount: 0,

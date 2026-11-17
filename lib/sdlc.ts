@@ -27,7 +27,7 @@ export interface SdlcPhaseInfo {
   description: string;
   /** Exit criteria = the quality gate to leave the phase; lowercase sentence fragment, no final period. */
   gate: string;
-  /** Always part of a run (planning, implementation, testing); the others only when the task needs them. */
+  /** Always part of a run (implementation, testing); the others only when the task needs them. */
   required: boolean;
 }
 
@@ -37,9 +37,9 @@ export const SDLC_PHASE_INFO: Record<SdlcPhaseId, SdlcPhaseInfo> = {
     id: "planning",
     step: 1,
     label: "Planning",
-    description: "Pin down the goal, requirements, scope and acceptance criteria, then split the work into steps.",
+    description: "Optional: pin down scope and acceptance criteria and split the work into steps; card agents skip it and start right away.",
     gate: "goal, scope and acceptance criteria are clear and the work is split into steps",
-    required: true,
+    required: false,
   },
   feasibility: {
     id: "feasibility",
@@ -69,8 +69,8 @@ export const SDLC_PHASE_INFO: Record<SdlcPhaseId, SdlcPhaseInfo> = {
     id: "testing",
     step: 5,
     label: "Testing",
-    description: "Build, type-check and run unit, integration and end-to-end tests to find and fix bugs before release.",
-    gate: "build, type checks and the relevant tests pass and the change was verified end to end",
+    description: "Verify the change fast: type-check, run only the tests covering the changed code and check the changed behavior once.",
+    gate: "type checks and the tests covering the change pass and the changed behavior was checked once",
     required: true,
   },
   deployment: {
