@@ -8,9 +8,25 @@ import { childEnv } from "@/lib/child-env";
 import { publish } from "@/lib/events";
 import { dataDir } from "@/lib/files";
 import { mcpAgentEnv } from "@/lib/server/mcp-env";
-import { parseTitle } from "@/lib/server/validate";
+import {
+  SCHEDULER_TOOL_PROPERTIES,
+  assertScheduleMatches,
+  createScheduler,
+  parseNewScheduler,
+  schedulerForAgent,
+  updateScheduler,
+} from "@/lib/server/scheduler-ops";
+import { parseCronExpression, parseTimeZone, parseTitle } from "@/lib/server/validate";
 import { getAppSettings } from "@/lib/settings";
-import { STATUS_LABELS, TASK_STATUSES, type BoardWithCounts, type ChatPlatform, type Task, type TaskStatus } from "@/lib/types";
+import {
+  STATUS_LABELS,
+  TASK_STATUSES,
+  type BoardWithCounts,
+  type ChatPlatform,
+  type Scheduler,
+  type Task,
+  type TaskStatus,
+} from "@/lib/types";
 import { splitMessage, unwatchCard, watchCard } from "./relay";
 import { getChatAdapter } from "./service";
 import { loadChatState, updateChatState } from "./store";
@@ -226,6 +242,7 @@ async function buildPrompt(env: ChatUserEnv, msg: IncomingChatMessage): Promise<
     "- Cards you start (or message) stream their agent's output into this chat automatically; do not wait for them.",
     "- Never delete anything; there is no tool for it.",
     "- Ask a short question only when the request is truly ambiguous (e.g. several boards fit and none is selected).",
+    `- Schedulers create a card on a board on a cron schedule; the scheduler's prompt is each card's whole brief and its agent starts at once. Create one with agentman_create_scheduler, change, pause or resume one with agentman_update_scheduler, find them with agentman_list_schedulers. Times are wall-clock times in the scheduler's time zone: the one the user names, else ${serverTimeZone()} (this server's). After creating or changing one, repeat its name, schedule in words, time zone and next run times from the tool result so the user can correct it.`,
     "- Reply in the user's language, in plain text for a chat app (no tables, no headings), at most about 1200 characters. Confirm what you did and give card ids as their first 8 characters.",
     "",
     `Now: ${new Date().toISOString()}`,
@@ -349,6 +366,47 @@ export const CHAT_ASSISTANT_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "agentman_list_schedulers",
+    label: "List schedulers",
+    description: "List schedulers (id, name, board, schedule in words, time zone, next runs, active or paused, prompt preview).",
+    parameters: {
+      type: "object",
+      properties: { board: { type: "string", description: "Only this board's (number, id, id prefix or name)." } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentman_create_scheduler",
+    label: "Create scheduler",
+    description:
+      "Create a scheduler: on every match of its cron (in its time zone) it creates a card on the board from its prompt and starts that card's agent. Returns it with its schedule in words and next run times.",
+    parameters: {
+      type: "object",
+      properties: {
+        ...SCHEDULER_TOOL_PROPERTIES,
+        board: { type: "string", description: "Board number, id, id prefix or name; default: this chat's board." },
+      },
+      required: ["prompt", "cron"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentman_update_scheduler",
+    label: "Update scheduler",
+    description:
+      "Change a scheduler: only the fields given change. enabled=false pauses it, enabled=true resumes it. Returns it with its schedule in words and next run times.",
+    parameters: {
+      type: "object",
+      properties: {
+        schedulerId: { type: "string", description: "Scheduler id, unique id prefix or exact name." },
+        ...SCHEDULER_TOOL_PROPERTIES,
+        board: { type: "string", description: "Move it to this board (number, id, id prefix or name)." },
+      },
+      required: ["schedulerId"],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 /** Run one AgentMan tool for the chat; the returned text is the tool result. Throws for a tool error. */
@@ -469,12 +527,78 @@ export async function runChatTool(
       await manager.onTaskMoved(task, previous.status);
       return JSON.stringify({ card: cardSummary((await repo.getTask(task.id)) ?? task), moved: true });
     }
+    case "agentman_list_schedulers": {
+      const boards = await repo.listBoards();
+      const query = optionalString(args, "board");
+      const board = query ? resolveBoard(boards, query) : null;
+      const schedulers = await repo.listSchedulers(board?.id);
+      return JSON.stringify({ schedulers: schedulers.map((s) => schedulerForAgent(s, boards)) });
+    }
+    case "agentman_create_scheduler": {
+      const board = await chatBoard(env, ctx, optionalString(args, "board"));
+      if (!board) throw new Error(NO_BOARDS);
+      const fields = schedulerFields(args);
+      const draft = await parseNewScheduler(repo, { timezone: serverTimeZone(), ...fields, boardId: board.id });
+      assertScheduleMatches(draft);
+      const scheduler = await createScheduler(repo, { ...draft });
+      return JSON.stringify({ created: schedulerForAgent(scheduler, await repo.listBoards()) });
+    }
+    case "agentman_update_scheduler": {
+      const current = await resolveScheduler(env, requiredString(args, "schedulerId"));
+      const fields = schedulerFields(args);
+      const query = optionalString(args, "board");
+      if (query) {
+        const board = await chatBoard(env, ctx, query);
+        if (board) fields.boardId = board.id;
+      }
+      if (fields.cron !== undefined || fields.timezone !== undefined) {
+        // A schedule that would never fire again is refused; the fields' syntax is checked by updateScheduler too.
+        assertScheduleMatches({
+          cron: parseCronExpression(fields.cron ?? current.cron),
+          timezone: parseTimeZone(fields.timezone ?? current.timezone),
+        });
+      }
+      const scheduler = await updateScheduler(repo, current, fields);
+      return JSON.stringify({ updated: schedulerForAgent(scheduler, await repo.listBoards()) });
+    }
     default:
       throw new Error(`Unknown tool ${name}`);
   }
 }
 
 const NO_BOARDS = "There are no boards yet: create a project in AgentMan first.";
+
+/** This server's IANA time zone (schedulers created from chat default to it), else UTC. */
+function serverTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+/** The scheduler fields among a tool's arguments; empty strings count as not given. */
+function schedulerFields(args: Json): Json {
+  const fields: Json = {};
+  for (const key of ["prompt", "cron", "timezone", "name", "maxRuns", "enabled"] as const) {
+    const value = args[key];
+    if (value !== undefined && value !== "") fields[key] = value;
+  }
+  return fields;
+}
+
+/** Scheduler by exact id, unique id prefix (≥ 4 characters), then unique exact name (case-insensitive). */
+async function resolveScheduler(env: ChatEnv, query: string): Promise<Scheduler> {
+  const exact = await env.repo.getScheduler(query);
+  if (exact) return exact;
+  const schedulers = await env.repo.listSchedulers();
+  const lower = query.toLowerCase();
+  const byPrefix = query.length >= MIN_ID_PREFIX ? schedulers.filter((s) => s.id.toLowerCase().startsWith(lower)) : [];
+  if (byPrefix.length === 1) return byPrefix[0];
+  const byName = schedulers.filter((s) => s.name.toLowerCase() === lower);
+  if (byName.length === 1) return byName[0];
+  const candidates = byPrefix.length > 1 ? byPrefix : byName;
+  if (candidates.length > 1) {
+    throw new Error(`"${query}" matches several schedulers: ${candidates.map((s) => `${s.id} ${s.name}`).join("; ")}`);
+  }
+  throw new Error(`No scheduler matches "${query}". Use agentman_list_schedulers to find its id.`);
+}
 
 /** Start a card's agent and stream it to the chat (watch first so no output is missed). */
 async function startCard(env: ChatEnv, ctx: ChatToolContext, task: Task): Promise<Task> {
@@ -531,7 +655,7 @@ async function chatBoard(env: ChatEnv, ctx: ChatToolContext, query: string): Pro
  * Board named by `query`: its 1-based number, exact id, unique id prefix, exact name
  * (case-insensitive), then unique name substring. Errors list the candidates.
  */
-function resolveBoard(boards: BoardWithCounts[], query: string): BoardWithCounts {
+export function resolveBoard(boards: BoardWithCounts[], query: string): BoardWithCounts {
   if (/^\d+$/.test(query)) {
     const index = Number(query);
     if (index >= 1 && index <= boards.length) return boards[index - 1];

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
-import { CalendarClock, Plus, RotateCw, TriangleAlert } from "lucide-react";
+import { CalendarClock, Plus, RotateCw, Sparkles, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessage, formatDateTime, formatRelative, useNow } from "@/components/board/format";
 import { RunResultBadge, schedulerCardHref } from "@/components/schedulers/scheduler-history";
@@ -176,12 +176,20 @@ export function SchedulerList() {
           Create a card on a schedule: every run makes a regular card on the project that goes through the normal
           agent flow.
         </p>
-        <Button asChild className="mt-5 h-11 md:h-9">
-          <Link href="/schedulers/new">
-            <Plus aria-hidden />
-            New scheduler
-          </Link>
-        </Button>
+        <div className="mt-5 flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+          <Button asChild className="h-11 md:h-9">
+            <Link href="/schedulers/new?mode=chat">
+              <Sparkles aria-hidden />
+              Create with Agent
+            </Link>
+          </Button>
+          <Button asChild variant="outline" className="h-11 md:h-9">
+            <Link href="/schedulers/new">
+              <Plus aria-hidden />
+              New scheduler
+            </Link>
+          </Button>
+        </div>
       </div>
     );
   }

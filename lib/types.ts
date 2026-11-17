@@ -461,6 +461,46 @@ export interface SchedulerLogEntry {
   runId: string | null;
 }
 
+/**
+ * A scheduler the scheduler assistant proposed (validated, not saved yet): the exact body of
+ * POST /api/v1/schedulers once the user confirms it.
+ */
+export interface SchedulerDraft {
+  boardId: string;
+  name: string;
+  prompt: string;
+  cron: string;
+  timezone: string;
+  enabled: boolean;
+  maxRuns: number | null;
+}
+
+/** One turn of the "Create with Agent" conversation (POST /api/v1/schedulers/chat). */
+export interface SchedulerChatMessage {
+  role: "user" | "assistant";
+  text: string;
+}
+
+/** POST /api/v1/schedulers/chat body: the whole conversation so far, the last message the user's. */
+export interface SchedulerChatRequest {
+  messages: SchedulerChatMessage[];
+  /** The user's IANA time zone (the browser's), used when they name none. */
+  timezone: string;
+  /** Project the conversation defaults to; null/omitted = the first one. */
+  boardId?: string | null;
+  /** The draft currently shown, so follow-ups ("make it 10:00") revise it. */
+  draft?: SchedulerDraft | null;
+}
+
+/**
+ * One NDJSON line of POST /api/v1/schedulers/chat: progress lines while the assistant works, then
+ * exactly one `done` (its reply and the draft it proposed this turn, else null) or `error`.
+ */
+export type SchedulerChatEvent =
+  | { type: "activity"; text: string }
+  | { type: "done"; reply: string; draft: SchedulerDraft | null }
+  | { type: "error"; error: string };
+
 export type ApprovalMode = "yolo" | "write" | "always-ask";
 
 export interface AppSettings {

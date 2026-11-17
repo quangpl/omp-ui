@@ -20,7 +20,7 @@ export interface ScheduleValue {
 }
 
 /** The browser's IANA zone, else UTC (old engines, or no `Intl` time zone data). */
-function browserTimeZone(): string {
+export function browserTimeZone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   } catch {
@@ -460,7 +460,7 @@ function TimeZoneOptions({ id }: { id: string }) {
 }
 
 /** The schedule in words and its next three runs in its zone, or why it is invalid. */
-function SchedulePreview({ value }: { value: ScheduleValue }) {
+export function SchedulePreview({ value }: { value: ScheduleValue }) {
   const now = useNow(60_000);
   const timezone = value.timezone.trim();
   const preview = (() => {
