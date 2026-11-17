@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  ArchiveRestoreIcon,
   BellIcon,
   BrainCircuitIcon,
   BrainIcon,
@@ -32,6 +33,7 @@ import { AiProvidersSettingsSection } from "@/components/settings/ai-providers-s
 import { AppearanceSettingsSection } from "@/components/settings/appearance-settings";
 import { ChatSettingsSection } from "@/components/settings/chat-settings";
 import { CleanupSettingsSection } from "@/components/settings/cleanup-settings";
+import { DataTransferSettingsSection } from "@/components/settings/data-transfer-settings";
 import { ClusterSettingsSection } from "@/components/settings/cluster-settings";
 import { MemorySettingsSection } from "@/components/settings/memory-settings";
 import { MenuSettingsSection } from "@/components/settings/menu-settings";
@@ -113,6 +115,7 @@ const SECTIONS: SettingsNavItem[] = [
   { id: "ai-providers", label: "AI Providers", icon: <BrainCircuitIcon /> },
   { id: "memory", label: "Memory", icon: <BrainIcon /> },
   { id: "cleanup", label: "Data cleanup", icon: <BrushCleaningIcon /> },
+  { id: "data", label: "Data transfer", icon: <ArchiveRestoreIcon /> },
   { id: "notifications", label: "Notifications", icon: <BellIcon /> },
   { id: "chat", label: "Chat", icon: <MessageCircleIcon /> },
   { id: "menu", label: "Menu", icon: <PanelLeftIcon /> },
@@ -124,8 +127,15 @@ const SECTIONS: SettingsNavItem[] = [
   { id: "api", label: "Mobile & API", icon: <SmartphoneIcon /> },
 ];
 
-/** Sections only admins get: the agent runtime, orchestration, cleanup, chat bots and accounts. */
-const ADMIN_ONLY_SECTIONS: Record<string, true> = { agent: true, orchestration: true, cleanup: true, chat: true, users: true };
+/** Sections only admins get: the agent runtime, orchestration, cleanup, data transfer, chat bots and accounts. */
+const ADMIN_ONLY_SECTIONS: Record<string, true> = {
+  agent: true,
+  orchestration: true,
+  cleanup: true,
+  data: true,
+  chat: true,
+  users: true,
+};
 const USER_SECTIONS = SECTIONS.filter((section) => !ADMIN_ONLY_SECTIONS[section.id]);
 
 const MIN_PASSWORD = 8;
@@ -911,6 +921,7 @@ export default function SettingsPage() {
                   <MemorySettingsSection />
                 </SettingsReadOnly>
                 {isAdmin && <CleanupSettingsSection />}
+                {isAdmin && <DataTransferSettingsSection />}
                 <SettingsReadOnly value={readOnly}>
                   <NotificationSettingsSection />
                 </SettingsReadOnly>

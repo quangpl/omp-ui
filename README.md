@@ -303,7 +303,16 @@ To choose a database, either:
 - Run `omp-ui init --db postgres --db-url postgres://…`.
 - Or edit `DATABASE_URL` in `.env` and run `omp-ui restart`.
 
-In Docker, `omp-ui docker up --postgres` or `--mongo` runs a bundled database for you. Data is not migrated when you switch databases.
+In Docker, `omp-ui docker up --postgres` or `--mongo` runs a bundled database for you. Switching databases starts empty; to take your data along, use **Settings → Data transfer** (below).
+
+### Move to another server (or database)
+
+**Settings → Data transfer** (admins) exports everything AgentMan stores (projects, cards, comments, runs and their logs, schedulers, users with their passwords, settings, saved credentials and AI provider keys, card and project shared files, and the key that decrypts the secrets) as one `.tar.gz`. On the new server, set it up as usual, then import the archive there: it replaces all of that server's data, after saving a backup of it (listed in the same section, the newest 3 kept). Afterwards sign in with the accounts from the export. The archive is database-independent, so it also moves data between SQLite, PostgreSQL and MongoDB.
+
+- **Not included:** project folders (copy or clone them to the same paths on the new server, or edit each project's folder) and omp's own setup in `~/.omp` (sign in to omp on the new server; resumed cards start a fresh agent session).
+- **Secrets:** the archive holds password hashes and every saved secret plus their key; keep it like a password. If the old server set `CREDENTIALS_KEY`, the key is not in the archive: set the same value on the new server.
+- **Agents:** stop running agents before importing. Cards whose agent was working when the export was made come over stopped; **Resume** continues them.
+- `ADMIN_PASSWORD` in the new server's `.env` still resets the `admin` account's password at every start.
 
 ## Run with PM2
 

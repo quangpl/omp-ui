@@ -80,6 +80,17 @@ OAuth sign-ins (`/settings/ai-providers/oauth`) keep nothing in AgentMan: `omp l
 
 Scheduled data cleanup runs the AgentMan-data cleanups of [`/stats/maintenance`](#stats) (`orphan-card-files`, `orphan-board-files`, `orphan-workspaces`, `shipped-workspaces`, `run-configs`, `drafts`, `diff-cache`, `rotated-logs`, `database`; Docker prunes stay manual) on the server: about a minute after start and then hourly it checks whether one period (7 days weekly, 30 days monthly) has passed since the later of the last run (manual or scheduled) and the moment the schedule was chosen, so enabling a schedule never cleans right away. The last outcome is kept in the settings table under `cleanup_state`.
 
+### Data transfer
+
+**Settings → Data transfer** (admin only) moves a server to another machine. An export is a `.tar.gz` holding `manifest.json` (`{ format: "agentman-data", version: 1, appVersion, createdAt, driver, counts, credentialsKey: "file"|"env"|"none" }`), `db/<table>.jsonl` for every table (`settings`, `users` with password hashes, `boards`, `tasks`, `comments`, `runs`, `run_events`, `schedulers`, `scheduler_runs`) as driver-independent domain records (the same shapes the API returns; an export from one database driver imports into another), `files/` (`DATA_DIR/files`) and `credentials.key` (left out when `CREDENTIALS_KEY` sets the key). Project folders and omp's `~/.omp` are not included.
+
+| Method | Path | Response |
+| --- | --- | --- |
+| GET | `/data-transfer` | `DataTransferStatus`: `{ driver, users, projects, cards, schedulers, filesBytes, credentialsKey: "env"\|"file", activeAgents, importing, backups: { name, size, createdAt }[] }` |
+| GET | `/data-transfer/export` | The export as `application/gzip` (`agentman-data-<yyyymmdd-hhmmss>.tar.gz`), built before the response starts. Logged as a security event |
+| POST | `/data-transfer/import?confirm=replace` | Raw `.tar.gz` body → `DataImportResult` `{ source: { appVersion, createdAt, driver }, counts, skipped, files, credentialsKey: "restored"\|"ignored"\|"set-env"\|"none", interrupted, backup, signedOut }`. Replaces **all** data: saves the current data to `DATA_DIR/backups/before-import-<stamp>.tar.gz` (newest 3 kept), replaces every table (one transaction on SQLite and PostgreSQL; MongoDB restores the backup when it fails midway), then `DATA_DIR/files` and `credentials.key`, and reloads the token secret, AI provider keys, MCP env and chat bots without a restart. Cards whose agent was running in the source fail with a note (Resume continues them), queued ones go idle, running runs end `aborted`; rows whose project, card, run or scheduler is missing are left out (`skipped`). `signedOut`: the caller's token no longer works (the import replaced the accounts or the token secret). 400 without `confirm=replace`, for anything but a valid export (wrong format, newer `version`, row counts not matching the manifest, links or special files in it, no active admin account) — nothing changes then; 409 while agents run or queue, or during another import |
+| GET | `/data-transfer/backups/{name}` | Download a pre-import backup (an export; importing it restores that state). 404 for unknown names |
+
 ## Stats
 
 | Method | Path | Response |

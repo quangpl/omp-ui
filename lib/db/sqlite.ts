@@ -34,6 +34,9 @@ import type {
   CreateSchedulerRunInput,
   CreateTaskInput,
   CreateUserInput,
+  DataRows,
+  DataSnapshot,
+  DataTable,
   Repository,
   UpdateBoardInput,
   UpdateRunInput,
@@ -42,6 +45,7 @@ import type {
   UpdateUserInput,
   UserAuthRecord,
 } from "@/lib/db/types";
+import { DATA_TABLES } from "@/lib/db/types";
 import {
   POSITION_STEP,
   type SchemaSnapshot,
@@ -389,6 +393,226 @@ function buildSet(
   }
   return { sql: parts.join(", "), params };
 }
+
+/** Rows per batch of `exportRows`. */
+const EXPORT_BATCH = 500;
+
+/** How a data table's rows map to domain records: primary key, columns (insert order), both directions. */
+interface TableSpec<R> {
+  key: string;
+  columns: string[];
+  read(r: Row): R;
+  /** Values for `columns`, in order. */
+  write(row: R): SQLInputValue[];
+}
+
+function bit(value: boolean): number {
+  return value ? 1 : 0;
+}
+
+function jsonOrNull(value: unknown): string | null {
+  return value == null ? null : JSON.stringify(value);
+}
+
+const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
+  settings: {
+    key: "key",
+    columns: ["key", "value"],
+    read: (r) => ({ key: str(r.key), value: str(r.value) }),
+    write: (s) => [s.key, s.value],
+  },
+  users: {
+    key: "id",
+    columns: ["id", "username", "email", "password_hash", "role", "is_active", "token_epoch", "created_at", "updated_at"],
+    read: toUserAuth,
+    write: (u) => [u.id, u.username, u.email, u.passwordHash, u.role, bit(u.isActive), u.tokenEpoch, u.createdAt, u.updatedAt],
+  },
+  boards: {
+    key: "id",
+    columns: [
+      "id",
+      "name",
+      "workdir",
+      "extra_folders",
+      "model",
+      "auto_run",
+      "worktrees",
+      "push_branch",
+      "pinned",
+      "last_accessed_at",
+      "user_id",
+      "created_at",
+      "updated_at",
+    ],
+    read: toBoard,
+    write: (b) => [
+      b.id,
+      b.name,
+      b.workdir,
+      JSON.stringify(b.extraFolders),
+      b.model,
+      bit(b.autoRun),
+      bit(b.worktrees),
+      b.pushBranch,
+      bit(b.pinned),
+      b.lastAccessedAt,
+      b.userId,
+      b.createdAt,
+      b.updatedAt,
+    ],
+  },
+  tasks: {
+    key: "id",
+    columns: [
+      "id",
+      "board_id",
+      "title",
+      "description",
+      "status",
+      "position",
+      "agent_state",
+      "agent_error",
+      "question",
+      "session_file",
+      "last_run_id",
+      "blocked_by",
+      "created_by_task_id",
+      "pushed_at",
+      "auto_retries",
+      "retry_at",
+      "todos",
+      "review",
+      "resources",
+      "session_usage",
+      "scheduler_id",
+      "parallelize",
+      "ignore_memory",
+      "user_id",
+      "created_at",
+      "updated_at",
+    ],
+    read: (r) => {
+      const { commentCount: _total, openCommentCount: _open, ...row } = toTask(r);
+      return row;
+    },
+    write: (t) => [
+      t.id,
+      t.boardId,
+      t.title,
+      t.description,
+      t.status,
+      t.position,
+      t.agentState,
+      t.agentError,
+      t.question,
+      t.sessionFile,
+      t.lastRunId,
+      JSON.stringify(t.blockedBy),
+      t.createdByTaskId,
+      t.pushedAt,
+      t.autoRetries,
+      t.retryAt,
+      JSON.stringify(t.todos),
+      jsonOrNull(t.review),
+      jsonOrNull(t.resources),
+      jsonOrNull(t.usage),
+      t.schedulerId,
+      t.parallelize == null ? null : bit(t.parallelize),
+      bit(t.ignoreMemory),
+      t.userId,
+      t.createdAt,
+      t.updatedAt,
+    ],
+  },
+  comments: {
+    key: "id",
+    columns: [
+      "id",
+      "task_id",
+      "author",
+      "body",
+      "resolved",
+      "resolved_at",
+      "resolved_by_run_id",
+      "from_task_id",
+      "user_id",
+      "created_at",
+    ],
+    read: toComment,
+    write: (c) => [
+      c.id,
+      c.taskId,
+      c.author,
+      c.body,
+      bit(c.resolved),
+      c.resolvedAt,
+      c.resolvedByRunId,
+      c.fromTaskId,
+      c.userId,
+      c.createdAt,
+    ],
+  },
+  runs: {
+    key: "id",
+    columns: ["id", "task_id", "status", "prompt", "summary", "error", "started_at", "ended_at", "user_id", "node_id", "node_name"],
+    read: toRun,
+    write: (r) => [r.id, r.taskId, r.status, r.prompt, r.summary, r.error, r.startedAt, r.endedAt, r.userId, r.nodeId, r.nodeName],
+  },
+  run_events: {
+    key: "seq",
+    columns: ["seq", "run_id", "task_id", "kind", "text", "created_at"],
+    read: toRunEvent,
+    write: (e) => [e.seq, e.runId, e.taskId, e.kind, e.text, e.createdAt],
+  },
+  schedulers: {
+    key: "id",
+    columns: [
+      "id",
+      "board_id",
+      "name",
+      "prompt",
+      "cron",
+      "timezone",
+      "enabled",
+      "max_runs",
+      "run_count",
+      "last_run_at",
+      "next_run_at",
+      "last_status",
+      "last_task_id",
+      "last_error",
+      "user_id",
+      "created_at",
+      "updated_at",
+    ],
+    read: toScheduler,
+    write: (s) => [
+      s.id,
+      s.boardId,
+      s.name,
+      s.prompt,
+      s.cron,
+      s.timezone,
+      bit(s.enabled),
+      s.maxRuns,
+      s.runCount,
+      s.lastRunAt,
+      s.nextRunAt,
+      s.lastStatus,
+      s.lastTaskId,
+      s.lastError,
+      s.userId,
+      s.createdAt,
+      s.updatedAt,
+    ],
+  },
+  scheduler_runs: {
+    key: "id",
+    columns: ["id", "scheduler_id", "task_id", "trigger", "scheduled_for", "status", "error", "created_at"],
+    read: toSchedulerRun,
+    write: (r) => [r.id, r.schedulerId, r.taskId, r.trigger, r.scheduledFor, r.status, r.error, r.createdAt],
+  },
+};
 
 export class SqliteRepository implements Repository {
   readonly driver = "sqlite" as const;
@@ -1147,5 +1371,36 @@ export class SqliteRepository implements Repository {
       run.createdAt,
     );
     return run;
+  }
+
+  // ------------------------------------------------------------ export/import
+
+  async *exportRows<T extends DataTable>(table: T): AsyncGenerator<DataRows[T][]> {
+    const spec = DATA_COLUMNS[table] as unknown as TableSpec<DataRows[T]>;
+    const first = this.stmt(`SELECT * FROM ${table} ORDER BY ${spec.key} LIMIT ${EXPORT_BATCH}`);
+    const next = this.stmt(`SELECT * FROM ${table} WHERE ${spec.key} > ? ORDER BY ${spec.key} LIMIT ${EXPORT_BATCH}`);
+    let last: SQLOutputValue | undefined;
+    for (;;) {
+      const rows = last === undefined ? first.all() : next.all(last as SQLInputValue);
+      if (rows.length > 0) yield rows.map(spec.read);
+      if (rows.length < EXPORT_BATCH) return;
+      last = rows[rows.length - 1]![spec.key];
+    }
+  }
+
+  async replaceAllData(data: DataSnapshot): Promise<void> {
+    // Synchronous from BEGIN to COMMIT: no other request's statement can land in between.
+    this.transaction(() => {
+      for (const table of [...DATA_TABLES].reverse()) this.db.exec(`DELETE FROM ${table}`);
+      // AUTOINCREMENT remembers the highest seq ever used; start over from the imported events.
+      this.db.exec("DELETE FROM sqlite_sequence WHERE name = 'run_events'");
+      for (const table of DATA_TABLES) {
+        const spec = DATA_COLUMNS[table] as unknown as TableSpec<DataRows[typeof table]>;
+        const insert = this.stmt(
+          `INSERT INTO ${table} (${spec.columns.join(", ")}) VALUES (${spec.columns.map(() => "?").join(", ")})`,
+        );
+        for (const row of data[table]) insert.run(...spec.write(row));
+      }
+    });
   }
 }

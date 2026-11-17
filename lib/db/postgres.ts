@@ -33,7 +33,12 @@ import type {
   UpdateTaskInput,
   UpdateUserInput,
   UserAuthRecord,
+  DataRows,
+  DataSnapshot,
+  DataTable,
+  TaskRow as TaskRecord,
 } from "@/lib/db/types";
+import { DATA_TABLES } from "@/lib/db/types";
 import {
   POSITION_STEP,
   type SchemaSnapshot,
@@ -531,6 +536,118 @@ function buildSet(fields: [column: string, value: unknown][]): { sql: string; pa
   return { sql: parts.join(", "), params };
 }
 
+/** JSON-encodes a nullable JSON column the way updateTask stores it (null stays SQL NULL). */
+function jsonOrNull(value: unknown): string | null {
+  return value === null || value === undefined ? null : JSON.stringify(value);
+}
+
+/** How each data table is exported (key column, row mapper) and imported (columns + values in order). */
+interface TableSpec<T extends DataTable> {
+  key: string;
+  /** Takes the driver row type of the table (a `never` parameter accepts any of them). */
+  toRow: (row: never) => DataRows[T];
+  columns: string[];
+  values: (row: DataRows[T]) => unknown[];
+}
+
+const TABLE_SPECS: { [T in DataTable]: TableSpec<T> } = {
+  settings: {
+    key: "key",
+    toRow: (r: { key: string; value: string }) => ({ key: r.key, value: r.value }),
+    columns: ["key", "value"],
+    values: (s) => [s.key, s.value],
+  },
+  users: {
+    key: "id",
+    toRow: toUserAuth,
+    columns: ["id", "username", "email", "password_hash", "role", "is_active", "token_epoch", "created_at", "updated_at"],
+    values: (u) => [u.id, u.username, u.email, u.passwordHash, u.role, u.isActive, u.tokenEpoch, u.createdAt, u.updatedAt],
+  },
+  boards: {
+    key: "id",
+    toRow: toBoard,
+    columns: [
+      "id", "name", "workdir", "extra_folders", "model", "auto_run", "worktrees", "push_branch", "pinned",
+      "last_accessed_at", "created_at", "updated_at", "user_id",
+    ],
+    values: (b) => [
+      b.id, b.name, b.workdir, JSON.stringify(b.extraFolders), b.model, b.autoRun, b.worktrees, b.pushBranch,
+      b.pinned, b.lastAccessedAt, b.createdAt, b.updatedAt, b.userId,
+    ],
+  },
+  tasks: {
+    key: "id",
+    toRow: (r: TaskRow): TaskRecord => {
+      const { commentCount: _c, openCommentCount: _o, ...task } = toTask({ ...r, comment_count: 0, open_comment_count: 0 });
+      return task;
+    },
+    columns: [
+      "id", "board_id", "title", "description", "status", "position", "agent_state", "agent_error", "question",
+      "session_file", "last_run_id", "blocked_by", "created_by_task_id", "pushed_at", "auto_retries", "retry_at",
+      "todos", "review", "resources", "session_usage", "scheduler_id", "parallelize", "ignore_memory",
+      "created_at", "updated_at", "user_id",
+    ],
+    values: (t) => [
+      t.id, t.boardId, t.title, t.description, t.status, t.position, t.agentState, t.agentError, t.question,
+      t.sessionFile, t.lastRunId, JSON.stringify(t.blockedBy), t.createdByTaskId, t.pushedAt, t.autoRetries,
+      t.retryAt, JSON.stringify(t.todos), jsonOrNull(t.review), jsonOrNull(t.resources), jsonOrNull(t.usage),
+      t.schedulerId, t.parallelize, t.ignoreMemory, t.createdAt, t.updatedAt, t.userId,
+    ],
+  },
+  comments: {
+    key: "id",
+    toRow: toComment,
+    columns: [
+      "id", "task_id", "author", "body", "resolved", "resolved_at", "resolved_by_run_id", "from_task_id",
+      "created_at", "user_id",
+    ],
+    values: (c) => [
+      c.id, c.taskId, c.author, c.body, c.resolved, c.resolvedAt, c.resolvedByRunId, c.fromTaskId, c.createdAt,
+      c.userId,
+    ],
+  },
+  runs: {
+    key: "id",
+    toRow: toRun,
+    columns: [
+      "id", "task_id", "status", "prompt", "summary", "error", "started_at", "ended_at", "user_id", "node_id",
+      "node_name",
+    ],
+    values: (r) => [
+      r.id, r.taskId, r.status, r.prompt, r.summary, r.error, r.startedAt, r.endedAt, r.userId, r.nodeId,
+      r.nodeName,
+    ],
+  },
+  run_events: {
+    key: "seq",
+    toRow: toRunEvent,
+    columns: ["seq", "run_id", "task_id", "kind", "text", "created_at"],
+    values: (e) => [e.seq, e.runId, e.taskId, e.kind, e.text, e.createdAt],
+  },
+  schedulers: {
+    key: "id",
+    toRow: toScheduler,
+    columns: [
+      "id", "board_id", "name", "prompt", "cron", "timezone", "enabled", "max_runs", "run_count", "last_run_at",
+      "next_run_at", "last_status", "last_task_id", "last_error", "created_at", "updated_at", "user_id",
+    ],
+    values: (s) => [
+      s.id, s.boardId, s.name, s.prompt, s.cron, s.timezone, s.enabled, s.maxRuns, s.runCount, s.lastRunAt,
+      s.nextRunAt, s.lastStatus, s.lastTaskId, s.lastError, s.createdAt, s.updatedAt, s.userId,
+    ],
+  },
+  scheduler_runs: {
+    key: "id",
+    toRow: toSchedulerRun,
+    columns: ["id", "scheduler_id", "task_id", "trigger", "scheduled_for", "status", "error", "created_at"],
+    values: (r) => [r.id, r.schedulerId, r.taskId, r.trigger, r.scheduledFor, r.status, r.error, r.createdAt],
+  },
+};
+
+/** Rows per multi-row INSERT; the widest table (tasks, 26 columns) stays far below pg's 65535 parameters. */
+const IMPORT_CHUNK = 500;
+const EXPORT_BATCH = 500;
+
 export class PostgresRepository implements Repository {
   readonly driver = "postgres" as const;
   private readonly pool: pg.Pool;
@@ -593,6 +710,58 @@ export class PostgresRepository implements Repository {
 
   async close(): Promise<void> {
     await this.pool.end();
+  }
+
+  async *exportRows<T extends DataTable>(table: T): AsyncIterable<DataRows[T][]> {
+    const spec = TABLE_SPECS[table] as TableSpec<T>;
+    let last: unknown;
+    for (;;) {
+      const res =
+        last === undefined
+          ? await this.query(`SELECT * FROM ${table} ORDER BY ${spec.key} LIMIT ${EXPORT_BATCH}`)
+          : await this.query(
+              `SELECT * FROM ${table} WHERE ${spec.key} > $1 ORDER BY ${spec.key} LIMIT ${EXPORT_BATCH}`,
+              [last],
+            );
+      if (res.rows.length === 0) return;
+      yield res.rows.map(spec.toRow as (row: pg.QueryResultRow) => DataRows[T]);
+      if (res.rows.length < EXPORT_BATCH) return;
+      last = res.rows[res.rows.length - 1][spec.key];
+    }
+  }
+
+  /**
+   * One transaction: wipe every table (children first), insert the snapshot verbatim, then move
+   * the run_events sequence past the highest imported seq.
+   */
+  async replaceAllData(data: DataSnapshot): Promise<void> {
+    await this.transaction(async (client) => {
+      for (const table of [...DATA_TABLES].reverse()) await this.query(`DELETE FROM ${table}`, [], client);
+      for (const table of DATA_TABLES) {
+        const spec = TABLE_SPECS[table] as TableSpec<typeof table>;
+        const rows = data[table] as DataRows[typeof table][];
+        const width = spec.columns.length;
+        for (let start = 0; start < rows.length; start += IMPORT_CHUNK) {
+          const chunk = rows.slice(start, start + IMPORT_CHUNK);
+          const params = chunk.flatMap((row) => spec.values(row));
+          const tuples = chunk.map(
+            (_, i) => `(${spec.columns.map((_c, j) => `$${i * width + j + 1}`).join(", ")})`,
+          );
+          await this.query(
+            `INSERT INTO ${table} (${spec.columns.join(", ")}) VALUES ${tuples.join(", ")}`,
+            params,
+            client,
+          );
+        }
+      }
+      // is_called = false when empty, so the next appendRunEvent gets seq 1.
+      await this.query(
+        `SELECT setval(pg_get_serial_sequence('run_events', 'seq'), GREATEST(m, 1), m IS NOT NULL)
+         FROM (SELECT MAX(seq) AS m FROM run_events) s`,
+        [],
+        client,
+      );
+    });
   }
 
   // ---------------------------------------------------------------- settings

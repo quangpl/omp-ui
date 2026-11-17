@@ -15,6 +15,9 @@ import type {
   CreateSchedulerRunInput,
   CreateTaskInput,
   CreateUserInput,
+  DataRows,
+  DataSnapshot,
+  DataTable,
   DbDriver,
   Repository,
   UpdateBoardInput,
@@ -267,6 +270,14 @@ class ScopedRepository implements Repository {
   createSchedulerRun(input: CreateSchedulerRunInput): Promise<SchedulerRun> {
     return this.base.createSchedulerRun(input);
   }
+
+  exportRows<T extends DataTable>(table: T): AsyncIterable<DataRows[T][]> {
+    return this.base.exportRows(table);
+  }
+
+  replaceAllData(data: DataSnapshot): Promise<void> {
+    return this.base.replaceAllData(data);
+  }
 }
 
 /**
@@ -463,6 +474,15 @@ class UserScopedRepository extends ScopedRepository {
   override async createSchedulerRun(input: CreateSchedulerRunInput): Promise<SchedulerRun> {
     if (!(await this.ownedScheduler(input.schedulerId))) throw new ScopeError("Scheduler not found");
     return this.base.createSchedulerRun(input);
+  }
+
+  /** Every user's data and secrets: admins only. */
+  override exportRows<T extends DataTable>(): AsyncIterable<DataRows[T][]> {
+    throw new ScopeError("Not found");
+  }
+
+  override async replaceAllData(): Promise<void> {
+    throw new ScopeError("Not found");
   }
 }
 
