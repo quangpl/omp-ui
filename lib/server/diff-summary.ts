@@ -7,6 +7,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { readModelRoles } from "@/lib/agent/model-select";
+import { chooseHelperModel } from "@/lib/agent/provider-quota";
 import { isDirectory, runOmpHelper } from "@/lib/agent/omp-helper";
 import { clip } from "@/lib/card-draft";
 import { childEnv } from "@/lib/child-env";
@@ -139,13 +140,14 @@ async function generate(
     const env = childEnv();
     const roles = await readModelRoles(settings.ompPath, cwd, env);
     // The fast `smol` role when configured; otherwise the usual model, thinking briefly.
-    const model = roles?.smol ? "@smol" : board.model?.trim() || settings.defaultModel.trim() || null;
+    const { model, role, config } = await chooseHelperModel({ settings, pinned: board.model, roles: [["smol", roles?.smol]] });
     const reply = await runOmpHelper({
       command: settings.ompPath,
       cwd,
       addDirs: [],
       model,
-      thinking: roles?.smol ? null : "low",
+      thinking: role ? null : "low",
+      config,
       timeoutSeconds: TIMEOUT_SECONDS,
       env,
       prompt: buildSummaryPrompt(diff, task),

@@ -22,6 +22,8 @@ export interface HelperRunOptions {
   addDirs: string[];
   model: string | null;
   thinking: string | null;
+  /** omp `--config` overlay file (e.g. the provider priority's mid-run fallback); null for none. */
+  config?: string | null;
   /** The call is cancelled (and its worker killed) after this long. */
   timeoutSeconds: number;
   env: NodeJS.ProcessEnv;
@@ -52,10 +54,13 @@ export interface HostTools {
  * omp arguments of a read-only helper worker. No `--max-time`: omp counts it from process start,
  * which a warm worker outlives; the host enforces `timeoutSeconds` per call instead.
  */
-export function helperArgs(options: Pick<HelperRunOptions, "cwd" | "addDirs" | "model" | "thinking" | "tools">): string[] {
+export function helperArgs(
+  options: Pick<HelperRunOptions, "cwd" | "addDirs" | "model" | "thinking" | "tools" | "config">,
+): string[] {
   const tools = options.tools ?? READ_ONLY_TOOLS;
   const args = ["--mode", "rpc", "--no-session", "--no-title", "--no-lsp", ...(tools ? ["--tools", tools] : ["--no-tools"]), "--cwd", options.cwd];
   for (const folder of options.addDirs) args.push("--add-dir", folder);
+  if (options.config) args.push("--config", options.config);
   if (options.model) args.push("--model", options.model);
   if (options.thinking) args.push("--thinking", options.thinking);
   const extra = process.env.OMP_EXTRA_ARGS?.trim();

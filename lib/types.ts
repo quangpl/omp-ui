@@ -2,6 +2,7 @@
 // and (later) mobile clients. All timestamps are ISO-8601 strings; all ids are strings.
 
 import { DEFAULT_PRIMARY_COLOR, type PrimaryColorId } from "@/lib/primary-colors";
+import type { ProviderPriorityEntry } from "@/lib/provider-priority";
 import type { SdlcProgress } from "@/lib/sdlc";
 
 export const TASK_STATUSES = ["todo", "in_progress", "done"] as const;
@@ -521,6 +522,12 @@ export interface AppSettings {
    */
   autoModel: boolean;
   /**
+   * Authenticated providers agents run on, in order (lib/provider-priority.ts): the first is the
+   * Main provider, used while it has quota; later ones only take over while it is out of quota.
+   * Replaces `defaultModel` when set; a board's pinned model still wins. Empty = off.
+   */
+  providerPriority: ProviderPriorityEntry[];
+  /**
    * Smart queue: when several cards of a project wait in the agent queue, a planner agent orders
    * them (prerequisites and quick unblockers first) and adds the "Runs after" links it finds, so
    * independent cards run in parallel and dependent ones wait for what they build on.
@@ -853,6 +860,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   approvalMode: "yolo",
   defaultModel: "",
   autoModel: true,
+  providerPriority: [],
   smartQueue: true,
   browser: "headless",
   autoRetry: true,

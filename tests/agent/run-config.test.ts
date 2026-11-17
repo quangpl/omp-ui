@@ -51,4 +51,21 @@ describe("runConfigOverlay", () => {
   it("ignores the subagent share while subagent limits are off", () => {
     expect(runConfigOverlay(settings({ subagentLimits: false }), TASK_FILES, 2)).not.toHaveProperty("task");
   });
+
+  it("falls back to the next providers' models only on usage limits when the provider priority has some", () => {
+    const overlay = runConfigOverlay(settings(), TASK_FILES, null, {
+      entry: { provider: "anthropic", model: "anthropic/claude-sonnet-4-5" },
+      index: 0,
+      skipped: [],
+      allOut: false,
+      fallbacks: ["openai-codex/gpt-5", "github-copilot/claude-sonnet-4.5"],
+    });
+    expect(overlay.retry).toEqual({
+      modelFallback: true,
+      fallbackOn: "usage-limit",
+      fallbackRevertPolicy: "cooldown-expiry",
+      fallbackChains: { "anthropic/*": ["openai-codex/gpt-5", "github-copilot/claude-sonnet-4.5"] },
+    });
+    expect(runConfigOverlay(settings(), TASK_FILES, null)).not.toHaveProperty("retry");
+  });
 });

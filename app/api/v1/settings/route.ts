@@ -1,5 +1,6 @@
 import { parseCleanupIds, resetCleanupAnchor } from "@/lib/cleanup";
 import { PRIMARY_COLOR_IDS, isPrimaryColorId } from "@/lib/primary-colors";
+import { parseProviderPriority } from "@/lib/provider-priority";
 import { HttpError, json, readJson, withApi } from "@/lib/server/http";
 import { MAX_EXPLICIT_AGENTS, getAppSettings, isDashboardMenuId, updateAppSettings } from "@/lib/settings";
 import {
@@ -144,6 +145,11 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
   if (body.autoModel !== undefined) {
     if (typeof body.autoModel !== "boolean") throw new HttpError(400, "autoModel must be a boolean");
     patch.autoModel = body.autoModel;
+  }
+  if (body.providerPriority !== undefined) {
+    const parsed = parseProviderPriority(body.providerPriority);
+    if (!parsed.ok) throw new HttpError(400, parsed.error);
+    patch.providerPriority = parsed.entries;
   }
   if (body.smartQueue !== undefined) {
     if (typeof body.smartQueue !== "boolean") throw new HttpError(400, "smartQueue must be a boolean");

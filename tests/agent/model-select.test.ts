@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { chooseModel, classifyTask } from "@/lib/agent/model-select";
+import type { ProviderPick } from "@/lib/provider-priority";
 import type { Comment, Task } from "@/lib/types";
 
 const NOW = "2026-01-01T00:00:00.000Z";
@@ -136,5 +137,52 @@ describe("chooseModel", () => {
     });
     expect(chooseModel({ ...resumed, board: { model: "pinned" } })).toMatchObject({ model: "pinned", source: "board" });
     expect(chooseModel(input("Fix the typo in the log message"))).toMatchObject({ model: "@smol", source: "auto" });
+  });
+
+  describe("with a provider priority", () => {
+    const main: ProviderPick = {
+      entry: { provider: "anthropic", model: "anthropic/claude-sonnet" },
+      index: 0,
+      skipped: [],
+      allOut: false,
+      fallbacks: [],
+    };
+    const roles = { smol: "anthropic/claude-haiku:low", slow: "openai/gpt-5:xhigh" };
+
+    it("runs the active provider's model instead of the default model", () => {
+      expect(chooseModel(input("Add a settings page", { provider: main }))).toMatchObject({
+        model: "anthropic/claude-sonnet",
+        source: "auto",
+      });
+      expect(
+        chooseModel(input("Debug the deadlock", { provider: main, settings: { defaultModel: "base", autoModel: false } })),
+      ).toMatchObject({ model: "anthropic/claude-sonnet", thinking: null, source: "provider" });
+    });
+
+    it("keeps a role only when its model runs on the active provider", () => {
+      expect(chooseModel(input("Fix the typo in the log message", { provider: main, roles }))).toMatchObject({
+        model: "@smol",
+      });
+      expect(chooseModel(input("Debug the deadlock", { provider: main, roles }))).toMatchObject({
+        model: "anthropic/claude-sonnet",
+        thinking: "high",
+        source: "auto",
+      });
+    });
+
+    it("switches a resumed session only when the retried run ran out of quota", () => {
+      const resumed = input("Debug the deadlock", { provider: main, isResume: true });
+      expect(chooseModel(resumed)).toMatchObject({ model: null, source: "session" });
+      expect(chooseModel({ ...resumed, quotaRetry: true })).toMatchObject({
+        model: "anthropic/claude-sonnet",
+        source: "provider",
+      });
+    });
+
+    it("never overrides a board's pinned model", () => {
+      expect(
+        chooseModel(input("Debug the deadlock", { provider: main, quotaRetry: true, isResume: true, board: { model: "pinned" } })),
+      ).toMatchObject({ model: "pinned", source: "board" });
+    });
   });
 });

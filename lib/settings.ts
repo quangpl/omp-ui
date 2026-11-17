@@ -1,5 +1,6 @@
 import type { Repository } from "@/lib/db/types";
 import { isPrimaryColorId } from "@/lib/primary-colors";
+import { parseProviderPriority } from "@/lib/provider-priority";
 import {
   BROWSER_MODES,
   CLEANUP_SCHEDULES,
@@ -130,6 +131,7 @@ function sanitize(s: AppSettings, knownMenus: readonly unknown[]): AppSettings {
     approvalMode: APPROVAL_MODES.includes(s.approvalMode) ? s.approvalMode : "yolo",
     defaultModel: String(s.defaultModel ?? "").trim(),
     autoModel: typeof s.autoModel === "boolean" ? s.autoModel : DEFAULT_SETTINGS.autoModel,
+    providerPriority: storedPriority(s.providerPriority),
     smartQueue: typeof s.smartQueue === "boolean" ? s.smartQueue : DEFAULT_SETTINGS.smartQueue,
     browser: BROWSER_MODES.includes(s.browser) ? s.browser : DEFAULT_SETTINGS.browser,
     autoRetry: typeof s.autoRetry === "boolean" ? s.autoRetry : DEFAULT_SETTINGS.autoRetry,
@@ -189,6 +191,12 @@ function sanitize(s: AppSettings, knownMenus: readonly unknown[]): AppSettings {
     clusterAutoRestart: bool(s, "clusterAutoRestart"),
     clusterRestartAfterSeconds: restartAfterSeconds(s.clusterRestartAfterSeconds),
   };
+}
+
+/** The stored provider priority; one that no longer validates (older or hand-edited data) is off. */
+function storedPriority(value: unknown): AppSettings["providerPriority"] {
+  const parsed = parseProviderPriority(value ?? []);
+  return parsed.ok ? parsed.entries : [];
 }
 
 type BooleanSettingKey = { [K in keyof AppSettings]: AppSettings[K] extends boolean ? K : never }[keyof AppSettings];
