@@ -207,18 +207,18 @@ describe("buildPrompt orchestration keyword", () => {
 const PARALLEL = "You may split independent parts of this work across parallel subagents when that helps.";
 
 describe("buildSteerMessage", () => {
-  it("wraps the trimmed comment body with steering instructions", () => {
-    const message = buildSteerMessage(comment("  Please also handle errors\nfrom the API  "), null, true);
-
-    expect(message).toContain("New feedback from the user on this task:");
-    expect(message).toContain("\n\nPlease also handle errors\nfrom the API\n\n");
-    expect(message).toMatch(/mention briefly how you addressed it in your final summary/);
+  it("sends user feedback word for word, like typing into omp mid-run", () => {
+    const body = "  Please also handle errors\nfrom the API  ";
+    expect(buildSteerMessage(comment(body), null, false)).toBe("Please also handle errors\nfrom the API");
+    expect(buildSteerMessage(comment(body), null, true)).toBe(`Please also handle errors\nfrom the API\n\n${PARALLEL}`);
   });
 
   it("names the sending card for a message from another card's agent", () => {
     const message = buildSteerMessage(comment("API is ready", { fromTaskId: "t9" }), "Build the API", true);
 
     expect(message).toContain('New message from the agent working on card "Build the API" (t9):');
+    expect(message).toContain("\n\nAPI is ready\n\n");
+    expect(message).toMatch(/mention briefly how you addressed it in your final summary/);
   });
 
   it("asks for orchestration on large user feedback only", () => {

@@ -69,6 +69,7 @@ import {
   type Comment,
   type GitStatus,
   type Run,
+  type SteerState,
   type Task,
 } from "@/lib/types";
 import { type BoardStreamListener, useQueueNode } from "@/hooks/use-board";
@@ -409,6 +410,8 @@ function TaskDetailBody({
   // that started before a live copy arrived must not overwrite it (e.g. a stale `resolved: false`).
   const liveCommentsRef = useRef(new Map<string, LiveCopy<Comment>>());
   const liveRunsRef = useRef(new Map<string, LiveCopy<Run>>());
+  // Live delivery state of comments steered into the running agent (`comment.steer`, not persisted).
+  const [steerStates, setSteerStates] = useState<ReadonlyMap<string, SteerState>>(() => new Map());
 
   const load = useCallback(async () => {
     const since = performance.now();
@@ -469,6 +472,12 @@ function TaskDetailBody({
               setDetail((prev) =>
                 prev ? { ...prev, comments: prev.comments.filter((c) => c.id !== commentId) } : prev,
               );
+            }
+            break;
+          case "comment.steer":
+            if (event.taskId === taskId) {
+              const { commentId, state } = event;
+              setSteerStates((prev) => new Map(prev).set(commentId, state));
             }
             break;
           case "run.updated":
@@ -1052,6 +1061,7 @@ function TaskDetailBody({
                 onSend={send}
                 onSetResolved={setResolved}
                 runs={runs}
+                steerStates={steerStates}
               />
             ) : (
               <ThreadSkeleton />
@@ -1094,6 +1104,7 @@ function TaskDetailBody({
                         onSend={send}
                         onSetResolved={setResolved}
                         runs={runs}
+                        steerStates={steerStates}
                         boardId={task.boardId}
                         onPickFile={(hit) => {
                           if (hit.kind === "file") openFile(hit.insert);

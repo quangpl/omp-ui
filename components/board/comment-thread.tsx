@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Bot, CircleCheck, MessageSquare, Undo2 } from "lucide-react";
+import { ArrowUp, Bot, CheckCheck, CircleCheck, Clock, MessageSquare, Undo2 } from "lucide-react";
 import { AttachmentViewer } from "@/components/attachment-viewer";
 import { appFileOf, type Attachment } from "@/components/viewer/common";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -11,7 +11,7 @@ import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Textarea } from "@/components/ui/textarea";
 import { modKeyLabel } from "@/lib/hotkeys";
 import { cn } from "@/lib/utils";
-import type { Comment, ProjectFileHit, Run, Task } from "@/lib/types";
+import type { Comment, ProjectFileHit, Run, SteerState, Task } from "@/lib/types";
 import { useComposerAutocomplete } from "@/components/board/composer-autocomplete";
 import { formatDateTime, formatRelative, useNow } from "@/components/board/format";
 import { RichText } from "@/components/board/rich-text";
@@ -21,9 +21,8 @@ import { parseRunReport, RunReport } from "@/components/board/run-report";
 const HIT_AREA = "relative after:absolute after:-inset-x-1 after:-inset-y-3 max-md:after:-inset-y-3.5";
 
 function composerHint(task: Task): string {
-  if (task.agentState === "running" || task.agentState === "queued") {
-    return "Feedback is sent to the running agent";
-  }
+  if (task.agentState === "running") return "Messages go straight to the running agent";
+  if (task.agentState === "queued") return "Feedback will be included when the agent starts";
   if (task.status === "done") return "Sending feedback reopens this card and the agent continues";
   if (task.status === "todo") return "Feedback will be included when the agent starts";
   return "Sending feedback resumes the agent with your notes";
@@ -92,11 +91,37 @@ function ResolveControls({
   );
 }
 
+const STEER_LABEL: Record<SteerState, string> = {
+  sent: "Sent to the running agent",
+  delivered: "Agent received it",
+  deferred: "Picked up by the next run",
+};
+
+/** Where a comment steered into the running agent is: sent, received by the agent, or deferred. */
+function SteerStatus({ state }: { state: SteerState }) {
+  return (
+    <span
+      role="status"
+      className={cn("inline-flex items-center gap-1 font-medium", state === "delivered" ? "text-primary" : "text-muted-foreground")}
+    >
+      {state === "sent" && (
+        <span aria-hidden className="relative flex size-3.5 items-center justify-center">
+          <span className="size-1.5 rounded-full bg-primary animate-breathe motion-reduce:animate-none" />
+        </span>
+      )}
+      {state === "delivered" && <CheckCheck aria-hidden className="size-3.5" />}
+      {state === "deferred" && <Clock aria-hidden className="size-3.5" />}
+      {STEER_LABEL[state]}
+    </span>
+  );
+}
+
 function CommentItem({
   comment,
   now,
   cards,
   runs,
+  steer,
   onOpenCard,
   onSetResolved,
   onAttachmentFeedback,
@@ -105,10 +130,13 @@ function CommentItem({
   now: number;
   cards: Task[];
   runs: Run[];
+  /** Live delivery state when the comment was steered into the running agent. */
+  steer: SteerState | undefined;
   onOpenCard: (taskId: string) => void;
   onSetResolved: (comment: Comment, resolved: boolean) => Promise<void>;
   onAttachmentFeedback: (attachment: Attachment) => void;
 }) {
+  const steerStatus = steer && !comment.resolved ? <SteerStatus state={steer} /> : null;
   const report = useMemo(() => parseRunReport(comment, runs), [comment, runs]);
   const time = (
     <time dateTime={comment.createdAt} title={formatDateTime(comment.createdAt)}>
@@ -186,6 +214,7 @@ function CommentItem({
             <RichText text={comment.body} onAttachmentFeedback={onAttachmentFeedback} />
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {steerStatus}
             <ResolveControls comment={comment} now={now} onSetResolved={onSetResolved} />
           </div>
         </div>
@@ -208,6 +237,7 @@ function CommentItem({
         <RichText text={comment.body} onAttachmentFeedback={onAttachmentFeedback} />
       </div>
       <div className="mt-2 flex flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        {steerStatus}
         <ResolveControls comment={comment} now={now} onSetResolved={onSetResolved} />
       </div>
     </li>
@@ -221,6 +251,7 @@ export function CommentThread({
   comments,
   cards,
   runs = NO_RUNS,
+  steerStates,
   onOpenCard,
   onSend,
   onSetResolved,
@@ -234,6 +265,8 @@ export function CommentThread({
   cards: Task[];
   /** The card's runs: matches the agent's result comments for the Report card (duration, outcome). */
   runs?: Run[];
+  /** Live delivery state of comments steered into the running agent, by comment id. */
+  steerStates?: ReadonlyMap<string, SteerState>;
   onOpenCard: (taskId: string) => void;
   /** Resolves true when the comment was posted. */
   onSend: (body: string) => Promise<boolean>;
@@ -303,6 +336,7 @@ export function CommentThread({
               now={now}
               cards={cards}
               runs={runs}
+              steer={steerStates?.get(comment.id)}
               onOpenCard={onOpenCard}
               onSetResolved={onSetResolved}
               onAttachmentFeedback={quoteAttachment}

@@ -767,7 +767,7 @@ describe("AgentManager feedback", () => {
     expect(agentComments(comments).map((c) => c.body)).toEqual([
       "Fake summary: addressed 1 steered message(s).",
     ]);
-    expect((await runEvents(run.id)).map((e) => e.text)).toContain("Feedback queued for the running agent (steering)");
+    expect((await runEvents(run.id)).map((e) => e.text)).toContain("Feedback sent to the running agent (steering)");
   });
 
   it("reopens a done task on feedback and resumes the same omp session", async () => {
@@ -974,7 +974,7 @@ describe("AgentManager omp session events", () => {
     const comment = await repo.addComment({ taskId: task.id, author: "user", body: "Also update the README" });
     await manager.onComment(await getTask(task.id), comment);
     await waitFor(
-      async () => (await runEvents(runId)).some((e) => e.text === "Feedback queued for the running agent (steering)"),
+      async () => (await runEvents(runId)).some((e) => e.text === "Feedback sent to the running agent (steering)"),
       "the feedback to be steered",
     );
     const steerId = commands("prompt", pid).find((e) => e.command?.message?.includes("Also update the README"))?.command?.id;
@@ -1020,7 +1020,7 @@ describe("AgentManager omp session events", () => {
     const comment = await repo.addComment({ taskId: task.id, author: "user", body: "Also update the README" });
     await manager.onComment(await getTask(task.id), comment);
     await waitFor(
-      async () => (await runEvents(runId)).some((e) => e.text === "Feedback queued for the running agent (steering)"),
+      async () => (await runEvents(runId)).some((e) => e.text === "Feedback sent to the running agent (steering)"),
       "the feedback to be steered",
     );
 
@@ -1080,6 +1080,29 @@ describe("AgentManager omp session events", () => {
       'Steering delivered to the agent: "Also update the README"',
       'Steering delivered to the agent: "Keep it small"',
     ]);
+  });
+
+  it("tells the Activity chat when a steered comment is sent and when it reaches the agent", async () => {
+    const { task, manager, pid, runId } = await startWorking("Steer state");
+    const comment = await repo.addComment({ taskId: task.id, author: "user", body: "Also update the README" });
+    await manager.onComment(await getTask(task.id), comment);
+    const steerStates = () =>
+      events.flatMap((e) => (e.type === "comment.steer" && e.commentId === comment.id ? [e.state] : []));
+    await waitFor(() => steerStates().length > 0, "the steer to be sent");
+    expect(steerStates()).toEqual(["sent"]);
+
+    const steer = commands("prompt", pid).find((e) => e.command?.message?.startsWith("Also update the README"))?.command;
+    const message = steer?.message ?? "";
+    // Sent word for word, like typing into omp mid-run (plus the Parallelize permission).
+    expect(message.split("\n\n")[0]).toBe("Also update the README");
+    const update = (steering: string[]) => ({ type: "queue_update", steering, followUp: [], liveSteered: 0 });
+    await sendFrames(pid, runId, update([message]), update([]));
+    expect(steerStates()).toEqual(["sent", "delivered"]);
+
+    // The steer's own prompt_result later does not report it twice.
+    await sendFrames(pid, runId, { type: "prompt_result", id: steer!.id, agentInvoked: true, status: "completed" });
+    expect(steerStates()).toEqual(["sent", "delivered"]);
+    expect(events.find((e) => e.type === "comment.steer")).toMatchObject({ taskId: task.id, boardId: board.id });
   });
 
   it("logs context compactions: start, result, failure and skip", async () => {

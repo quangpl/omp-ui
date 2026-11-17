@@ -112,6 +112,7 @@ import type {
   QueueEntry,
   QueueSnapshot,
   RunEventKind,
+  SteerState,
   SubagentSnapshot,
   Task,
   TaskStatus,
@@ -133,6 +134,8 @@ const MAX_TOOL_INTENT_TEXT = 160;
 const MAX_TOOL_ERROR_TEXT = 1_000;
 /** Text quoted inside a status line (a delivered steer, a declined omp dialog's title). */
 const MAX_QUOTED_TEXT = 120;
+/** RPC id prefix of a steered comment (`steer-<comment id>`): its prompt_result names the comment. */
+const STEER_ID_PREFIX = "steer-";
 /** Live `run.delta` events: at most one per run+kind per window (leading + trailing). */
 const DELTA_THROTTLE_MS = 120;
 const MAX_THINKING_DELTA = 4_000;
@@ -271,6 +274,12 @@ interface ActiveRun {
   settled: boolean;
   /** Steering texts omp last reported queued (`queue_update`); a text that leaves the queue reached the agent. */
   queuedSteering: string[];
+  /**
+   * Comments steered into this run that have not reached the agent yet: comment id → the message
+   * sent. One reaches the agent when its text leaves omp's steering queue (`queue_update`) or its
+   * steer's `prompt_result` arrives; the card's Activity chat is told (`comment.steer`).
+   */
+  undeliveredSteers: Map<string, string>;
   /** The "waiting for background work" status was logged for this stretch of the run (reset by `agent_start`). */
   waitingLogged: boolean;
   /** Serializes startup, frame handling and teardown so persistence stays ordered. */
@@ -631,6 +640,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       if (run) {
         // The run is wrapping up; pick the feedback up in a fresh run afterwards.
         run.restartAfter = true;
+        publishSteer(task.boardId, task.id, comment.id, "deferred");
         return;
       }
       // Queued runs build their prompt from all unresolved feedback when they start.
@@ -1130,6 +1140,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       yielded: false,
       settled: false,
       queuedSteering: [],
+      undeliveredSteers: new Map(),
       waitingLogged: false,
       chain: Promise.resolve(),
     };
@@ -1795,7 +1806,10 @@ class OmpAgentManager implements AgentManager, RunControl {
           break;
         }
         // A steer's message left omp's queue and the turn it joined has yielded.
-        if (typeof frame.id === "string") run.pendingSteers.delete(frame.id);
+        if (typeof frame.id === "string") {
+          run.pendingSteers.delete(frame.id);
+          if (frame.id.startsWith(STEER_ID_PREFIX)) this.steerDelivered(run, frame.id.slice(STEER_ID_PREFIX.length));
+        }
         if (frame.sessionSettled === true) run.settled = true;
         await this.maybeComplete(run);
         break;
@@ -1905,7 +1919,18 @@ class OmpAgentManager implements AgentManager, RunControl {
     run.queuedSteering = steering;
     for (const text of delivered) {
       await this.event(run, "status", `Steering delivered to the agent: "${truncate(oneLineTrim(text), MAX_QUOTED_TEXT)}"`);
+      for (const [commentId, message] of run.undeliveredSteers) {
+        if (message !== text) continue;
+        this.steerDelivered(run, commentId);
+        break;
+      }
     }
+  }
+
+  /** A steered comment reached the agent: tell the card's Activity chat once. */
+  private steerDelivered(run: ActiveRun, commentId: string): void {
+    if (!run.undeliveredSteers.delete(commentId)) return;
+    publishSteer(run.boardId, run.taskId, commentId, "delivered");
   }
 
   /** `auto_compaction_end` / `manual_compaction_end`: what became of the compaction, then the new context fill. */
@@ -2131,17 +2156,16 @@ class OmpAgentManager implements AgentManager, RunControl {
           this.repo.getTask(run.taskId),
           comment.fromTaskId ? this.repo.getTask(comment.fromTaskId) : null,
         ]);
+        const message = buildSteerMessage(comment, sender?.title, task?.parallelize !== false);
         // Its own id keeps it apart from run.promptId, so its response cannot complete or fail the run.
-        const taken = await this.sendSteer(
-          run,
-          `steer-${comment.id}`,
-          buildSteerMessage(comment, sender?.title, task?.parallelize !== false),
-        );
+        const taken = await this.sendSteer(run, `${STEER_ID_PREFIX}${comment.id}`, message);
         if (!taken) {
           run.restartAfter = true;
+          publishSteer(run.boardId, run.taskId, comment.id, "deferred");
           await this.event(run, "status", "The agent did not take the feedback mid-run; it will be picked up by the next run");
           return;
         }
+        run.undeliveredSteers.set(comment.id, message);
       } catch (err) {
         if (run.finished) {
           const task = await this.repo.getTask(run.taskId);
@@ -2149,6 +2173,7 @@ class OmpAgentManager implements AgentManager, RunControl {
           return;
         }
         run.restartAfter = true;
+        publishSteer(run.boardId, run.taskId, comment.id, "deferred");
         await this.event(
           run,
           "error",
@@ -2157,7 +2182,8 @@ class OmpAgentManager implements AgentManager, RunControl {
         return;
       }
       run.feedbackIds.add(comment.id);
-      await this.event(run, "status", "Feedback queued for the running agent (steering)");
+      publishSteer(run.boardId, run.taskId, comment.id, "sent");
+      await this.event(run, "status", "Feedback sent to the running agent (steering)");
     } catch (err) {
       console.error(`[agent] failed to steer feedback for task ${run.taskId}:`, err);
     }
@@ -2783,6 +2809,11 @@ function oneLineTrim(text: string): string {
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** Live delivery state of a steered comment for the card's Activity chat (not persisted). */
+function publishSteer(boardId: string, taskId: string, commentId: string, state: SteerState): void {
+  publish({ type: "comment.steer", commentId, taskId, boardId, state });
 }
 
 /** Keeps the end of a growing text (live thinking shows its latest part). */
