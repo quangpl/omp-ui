@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useId, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { FolderX, RotateCw, TriangleAlert } from "lucide-react";
+import { FolderX, ListChecks, RotateCw, Sparkles, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
 import { errorMessage } from "@/components/board/format";
@@ -16,17 +16,22 @@ import {
   scheduleError,
   type ScheduleValue,
 } from "@/components/schedulers/schedule-fields";
+import { SchedulerChat } from "@/components/schedulers/scheduler-chat";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { api } from "@/lib/api-client";
 import { LAST_BOARD_KEY } from "@/lib/new-card-route";
-import type { BoardWithCounts } from "@/lib/types";
+import type { BoardWithCounts, SchedulerDraft } from "@/lib/types";
 
-/** `/schedulers/new` (`?boardId=` preselects the project): the "New task" composer plus a schedule. */
+/**
+ * `/schedulers/new` (`?boardId=` preselects the project, `?mode=chat` opens "Chat with Agent"): the
+ * "New task" composer plus a schedule, or a chat in which an agent drafts the scheduler.
+ */
 export default function NewSchedulerPage() {
   useDocumentTitle("New scheduler");
   return (
@@ -111,21 +116,108 @@ function NewSchedulerLoader() {
   }
   const initialBoardId =
     boards.find((b) => b.id === wanted)?.id ?? boards.find((b) => b.id === lastBoard)?.id ?? boards[0].id;
-  return <NewSchedulerForm boards={boards} initialBoardId={initialBoardId} />;
+  return (
+    <NewScheduler
+      boards={boards}
+      initialBoardId={initialBoardId}
+      initialMode={searchParams.get("mode") === "chat" ? "chat" : "form"}
+    />
+  );
+}
+
+type Mode = "chat" | "form";
+
+/**
+ * "Form" and "Chat with Agent" tabs sharing the project. Both stay mounted, so switching keeps the
+ * conversation and the typed form; "Edit in form" reopens the form filled from a chat draft.
+ */
+function NewScheduler({
+  boards,
+  initialBoardId,
+  initialMode,
+}: {
+  boards: BoardWithCounts[];
+  initialBoardId: string;
+  initialMode: Mode;
+}) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [mode, setMode] = useState<Mode>(initialMode);
+  const [boardId, setBoardId] = useState(initialBoardId);
+  /** Bumped (with the draft to show) to remount the form filled from a chat draft. */
+  const [formSeed, setFormSeed] = useState<{ key: number; draft: SchedulerDraft | null }>({ key: 0, draft: null });
+
+  const switchMode = (next: Mode) => {
+    setMode(next);
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "chat") params.set("mode", "chat");
+    else params.delete("mode");
+    const query = params.toString();
+    router.replace(`/schedulers/new${query ? `?${query}` : ""}`, { scroll: false });
+  };
+
+  return (
+    <Tabs value={mode} onValueChange={(value) => switchMode(value as Mode)} className="gap-6">
+      <TabsList className="w-full sm:w-fit">
+        <TabsTrigger value="form" className="sm:px-3">
+          <ListChecks aria-hidden />
+          Form
+        </TabsTrigger>
+        <TabsTrigger value="chat" className="sm:px-3">
+          <Sparkles aria-hidden />
+          Chat with Agent
+        </TabsTrigger>
+      </TabsList>
+      <TabsContent value="form" forceMount className="data-[state=inactive]:hidden">
+        <NewSchedulerForm
+          key={formSeed.key}
+          boards={boards}
+          boardId={boardId}
+          onBoardIdChange={setBoardId}
+          initial={formSeed.draft}
+        />
+      </TabsContent>
+      <TabsContent value="chat" forceMount className="data-[state=inactive]:hidden">
+        <SchedulerChat
+          boards={boards}
+          boardId={boardId}
+          onBoardIdChange={setBoardId}
+          onEditInForm={(draft) => {
+            setBoardId(draft.boardId);
+            setFormSeed((seed) => ({ key: seed.key + 1, draft }));
+            switchMode("form");
+            window.scrollTo({ top: 0 });
+          }}
+        />
+      </TabsContent>
+    </Tabs>
+  );
 }
 
 /**
  * The form proper, mounted once the projects are known (so the browser's time zone default and
- * the preselected project never go through server rendering).
+ * the preselected project never go through server rendering). `initial` fills it from a chat draft.
  */
-function NewSchedulerForm({ boards, initialBoardId }: { boards: BoardWithCounts[]; initialBoardId: string }) {
+function NewSchedulerForm({
+  boards,
+  boardId,
+  onBoardIdChange,
+  initial,
+}: {
+  boards: BoardWithCounts[];
+  boardId: string;
+  onBoardIdChange: (boardId: string) => void;
+  initial: SchedulerDraft | null;
+}) {
   const router = useRouter();
   const id = useId();
-  const [boardId, setBoardId] = useState(initialBoardId);
-  const [name, setName] = useState("");
+  const [name, setName] = useState(initial?.name ?? "");
   const [firstLine, setFirstLine] = useState("");
-  const [schedule, setSchedule] = useState<ScheduleValue>(defaultScheduleValue);
-
+  const [schedule, setSchedule] = useState<ScheduleValue>(() =>
+    initial
+      ? { cron: initial.cron, timezone: initial.timezone, enabled: initial.enabled, maxRuns: initial.maxRuns }
+      : defaultScheduleValue(),
+  );
   const create = async (text: string): Promise<boolean> => {
     try {
       const scheduler = await api.schedulers.create({
@@ -150,9 +242,10 @@ function NewSchedulerForm({ boards, initialBoardId }: { boards: BoardWithCounts[
       layout="dialog"
       className={STICKY_FORM_ACTIONS}
       boardId={boardId}
+      initialText={initial?.prompt}
       projectField={
         <div className="grid gap-4 sm:grid-cols-2">
-          <ProjectField boards={boards} value={boardId} onValueChange={setBoardId} />
+          <ProjectField boards={boards} value={boardId} onValueChange={onBoardIdChange} />
           <div className="flex flex-col gap-2">
             <Label htmlFor={`${id}-name`}>
               Name <span className="font-normal text-muted-foreground">(optional)</span>

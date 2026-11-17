@@ -79,9 +79,9 @@
 // pooled and reused across prompts via new_session. They log "helper_argv" at startup instead of
 // "argv", every prompt as a "helper" entry {argv, cwd, prompt}, and other commands as
 // "helper_command" instead of "command", so card-run assertions only see card runs. A helper prompt
-// starting with "You are AgentMan's chat assistant" is answered by chatAssistant: it calls the host
-// tools the message lists as `<calls>[…]</calls>` and answers "Chat reply: …"; `[fake-chat:slow]`
-// never answers, `[fake-chat:fail]` exits 1 (see chatAssistant).
+// starting with "You are AgentMan's chat assistant" (or "…scheduler assistant") is answered by
+// chatAssistant: it calls the host tools the message lists as `<calls>[…]</calls>` and answers
+// "Chat reply: …"; `[fake-chat:slow]` never answers, `[fake-chat:fail]` exits 1 (see chatAssistant).
 //
 // Test-only commands (answered like real commands): fake_echo {value, delayMs}, fake_crash,
 // fake_chunked {size}, fake_bad_chunk.
@@ -738,8 +738,9 @@ async function startPrompt(command) {
   respond(command, { agentInvoked: true });
   emit({ type: "agent_start" });
   emit({ type: "turn_start" });
-  if (helper && String(command.message ?? "").startsWith("You are AgentMan's chat assistant")) {
-    await chatAssistant(String(command.message));
+  const helperPrompt = String(command.message ?? "");
+  if (helper && /^You are AgentMan's (chat|scheduler) assistant/.test(helperPrompt)) {
+    await chatAssistant(helperPrompt);
     return;
   }
   if (helper) {

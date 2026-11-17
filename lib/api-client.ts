@@ -44,6 +44,9 @@ import type {
   Run,
   RunEvent,
   Scheduler,
+  SchedulerChatEvent,
+  SchedulerChatRequest,
+  SchedulerDraft,
   SchedulerLogEntry,
   SchedulerRunView,
   ScheduledCleanupId,
@@ -623,6 +626,38 @@ export const api = {
     runs: (id: string) => request<SchedulerRunView[]>(`/schedulers/${id}/runs`),
     /** Aggregated log of the latest runs (scheduler lines + their cards' agent run events), oldest first. */
     logs: (id: string) => request<SchedulerLogEntry[]>(`/schedulers/${id}/logs`),
+    /**
+     * One "Create with Agent" turn: streams the assistant's progress to `onActivity`, then resolves
+     * with its reply and the draft it proposed (null when none). Aborting `signal` cancels it.
+     */
+    chat: async (
+      input: SchedulerChatRequest,
+      onActivity: (text: string) => void,
+      signal?: AbortSignal,
+    ): Promise<{ reply: string; draft: SchedulerDraft | null }> => {
+      const res = await send("/schedulers/chat", { method: "POST", json: input, signal });
+      if (!res.body) throw new ApiRequestError("The server sent no answer", 502);
+      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = "";
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          buffer += value ?? "";
+          const lines = buffer.split("\n");
+          buffer = done ? "" : (lines.pop() ?? "");
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const event = JSON.parse(line) as SchedulerChatEvent;
+            if (event.type === "activity") onActivity(event.text);
+            else if (event.type === "done") return { reply: event.reply, draft: event.draft };
+            else throw new ApiRequestError(event.error, 502);
+          }
+          if (done) throw new ApiRequestError("The connection closed before the assistant answered", 502);
+        }
+      } finally {
+        reader.cancel().catch(() => undefined);
+      }
+    },
   },
   tasks: {
     create: (

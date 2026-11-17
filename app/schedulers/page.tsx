@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Plus } from "lucide-react";
+import { Plus, Sparkles } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { SchedulerList } from "@/components/schedulers/scheduler-list";
 import { Button } from "@/components/ui/button";
@@ -21,12 +21,20 @@ export default function SchedulersPage() {
                 Recurring cards: each run creates a regular card on its project and the agent starts.
               </p>
             </div>
-            <Button asChild className="h-11 shrink-0 md:h-9">
-              <Link href="/schedulers/new">
-                <Plus aria-hidden />
-                New scheduler
-              </Link>
-            </Button>
+            <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+              <Button asChild variant="outline" className="h-11 md:h-9">
+                <Link href="/schedulers/new?mode=chat">
+                  <Sparkles aria-hidden />
+                  Create with Agent
+                </Link>
+              </Button>
+              <Button asChild className="h-11 md:h-9">
+                <Link href="/schedulers/new">
+                  <Plus aria-hidden />
+                  New scheduler
+                </Link>
+              </Button>
+            </div>
           </div>
           <SchedulerList />
         </div>
