@@ -54,8 +54,10 @@ import {
   normalizeRecentRunLimit,
   nowIso,
   parseAgentResources,
+  parseTaskUsage,
   parseFolderList,
   parseTaskReview,
+  touchesTask,
 } from "@/lib/db/util";
 import { parseTodoPhases } from "@/lib/todos";
 import { DEFAULT_PUSH_BRANCH } from "@/lib/push-branch";
@@ -116,6 +118,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   todos TEXT NOT NULL DEFAULT '[]',
   review TEXT,
   resources TEXT,
+  session_usage TEXT,
   scheduler_id TEXT,
   parallelize INTEGER,
   ignore_memory INTEGER NOT NULL DEFAULT 0,
@@ -262,6 +265,7 @@ function toTask(r: Row): Task {
     todos: parseTodoPhases(r.todos),
     review: parseTaskReview(r.review),
     resources: parseAgentResources(r.resources),
+    usage: parseTaskUsage(r.session_usage),
     schedulerId: strOrNull(r.scheduler_id),
     parallelize: r.parallelize == null ? null : num(r.parallelize) !== 0,
     ignoreMemory: r.ignore_memory != null && num(r.ignore_memory) !== 0,
@@ -441,6 +445,7 @@ export class SqliteRepository implements Repository {
       ["todos", "TEXT NOT NULL DEFAULT '[]'"],
       ["review", "TEXT"],
       ["resources", "TEXT"],
+      ["session_usage", "TEXT"],
       ["scheduler_id", "TEXT"],
       ["parallelize", "INTEGER"],
       ["ignore_memory", "INTEGER NOT NULL DEFAULT 0"],
@@ -818,7 +823,8 @@ export class SqliteRepository implements Repository {
         "resources",
         patch.resources === undefined ? undefined : patch.resources === null ? null : JSON.stringify(patch.resources),
       ],
-      ["updated_at", nowIso()],
+      ["session_usage", patch.usage === undefined ? undefined : patch.usage === null ? null : JSON.stringify(patch.usage)],
+      ["updated_at", touchesTask(patch) ? nowIso() : undefined],
     ]);
     const res = this.db.prepare(`UPDATE tasks SET ${sql} WHERE id = ?`).run(...params, id);
     if (Number(res.changes) === 0) return null;

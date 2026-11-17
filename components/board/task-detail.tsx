@@ -79,6 +79,7 @@ import { CommentThread } from "@/components/board/comment-thread";
 import { DETAIL_HEADING_CLASS, DetailSection } from "@/components/board/detail-section";
 import { errorMessage, formatDateTime, formatRelative } from "@/components/board/format";
 import { DetailResources, useAgentResources } from "@/components/board/agent-resources";
+import { DetailUsage, hasUsage } from "@/components/board/agent-usage";
 import { useTaskDiff } from "@/components/board/code-changes";
 import { CodeReview } from "@/components/board/code-review";
 import { quickActionForKey, quickActionsFor, type QuickActionId } from "@/components/board/quick-actions";
@@ -957,6 +958,11 @@ function TaskDetailBody({
               )}
             </MetaItem>
             <ResourcesMetaItem task={task} />
+            {hasUsage(task.usage) && (
+              <MetaItem label="Cost & tokens">
+                <DetailUsage usage={task.usage} />
+              </MetaItem>
+            )}
             <MetaItem label="Pushed to main">
               {task.pushedAt ? (
                 <time dateTime={task.pushedAt} title={formatDateTime(task.pushedAt)}>

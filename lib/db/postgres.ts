@@ -46,8 +46,10 @@ import {
   normalizeRecentRunLimit,
   nowIso,
   parseAgentResources,
+  parseTaskUsage,
   parseFolderList,
   parseTaskReview,
+  touchesTask,
 } from "@/lib/db/util";
 import { parseTodoPhases } from "@/lib/todos";
 import { DEFAULT_PUSH_BRANCH } from "@/lib/push-branch";
@@ -120,6 +122,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   todos TEXT NOT NULL DEFAULT '[]',
   review TEXT,
   resources TEXT,
+  session_usage TEXT,
   scheduler_id TEXT,
   parallelize BOOLEAN,
   ignore_memory BOOLEAN NOT NULL DEFAULT FALSE,
@@ -136,6 +139,7 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS retry_at TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS todos TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS resources TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS session_usage TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS scheduler_id TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parallelize BOOLEAN;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ignore_memory BOOLEAN NOT NULL DEFAULT FALSE;
@@ -274,6 +278,7 @@ interface TaskRow {
   todos: string;
   review: string | null;
   resources: string | null;
+  session_usage: string | null;
   scheduler_id: string | null;
   parallelize: boolean | null;
   ignore_memory: boolean | null;
@@ -403,6 +408,7 @@ function toTask(r: TaskRow): Task {
     todos: parseTodoPhases(r.todos),
     review: parseTaskReview(r.review),
     resources: parseAgentResources(r.resources),
+    usage: parseTaskUsage(r.session_usage),
     schedulerId: r.scheduler_id ?? null,
     parallelize: r.parallelize ?? null,
     ignoreMemory: r.ignore_memory === true,
@@ -852,7 +858,8 @@ export class PostgresRepository implements Repository {
         "resources",
         patch.resources === undefined ? undefined : patch.resources === null ? null : JSON.stringify(patch.resources),
       ],
-      ["updated_at", nowIso()],
+      ["session_usage", patch.usage === undefined ? undefined : patch.usage === null ? null : JSON.stringify(patch.usage)],
+      ["updated_at", touchesTask(patch) ? nowIso() : undefined],
     ]);
     const res = await this.query(`UPDATE tasks SET ${sql} WHERE id = $${params.length + 1}`, [
       ...params,

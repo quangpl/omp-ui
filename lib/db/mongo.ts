@@ -17,6 +17,7 @@ import type {
   Task,
   TaskReview,
   TaskStatus,
+  TaskUsage,
   TodoPhase,
   User,
   UserRole,
@@ -49,8 +50,10 @@ import {
   normalizeRecentRunLimit,
   nowIso,
   parseAgentResources,
+  parseTaskUsage,
   parseFolderList,
   parseTaskReview,
+  touchesTask,
 } from "@/lib/db/util";
 import { parseTodoPhases } from "@/lib/todos";
 import { DEFAULT_PUSH_BRANCH } from "@/lib/push-branch";
@@ -121,6 +124,8 @@ interface TaskDoc {
   review?: TaskReview | null;
   /** Missing on documents created before agent resource tracking. */
   resources?: AgentResources | null;
+  /** Missing on documents created before session usage tracking. */
+  usage?: TaskUsage | null;
   /** Missing on documents created before schedulers. */
   schedulerId?: string | null;
   /** Missing on documents created before the parallelize toggle. */
@@ -277,6 +282,7 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     todos: parseTodoPhases(d.todos),
     review: parseTaskReview(d.review),
     resources: parseAgentResources(d.resources),
+    usage: parseTaskUsage(d.usage),
     schedulerId: d.schedulerId ?? null,
     parallelize: d.parallelize ?? null,
     ignoreMemory: d.ignoreMemory === true,
@@ -401,6 +407,7 @@ const TASK_PATCH_KEYS = [
   "todos",
   "review",
   "resources",
+  "usage",
   "ignoreMemory",
 ] as const satisfies readonly (keyof UpdateTaskInput)[];
 const RUN_PATCH_KEYS = ["status", "summary", "error", "endedAt"] as const satisfies readonly (keyof UpdateRunInput)[];
@@ -767,6 +774,7 @@ export class MongoRepository implements Repository {
       todos: [],
       review: null,
       resources: null,
+      usage: null,
       schedulerId: input.schedulerId ?? null,
       parallelize: input.parallelize ?? null,
       ignoreMemory: input.ignoreMemory ?? false,
@@ -781,7 +789,7 @@ export class MongoRepository implements Repository {
   async updateTask(id: string, patch: UpdateTaskInput): Promise<Task | null> {
     const doc = await this.tasks.findOneAndUpdate(
       { _id: id },
-      { $set: { ...pickDefined(patch, TASK_PATCH_KEYS), updatedAt: nowIso() } },
+      { $set: { ...pickDefined(patch, TASK_PATCH_KEYS), ...(touchesTask(patch) ? { updatedAt: nowIso() } : {}) } },
       { returnDocument: "after" },
     );
     if (!doc) return null;

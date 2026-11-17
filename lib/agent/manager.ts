@@ -27,6 +27,14 @@ import { chooseModel, readModelRoles } from "@/lib/agent/model-select";
 import { buildPrompt, buildSteerMessage } from "@/lib/agent/prompt";
 import { planQueue, type PlanCard, type QueuePlan } from "@/lib/agent/queue-planner";
 import { listProcesses, nextResources, treeTotals } from "@/lib/agent/resources";
+import {
+  emptyUsage,
+  sameUsage,
+  SessionUsageScanner,
+  sumUsage,
+  usageBeyond,
+  type UsageSums,
+} from "@/lib/agent/session-usage";
 import { OmpRpcProcess, describeExit, type RpcExitInfo, type RpcFrame } from "@/lib/agent/rpc";
 import {
   evaluateBudget,
@@ -116,6 +124,7 @@ import type {
   SubagentSnapshot,
   Task,
   TaskStatus,
+  TaskUsage,
   TodoPhase,
 } from "@/lib/types";
 
@@ -126,6 +135,8 @@ const ABORT_TIMEOUT_MS = 5_000;
 const SUMMARY_TIMEOUT_MS = 15_000;
 /** `get_session_stats` after an assistant message: best effort, never blocks frame handling. */
 const CONTEXT_STATS_TIMEOUT_MS = 5_000;
+/** Least time between two session usage scans of a run while it goes (the run's end always scans). */
+const USAGE_REFRESH_MS = 15_000;
 const PUMP_RETRY_MS = 5_000;
 const MAX_EVENT_TEXT = 50_000;
 const MAX_THINKING_TEXT = 2_000;
@@ -259,6 +270,18 @@ interface ActiveRun {
   resources: AgentResources | null;
   /** Raw CPU total of the process tree at the latest sample (`nextResources`); 0 before the first. */
   treeCpuSeconds: number;
+  /** Session JSONL this run's spend is tallied from (`get_state`); null until known or when untrusted. */
+  usageFile: string | null;
+  /** Incremental reader of `usageFile` and its subagents' files; created on the first scan. */
+  usageScanner: SessionUsageScanner | null;
+  /** Spend of the card's earlier omp sessions, when this run started a new one; zero otherwise. */
+  usageBase: UsageSums;
+  /** Usage last stored on the card (`Task.usage`); null when none. */
+  usage: UsageSums | null;
+  /** When the latest usage scan was scheduled (ms epoch); 0 before. */
+  usageScannedAt: number;
+  /** Usage scans run one after another. */
+  usageChain: Promise<void>;
   /** Approval mode the run's omp was started with (settings `approvalMode` at launch). */
   approvalMode: ApprovalMode;
   /** omp's `confirm` dialogs are approved (yolo); otherwise lib/agent/rpc.ts declines them. */
@@ -692,6 +715,7 @@ class OmpAgentManager implements AgentManager, RunControl {
         await this.recordTaskError(task.id, err);
       }
     }
+    void this.backfillUsage();
   }
 
   /**
@@ -1134,6 +1158,12 @@ class OmpAgentManager implements AgentManager, RunControl {
       spawnedAt: 0,
       resources: null,
       treeCpuSeconds: 0,
+      usageFile: null,
+      usageScanner: null,
+      usageBase: emptyUsage(),
+      usage: null,
+      usageScannedAt: 0,
+      usageChain: Promise.resolve(),
       approvalMode: settings.approvalMode,
       autoConfirm: settings.approvalMode === "yolo",
       pendingSteers: new Set(),
@@ -1176,6 +1206,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     this.stopSupervisorIfIdle();
     this.stopResourceSamplerIfIdle();
     void this.persistResources(run);
+    this.refreshUsage(run, true);
     // The agent may have written files or screenshots into the card's folder.
     if (run.boardId) publish({ type: "files.updated", boardId: run.boardId, taskId: run.taskId });
     this.cancelUnusedPlacement(run);
@@ -1308,6 +1339,73 @@ class OmpAgentManager implements AgentManager, RunControl {
   /** Spend of the run's omp session plus its subagents. */
   private runUsage(run: ActiveRun): RunUsage {
     return totalUsage(run.sessionUsage, Array.from(run.subagents.values(), (tracked) => tracked.snapshot));
+  }
+
+  // --- Session usage (lib/agent/session-usage.ts) -------------------------------------------
+
+  /**
+   * Schedule a scan of the run's session files and store the card's usage when it changed: at
+   * most every USAGE_REFRESH_MS while the run goes, always when `final` (the run ended).
+   */
+  private refreshUsage(run: ActiveRun, final = false): void {
+    if (!run.usageFile) return;
+    const now = Date.now();
+    if (!final && now - run.usageScannedAt < USAGE_REFRESH_MS) return;
+    run.usageScannedAt = now;
+    run.usageChain = run.usageChain.then(() => this.storeUsage(run));
+  }
+
+  /**
+   * Run start: tally the session as it stands before this run. Stored usage beyond it (the card's
+   * earlier sessions, e.g. after its session file went missing) carries over as `usageBase`.
+   */
+  private async primeUsage(run: ActiveRun, stored: TaskUsage | null): Promise<void> {
+    run.usage = stored;
+    if (!run.usageFile) return;
+    try {
+      run.usageScanner = new SessionUsageScanner(run.usageFile);
+      const before = await run.usageScanner.scan();
+      if (stored) run.usageBase = usageBeyond(stored, before ?? emptyUsage());
+    } catch (err) {
+      console.error(`[agent] failed to read the model usage of task ${run.taskId}:`, err);
+    }
+  }
+
+  private async storeUsage(run: ActiveRun): Promise<void> {
+    const file = run.usageFile;
+    if (!file) return;
+    try {
+      if (run.usageScanner?.sessionFile !== file) run.usageScanner = new SessionUsageScanner(file);
+      const session = await run.usageScanner.scan();
+      if (!session) return;
+      const sums = sumUsage(run.usageBase, session);
+      // Nothing stored yet counts as zero: a session without model requests stores nothing.
+      if (sameUsage(sums, run.usage ?? emptyUsage())) return;
+      const task = await this.repo.updateTask(run.taskId, { usage: { ...sums, updatedAt: new Date().toISOString() } });
+      run.usage = sums;
+      if (task) publish({ type: "task.updated", task });
+    } catch (err) {
+      console.error(`[agent] failed to store the model usage of task ${run.taskId}:`, err);
+    }
+  }
+
+  /**
+   * Boot: tally the usage of finished cards that have an omp session but no stored usage (cards
+   * that ran before usage tracking). One card at a time, in the background; best effort.
+   */
+  private async backfillUsage(): Promise<void> {
+    try {
+      const tasks = await this.repo.listTasksByAgentState(["idle", "error"]);
+      for (const task of tasks) {
+        if (!task.sessionFile || task.usage) continue;
+        const sums = await new SessionUsageScanner(task.sessionFile).scan();
+        if (!sums || sums.requests === 0) continue;
+        const updated = await this.repo.updateTask(task.id, { usage: { ...sums, updatedAt: new Date().toISOString() } });
+        if (updated) publish({ type: "task.updated", task: updated });
+      }
+    } catch (err) {
+      console.error("[agent] could not tally the model usage of past runs:", err);
+    }
   }
 
   private stopSupervisorIfIdle(): void {
@@ -1678,9 +1776,12 @@ class OmpAgentManager implements AgentManager, RunControl {
         if (remote && !(path.isAbsolute(sessionFile) && isInside(sessionFile, sessionDir!))) {
           await this.event(run, "error", `Ignored the session file reported by ${remote.nodeName}: ${sessionFile}`);
         } else {
+          run.usageFile = sessionFile;
           const updated = await repo.updateTask(task.id, { sessionFile });
           if (updated) publish({ type: "task.updated", task: updated });
         }
+      } else if (sessionFile) {
+        run.usageFile = sessionFile;
       }
       // Name the card's agentmemory session after the card (best effort, not awaited).
       if (sessionId && !memoryOff && agentmemoryEnabled()) {
@@ -1690,6 +1791,9 @@ class OmpAgentManager implements AgentManager, RunControl {
       if (run.finished) return;
       await this.event(run, "error", `Could not read the omp session state: ${errorMessage(err, run.ompPath)}`);
     }
+    // On the usage chain: a scan must never read the same files concurrently.
+    run.usageChain = run.usageChain.then(() => this.primeUsage(run, task.usage));
+    await run.usageChain;
     if (run.finished) return;
 
     // Orchestrated runs: stream subagent lifecycle + progress. Older omp versions lack it; the
@@ -1735,6 +1839,7 @@ class OmpAgentManager implements AgentManager, RunControl {
         if (isObject(frame.message) && frame.message.role === "assistant") {
           await this.onAssistantMessage(run, frame.message);
           this.refreshContext(run);
+          this.refreshUsage(run);
         } else {
           this.resetDeltas(run);
         }
@@ -2632,6 +2737,7 @@ class OmpAgentManager implements AgentManager, RunControl {
    */
   private async trackSubagent(run: ActiveRun, patch: SubagentPatch): Promise<void> {
     if (run.finished || !run.runId) return;
+    this.refreshUsage(run);
     const tracked = run.subagents.get(patch.id);
     const snapshot = mergeSubagent(tracked?.snapshot, patch);
     if (!tracked) {

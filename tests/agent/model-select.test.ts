@@ -30,6 +30,7 @@ function card(title: string, description = ""): Task {
     todos: [],
     review: null,
     resources: null,
+    usage: null,
     createdAt: NOW,
     updatedAt: NOW,
     commentCount: 0,
