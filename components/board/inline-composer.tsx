@@ -11,8 +11,8 @@ export type QuickCreate = (text: string) => Promise<boolean>;
 
 /**
  * Trello-style "Add a task" composer: Enter adds (and stays open for the next card),
- * Shift+Enter inserts a newline, Esc cancels. The card is created right away; the card agent
- * turns longer text into its title and brief in the background.
+ * Shift+Enter inserts a newline, Esc cancels. The card is created right away from the text as
+ * typed, and its agent starts.
  */
 export function InlineComposer({
   onSubmit,

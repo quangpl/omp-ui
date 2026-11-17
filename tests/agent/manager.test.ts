@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { getAgentManager } from "@/lib/agent/manager";
-import type { OmpRpcProcess } from "@/lib/agent/rpc";
+import type { OmpRpcProcess, RpcFrame } from "@/lib/agent/rpc";
 import type { AgentManager } from "@/lib/agent/types";
 import { getRepo } from "@/lib/db";
 import type { Repository } from "@/lib/db/types";
@@ -40,6 +40,8 @@ const ENV_KEYS = [
   "FAKE_OMP_SESSION_DIR",
   "FAKE_OMP_MODEL_ROLES",
   "FAKE_OMP_PLAN",
+  "FAKE_OMP_EXTENSIONS",
+  "FAKE_OMP_DISABLED_EXTENSIONS",
   "OMP_UI_RETRY_BASE_MS",
   "OMP_UI_QUOTA_RETRY_BASE_MS",
 ] as const;
@@ -190,6 +192,30 @@ function plannerEntries(): LogEntry[] {
 async function runStartOrder(ids: string[]): Promise<string[]> {
   const starts = await Promise.all(ids.map(async (id) => [id, (await latestRun(id)).startedAt] as const));
   return starts.sort((x, y) => x[1].localeCompare(y[1])).map(([id]) => id);
+}
+
+/** An assistant message as omp reports it in message_end / agent_end. */
+function assistantMessage(text: string): Record<string, unknown> {
+  return { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" };
+}
+
+let injected = 0;
+
+/**
+ * Feeds frames to a card run as if its omp process (by pid) had sent them, for omp behaviour the
+ * fake does not script, then waits until the run handled them: frames are handled in order, so a
+ * trailing `notice` shows up in the run log once the earlier ones were handled, unless one of them
+ * ended the run (which then ignores the notice).
+ */
+async function sendFrames(pid: number, runId: string, ...frames: RpcFrame[]): Promise<void> {
+  const proc = [...(globals.__ompUiRpcProcesses ?? [])].find((p) => p.pid === pid);
+  if (!proc) throw new Error(`no live omp process ${pid}`);
+  const marker = `frames handled (${++injected})`;
+  for (const frame of [...frames, { type: "notice", level: "info", message: marker }]) proc.emit("frame", frame);
+  await waitFor(async () => {
+    if ((await runEvents(runId)).some((e) => e.text === marker)) return true;
+    return (await repo.getRun(runId))?.status !== "running";
+  }, "the run to handle the injected frames");
 }
 
 // --- setup -----------------------------------------------------------------------------------
@@ -447,6 +473,33 @@ describe("AgentManager run lifecycle", () => {
     await waitDone(task.id);
 
     await waitFor(() => readLog().some((e) => e.kind === "stdin_closed"), "omp stdin to be closed");
+  });
+
+  it("writes the memory-off overlay into the run config only for cards that ignore memory", async () => {
+    process.env.FAKE_OMP_EXTENSIONS = JSON.stringify(["/x/agent/agentmemory", "/x/other"]);
+    process.env.FAKE_OMP_DISABLED_EXTENSIONS = JSON.stringify(["skill:foo"]);
+    try {
+      const manager = await getAgentManager();
+      const readConfig = (taskId: string) =>
+        JSON.parse(readFileSync(path.join(root, "runtime", `omp-config-${taskId}.yml`), "utf8")) as Record<string, unknown>;
+
+      const off = await repo.createTask({ boardId: board.id, title: "No memory", description: "", status: "todo", ignoreMemory: true });
+      await manager.start(off.id);
+      await waitDone(off.id);
+      const offConfig = readConfig(off.id);
+      expect(offConfig.extensions).toEqual(["/x/other"]);
+      expect(offConfig.disabledExtensions).toEqual(["skill:foo", "mcp:agentmemory"]);
+
+      const on = await createTask("With memory");
+      await manager.start(on.id);
+      await waitDone(on.id);
+      const onConfig = readConfig(on.id);
+      expect(onConfig).not.toHaveProperty("extensions");
+      expect(onConfig).not.toHaveProperty("disabledExtensions");
+    } finally {
+      delete process.env.FAKE_OMP_EXTENSIONS;
+      delete process.env.FAKE_OMP_DISABLED_EXTENSIONS;
+    }
   });
 
   it("treats start() on an active task as a no-op and rejects unknown tasks", async () => {
@@ -714,7 +767,7 @@ describe("AgentManager feedback", () => {
     expect(agentComments(comments).map((c) => c.body)).toEqual([
       "Fake summary: addressed 1 steered message(s).",
     ]);
-    expect((await runEvents(run.id)).map((e) => e.text)).toContain("Feedback sent to agent");
+    expect((await runEvents(run.id)).map((e) => e.text)).toContain("Feedback queued for the running agent (steering)");
   });
 
   it("reopens a done task on feedback and resumes the same omp session", async () => {
@@ -900,6 +953,190 @@ describe("AgentManager feedback", () => {
     expect(await getTask(done.id)).toMatchObject({ status: "done", agentState: "idle" });
     expect(await repo.listRuns(todo.id)).toHaveLength(0);
     expect(await repo.listRuns(done.id)).toHaveLength(0);
+  });
+});
+
+describe("AgentManager omp session events", () => {
+  /** Starts a card that works silently ("spend"); returns its omp pid and run id. */
+  async function startWorking(title: string): Promise<{ task: Task; manager: AgentManager; pid: number; runId: string }> {
+    const task = await createTask(title, "[fake:spend]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    const pid = await waitPromptReceived();
+    const runId = (await latestRun(task.id)).id;
+    // The fake's one assistant message is in: the run is past its startup.
+    await waitFor(async () => (await runEvents(runId)).some((e) => e.text === "Working on it."), "the agent to start working");
+    return { task, manager, pid, runId };
+  }
+
+  it("keeps a run open for a steer sent as the agent yields until its turn ends and the session settles", async () => {
+    const { task, manager, pid, runId } = await startWorking("Steer at the end");
+    const comment = await repo.addComment({ taskId: task.id, author: "user", body: "Also update the README" });
+    await manager.onComment(await getTask(task.id), comment);
+    await waitFor(
+      async () => (await runEvents(runId)).some((e) => e.text === "Feedback queued for the running agent (steering)"),
+      "the feedback to be steered",
+    );
+    const steerId = commands("prompt", pid).find((e) => e.command?.message?.includes("Also update the README"))?.command?.id;
+    expect(steerId).toBeDefined();
+
+    // The agent yields while the steer is queued: omp answers the run's prompt, then starts a turn for the steer.
+    await sendFrames(
+      pid,
+      runId,
+      { type: "agent_end", messages: [assistantMessage("Working on it.")], isTerminal: true, yielded: true },
+      { type: "prompt_result", id: `prompt-${runId}`, agentInvoked: true, status: "completed", sessionSettled: false },
+    );
+    expect(manager.stats().running).toEqual([task.id]);
+
+    await sendFrames(
+      pid,
+      runId,
+      { type: "agent_start" },
+      { type: "message_end", message: assistantMessage("Fake summary: updated the README.") },
+      { type: "agent_end", messages: [assistantMessage("Fake summary: updated the README.")], isTerminal: true, yielded: true },
+    );
+    expect(manager.stats().running).toEqual([task.id]);
+
+    // The steer's turn yielded, but a background job may still wake the session.
+    await sendFrames(pid, runId, { type: "prompt_result", id: steerId, agentInvoked: true, status: "completed", sessionSettled: false });
+    expect(manager.stats().running).toEqual([task.id]);
+    expect((await getTask(task.id)).agentState).toBe("running");
+
+    await sendFrames(pid, runId, { type: "session_settled" });
+    const done = await waitDone(task.id);
+    const run = await latestRun(task.id);
+    expect(run).toMatchObject({ id: runId, status: "succeeded", summary: "Fake summary: updated the README." });
+    expect(done.lastRunId).toBe(runId);
+    expect(await repo.listRuns(task.id)).toHaveLength(1);
+    expect((await repo.listComments(task.id)).find((c) => c.id === comment.id)).toMatchObject({
+      resolved: true,
+      resolvedByRunId: runId,
+    });
+  });
+
+  it("completes on a terminal agent_end without `yielded` from an older omp, even with a steer pending", async () => {
+    const { task, manager, pid, runId } = await startWorking("Old omp");
+    const comment = await repo.addComment({ taskId: task.id, author: "user", body: "Also update the README" });
+    await manager.onComment(await getTask(task.id), comment);
+    await waitFor(
+      async () => (await runEvents(runId)).some((e) => e.text === "Feedback queued for the running agent (steering)"),
+      "the feedback to be steered",
+    );
+
+    await sendFrames(pid, runId, { type: "agent_end", messages: [assistantMessage("Fake summary: done.")] });
+    await waitDone(task.id);
+    expect(await latestRun(task.id)).toMatchObject({ id: runId, status: "succeeded" });
+  });
+
+  it("fails the run when omp reports the main prompt failed without an agent_end (e.g. cost cap)", async () => {
+    const { task, pid, runId } = await startWorking("Cost cap");
+    await sendFrames(pid, runId, {
+      type: "prompt_result",
+      id: `prompt-${runId}`,
+      agentInvoked: true,
+      status: "error",
+      error: { message: "cost cap" },
+    });
+    await waitFor(async () => (await repo.getRun(runId))?.status === "failed", "the run to fail");
+    expect(await latestRun(task.id)).toMatchObject({ id: runId, status: "failed", error: "cost cap" });
+  });
+
+  it("completes once the session settles after the agent yielded, waiting out background work", async () => {
+    const { task, manager, pid, runId } = await startWorking("Background work");
+    // Async subagents still run: the agent ends a turn without yielding for good (logged once).
+    const waiting = { type: "agent_end", messages: [], isTerminal: false, yielded: false, awaitingAsyncWork: true };
+    await sendFrames(pid, runId, waiting, waiting);
+    await sendFrames(
+      pid,
+      runId,
+      { type: "agent_start" },
+      { type: "agent_end", messages: [assistantMessage("Working on it.")], isTerminal: true, yielded: true },
+    );
+    expect(manager.stats().running).toEqual([task.id]);
+    const texts = (await runEvents(runId)).map((e) => e.text);
+    expect(texts.filter((t) => t === "Waiting for background work (subagents, background jobs) before finishing")).toHaveLength(1);
+
+    await sendFrames(pid, runId, { type: "session_settled" });
+    await waitDone(task.id);
+    expect(await latestRun(task.id)).toMatchObject({ id: runId, status: "succeeded", summary: "Working on it." });
+  });
+
+  it("logs each steering message omp delivers from its queue", async () => {
+    const { pid, runId } = await startWorking("Show steering");
+    const update = (steering: string[]) => ({ type: "queue_update", steering, followUp: [], liveSteered: 0 });
+    await sendFrames(
+      pid,
+      runId,
+      update(["Also update\nthe README", "Keep it small"]),
+      update(["Keep it small"]),
+    );
+    const afterFirst = (await runEvents(runId)).map((e) => e.text).filter((t) => t.startsWith("Steering delivered"));
+    expect(afterFirst).toEqual(['Steering delivered to the agent: "Also update the README"']);
+
+    await sendFrames(pid, runId, update([]));
+    const afterSecond = (await runEvents(runId)).map((e) => e.text).filter((t) => t.startsWith("Steering delivered"));
+    expect(afterSecond).toEqual([
+      'Steering delivered to the agent: "Also update the README"',
+      'Steering delivered to the agent: "Keep it small"',
+    ]);
+  });
+
+  it("logs context compactions: start, result, failure and skip", async () => {
+    const { pid, runId } = await startWorking("Compact me");
+    await sendFrames(
+      pid,
+      runId,
+      { type: "auto_compaction_start", reason: "threshold", action: "snapcompact" },
+      {
+        type: "auto_compaction_end",
+        action: "snapcompact",
+        result: {
+          summary: "The full summary of the conversation so far.",
+          shortSummary: "Kept the plan and the failing test",
+          firstKeptEntryId: "entry-9",
+          tokensBefore: 123456,
+          details: {},
+        },
+        aborted: false,
+        willRetry: false,
+      },
+      { type: "auto_compaction_start", reason: "overflow" },
+      { type: "auto_compaction_end", action: "snapcompact", aborted: false, willRetry: true, errorMessage: "summary model unavailable" },
+      { type: "manual_compaction_start" },
+      { type: "manual_compaction_end", aborted: false, skipped: true, errorMessage: "Nothing to compact" },
+    );
+    const log = await runEvents(runId);
+    const texts = (kind: RunEvent["kind"]) => log.filter((e) => e.kind === kind).map((e) => e.text);
+    const statuses = texts("status");
+    for (const line of [
+      "Compacting conversation context (threshold, snapcompact)",
+      "Context compacted (123,456 tokens before): Kept the plan and the failing test",
+      "Compacting conversation context (overflow)",
+      "Compacting conversation context (manual)",
+      "Context compaction skipped: Nothing to compact",
+    ]) {
+      expect(statuses).toContain(line);
+    }
+    expect(texts("error")).toEqual(["Context compaction failed: summary model unavailable; retrying"]);
+  });
+
+  it("logs omp's dialogs a card run declines when it does not run in yolo mode", async () => {
+    await updateAppSettings(repo, { approvalMode: "write" });
+    const task = await createTask("Ask me", "[fake:confirm]");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    await waitDone(task.id);
+
+    const run = await latestRun(task.id);
+    const errors = (await runEvents(run.id)).filter((e) => e.kind === "error").map((e) => e.text);
+    // The confirm and the select are declined; the notify needs no answer.
+    expect(errors).toEqual([
+      `Declined omp's request "Run?": card runs cannot answer prompts (approval mode write). Use approval mode yolo for unattended tool use.`,
+      `Declined omp's request "Pick": card runs cannot answer prompts (approval mode write). Use approval mode yolo for unattended tool use.`,
+    ]);
+    const responses = readLog().filter((e) => e.kind === "ui_response");
+    expect(responses).toHaveLength(2);
   });
 });
 

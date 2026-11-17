@@ -172,14 +172,16 @@ function NewSchedulerForm({ boards, initialBoardId }: { boards: BoardWithCounts[
       label="What should the agent do each time?"
       hint={
         <>
-          Every run creates a regular card from this text: it goes to In progress, an agent writes its title and
-          brief, then starts. Type <Kbd>/</Kbd> for OMP skills, <Kbd>@</Kbd> to mention project files.
+          Every run creates a regular card from this text: it goes to In progress and its agent starts with the
+          text as its brief. Type <Kbd>/</Kbd> for OMP skills, <Kbd>@</Kbd> to mention project files.
         </>
       }
       submitLabel="Create scheduler"
       busyLabel="Creating…"
       canSubmit={!scheduleError(schedule) && !!boardId}
       resetOnSubmit={false}
+      parallelizeToggle={false}
+      memoryToggle={false}
       onTextChange={(text) => setFirstLine(text.trim().split("\n", 1)[0]?.trim().slice(0, 200) ?? "")}
       onSubmit={create}
       onCancel={() => router.push("/schedulers")}

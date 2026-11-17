@@ -300,9 +300,12 @@ export function parseToolLine(text: string): { name: string; detail: string } | 
 
 /**
  * Model of the run from its status lines: "Starting agent in … (model X, thinking Y)",
- * "Resuming agent session in … (model X)" or "Model auto-selected: X (reason)".
+ * "Resuming agent session in … (model X)", "Model auto-selected: X (reason)" or
+ * "Model kept from the resumed session: X[ (thinking Y)]".
  */
 export function parseModel(text: string): string | null {
+  const kept = /^Model kept from the resumed session: (\S+)/.exec(text);
+  if (kept?.[1]) return kept[1];
   const auto = /^Model auto-selected: (\S+)/.exec(text);
   if (auto?.[1]) return auto[1] === "omp" ? null : auto[1];
   if (!/^(Starting agent|Resuming agent session)\b/.test(text)) return null;

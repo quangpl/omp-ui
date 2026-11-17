@@ -158,7 +158,8 @@ function BoardScreen() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selectedTaskId, columns, switchTask]);
 
-  const create = async (text: string) => (await controller.createFromText(text)) !== null;
+  const create = async (text: string, options?: { parallelize: boolean; ignoreMemory: boolean }) =>
+    (await controller.createFromText(text, options)) !== null;
 
   // Phones get the full "New task" page (the board stays right behind it in history); desktop
   // the dialog. Whether it's a phone is decided at click time.
@@ -190,7 +191,13 @@ function BoardScreen() {
         : null,
       duplicate: async (task) => {
         // A copy waits in To do even on auto-run boards: re-running a finished card is opt-in.
-        await createTask({ title: `${task.title} (copy)`, description: task.description, start: false });
+        await createTask({
+          title: `${task.title} (copy)`,
+          description: task.description,
+          start: false,
+          parallelize: task.parallelize,
+          ignoreMemory: task.ignoreMemory,
+        });
       },
       requestDelete: setDeleting,
       requestDeleteAll: setDeletingAll,

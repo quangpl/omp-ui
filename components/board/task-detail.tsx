@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   AlignLeft,
   ArrowUp,
+  BrainOff,
   CalendarClock,
   ChevronRight,
   CircleHelp,
@@ -56,6 +57,7 @@ import {
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Kbd } from "@/components/ui/kbd";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -69,7 +71,7 @@ import {
   type Run,
   type Task,
 } from "@/lib/types";
-import { type BoardStreamListener, useQueueDrafting, useQueueNode } from "@/hooks/use-board";
+import { type BoardStreamListener, useQueueNode } from "@/hooks/use-board";
 import { AgentLog } from "@/components/board/agent-log";
 import { TaskProgressIcon, TodoListSection } from "@/components/board/task-progress";
 import { CommentThread } from "@/components/board/comment-thread";
@@ -558,7 +560,6 @@ function TaskDetailBody({
       review.style.height = "";
     };
   }, [tab, isMobile]);
-  const drafting = useQueueDrafting(taskId) && task?.agentState === "queued";
   const liveNode = useQueueNode(taskId);
 
   if (!task) {
@@ -595,7 +596,12 @@ function TaskDetailBody({
     : [];
   const runs = detail?.runs ?? [];
 
-  const save = async (patch: { title?: string; description?: string; blockedBy?: string[] }) => {
+  const save = async (patch: {
+    title?: string;
+    description?: string;
+    blockedBy?: string[];
+    ignoreMemory?: boolean;
+  }) => {
     try {
       const updated = await api.tasks.update(task.id, patch);
       upsertTask(updated);
@@ -793,7 +799,6 @@ function TaskDetailBody({
               state={task.agentState}
               retryAt={task.retryAt}
               agentError={task.agentError}
-              drafting={drafting}
             />
             {task.pushedAt && (
               <span
@@ -802,6 +807,15 @@ function TaskDetailBody({
               >
                 <Upload className="size-3" />
                 Pushed
+              </span>
+            )}
+            {task.ignoreMemory && (
+              <span
+                title="Agent memory off for this card"
+                className="inline-flex h-6 items-center gap-1 rounded-full bg-muted px-2 text-xs font-medium text-muted-foreground"
+              >
+                <BrainOff className="size-3" />
+                Memory off
               </span>
             )}
           </div>
@@ -942,6 +956,22 @@ function TaskDetailBody({
               ) : (
                 <span className="text-muted-foreground">Not yet</span>
               )}
+            </MetaItem>
+            <MetaItem label="Agent memory">
+              <span
+                className="inline-flex items-center gap-2"
+                title="Ignore memory: no recall, nothing saved. Takes effect from the next run."
+              >
+                <Switch
+                  size="sm"
+                  checked={Boolean(task.ignoreMemory)}
+                  onCheckedChange={(checked) => void save({ ignoreMemory: checked })}
+                  aria-label="Ignore memory"
+                />
+                <span className={task.ignoreMemory ? undefined : "text-muted-foreground"}>
+                  {task.ignoreMemory ? "Ignored" : "Used"}
+                </span>
+              </span>
             </MetaItem>
           </dl>
 

@@ -1,5 +1,5 @@
-// Installed omp skills, from `omp skill list --json`: offered with "/" in the composer and
-// suggested by the card writer. Listing spawns omp, so results are cached for a minute.
+// Installed omp skills, from `omp skill list --json`: offered with "/" in the composer. Listing
+// spawns omp, so results are cached for a minute.
 import { execFile } from "node:child_process";
 import { childEnv } from "@/lib/child-env";
 import type { OmpSkill } from "@/lib/types";

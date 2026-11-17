@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { FolderX, X } from "lucide-react";
 import { toast } from "sonner";
 import { toastCardAdded } from "@/components/board/card-added-toast";
-import { NewTaskForm } from "@/components/board/new-task-form";
+import { type CreateFromText, NewTaskForm } from "@/components/board/new-task-form";
 import { ProjectField } from "@/components/board/project-field";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -102,8 +102,8 @@ export function NewCardScreen({ boardId }: { boardId: string }) {
     router.replace(newCardHref(id));
   };
 
-  const create = async (text: string) => {
-    const task = await createCardFromText(boardId, text);
+  const create: CreateFromText = async (text, { parallelize, ignoreMemory }) => {
+    const task = await createCardFromText(boardId, text, { parallelize, ignoreMemory });
     if (!task) return false;
     localStorage.setItem(LAST_BOARD_KEY, boardId);
     setMobileColumnHint(boardId, task.status);

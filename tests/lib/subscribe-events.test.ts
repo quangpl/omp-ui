@@ -101,8 +101,8 @@ describe("subscribeEvents", () => {
     expect(onFirstOpen).toHaveBeenCalledTimes(1);
     expect(onReconnect).not.toHaveBeenCalled();
 
-    source.message({ type: "queue.updated", running: [], queued: [], drafting: [] });
-    expect(onEvent).toHaveBeenCalledWith({ type: "queue.updated", running: [], queued: [], drafting: [] });
+    source.message({ type: "queue.updated", running: [], queued: [] });
+    expect(onEvent).toHaveBeenCalledWith({ type: "queue.updated", running: [], queued: [] });
 
     // A native retry (readyState stays CONNECTING) reopens the same source.
     source.fail(false);

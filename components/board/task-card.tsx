@@ -4,6 +4,7 @@ import { type CSSProperties, memo, type MouseEvent, type ReactNode, type Ref, us
 import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
 import {
   Bot,
+  BrainOff,
   CircleHelp,
   Clock,
   Hourglass,
@@ -13,13 +14,12 @@ import {
   MessageSquareDot,
   RotateCw,
   Server,
-  Sparkles,
   Timer,
   TriangleAlert,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useBoardTasks, useQueueDrafting, useQueueNode, useQueuePosition } from "@/hooks/use-board";
+import { useBoardTasks, useQueueNode, useQueuePosition } from "@/hooks/use-board";
 import { isQuotaError } from "@/lib/quota";
 import { questionPreview } from "@/lib/question";
 import { formatDateTime } from "@/components/board/format";
@@ -132,7 +132,6 @@ export function AgentStateBadge({
   queuePosition = -1,
   retryAt = null,
   agentError = null,
-  drafting = false,
   className,
 }: {
   state: AgentState;
@@ -141,21 +140,8 @@ export function AgentStateBadge({
   retryAt?: string | null;
   /** Last run's error (Task.agentError); a quota error turns "Retrying" into "Waiting for quota". */
   agentError?: string | null;
-  /** Queued card the card writer is still writing (`useQueueDrafting`). */
-  drafting?: boolean;
   className?: string;
 }) {
-  if (state === "queued" && drafting) {
-    return (
-      <Badge
-        className={cn("gap-1 bg-primary/10 text-primary dark:bg-primary/15", className)}
-        title="Writing the title and brief; the agent starts next"
-      >
-        <Sparkles className="animate-pulse motion-reduce:animate-none" />
-        Writing card
-      </Badge>
-    );
-  }
   if (state === "queued") {
     return (
       <Badge variant="secondary" className={cn("gap-1", className)}>
@@ -314,7 +300,6 @@ export const TaskCard = memo(function TaskCard({
     .map((line) => line.trim())
     .find(Boolean);
   const queuePosition = useQueuePosition(task.id);
-  const drafting = useQueueDrafting(task.id) && task.agentState === "queued";
   // Cluster mode: the machine the card's agent runs on.
   const liveNode = useQueueNode(task.id);
   const node = task.agentState === "running" ? liveNode : null;
@@ -373,7 +358,7 @@ export const TaskCard = memo(function TaskCard({
             {selected && <span className="sr-only"> (selected)</span>}
           </span>
         </span>
-        {(task.agentState === "running" || drafting) && activity ? (
+        {task.agentState === "running" && activity ? (
           <span
             className="mt-1 block truncate font-mono text-[11px] leading-4 text-muted-foreground"
             title={activity}
@@ -394,7 +379,6 @@ export const TaskCard = memo(function TaskCard({
               queuePosition={queuePosition}
               retryAt={task.retryAt}
               agentError={task.agentError}
-              drafting={drafting}
             />
             {node && (
               <span
@@ -436,6 +420,15 @@ export const TaskCard = memo(function TaskCard({
               >
                 <Bot className="size-3" aria-hidden />
                 <span className="sr-only">Created by an agent</span>
+              </span>
+            )}
+            {task.ignoreMemory && (
+              <span
+                className="inline-flex size-5 items-center justify-center rounded-full bg-muted text-muted-foreground"
+                title="Agent memory off"
+              >
+                <BrainOff className="size-3" aria-hidden />
+                <span className="sr-only">Agent memory off</span>
               </span>
             )}
             {task.openCommentCount > 0 && (

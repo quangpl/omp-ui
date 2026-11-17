@@ -932,9 +932,17 @@ async function buildOrKeepPrevious() {
   }
 }
 
-/** Environment of the server process: the full inherited environment plus .env (see loadConfig). */
+/**
+ * Environment of the server process: the full inherited environment plus .env (see loadConfig).
+ * When OMP_PATH is a bare name that is not on PATH but sits in the installer's default location
+ * (~/.local/bin, missing from PATH under npx, cron and non-login shells), that directory goes on
+ * PATH so the server and its agents find omp.
+ */
 function serverEnv(cfg) {
-  return { ...cfg.env, NODE_ENV: "production", PORT: String(cfg.port), HOST: cfg.host };
+  const env = { ...cfg.env, NODE_ENV: "production", PORT: String(cfg.port), HOST: cfg.host };
+  const omp = resolveOmp(env.OMP_PATH || "omp");
+  if (omp && !omp.onPath) env.PATH = [path.dirname(omp.path), env.PATH].filter(Boolean).join(path.delimiter);
+  return env;
 }
 
 async function assertPortFree(cfg) {
@@ -2304,7 +2312,7 @@ const COMMANDS = {
       if (!omp) row("fail", "omp", `not found (${ompPath}) — install: ${OMP_INSTALL_CMD}`);
       else {
         const v = capture(omp.path, ["--version"]);
-        if (!omp.onPath) row("warn", "omp", `${v ?? "installed"} at ${omp.path} — not on PATH; set OMP_PATH=${omp.path} in .env`);
+        if (!omp.onPath) row(v ? "ok" : "warn", "omp", `${v ?? "installed"} ${c.dim(omp.path)} — not on this shell's PATH; the server adds ${path.dirname(omp.path)}`);
         else row(v ? "ok" : "warn", "omp", v ? `${v} ${c.dim(omp.path)}` : `${omp.path} did not answer --version`);
       }
       const ompAgentDir = path.join(os.homedir(), ".omp", "agent");

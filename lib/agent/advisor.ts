@@ -5,7 +5,7 @@
 //   can (sending the agent back to work when an answer changes the result) and keeps for the user
 //   only the questions that need their own judgment.
 // It runs on a warm `omp --mode rpc` helper worker in the project with read-only tools, like the
-// card writer.
+// other helpers.
 import { readModelRoles } from "@/lib/agent/model-select";
 import { existingFolders, extractJsonObject, runOmpHelper } from "@/lib/agent/omp-helper";
 import { clip } from "@/lib/card-draft";

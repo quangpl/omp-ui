@@ -32,6 +32,9 @@
 //                         "loop" repeats the same `read` call (same args, same result) every ~30 ms,
 //                         40 times, then succeeds; it stops early if the run is aborted meanwhile.
 //                         "question" succeeds with a summary that ends in a question for the user.
+//                         "parallel" succeeds with "Fake summary: parallel subagents allowed." when the
+//                         prompt carries the parallel-subagent permission (PARALLEL_PERMISSION), else
+//                         "Fake summary: parallel subagents not allowed." (the Parallelize toggle).
 //                         "stream" emits 2 thinking_delta + 15 text_delta frames ~80ms apart, then succeeds.
 //                         "orchestrate" runs a `task` call with two subagents (Scout succeeds, Builder
 //                         fails), reporting progress via task tool updates and, when subscribed via
@@ -63,8 +66,6 @@
 //                         Logged as a "usage" entry, not "argv".
 //   FAKE_OMP_STATS        JSON object `omp stats --json` prints (default {}). Logged as a "stats"
 //                         entry, not "argv".
-//   FAKE_OMP_DRAFT        Reply text of the card writer (an RPC prompt starting with "You are the card
-//                         writer"; see cardWriter), used verbatim instead of the card it writes.
 //   `omp login <id>`      Speaks omp's login dialog on stdio (logged as a "login" entry): prints the
 //                         page to open, then asks for the pasted code ("Paste the authorization code
 //                         (or full redirect URL): "); "good-code" or a URL with code=good-code
@@ -74,7 +75,7 @@
 //                         prints a device URL and "Enter code: FAKE-1234" and logs in after
 //                         FAKE_OMP_LOGIN_DEVICE_MS (default 300).
 //
-// Helper workers (started with --no-session: card writer, advisor, queue planner, chat assistant) are
+// Helper workers (started with --no-session: advisor, queue planner, chat assistant) are
 // pooled and reused across prompts via new_session. They log "helper_argv" at startup instead of
 // "argv", every prompt as a "helper" entry {argv, cwd, prompt}, and other commands as
 // "helper_command" instead of "command", so card-run assertions only see card runs. A helper prompt
@@ -84,7 +85,7 @@
 //
 // Test-only commands (answered like real commands): fake_echo {value, delayMs}, fake_crash,
 // fake_chunked {size}, fake_bad_chunk.
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -105,6 +106,12 @@ function flag(name) {
 
 if (argv[0] === "config") {
   log("config", { argv, cwd: process.cwd() });
+  const arrays = { extensions: "FAKE_OMP_EXTENSIONS", disabledExtensions: "FAKE_OMP_DISABLED_EXTENSIONS" };
+  if (argv[2] in arrays) {
+    const value = JSON.parse(process.env[arrays[argv[2]]] || "[]");
+    process.stdout.write(`${JSON.stringify({ key: argv[2], value }, null, 2)}\n`);
+    process.exit(0);
+  }
   const roles = process.env.FAKE_OMP_MODEL_ROLES || "{}";
   if (roles === "fail") process.exit(1);
   process.stdout.write(`${JSON.stringify({ key: argv[2], value: JSON.parse(roles) }, null, 2)}\n`);
@@ -226,7 +233,7 @@ function helperReply(prompt) {
   return JSON.stringify(reply);
 }
 
-/** A pooled helper worker (card writer, advisor, queue planner) rather than a card run. */
+/** A pooled helper worker (advisor, queue planner, chat assistant) rather than a card run. */
 const helper = argv.includes("--no-session");
 
 /** Environment variables whose values the "argv" entry records (credentials in, AgentMan secrets out). */
@@ -490,6 +497,9 @@ async function orchestrate(current) {
   completeSuccessfully("Fake summary: orchestrated the work across two subagents.");
 }
 
+/** The parallel-subagent permission AgentMan adds to a run's prompt while Parallelize is on. */
+const PARALLEL_PERMISSION = "You may split independent parts of this work across parallel subagents when that helps.";
+
 function scenarioOf(message) {
   const match = /\[fake:([a-z_]+)\]/.exec(String(message ?? ""));
   return match ? match[1] : defaultScenario;
@@ -575,60 +585,6 @@ async function chatAssistant(prompt) {
     results.push({ toolName: call.toolName, isError: reply.isError === true, text: result });
   }
   finishRun(assistant(`Chat reply: ${JSON.stringify(results)}`, "stop"));
-}
-
-/**
- * The card writer (a prompt starting with "You are the card writer…"): takes the request between
- * the <request> and </request> lines, or reads the file the prompt says it "is saved in", reports
- * one tool call, then answers with FAKE_OMP_DRAFT or a card: the request's first line (without
- * markdown markers and [fake-draft:…] markers) as the title, "## Goal" plus the request as the
- * description, `parallel` when the request says "parallel", and every open-card id the request
- * mentions as waitFor. A `[fake-draft:<mode>]` marker in the request changes that:
- *   fail         exits 1 without an answer.
- *   slow         reports the tool call, then never answers (until killed).
- *   lookaround   keeps reporting tool calls (up to 100) until steered, then answers.
- *   prose        wraps the card in prose and a ```json fence.
- *   notitle      answers with an empty title.
- */
-async function cardWriter(prompt) {
-  const savedIn = /is saved in (\S+?)\.(?=\s|$)/.exec(prompt)?.[1];
-  const request = savedIn
-    ? readFileSync(savedIn, "utf8")
-    : (/^<request>\n([\s\S]*?)\n<\/request>$/m.exec(prompt)?.[1] ?? "");
-  const modes = [...request.matchAll(/\[fake-draft:([a-z]+)\]/g)].map((m) => m[1]);
-  if (modes.includes("fail")) {
-    process.stderr.write("fake omp: card writer exploded\n", () => process.exit(1));
-    return;
-  }
-  const lookup = (n) =>
-    emit({ type: "tool_execution_start", toolCallId: `t${n}`, toolName: "grep", args: { pattern: "card" }, intent: n === 1 ? "Finding the files involved" : `Lookup ${n}` });
-  lookup(1);
-  if (modes.includes("slow")) return;
-  if (modes.includes("lookaround")) {
-    const current = run;
-    const { promise, resolve } = Promise.withResolvers();
-    current.onSteer = resolve;
-    for (let n = 2; n <= 100 && run === current && !current.steers.length; n++) {
-      lookup(n);
-      await Promise.race([promise, new Promise((r) => setTimeout(r, 10))]);
-    }
-    if (run !== current) return;
-  }
-  const firstLine = request.split("\n").find((line) => line.trim()) ?? "";
-  const title = firstLine
-    .replace(/\[fake-draft:[a-z]+\]/g, "")
-    .trim()
-    .replace(/^(?:#+|[-*>]|\d+\.)\s*/, "")
-    .trim();
-  const uuid = /^- ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) — /gm;
-  const json = JSON.stringify({
-    title: modes.includes("notitle") ? "" : title,
-    description: `## Goal\n\n${request.trim()}`,
-    parallel: /\bparallel\b/i.test(request),
-    waitFor: [...prompt.matchAll(uuid)].map((m) => m[1]).filter((id) => request.includes(id)),
-  });
-  const text = process.env.FAKE_OMP_DRAFT || (modes.includes("prose") ? `Here is the card:\n\`\`\`json\n${json}\n\`\`\`\nDone.` : json);
-  finishRun(assistant(text, "stop"));
 }
 
 /** Fake `todo` tool results as omp reports them (`result.details.phases`); the last one stays. */
@@ -777,16 +733,11 @@ async function loopCalls(current) {
 }
 
 async function startPrompt(command) {
-  const cardWriterPrompt = String(command.message ?? "").startsWith("You are the card writer");
-  const scenario = cardWriterPrompt ? "card_writer" : scenarioOf(command.message);
+  const scenario = scenarioOf(command.message);
   run = { scenario, steers: [] };
   respond(command, { agentInvoked: true });
   emit({ type: "agent_start" });
   emit({ type: "turn_start" });
-  if (cardWriterPrompt) {
-    await cardWriter(command.message);
-    return;
-  }
   if (helper && String(command.message ?? "").startsWith("You are AgentMan's chat assistant")) {
     await chatAssistant(String(command.message));
     return;
@@ -805,6 +756,11 @@ async function startPrompt(command) {
     case "question":
       completeSuccessfully(
         "Fake summary: added the endpoint.\n\nShould pagination default to 20 or 50 items per page?",
+      );
+      break;
+    case "parallel":
+      completeSuccessfully(
+        `Fake summary: parallel subagents ${String(command.message ?? "").includes(PARALLEL_PERMISSION) ? "allowed" : "not allowed"}.`,
       );
       break;
     case "error":

@@ -13,7 +13,7 @@ import {
 import { usePathname, useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { toastCardAdded } from "@/components/board/card-added-toast";
-import { NewTaskDialog } from "@/components/board/new-task-form";
+import { type CreateFromText, NewTaskDialog } from "@/components/board/new-task-form";
 import { ProjectField } from "@/components/board/project-field";
 import { createCardFromText } from "@/hooks/use-board";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -168,12 +168,12 @@ function GlobalNewCardDialog({
 
   const board = boards?.find((b) => b.id === boardId);
 
-  const create = async (text: string) => {
+  const create: CreateFromText = async (text, { parallelize, ignoreMemory }) => {
     if (!board) {
       toast.error("Pick a project first");
       return false;
     }
-    const task = await createCardFromText(board.id, text);
+    const task = await createCardFromText(board.id, text, { parallelize, ignoreMemory });
     if (!task) return false;
     localStorage.setItem(LAST_BOARD_KEY, board.id);
     toastCardAdded(task, {

@@ -174,6 +174,17 @@ export interface Task {
   openCommentCount: number;
   /** Scheduler whose run created this card; null when a person or an agent created it. */
   schedulerId: string | null;
+  /**
+   * Whether the card's runs may split the work across parallel subagents (the New task form's
+   * "Parallelize" toggle). null (cards created without a choice) counts as true.
+   */
+  parallelize: boolean | null;
+  /**
+   * Whether the card's agent runs without agentmemory (the "Ignore memory" toggle): no recall from past
+   * sessions, nothing from its runs saved to memory, no memory tools. Default false. Takes effect from the
+   * next run.
+   */
+  ignoreMemory: boolean;
   /** Owning user, inherited from the board (see Board.userId). */
   userId: string | null;
 }
@@ -352,7 +363,7 @@ export interface RunEvent {
 /**
  * A recurring card: on every match of its cron expression (in its time zone) the scheduler
  * creates a regular card on its board from `prompt`, through the same free-text flow as the
- * "New task" form (card writer drafts the title and brief, then the card's agent starts).
+ * "New task" form (the card takes the prompt as typed and its agent starts at once).
  */
 export interface Scheduler {
   id: string;
@@ -891,19 +902,15 @@ export type ServerEvent =
   /** Files of a card (`taskId`) or the board's shared files (`taskId` null) changed. */
   | { type: "files.updated"; boardId: string; taskId: string | null }
   /**
-   * The agent queue changed: running and queued task ids, queued in start order. `drafting`:
-   * queued cards held while the card writer turns their free text into a title and brief.
+   * The agent queue changed: running and queued task ids, queued in start order.
    * `nodes`: cluster mode, the machine each running card runs on (task id → node); `{}` otherwise.
    */
   | {
       type: "queue.updated";
       running: string[];
       queued: string[];
-      drafting: string[];
       nodes: Record<string, { id: string; name: string }>;
     }
-  /** Live, NOT persisted: progress line of the card writer while it writes a queued card. */
-  | { type: "task.activity"; taskId: string; boardId: string; text: string }
   /** Live, NOT persisted: subagent progress between its persisted `agent` events. */
   | { type: "run.agent"; runId: string; taskId: string; boardId: string; agent: SubagentSnapshot }
   /**
@@ -946,19 +953,6 @@ export type ServerEvent =
 
 export interface ApiError {
   error: string;
-}
-
-/**
- * The card the card writer made from a card's free text (POST /boards/:id/tasks with `text`).
- * `description` never contains the `orchestrate` keyword; `orchestrate` adds it.
- */
-export interface CardDraft {
-  title: string;
-  description: string;
-  /** The work splits into independent parts: the card asks omp to orchestrate parallel subagents. */
-  orchestrate: boolean;
-  /** Open cards on the board this one must wait for ("Run after"). */
-  waitFor: { id: string; title: string }[];
 }
 
 /** A file shared on a card or on a board (GET /tasks/:id/files, GET /boards/:id/files). */
@@ -1008,8 +1002,6 @@ export interface QueueEntry {
   waitingFor: string[];
   /** Held until the smart-queue planner has ordered its project's queued cards. */
   planning: boolean;
-  /** Held while the card writer turns the card's free text into its title and brief. */
-  drafting: boolean;
   /** Why the smart-queue planner put the card where it is (one line); null when not planned. */
   planNote: string | null;
   /** Card whose agent created this card (Task.createdByTaskId); null when a person did. */
@@ -1107,8 +1099,8 @@ export interface ResourcePressure {
    */
   restartAfterMin: number;
   /**
-   * The memory hold outlasted `restartAfterMin`: the server restarts once no agent runs or is being
-   * prepared, provided cards are queued (CPU pressure never restarts).
+   * The memory hold outlasted `restartAfterMin`: the server restarts once no agent runs,
+   * provided cards are queued (CPU pressure never restarts).
    */
   restartPending: boolean;
   sampledAt: string;
@@ -1581,7 +1573,7 @@ export interface SystemStats {
  * What a process is to AgentMan:
  * - server: this server or one of its ancestors (supervisor, pm2…); never ended from the UI
  * - card-agent: a running card's omp agent (stop the card instead)
- * - helper: a pooled omp helper (card writer, advisor…) of this server
+ * - helper: a pooled omp helper (advisor, queue planner…) of this server
  * - orphan-agent: an omp agent of this DATA_DIR that this server no longer tracks (left by a crash)
  * - agent-spawned: started by an omp process (dev servers, browsers, test runners…)
  * - omp: another omp process (your own sessions, daemons)

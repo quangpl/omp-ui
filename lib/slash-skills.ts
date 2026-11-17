@@ -16,8 +16,8 @@ export interface SlashItem {
 
 /**
  * OMP prompt shortcuts the pipeline understands, beyond skills. `orchestrate` is omp's magic
- * keyword: the card writer and the run prompt both treat it as a cue to split the card across
- * parallel subagents.
+ * keyword: omp and the run prompt both treat it as a cue to split the card across parallel
+ * subagents.
  */
 export const OMP_SHORTCUTS: readonly SlashItem[] = [
   {

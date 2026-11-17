@@ -3,6 +3,7 @@ import { publish } from "@/lib/events";
 import { deleteCard } from "@/lib/server/delete-card";
 import { error, json, readJson, withApi } from "@/lib/server/http";
 import {
+  parseBoolean,
   parseBlockedBy,
   parseDescription,
   parsePosition,
@@ -22,7 +23,10 @@ export const GET = withApi<Params>(async ({ repo, params }) => {
   return json({ task, comments, runs });
 });
 
-/** Edit or move a card. A status change runs the agent rules (start/stop) after persisting. */
+/**
+ * Edit or move a card. A status change runs the agent rules (start/stop) after persisting.
+ * `ignoreMemory` (boolean) applies from the card's next run; a running run keeps its setting.
+ */
 export const PATCH = withApi<Params>(async ({ req, repo, manager, params }) => {
   const previous = await requireTask(repo, params.id);
   const body = await readJson(req);
@@ -32,6 +36,7 @@ export const PATCH = withApi<Params>(async ({ req, repo, manager, params }) => {
   if (body.status !== undefined) patch.status = parseStatus(body.status);
   if (body.position !== undefined) patch.position = parsePosition(body.position);
   if (body.question !== undefined) patch.question = parseQuestionClear(body.question);
+  if (body.ignoreMemory !== undefined) patch.ignoreMemory = parseBoolean(body.ignoreMemory, "ignoreMemory");
   if (body.blockedBy !== undefined) {
     patch.blockedBy = await parseBlockedBy(repo, body.blockedBy, previous.boardId, previous.id);
   }

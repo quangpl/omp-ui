@@ -448,7 +448,6 @@ function viewOf(
               `${name} · ${LEAD} · ${entry.boardName} · #${position} in line`,
               blocked && `Blocked: ${blocked}`,
               entry.planning && "Being planned",
-              entry.drafting && "Being written",
               entry.planNote,
               ...(links.get(entry.taskId) ?? []).map((link) => linkSentence(link, titleOf)),
             ]}

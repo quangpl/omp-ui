@@ -1,4 +1,4 @@
-// Warm `omp --mode rpc` workers for the short helper agents (card writer, advisor, queue planner).
+// Warm `omp --mode rpc` workers for the short helper agents (advisor, queue planner).
 // Starting omp costs seconds; a worker that finished a call cleanly starts a fresh session
 // (`new_session`) and waits, idle, for the next call with the same arguments. Workers spawn
 // lazily, idle ones are capped and closed after a while, and every worker is an OmpRpcProcess, so

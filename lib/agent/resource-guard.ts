@@ -4,8 +4,8 @@
 // never touched). Each held resource is released once it drops below its resume % (hysteresis).
 // Thresholds are OMP_UI_* variables re-read live from `.env`, so editing them needs no restart.
 // Hold/resume events go to the System log (server stdout). Optionally, a memory hold that outlasts
-// OMP_UI_RESOURCE_RESTART_MIN restarts the server through bin/supervisor.mjs once no agent runs or
-// is being prepared and cards are queued (a restart frees memory, not host CPU).
+// OMP_UI_RESOURCE_RESTART_MIN restarts the server through bin/supervisor.mjs once no agent runs
+// and cards are queued (a restart frees memory, not host CPU).
 //
 // ResourceGuard is the pure state machine (tests feed it synthetic samples); startResourceGuard
 // owns the sampling timer, the logging and the graceful restart.
@@ -312,8 +312,6 @@ export interface ResourceGuardHooks {
   onChange(): void;
   activeRunCount(): number;
   queuedCount(): number;
-  /** Queued cards the card writer is still preparing (in memory only; a restart would lose them). */
-  preparingCount(): number;
 }
 
 interface GuardRuntime {
@@ -411,7 +409,7 @@ function tick(runtime: GuardRuntime): void {
 }
 
 /**
- * Restarts through the supervisor once no agent runs or is being prepared, and only while cards are
+ * Restarts through the supervisor once no agent runs, and only while cards are
  * queued (the restart exists to unblock them); never stops agents.
  */
 function maybeRestart(runtime: GuardRuntime, pressure: ResourcePressure): void {
@@ -423,12 +421,11 @@ function maybeRestart(runtime: GuardRuntime, pressure: ResourcePressure): void {
     warn(message);
   };
   const running = runtime.hooks.activeRunCount();
-  const preparing = runtime.hooks.preparingCount();
-  if (running + preparing > 0) {
+  if (running > 0) {
     notice(
       "busy",
       `Warning: memory pressure for ${minutes} min — graceful restart once no agent runs ` +
-        `(${running} running, ${preparing} being prepared; queued cards stay held).`,
+        `(${running} running; queued cards stay held).`,
     );
     return;
   }
