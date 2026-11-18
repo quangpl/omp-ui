@@ -102,6 +102,8 @@ Scheduled data cleanup runs the AgentMan-data cleanups of [`/stats/maintenance`]
 
 `AiStats.quota` and `AiStats.usage` each carry `available: boolean` and a plain-language `error` (e.g. `"omp is not installed"`, `"omp usage took too long to respond"`); a failing `omp` command never fails the request. Each quota limit has `usedFraction` (0–1), `windowLabel` (e.g. `"5 Hour"`) and `resetsAt` (ISO). Timestamps are ISO strings.
 
+`AiStats.balances` carries prepaid balances the server reads directly from provider APIs because `omp usage` cannot read them (currently DeepSeek, via `GET /user/balance` with `DEEPSEEK_API_KEY`): one `AiProviderBalance` per provider with `provider`, `currency` (ISO code, e.g. `"CNY"`/`"USD"`), `total`, `granted`, `toppedUp` (amounts, `null` when unreported) and `available` (whether the balance is enough for API calls). A missing key or a failed request simply omits the entry — it never fails the request.
+
 ## Cluster
 
 Cluster mode ([docs/CLUSTER.md](CLUSTER.md)). Types (`ClusterStatus`, `ClusterNodeStatus`, `ClusterJoinInfo`, `ClusterTestResult`, `ClusterInfo`, `ClusterNotice`) are in [`lib/types.ts`](../lib/types.ts).

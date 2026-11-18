@@ -1581,7 +1581,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       browser: settings.browser,
       senders,
       previousFailure,
-    });
+    }, settings.useSystemPrompt);
     const created = await repo.createRun({
       taskId: task.id,
       prompt,

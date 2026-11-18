@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { api, call, env, freshEnv, setupAdmin, teardown, tempDir, waitFor, writeScript } from "./helpers";
 
@@ -297,6 +297,40 @@ describe("GET /stats/ai", () => {
         totals: null,
         byModel: [],
       });
+    });
+
+    it("reads a DeepSeek balance from its API key into balances", async () => {
+      const stub = writeScript(
+        path.join(tempDir("bin"), "omp-empty"),
+        [
+          'const fs = require("node:fs");',
+          `fs.appendFileSync(${JSON.stringify(callLog)}, process.argv.slice(2).join(" ") + "\\n");`,
+          'if (process.argv[2] === "usage") console.log(JSON.stringify({ reports: [] }));',
+          'else if (process.argv[2] === "stats") console.log(JSON.stringify({ byModel: [] }));',
+          "else process.exit(2);",
+        ].join("\n"),
+      );
+      await setOmpPath(stub);
+
+      const balance = {
+        is_available: true,
+        balance_infos: [
+          { currency: "CNY", total_balance: "110.00", granted_balance: "10.00", topped_up_balance: "100.00" },
+        ],
+      };
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(balance), { status: 200 })));
+      process.env.DEEPSEEK_API_KEY = "sk-test";
+
+      try {
+        const stats = await aiStats("?refresh=1");
+        expect(stats.quota.providers).toEqual([]);
+        expect(stats.balances).toEqual([
+          { provider: "deepseek", currency: "CNY", total: 110, granted: 10, toppedUp: 100, available: true },
+        ]);
+      } finally {
+        vi.unstubAllGlobals();
+        delete process.env.DEEPSEEK_API_KEY;
+      }
     });
   });
 });

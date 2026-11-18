@@ -81,6 +81,7 @@ const PROVIDER_NAMES: Record<string, string> = {
   openai: "OpenAI",
   "openai-codex": "OpenAI Codex",
   google: "Google",
+  deepseek: "DeepSeek",
   "google-gemini-cli": "Gemini CLI",
   "github-copilot": "GitHub Copilot",
 };

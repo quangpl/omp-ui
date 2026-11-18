@@ -128,6 +128,13 @@ describe("buildPrompt (first run)", () => {
   });
 });
 
+describe("buildPrompt system prompt off", () => {
+  it("forwards only the task text, with nothing added", () => {
+    const prompt = buildPrompt(task, board, [comment("Use the brand colors")], true, undefined, false);
+    expect(prompt).toBe("# Task: Add a cart page\n\nShow the items in the cart.\nAllow removing items.");
+  });
+});
+
 describe("buildPrompt (resumed session)", () => {
   it("sends only the new feedback when resuming with feedback", () => {
     const prompt = buildPrompt(task, board, [comment("Rename the button"), comment("Fix the typo")], true);

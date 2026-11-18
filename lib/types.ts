@@ -536,6 +536,12 @@ export interface AppSettings {
   /** What a card's agent may do with a web browser (omp's `browser` tool). */
   browser: BrowserMode;
   /**
+   * Prepend AgentMan's system prompt (SDLC workflow, quality gates, cleanup, summary and report
+   * instructions) to every task sent to omp. Off: the task is forwarded to omp exactly as
+   * written, with nothing added.
+   */
+  useSystemPrompt: boolean;
+  /**
    * Retry failed runs automatically (resuming the omp session) with exponential backoff, and
    * resume interrupted and failed In progress cards when the server restarts.
    */
@@ -863,6 +869,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   providerPriority: [],
   smartQueue: true,
   browser: "headless",
+  useSystemPrompt: true,
   autoRetry: true,
   maxAutoRetries: 5,
   persistentRetry: true,
@@ -1922,10 +1929,28 @@ export interface AiModelUsage {
   costUsd: number;
 }
 
+/** A provider balance the server reads directly, because `omp usage` cannot read it (e.g. DeepSeek). */
+export interface AiProviderBalance {
+  /** omp provider id, e.g. "deepseek". */
+  provider: string;
+  /** ISO currency code the provider reported, e.g. "CNY", "USD". */
+  currency: string | null;
+  /** Current total balance (granted + topped up). */
+  total: number | null;
+  /** Non-expired granted (promotional) balance. */
+  granted: number | null;
+  /** Topped-up balance. */
+  toppedUp: number | null;
+  /** Provider-reported: whether the balance is enough for API calls. */
+  available: boolean | null;
+}
+
 /** GET /stats/ai — from `omp usage --json` (quota) and `omp stats --json` (usage). Cached 60s. */
 export interface AiStats {
   generatedAt: string;
   quota: { available: boolean; error: string | null; providers: AiProviderQuota[] };
+  /** Balances read directly from provider APIs (e.g. DeepSeek); shown in the quota section. */
+  balances: AiProviderBalance[];
   usage: {
     available: boolean;
     error: string | null;
