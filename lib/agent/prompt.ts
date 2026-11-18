@@ -1,4 +1,5 @@
 import { SDLC_PHASE_INFO, SDLC_PHASES, sdlcProgress } from "@/lib/sdlc";
+import { isSoftwareTask } from "@/lib/task-kind";
 import type { Board, BrowserMode, Comment, Task } from "@/lib/types";
 import { TASK_DOCKER_LABEL, taskComposeProject } from "@/lib/task-docker";
 
@@ -90,6 +91,13 @@ const SDLC_INSTRUCTION = [
   "Testing must pass before Deployment. A small fix needs one or two items per phase, not ceremony.",
 ].join(" ");
 
+/**
+ * What a non-software task gets instead of the SDLC workflow: do the work directly, with no todo
+ * phases named after SDLC phases and no quality/release gates, then finish with the summary.
+ */
+const DIRECT_INSTRUCTION =
+  "This is not a software-development task, so skip the software-development lifecycle (SDLC) and any complicated workflow: do not create todo phases named after SDLC phases or follow their quality gates, and instead do the task directly right away, then finish with the summary.";
+
 /** Who does the work in each SDLC phase of an orchestrated run. */
 const SDLC_STAFFING_INSTRUCTION =
   "Staff each SDLC phase: Feasibility → read-only scout subagents in parallel; Design → you (the lead) fix the shared contracts (types, APIs, schemas, UI) before fanning out; Implementation → parallel task subagents on disjoint files (sonic for mechanical edits); Testing → you run the targeted checks yourself (plus a security-reviewer subagent only when auth, input handling or secrets change); Deployment → docs, changelog and report.";
@@ -147,11 +155,14 @@ export function buildPrompt(
   const where = folders ? "this project (any of the folders above)" : `this repository (${board.workdir})`;
 
   const failure = previousFailureNote(context);
+  // Non-software tasks run straight: the SDLC phases, gates and staffing are software-work process.
+  const software = isSoftwareTask(task);
+  const workflow = software ? SDLC_INSTRUCTION : DIRECT_INSTRUCTION;
   // Parallelize off (false) drops both the permission and the orchestration push; null counts as on.
   const parallel = task.parallelize !== false;
   const parallelLines = (orchestrate: boolean): string[] =>
     parallel
-      ? [PARALLEL_INSTRUCTION, ...(orchestrate ? [ORCHESTRATE_INSTRUCTION, SDLC_STAFFING_INSTRUCTION] : [])]
+      ? [PARALLEL_INSTRUCTION, ...(orchestrate ? [ORCHESTRATE_INSTRUCTION, ...(software ? [SDLC_STAFFING_INSTRUCTION] : [])] : [])]
       : [];
 
   if (isResume && feedback.length > 0) {
@@ -163,8 +174,8 @@ export function buildPrompt(
       ...(failure ? [failure, ""] : []),
       ...(folders ? [folders, ""] : []),
       `Address all of the feedback above in ${where}. Make the changes and verify them.`,
-      SDLC_INSTRUCTION,
-      feedbackSdlcInstruction(task),
+      workflow,
+      ...(software ? [feedbackSdlcInstruction(task)] : []),
       ...parallelLines(needsOrchestration(null, feedback)),
       HEADLESS_INSTRUCTION,
       cleanupInstruction(task),
@@ -183,8 +194,8 @@ export function buildPrompt(
       ...(failure ? [failure, ""] : []),
       ...(folders ? [folders, ""] : []),
       `Check the current state of ${where}, finish any remaining work, and verify it.`,
-      SDLC_INSTRUCTION,
-      "Continue from the SDLC phase your todo list shows.",
+      workflow,
+      ...(software ? ["Continue from the SDLC phase your todo list shows."] : []),
       ...parallelLines(needsOrchestration(task, [])),
       HEADLESS_INSTRUCTION,
       cleanupInstruction(task),
@@ -214,7 +225,7 @@ export function buildPrompt(
     "## Instructions",
     "",
     `- Work in ${where} and make the change described above${feedback.length > 0 ? ", taking all of the feedback into account" : ""}.`,
-    `- ${SDLC_INSTRUCTION}`,
+    `- ${workflow}`,
     ...parallelLines(needsOrchestration(task, feedback)).map((line) => `- ${line}`),
     "- Verify it with the narrowest checks that cover the change.",
     `- ${HEADLESS_INSTRUCTION}`,
