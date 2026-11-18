@@ -32,6 +32,7 @@ import type {
   FsEntry,
   GitActionResult,
   GitBranches,
+  GitDiscardResult,
   GitStatus,
   GitSwitchResult,
   MaintenanceAction,
@@ -831,9 +832,15 @@ export const api = {
     /** Header quick push: commit every project repo's changes and push to the project's push branch. */
     pushBoard: (boardId: string) =>
       request<BoardPushResult>(`/boards/${boardId}/git/push`, { method: "POST", json: {} }),
+    /** Header quick discard: roll every project repo's working tree back to HEAD (uncommitted changes only). */
+    discardBoard: (boardId: string) =>
+      request<GitDiscardResult>(`/boards/${boardId}/git/discard`, { method: "POST", json: {} }),
     /** Commit the task's changes and push straight to the project's push branch (all changed folders). */
     push: (taskId: string, input: { message?: string; folders?: string[] } = {}) =>
       request<GitActionResult>(`/tasks/${taskId}/git/push`, { method: "POST", json: input }),
+    /** Discard the task's uncommitted changes in the folders it ships from (worktrees, else project folders). */
+    discard: (taskId: string) =>
+      request<GitDiscardResult>(`/tasks/${taskId}/git/discard`, { method: "POST", json: {} }),
     /** Commit to a new branch, push, and open a PR (GitHub) / MR (GitLab). */
     pr: (taskId: string, input: { title?: string; body?: string; folders?: string[] } = {}) =>
       request<GitActionResult>(`/tasks/${taskId}/git/pr`, { method: "POST", json: input }),

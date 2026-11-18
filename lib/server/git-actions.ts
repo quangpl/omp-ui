@@ -2,11 +2,11 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { publish } from "@/lib/events";
-import { createPullRequest, isGitRepo, pushToBranch, type GitFolderOutcome } from "@/lib/git";
+import { createPullRequest, discardChanges, gitStatus, isGitRepo, pushToBranch, type GitFolderOutcome } from "@/lib/git";
 import { buildPrBody } from "@/lib/pr-body";
 import { HttpError, json, readJson, type ApiContext } from "@/lib/server/http";
 import { requireBoard, requireTask } from "@/lib/server/validate";
-import type { GitActionResult, Task } from "@/lib/types";
+import type { GitActionResult, GitDiscardFolderResult, Task } from "@/lib/types";
 import { shipFolders } from "@/lib/workspaces";
 
 const MAX_PR_BODY = 60_000;
@@ -124,4 +124,32 @@ export async function runTaskGitAction(
 
   const response: GitActionResult = { action, results, comment };
   return json(response);
+}
+
+/**
+ * Discard uncommitted changes in every git repo among `folders` (tracked, staged and untracked),
+ * one at a time; a failing folder reports its error and the rest still proceed. Returns one result
+ * per git repo (clean folders report 0 discarded files).
+ */
+export async function discardChangesIn(folders: string[]): Promise<GitDiscardFolderResult[]> {
+  const statuses = await Promise.all(folders.map(gitStatus));
+  const repos = statuses.filter((s) => s.isRepo);
+  const results: GitDiscardFolderResult[] = [];
+  for (const status of repos) {
+    if (!status.dirty) {
+      results.push({ folder: status.folder, discardedFiles: 0, error: null });
+      continue;
+    }
+    try {
+      await discardChanges(status.folder);
+      results.push({ folder: status.folder, discardedFiles: status.changedFiles, error: null });
+    } catch (err) {
+      results.push({
+        folder: status.folder,
+        discardedFiles: 0,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return results;
 }

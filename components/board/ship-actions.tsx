@@ -13,16 +13,27 @@ import {
   LoaderCircle,
   Rocket,
   TriangleAlert,
+  Undo2,
   Upload,
 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { ApiRequestError, api } from "@/lib/api-client";
-import type { AgentState, Comment, GitActionResult, GitBranches, GitStatus, Task } from "@/lib/types";
+import type { AgentState, Comment, GitActionResult, GitBranches, GitDiscardResult, GitStatus, Task } from "@/lib/types";
 import { errorMessage } from "@/components/board/format";
 
 /** Last path segment, for compact folder labels. */
@@ -128,14 +139,24 @@ export function GitIndicator({
         </PopoverContent>
       </Popover>
       {(changes > 0 || unpushed > 0) && (
-        <QuickPushChip
-          boardId={boardId}
-          repos={repos}
-          pushBranch={pushBranch}
-          changes={changes}
-          unpushed={unpushed}
-          onPushed={onChanged}
-        />
+        <>
+          <QuickPushChip
+            boardId={boardId}
+            repos={repos}
+            pushBranch={pushBranch}
+            changes={changes}
+            unpushed={unpushed}
+            onPushed={onChanged}
+          />
+          {changes > 0 && (
+            <DiscardChangesButton
+              compact
+              discard={() => api.git.discardBoard(boardId)}
+              repos={repos}
+              onDiscarded={onChanged}
+            />
+          )}
+        </>
       )}
     </div>
   );
@@ -238,6 +259,133 @@ function QuickPushChip({
       </TooltipTrigger>
       <TooltipContent>{hint}</TooltipContent>
     </Tooltip>
+  );
+}
+
+/**
+ * "Discard all changes" control: a destructive action with a per-repo confirmation. Discards
+ * uncommitted changes (tracked, staged and untracked) in the repos it is given — the header shows
+ * it as a small icon button, the Ship panel as a labelled button.
+ */
+export function DiscardChangesButton({
+  discard,
+  repos,
+  disabled = false,
+  onDiscarded,
+  compact = false,
+}: {
+  /** Runs the discard request for the button's scope and resolves its result (null on request failure). */
+  discard: () => Promise<GitDiscardResult>;
+  /** Repos the discard acts on (their uncommitted change counts drive the confirmation). */
+  repos: GitStatus[];
+  disabled?: boolean;
+  onDiscarded: () => void;
+  /** Small icon button (header) instead of a labelled button (Ship panel). */
+  compact?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const changed = repos.filter((repo) => repo.isRepo && repo.dirty);
+  const changedFiles = changed.reduce((sum, repo) => sum + repo.changedFiles, 0);
+  if (changed.length === 0) return null;
+
+  const run = async () => {
+    setBusy(true);
+    try {
+      const outcome = await discard();
+      if (outcome) {
+        const failed = outcome.results.filter((r) => r.error);
+        const done = outcome.results.filter((r) => !r.error && r.discardedFiles > 0);
+        if (done.length === 0 && failed.length === 0) {
+          toast("Nothing to discard", { description: "No uncommitted changes were found." });
+        } else if (done.length === 0) {
+          toast.error("Couldn't discard changes", { description: failed[0]?.error ?? undefined });
+        } else if (failed.length > 0) {
+          toast.warning("Discarded some folders", {
+            description: failed.map((r) => `${folderName(r.folder)}: ${r.error}`).join("\n"),
+          });
+        } else {
+          const files = done.reduce((sum, r) => sum + r.discardedFiles, 0);
+          toast.success("Changes discarded", {
+            description: `${files} ${files === 1 ? "file" : "files"} reset in ${done.length === 1 ? folderName(done[0].folder) : `${done.length} folders`}.`,
+          });
+        }
+      }
+      onDiscarded();
+    } catch (err) {
+      toast.error("Couldn't discard changes", {
+        description:
+          err instanceof ApiRequestError && err.status === 409
+            ? "An agent is working in this project. Try again when it finishes."
+            : errorMessage(err),
+      });
+      onDiscarded();
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
+  return (
+    <>
+      {compact ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              disabled={disabled}
+              aria-disabled={disabled || undefined}
+              aria-label={`Discard all changes (${changesLabel(changedFiles)})`}
+              className="-ml-1 flex h-11 shrink-0 items-center rounded-md px-1 text-muted-foreground outline-none hover:text-destructive focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-default disabled:opacity-50 md:h-9"
+            >
+              <Undo2 className="size-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Discard all changes</TooltipContent>
+        </Tooltip>
+      ) : (
+        <Button
+          variant="outline"
+          className="h-11 w-full min-w-0 transition-transform active:scale-[0.98] md:h-9"
+          disabled={disabled || busy}
+          onClick={() => setOpen(true)}
+        >
+          {busy ? <LoaderCircle className="animate-spin" /> : <Undo2 />}
+          <span className="truncate">{busy ? "Discarding…" : "Discard all changes"}</span>
+        </Button>
+      )}
+
+      <AlertDialog open={open} onOpenChange={(next) => !busy && setOpen(next)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard all changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {changed.length === 1
+                ? `${changesLabel(changed[0].changedFiles)} in ${folderName(changed[0].folder)}/ will be discarded: tracked edits are reset and new untracked files are deleted. This cannot be undone.`
+                : `${changesLabel(changedFiles)} across ${changed.length} folders will be discarded: tracked edits are reset and new untracked files are deleted. This cannot be undone.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="max-md:h-11" disabled={busy}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              className="max-md:h-11"
+              disabled={busy}
+              onClick={(event) => {
+                event.preventDefault();
+                void run();
+              }}
+            >
+              {busy ? "Discarding…" : "Discard changes"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 
@@ -464,6 +612,7 @@ export function ShipActions({
   pushBranch,
   fromWorkspace = false,
   onShipped,
+  onDiscarded,
 }: {
   task: Task;
   statuses: GitStatus[] | null;
@@ -473,6 +622,8 @@ export function ShipActions({
   fromWorkspace?: boolean;
   /** Called after an action finishes, with the agent comment the server posted. */
   onShipped: (comment: Comment) => void;
+  /** Called after the discard-changes action finishes so the card re-reads git status. */
+  onDiscarded: () => void;
 }) {
   const [busy, setBusy] = useState<ShipAction | null>(null);
   const [result, setResult] = useState<GitActionResult | null>(null);
@@ -579,6 +730,14 @@ export function ShipActions({
           <span className="truncate">{busy === "push" ? "Pushing…" : `Push to ${pushTarget}`}</span>
         </Button>
       </div>
+      {changedFiles > 0 && (
+        <DiscardChangesButton
+          discard={() => api.git.discard(task.id)}
+          repos={repos}
+          disabled={agentActive || busy !== null}
+          onDiscarded={onDiscarded}
+        />
+      )}
       <p className="text-xs leading-relaxed text-muted-foreground">{hint}</p>
 
       {result && <ShipResults result={result} prNoun={prNoun} />}
