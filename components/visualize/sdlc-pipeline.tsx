@@ -6,7 +6,6 @@ import {
   CheckIcon,
   InboxIcon,
   PackageCheckIcon,
-  RotateCcwIcon,
   ServerIcon,
   ShieldAlertIcon,
   ShieldCheckIcon,
@@ -581,23 +580,6 @@ function GateShield({ from, to, breaches, side }: { from: SdlcPhaseId; to: SdlcP
   );
 }
 
-/** Shared by the marker's tooltip and its screen-reader text. */
-const FEEDBACK_NOTE = "Maintenance feeds the next Planning round: the cycle never ends";
-
-/** The feedback edge closing the cycle, Maintenance back to Planning. Not a quality gate, so no exit criteria. */
-function FeedbackMarker() {
-  return (
-    <span
-      title={FEEDBACK_NOTE}
-      className="flex items-center gap-1 rounded-full border border-dashed border-muted-foreground/50 bg-card px-2 py-1 font-mono text-[9px] leading-none font-medium tracking-wide text-muted-foreground uppercase"
-    >
-      <RotateCcwIcon className="size-3 shrink-0" aria-hidden />
-      Feedback
-      <span className="sr-only">: {FEEDBACK_NOTE}</span>
-    </span>
-  );
-}
-
 /** Stacked layout: the gate between two stations on a vertical flow line. */
 function StackGate({ from, to, breaches }: { from: SdlcPhaseId; to: SdlcPhaseId | null; breaches: GateBreach[] }) {
   const alert = breaches.length > 0;
@@ -615,25 +597,12 @@ function StackGate({ from, to, breaches }: { from: SdlcPhaseId; to: SdlcPhaseId 
   );
 }
 
-/** Stacked layout: after Maintenance, the flow line turns back to Planning. */
-function StackLoopBack() {
-  return (
-    <div className="flex flex-col items-center">
-      <Connector />
-      <p className="flex items-center gap-2">
-        <FeedbackMarker />
-        <span className="font-mono text-xs text-muted-foreground">back to Planning</span>
-      </p>
-    </div>
-  );
-}
-
 /** Plain flow line between an end cap and the stacked stations. */
 function Connector() {
   return <span aria-hidden className="mx-auto h-3 w-px bg-border" />;
 }
 
-/** Stacked layout: Backlog / Delivered, where cards wait before Planning and where they land after the run. */
+/** Stacked layout: Backlog / Delivered, where cards wait before Analyze and where they land after the run. */
 function EndCap({
   icon: Icon,
   label,
@@ -706,7 +675,7 @@ function CycleHub({
   return (
     <div className="absolute top-1/2 left-1/2 flex w-[44%] -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-3 text-center">
       <div className="grid w-full grid-cols-2 gap-4">
-        <HubTally icon={InboxIcon} label="Backlog" count={backlog} hint="In line, before Planning" />
+        <HubTally icon={InboxIcon} label="Backlog" count={backlog} hint="In line, before Analyze" />
         <HubTally icon={PackageCheckIcon} label="Delivered" count={delivered} hint="Recently done" />
       </div>
       <span aria-hidden className="w-3/4 border-t border-dashed" />
@@ -720,8 +689,8 @@ function CycleHub({
   );
 }
 
-/** What the dots and shields mean; the feedback row only while Maintenance is on the board. */
-function PipelineLegend({ feedback }: { feedback: boolean }) {
+/** What the dots and shields mean. */
+function PipelineLegend() {
   const statuses: SdlcPhaseStatus[] = ["done", "active", "pending"];
   return (
     <ul className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-xs text-muted-foreground">
@@ -739,28 +708,21 @@ function PipelineLegend({ feedback }: { feedback: boolean }) {
         <ShieldAlertIcon className="size-3.5" aria-hidden />
         crossed before the earlier phase was done
       </li>
-      {feedback && (
-        <li className="flex items-center gap-1.5">
-          <RotateCcwIcon className="size-3.5" aria-hidden />
-          feedback: Maintenance feeds the next Planning round
-        </li>
-      )}
     </ul>
   );
 }
 
 /**
- * The software lifecycle as a continuous cycle: the visible SDLC phases — the required ones plus
- * when-needed phases some running card includes or executes (`sdlcPipeline().visible`) — with a
- * quality gate between each consecutive pair (the gate leaving Testing is the release gate) and a
- * Feedback marker on the Maintenance → Planning edge while Maintenance is drawn. Every running
- * card's agent stands at the phase it is executing with its progress through its included phases;
- * busy subagents stand at the phase their role works in. Phases every card finished are
- * highlighted as done. Sized from the section (an `@container`):
+ * The software lifecycle: the visible SDLC phases (`sdlcPipeline().visible`) — the three phases,
+ * every one required — with a quality gate between each consecutive pair (the gate leaving Testing
+ * is the release gate: what passes it ships to Delivered). Every running card's agent stands at the
+ * phase it is executing with its progress through its included phases; busy subagents stand at the
+ * phase their role works in. Phases every card finished are highlighted as done. Sized from the
+ * section (an `@container`):
  * - from 56rem, the phases sit clockwise from 12 o'clock on a ring (CycleRing), gates on the arcs
  *   between them, and a hub in the middle tallies Backlog, Delivered and what is in flight;
  * - below, the visible phases stack top to bottom between the Backlog and Delivered end caps, gates
- *   on the flow line between them; while Maintenance is drawn, a loop-back row turns it back to Planning.
+ *   on the flow line between them.
  */
 export function SdlcPipeline({
   dashboard,
@@ -862,33 +824,23 @@ export function SdlcPipeline({
                   // Gates sit slightly outside the track so tall occupied stations never cover them.
                   style={ringPoint(i + 0.5, count, 47)}
                 >
-                  {phase === "maintenance" ? (
-                    <FeedbackMarker />
-                  ) : (
-                    <GateShield
-                      from={phase}
-                      to={i + 1 < count ? phases[i + 1] : null}
-                      breaches={pipeline.stations[phase].breaches}
-                      side={outwardSide(i + 0.5, count)}
-                    />
-                  )}
+                  <GateShield
+                    from={phase}
+                    to={i + 1 < count ? phases[i + 1] : null}
+                    breaches={pipeline.stations[phase].breaches}
+                    side={outwardSide(i + 0.5, count)}
+                  />
                 </div>
               </li>
             ))}
           </ol>
         </div>
 
-        {/* Narrow: the cycle stacked; while Maintenance is drawn, a dashed rail loops it back to Planning. */}
+        {/* Narrow: the phases stack top to bottom between the Backlog and Delivered end caps. */}
         <div className="flex flex-col @min-[56rem]:hidden">
-          <EndCap icon={InboxIcon} label="Backlog" count={pipeline.backlog} hint="In line, before Planning" />
+          <EndCap icon={InboxIcon} label="Backlog" count={pipeline.backlog} hint="In line, before Analyze" />
           <Connector />
           <ol aria-label="Phases" className="relative flex flex-col pl-5">
-            {phases.includes("maintenance") && (
-              <span
-                aria-hidden
-                className="absolute top-4 bottom-4 left-1.5 w-3.5 rounded-l-[3px] border-y border-l border-dashed border-muted-foreground/40"
-              />
-            )}
             {phases.map((phase, i) => (
               <li key={phase} className="flex flex-col">
                 <StackStation
@@ -902,11 +854,7 @@ export function SdlcPipeline({
                   models={models}
                   now={now}
                 />
-                {phase === "maintenance" ? (
-                  <StackLoopBack />
-                ) : (
-                  <StackGate from={phase} to={i + 1 < count ? phases[i + 1] : null} breaches={pipeline.stations[phase].breaches} />
-                )}
+                <StackGate from={phase} to={i + 1 < count ? phases[i + 1] : null} breaches={pipeline.stations[phase].breaches} />
               </li>
             ))}
           </ol>
@@ -914,7 +862,7 @@ export function SdlcPipeline({
           <EndCap icon={PackageCheckIcon} label="Delivered" count={delivered} hint="Recently done" />
         </div>
       </div>
-      <PipelineLegend feedback={phases.includes("maintenance")} />
+      <PipelineLegend />
     </section>
   );
 }

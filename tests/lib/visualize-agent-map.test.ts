@@ -237,9 +237,8 @@ describe("ROLE_PHASE", () => {
   it("staffs each SDLC phase with the roles that work in it", () => {
     const byPhase = (phase: SdlcPhaseId | null) =>
       (Object.keys(ROLE_PHASE) as AgentRole[]).filter((role) => ROLE_PHASE[role] === phase).sort();
-    expect(byPhase("planning")).toEqual(["oracle", "planner", "scout"]);
-    expect(byPhase("design")).toEqual(["designer"]);
-    expect(byPhase("implementation")).toEqual(["sprinter", "worker"]);
+    expect(byPhase("analyze")).toEqual(["designer", "oracle", "planner", "scout"]);
+    expect(byPhase("implement")).toEqual(["sprinter", "worker"]);
     expect(byPhase("testing")).toEqual(["guard", "reviewer"]);
     expect(byPhase(null)).toEqual(["helper", "lead"]);
   });
@@ -249,28 +248,27 @@ describe("sdlcPipeline", () => {
   const ids = (pipeline: SdlcPipeline, phase: SdlcPhaseId) =>
     pipeline.stations[phase].workers.map((worker) => worker.id);
 
-  it("puts a running card at its current phase, at Planning without a plan, at its last included phase when all are done", () => {
+  it("puts a running card at its current phase, at Analyze without a plan, at its last included phase when all are done", () => {
     const D = "44444444-4444-4444-8444-444444444444";
     const q = queue(
       [
-        entry(A, "running", { sdlc: progress({ planning: "done", implementation: "active", testing: "pending" }, "implementation") }),
+        entry(A, "running", { sdlc: progress({ analyze: "done", implement: "active", testing: "pending" }, "implement") }),
         entry(B, "running"),
-        entry(C, "running", { sdlc: progress({ planning: "done", implementation: "done", testing: "done" }, null) }),
+        entry(C, "running", { sdlc: progress({ analyze: "done", implement: "done", testing: "done" }, null) }),
       ],
       [entry(D, "queued")],
     );
     const pipeline = sdlcPipeline(q, {});
-    expect(ids(pipeline, "implementation")).toEqual([`card:${A}`]);
-    expect(ids(pipeline, "planning")).toEqual([`card:${B}`]);
+    expect(ids(pipeline, "implement")).toEqual([`card:${A}`]);
+    expect(ids(pipeline, "analyze")).toEqual([`card:${B}`]);
     expect(ids(pipeline, "testing")).toEqual([`card:${C}`]);
-    expect(ids(pipeline, "deployment")).toEqual([]);
     expect(pipeline.backlog).toBe(1);
   });
 
   it("puts busy subagents at their role's phase, helpers at their lead's phase, after the leads", () => {
     const q = queue([
-      entry(A, "running", { sdlc: progress({ planning: "done", design: "active" }, "design") }),
-      entry(B, "running", { sdlc: progress({ planning: "active" }, "planning") }),
+      entry(A, "running", { sdlc: progress({ analyze: "done", implement: "active" }, "implement") }),
+      entry(B, "running", { sdlc: progress({ analyze: "active" }, "analyze") }),
     ]);
     const live = {
       [A]: liveAgent({
@@ -284,57 +282,44 @@ describe("sdlcPipeline", () => {
       }),
     };
     const pipeline = sdlcPipeline(q, live);
-    expect(ids(pipeline, "planning")).toEqual([`card:${B}`, `sub:${A}:s`]);
-    expect(ids(pipeline, "design")).toEqual([`card:${A}`, `sub:${A}:h`]);
-    expect(ids(pipeline, "implementation")).toEqual([`sub:${A}:w`]);
+    expect(ids(pipeline, "analyze")).toEqual([`card:${B}`, `sub:${A}:s`]);
+    expect(ids(pipeline, "implement")).toEqual([`card:${A}`, `sub:${A}:w`, `sub:${A}:h`]);
     expect(ids(pipeline, "testing")).toEqual([`sub:${A}:r`]);
   });
 
   it("counts early starts per phase and breaches per quality gate crossed", () => {
-    const early: SdlcViolation = { phase: "deployment", requires: "testing", message: "Deployment started before Testing was complete" };
-    const skipped: SdlcViolation = { phase: "implementation", requires: "planning", message: "Implementation started before Planning was complete" };
+    const early: SdlcViolation = { phase: "testing", requires: "implement", message: "Testing started before Implement was complete" };
+    const skipped: SdlcViolation = { phase: "implement", requires: "analyze", message: "Implement started before Analyze was complete" };
     const q = queue([
-      entry(A, "running", { sdlc: progress({ planning: "done", implementation: "done", testing: "active", deployment: "active" }, "testing", [early]) }),
-      entry(B, "running", { sdlc: progress({ planning: "active", implementation: "active" }, "planning", [skipped]) }),
-      entry(C, "running", { sdlc: progress({ planning: "done", implementation: "active" }, "implementation") }),
+      entry(A, "running", { sdlc: progress({ analyze: "done", implement: "active", testing: "active" }, "testing", [early]) }),
+      entry(B, "running", { sdlc: progress({ analyze: "active", implement: "active" }, "analyze", [skipped]) }),
+      entry(C, "running", { sdlc: progress({ analyze: "done", implement: "active" }, "implement") }),
     ]);
     const { stations } = sdlcPipeline(q, {});
-    expect(stations.deployment.alerts).toBe(1);
-    expect(stations.implementation.alerts).toBe(1);
-    expect(stations.testing.alerts).toBe(0);
-    // The release gate (Testing → Deployment) was crossed by A only.
-    expect(stations.testing.breaches.map((breach) => breach.entry.taskId)).toEqual([A]);
-    // B skipped past the Planning, Feasibility and Design gates.
-    expect(stations.planning.breaches.map((breach) => breach.entry.taskId)).toEqual([B]);
-    expect(stations.feasibility.breaches.map((breach) => breach.violation)).toEqual([skipped]);
-    expect(stations.design.breaches.map((breach) => breach.entry.taskId)).toEqual([B]);
-    expect(stations.implementation.breaches).toEqual([]);
-    expect(stations.maintenance.breaches).toEqual([]);
+    expect(stations.testing.alerts).toBe(1);
+    expect(stations.implement.alerts).toBe(1);
+    expect(stations.analyze.alerts).toBe(0);
+    // A crossed the Implement → Testing gate early; B crossed the Analyze → Implement gate early.
+    expect(stations.implement.breaches.map((breach) => breach.entry.taskId)).toEqual([A]);
+    expect(stations.analyze.breaches.map((breach) => breach.entry.taskId)).toEqual([B]);
+    expect(stations.testing.breaches).toEqual([]);
   });
 
-  it("lists visible phases: the required ones plus when-needed phases a card includes or a subagent executes", () => {
-    // No running cards: only the required phases.
-    expect(sdlcPipeline(queue([]), {}).visible).toEqual(["implementation", "testing"]);
-    // A plan that includes Planning, or a card without a plan (standing at Planning), reveals it.
-    const minimal = queue([
-      entry(A, "running", { sdlc: progress({ planning: "done", implementation: "active", testing: "pending" }, "implementation") }),
+  it("always draws all three phases, since every phase is required", () => {
+    expect(sdlcPipeline(queue([]), {}).visible).toEqual(["analyze", "implement", "testing"]);
+    const withCards = queue([
+      entry(A, "running", { sdlc: progress({ analyze: "done", implement: "active", testing: "pending" }, "implement") }),
       entry(B, "running"),
     ]);
-    expect(sdlcPipeline(minimal, {}).visible).toEqual(["planning", "implementation", "testing"]);
-    // A plan that includes Design reveals it, in SDLC order.
-    const withDesign = queue([
-      entry(A, "running", { sdlc: progress({ planning: "done", design: "active", implementation: "pending", testing: "pending" }, "design") }),
-    ]);
-    expect(sdlcPipeline(withDesign, {}).visible).toEqual(["planning", "design", "implementation", "testing"]);
-    // A busy designer subagent reveals Design even when no plan includes it.
+    expect(sdlcPipeline(withCards, {}).visible).toEqual(["analyze", "implement", "testing"]);
     const live = { [A]: liveAgent({ helpers: { d: helper("d", "running", undefined, "designer") } }) };
-    expect(sdlcPipeline(queue([entry(A, "running")]), live).visible).toEqual(["planning", "design", "implementation", "testing"]);
+    expect(sdlcPipeline(queue([entry(A, "running")]), live).visible).toEqual(["analyze", "implement", "testing"]);
   });
 });
 
 describe("sdlcStation", () => {
-  it("falls back to Planning when nothing is included", () => {
-    expect(sdlcStation(progress({}, null))).toBe("planning");
-    expect(sdlcStation(null)).toBe("planning");
+  it("falls back to Analyze when nothing is included", () => {
+    expect(sdlcStation(progress({}, null))).toBe("analyze");
+    expect(sdlcStation(null)).toBe("analyze");
   });
 });

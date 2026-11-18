@@ -1176,16 +1176,12 @@ describe("AgentManager SDLC quality gates", () => {
     expect(runs).toHaveLength(1);
     const texts = (await runEvents(runs[0]!.id)).map((e) => e.text);
     for (const line of [
-      "▸ SDLC phase 1/7: Planning",
-      "▸ SDLC phase 3/7: Design",
-      "▸ SDLC phase 4/7: Implementation",
-      "▸ SDLC phase 5/7: Testing",
-      "▸ SDLC phase 6/7: Deployment",
-      "✓ Quality gate passed: Planning complete",
-      "✓ Quality gate passed: Design complete",
-      "✓ Quality gate passed: Implementation complete",
+      "▸ SDLC phase 1/3: Analyze",
+      "▸ SDLC phase 2/3: Implement",
+      "▸ SDLC phase 3/3: Testing",
+      "✓ Quality gate passed: Analyze complete",
+      "✓ Quality gate passed: Implement complete",
       "✓ Quality gate passed: Testing complete",
-      "✓ Quality gate passed: Deployment complete",
     ]) {
       expect(texts).toContain(line);
     }
@@ -1218,7 +1214,7 @@ describe("AgentManager SDLC quality gates", () => {
     expect(second!.filter((t) => t.startsWith(shippedPrefix))).toHaveLength(1);
   });
 
-  it("steers an agent that starts Deployment before Testing is complete back into the process", async () => {
+  it("steers an agent that starts Testing before Implement is complete back into the process", async () => {
     const task = await createTask("Skip the tests", "[fake:sdlc_skip]");
     const manager = await getAgentManager();
     await manager.start(task.id);
@@ -1227,16 +1223,16 @@ describe("AgentManager SDLC quality gates", () => {
       () => readLog().find((e) => e.kind === "steer" && e.pid === pid),
       "the quality-gate steer",
     );
-    expect(steer.message).toContain("Quality gate (SDLC): Deployment started before Testing was complete");
+    expect(steer.message).toContain("Quality gate (SDLC): Testing started before Implement was complete");
     expect(steer).toMatchObject({ via: "prompt", streamingBehavior: "steer" });
 
-    // Testing is still pending when it succeeds: the release gate sends it back once before it ships.
+    // Testing is still incomplete when it succeeds: the release gate sends it back once before it ships.
     await waitDone(task.id);
     await waitIdleManager(manager);
     const runs = await repo.listRuns(task.id);
     const first = runs.at(-1)!;
     expect((await runEvents(first.id)).map((e) => e.text)).toContain(
-      "⚠ Quality gate: Deployment started before Testing was complete",
+      "⚠ Quality gate: Testing started before Implement was complete",
     );
     // Each violation is steered once.
     expect(readLog().filter((e) => e.kind === "steer" && e.message?.startsWith("Quality gate (SDLC)"))).toHaveLength(1);
@@ -1250,7 +1246,7 @@ describe("AgentManager SDLC quality gates", () => {
       const running = (await manager.queueSnapshot()).running.find((e) => e.taskId === task.id);
       return running?.sdlc ? running : null;
     }, "the SDLC progress in the queue snapshot");
-    expect(entry.sdlc).toMatchObject({ current: "implementation", canonical: true, violations: [] });
+    expect(entry.sdlc).toMatchObject({ current: "implement", canonical: true, violations: [] });
 
     const stopped = await manager.stop(task.id);
     expect(stopped).toMatchObject({ status: "in_progress", agentState: "idle" });

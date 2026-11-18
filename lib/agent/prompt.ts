@@ -84,11 +84,10 @@ const SDLC_LABELS = SDLC_PHASES.map((id) => SDLC_PHASE_INFO[id].label);
  * progress and enforces the gates from those names), with each phase's exit criteria as its quality gate.
  */
 const SDLC_INSTRUCTION = [
-  `Work through the software development lifecycle like an enterprise software team, scaled to the task. Keep your todo list with the todo tool and name its phases exactly after the SDLC phases you use, in this order: ${SDLC_LABELS.join(", ")}.`,
-  "Skip Planning: analyse the task and the relevant code until you understand the requirement, then start right away. Implementation and Testing are always included; add Feasibility only for real risks or unknowns, Design when architecture, APIs, data shapes or UI change, Deployment for release work (docs, changelog, report; commit/PR only when asked).",
+  `Work through the software development lifecycle as three simple phases. Keep your todo list with the todo tool and name its phases exactly after the SDLC phases, in this order: ${SDLC_LABELS.join(", ")}.`,
   `Finish (or drop) every item of a phase before starting the next; each phase's exit criteria are its quality gate: ${SDLC_PHASES.map((id) => `${SDLC_PHASE_INFO[id].label}: ${SDLC_PHASE_INFO[id].gate}`).join("; ")}.`,
   "Keep Testing fast and targeted: type-check, run only the tests covering the changed code (by file or test name, not whole suites) and check the changed behavior once; no full production builds, complete or end-to-end suites, repeated runs or extra audits unless the change specifically needs them, since broad testing is left to the quality gatekeeper.",
-  "Testing must pass before Deployment. A small fix needs one or two items per phase, not ceremony.",
+  "Testing must pass before the work ships. A small fix needs one or two items per phase, not ceremony.",
 ].join(" ");
 
 /**
@@ -100,13 +99,13 @@ const DIRECT_INSTRUCTION =
 
 /** Who does the work in each SDLC phase of an orchestrated run. */
 const SDLC_STAFFING_INSTRUCTION =
-  "Staff each SDLC phase: Feasibility → read-only scout subagents in parallel; Design → you (the lead) fix the shared contracts (types, APIs, schemas, UI) before fanning out; Implementation → parallel task subagents on disjoint files (sonic for mechanical edits); Testing → you run the targeted checks yourself (plus a security-reviewer subagent only when auth, input handling or secrets change); Deployment → docs, changelog and report.";
+  "Staff each SDLC phase: Analyze → read-only scout subagents in parallel; Implement → parallel task subagents on disjoint files (sonic for mechanical edits); Testing → you run the targeted checks yourself (plus a security-reviewer subagent only when auth, input handling or secrets change).";
 
-/** Where a feedback round sits in the SDLC: Maintenance once every included phase is done, else the current phase. */
+/** Where a feedback round sits in the SDLC: a fresh round once every included phase is done, else the current phase. */
 function feedbackSdlcInstruction(task: Task): string {
   const progress = sdlcProgress(task.todos ?? []);
   if (progress && progress.current === null) {
-    return "This feedback is Maintenance on delivered work: add a Maintenance phase to the todo list for this round (fix, re-test, report) after the earlier phases, without reopening them.";
+    return "This feedback is on delivered work: run a fresh Analyze → Implement → Testing round for it (understand the feedback, fix, re-test) without reopening the earlier phases.";
   }
   return "Continue in the current SDLC phase and add the new items to the phase they belong to.";
 }

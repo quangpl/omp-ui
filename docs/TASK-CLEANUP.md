@@ -70,7 +70,7 @@ with it.
 ## When
 
 - At the end of every run that finishes the work, before committing or pushing and before the final summary, including
-  feedback (Maintenance) rounds, for what that round created.
+  feedback rounds, for what that round created.
 - Interrupted or failed run: the run that resumes and finishes the task cleans up the leftovers.
 
 ## Workflow
