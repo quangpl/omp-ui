@@ -8,11 +8,14 @@ import type { AiStats } from "@/lib/types";
 vi.mock("@/lib/stats", () => ({ getAiStats: vi.fn() }));
 
 const HOUR = 3_600_000;
-const PRIORITY = [
-  { provider: "anthropic", model: "anthropic/claude-sonnet-4-5" },
-  { provider: "openai-codex", model: "openai-codex/gpt-5" },
-  { provider: "github-copilot", model: "github-copilot/claude-sonnet-4.5" },
-];
+const PRIORITY = [{ provider: "anthropic" }, { provider: "openai-codex" }, { provider: "github-copilot" }];
+/** omp's model roles: each provider runs the model of a role on it ("default" first). */
+const ROLES = {
+  smol: "openai-codex/gpt-5-mini",
+  default: "anthropic/claude-sonnet-4-5",
+  slow: "openai-codex/gpt-5",
+  plan: "github-copilot/claude-sonnet-4.5",
+};
 const SETTINGS = { ompPath: "omp", providerPriority: PRIORITY, defaultModel: "base" };
 
 /** `omp usage` reporting `exhausted` providers out of quota for another hour. */
@@ -53,21 +56,35 @@ beforeEach(() => {
 describe("chooseProvider", () => {
   it("picks Main while it has quota", async () => {
     vi.mocked(getAiStats).mockResolvedValue(usage());
-    expect(await chooseProvider(SETTINGS, null)).toMatchObject({ entry: PRIORITY[0], index: 0 });
+    expect(await chooseProvider(SETTINGS, null, ROLES)).toMatchObject({
+      entry: { provider: "anthropic", model: "anthropic/claude-sonnet-4-5" },
+      index: 0,
+    });
   });
 
   it("picks the first backup with quota while Main is out of quota", async () => {
     vi.mocked(getAiStats).mockResolvedValue(usage("anthropic"));
-    expect(await chooseProvider(SETTINGS, " ")).toMatchObject({
-      entry: PRIORITY[1],
+    expect(await chooseProvider(SETTINGS, " ", ROLES)).toMatchObject({
+      entry: { provider: "openai-codex", model: "openai-codex/gpt-5-mini" },
       index: 1,
       fallbacks: ["github-copilot/claude-sonnet-4.5"],
     });
   });
 
+  it("skips a provider no role uses, and picks nothing while omp's roles are unknown", async () => {
+    vi.mocked(getAiStats).mockResolvedValue(usage());
+    const { default: _unused, ...withoutAnthropic } = ROLES;
+    expect(await chooseProvider(SETTINGS, null, withoutAnthropic)).toMatchObject({
+      entry: { provider: "openai-codex" },
+      index: 0,
+      fallbacks: ["github-copilot/claude-sonnet-4.5"],
+    });
+    expect(await chooseProvider(SETTINGS, null, null)).toBeNull();
+  });
+
   it("leaves a board's pinned model and an empty list alone, without reading omp usage", async () => {
-    expect(await chooseProvider(SETTINGS, "anthropic/claude-opus-4")).toBeNull();
-    expect(await chooseProvider({ ...SETTINGS, providerPriority: [] }, null)).toBeNull();
+    expect(await chooseProvider(SETTINGS, "anthropic/claude-opus-4", ROLES)).toBeNull();
+    expect(await chooseProvider({ ...SETTINGS, providerPriority: [] }, null, ROLES)).toBeNull();
     expect(getAiStats).not.toHaveBeenCalled();
   });
 });
@@ -75,12 +92,12 @@ describe("chooseProvider", () => {
 describe("chooseHelperModel", () => {
   it("runs a helper on the picked backup, with a config that falls back to the later providers", async () => {
     vi.mocked(getAiStats).mockResolvedValue(usage("anthropic"));
-    const choice = await chooseHelperModel({ settings: SETTINGS, pinned: null, roles: [["smol", "anthropic/claude-haiku"]] });
-    expect(choice).toMatchObject({ model: "openai-codex/gpt-5", role: null });
+    const choice = await chooseHelperModel({ settings: SETTINGS, pinned: null, roles: [["smol", "anthropic/claude-haiku"]], modelRoles: ROLES });
+    expect(choice).toMatchObject({ model: "openai-codex/gpt-5-mini", role: null });
     expect(JSON.parse(await readFile(choice.config!, "utf8"))).toEqual({
       retry: {
         modelFallback: true,
-        fallbackOn: "usage-limit",
+        fallbackOn: "any",
         fallbackRevertPolicy: "cooldown-expiry",
         fallbackChains: { "openai-codex/*": ["github-copilot/claude-sonnet-4.5"] },
       },
@@ -91,10 +108,11 @@ describe("chooseHelperModel", () => {
   it("keeps a role on the picked provider, and a board pin over both", async () => {
     vi.mocked(getAiStats).mockResolvedValue(usage());
     const roles = [["smol", "anthropic/claude-haiku:low"]] as const;
-    const onProvider = await chooseHelperModel({ settings: SETTINGS, pinned: null, roles });
+    const modelRoles = ROLES;
+    const onProvider = await chooseHelperModel({ settings: SETTINGS, pinned: null, roles, modelRoles });
     expect(onProvider).toMatchObject({ model: "@smol", role: "smol" });
     await rm(onProvider.config!);
-    expect(await chooseHelperModel({ settings: SETTINGS, pinned: "openai/gpt-5", roles })).toEqual({
+    expect(await chooseHelperModel({ settings: SETTINGS, pinned: "openai/gpt-5", roles, modelRoles })).toEqual({
       model: "openai/gpt-5",
       role: null,
       config: null,

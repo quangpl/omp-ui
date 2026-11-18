@@ -18,7 +18,7 @@ import type {
   ClusterJoinInfo,
   ClusterStatus,
   ClusterTestResult,
-  AiStats,
+  AiStatsResponse,
   OmpSkill,
   OmpConfigSnapshot,
   OmpConfigUpdate,
@@ -774,7 +774,7 @@ export const api = {
   stats: {
     system: () => request<SystemStats>("/stats/system"),
     /** AI provider quota + usage via omp; `refresh` bypasses the 60s server cache. */
-    ai: (refresh = false) => request<AiStats>(`/stats/ai${refresh ? "?refresh=1" : ""}`),
+    ai: (refresh = false) => request<AiStatsResponse>(`/stats/ai${refresh ? "?refresh=1" : ""}`),
     /** Analyze CPU, memory and storage (processes, cleanable data, recommendations). */
     analyze: () => request<MaintenanceReport>("/stats/maintenance"),
     /** Clean up storage, end processes, free server memory or stop a card. */

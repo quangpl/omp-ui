@@ -52,7 +52,7 @@ describe("runConfigOverlay", () => {
     expect(runConfigOverlay(settings({ subagentLimits: false }), TASK_FILES, 2)).not.toHaveProperty("task");
   });
 
-  it("falls back to the next providers' models only on usage limits when the provider priority has some", () => {
+  it("falls back to the next providers' models on any provider error when the provider priority has some", () => {
     const overlay = runConfigOverlay(settings(), TASK_FILES, null, {
       entry: { provider: "anthropic", model: "anthropic/claude-sonnet-4-5" },
       index: 0,
@@ -62,7 +62,7 @@ describe("runConfigOverlay", () => {
     });
     expect(overlay.retry).toEqual({
       modelFallback: true,
-      fallbackOn: "usage-limit",
+      fallbackOn: "any",
       fallbackRevertPolicy: "cooldown-expiry",
       fallbackChains: { "anthropic/*": ["openai-codex/gpt-5", "github-copilot/claude-sonnet-4.5"] },
     });

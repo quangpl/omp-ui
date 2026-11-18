@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic";
 
 export const GET = withApi(async ({ req, repo }) => {
   const refresh = new URL(req.url).searchParams.get("refresh");
-  const { ompPath } = await getAppSettings(repo);
-  return json(await getAiStats(ompPath, { refresh: refresh === "1" || refresh === "true" }));
+  const { ompPath, providerPriority } = await getAppSettings(repo);
+  const stats = await getAiStats(ompPath, { refresh: refresh === "1" || refresh === "true" });
+  return json({ ...stats, activeProviders: providerPriority.map((entry) => entry.provider) });
 });

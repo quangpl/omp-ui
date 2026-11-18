@@ -3,6 +3,7 @@
 // Formatters, tone helpers and building blocks shared by the Stats page sections.
 import Link from "next/link";
 import { TriangleAlertIcon } from "lucide-react";
+import type { AiQuotaLimit } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------------------------
@@ -62,6 +63,17 @@ export function formatResetTime(iso: string): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+/** When a quota limit resets: "Resets in 3h 12m · Sun 4:00 PM", its window, or that omp reported none. */
+export function resetText(limit: AiQuotaLimit, now: number): string {
+  const resetsAt = limit.resetsAt;
+  const resetMs = resetsAt ? Date.parse(resetsAt) - now : null;
+  if (!resetsAt || resetMs === null || Number.isNaN(resetMs)) {
+    return limit.windowLabel ? `${limit.windowLabel} window` : "No reset time reported";
+  }
+  if (resetMs <= 0) return "Resetting now";
+  return `Resets in ${formatDuration(resetMs / 1000)} · ${formatResetTime(resetsAt)}`;
 }
 
 const PROVIDER_NAMES: Record<string, string> = {

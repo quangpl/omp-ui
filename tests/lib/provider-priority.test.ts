@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { parseProviderPriority, pickProvider, quotaBlocks, type ProviderPriorityEntry } from "@/lib/provider-priority";
+import { parseProviderPriority, pickProvider, providerRoleModel, quotaBlocks, resolveProviders, type ProviderEntry } from "@/lib/provider-priority";
 import type { AiProviderQuota, AiQuotaLimit } from "@/lib/types";
 
 const NOW = Date.parse("2026-01-01T12:00:00.000Z");
 const HOUR = 3_600_000;
 
-const PRIORITY: ProviderPriorityEntry[] = [
+const PRIORITY: ProviderEntry[] = [
   { provider: "anthropic", model: "anthropic/claude-sonnet-4-5" },
   { provider: "openai-codex", model: "openai-codex/gpt-5" },
   { provider: "github-copilot", model: "github-copilot/claude-sonnet-4.5" },
@@ -94,20 +94,44 @@ describe("quotaBlocks", () => {
 });
 
 describe("parseProviderPriority", () => {
-  it("accepts unique providers each with one of its own models", () => {
-    expect(parseProviderPriority([{ provider: " anthropic ", model: " anthropic/claude-x:high " }])).toEqual({
+  it("accepts unique provider ids, and drops the model older versions stored with each", () => {
+    expect(parseProviderPriority([{ provider: " anthropic " }, { provider: "openai-codex", model: "openai-codex/gpt-5" }])).toEqual({
       ok: true,
-      entries: [{ provider: "anthropic", model: "anthropic/claude-x:high" }],
+      entries: [{ provider: "anthropic" }, { provider: "openai-codex" }],
     });
   });
 
   it.each([
     ["not an array", { provider: "anthropic" }],
-    ["a model of another provider", [{ provider: "anthropic", model: "openai/gpt-5" }]],
-    ["a role instead of a model", [{ provider: "anthropic", model: "@slow" }]],
-    ["a provider listed twice", [PRIORITY[0], { provider: "anthropic", model: "anthropic/claude-opus-4" }]],
+    ["a provider listed twice", [{ provider: "anthropic" }, { provider: "anthropic" }]],
     ["a missing provider", [{ model: "anthropic/claude-x" }]],
+    ["an invalid provider id", [{ provider: "a/b" }]],
   ])("rejects %s", (_, value) => {
     expect(parseProviderPriority(value).ok).toBe(false);
+  });
+});
+
+describe("providerRoleModel", () => {
+  const roles = { smol: "openai-codex/gpt-5-mini", default: "anthropic/claude-x:high", slow: "anthropic/claude-opus" };
+
+  it("prefers the given role, then default, then the other roles in order", () => {
+    expect(providerRoleModel(roles, "anthropic", "slow")).toBe("anthropic/claude-opus");
+    expect(providerRoleModel(roles, "anthropic")).toBe("anthropic/claude-x:high");
+    expect(providerRoleModel(roles, "openai-codex")).toBe("openai-codex/gpt-5-mini");
+  });
+
+  it("is null for a provider no role uses and for unknown roles", () => {
+    expect(providerRoleModel(roles, "github-copilot")).toBeNull();
+    expect(providerRoleModel(null, "anthropic")).toBeNull();
+  });
+});
+
+describe("resolveProviders", () => {
+  it("gives each provider its role's model and leaves out the ones no role uses", () => {
+    const roles = { default: "anthropic/claude-x", plan: "github-copilot/gpt-5" };
+    expect(resolveProviders([{ provider: "anthropic" }, { provider: "openai-codex" }, { provider: "github-copilot" }], roles)).toEqual([
+      { provider: "anthropic", model: "anthropic/claude-x" },
+      { provider: "github-copilot", model: "github-copilot/gpt-5" },
+    ]);
   });
 });

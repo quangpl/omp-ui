@@ -6,10 +6,7 @@ import * as settingsRoute from "@/app/api/v1/settings/route";
 import { getRepo } from "@/lib/db";
 import type { AppSettings } from "@/lib/types";
 
-const PRIORITY = [
-  { provider: "anthropic", model: "anthropic/claude-sonnet-4-5" },
-  { provider: "openai-codex", model: "openai-codex/gpt-5" },
-];
+const PRIORITY = [{ provider: "anthropic" }, { provider: "openai-codex" }];
 
 async function getSettings(): Promise<AppSettings> {
   const res = await api<AppSettings>(settingsRoute, "GET", "/settings");
@@ -40,7 +37,7 @@ describe("/settings providerPriority", () => {
     await api(settingsRoute, "PATCH", "/settings", { body: { providerPriority: PRIORITY } });
     for (const providerPriority of [
       "anthropic",
-      [{ provider: "anthropic", model: "openai/gpt-5" }],
+      [{ model: "openai/gpt-5" }],
       [PRIORITY[0], PRIORITY[0]],
     ]) {
       const res = await api(settingsRoute, "PATCH", "/settings", { body: { providerPriority } });
@@ -49,8 +46,16 @@ describe("/settings providerPriority", () => {
     expect((await getSettings()).providerPriority).toEqual(PRIORITY);
   });
 
+  it("a list stored with models (older versions) keeps its providers", async () => {
+    await (await getRepo()).setSetting(
+      "app_settings",
+      JSON.stringify({ providerPriority: [{ provider: "anthropic", model: "anthropic/claude-sonnet-4-5" }] }),
+    );
+    expect((await getSettings()).providerPriority).toEqual([{ provider: "anthropic" }]);
+  });
+
   it("an invalid stored list turns the priority off", async () => {
-    await (await getRepo()).setSetting("app_settings", JSON.stringify({ providerPriority: [{ provider: "x" }] }));
+    await (await getRepo()).setSetting("app_settings", JSON.stringify({ providerPriority: [{ model: "x" }] }));
     expect((await getSettings()).providerPriority).toEqual([]);
   });
 });
