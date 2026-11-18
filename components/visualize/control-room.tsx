@@ -24,7 +24,7 @@ import { agentVitals, moodTone, type Vitals } from "@/components/visualize/mood"
 import { modelLabel, ROLE_INFO, roleOf, subagentName } from "@/components/visualize/roles";
 import type { LiveAgent } from "@/components/visualize/use-live-agents";
 import { ManaBar, MOOD_LABEL, RoleTag, WorkerAvatar } from "@/components/visualize/worker-avatar";
-import { SDLC_PHASE_INFO, type SdlcProgress } from "@/lib/sdlc";
+import { SDLC_PHASE_INFO, SDLC_PHASES, type SdlcProgress } from "@/lib/sdlc";
 import type { Dashboard, QueueEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -182,7 +182,7 @@ function Crew({ taskId, agent }: { taskId: string; agent: LiveAgent | undefined 
   );
 }
 
-/** "5/7 Testing": the SDLC phase a card's agent is in; warns when it crossed a quality gate early. */
+/** "2/3 Testing": the SDLC phase a card's agent is in; warns when it crossed a quality gate early. */
 function SdlcChip({ sdlc }: { sdlc: SdlcProgress }) {
   const info = SDLC_PHASE_INFO[sdlcStation(sdlc)];
   const phase = sdlc.phases.find((p) => p.id === info.id);
@@ -191,7 +191,7 @@ function SdlcChip({ sdlc }: { sdlc: SdlcProgress }) {
   const title = [
     delivered
       ? `Every SDLC phase done (${sdlc.completed} of ${sdlc.included})`
-      : `SDLC phase ${info.step} of 7: ${info.label}, ${phase?.done ?? 0} of ${phase?.total ?? 0} items done, ${sdlc.completed} of ${sdlc.included} phases done`,
+      : `SDLC phase ${info.step} of ${SDLC_PHASES.length}: ${info.label}, ${phase?.done ?? 0} of ${phase?.total ?? 0} items done, ${sdlc.completed} of ${sdlc.included} phases done`,
     ...sdlc.violations.map((violation) => `Quality gate: ${violation.message}`),
   ].join("\n");
   return (
@@ -213,7 +213,7 @@ function SdlcChip({ sdlc }: { sdlc: SdlcProgress }) {
       ) : (
         delivered && <CheckIcon className="size-3" aria-hidden />
       )}
-      {delivered ? `${sdlc.completed}/${sdlc.included} done` : `${info.step}/7 ${info.label}`}
+      {delivered ? `${sdlc.completed}/${sdlc.included} done` : `${info.step}/${SDLC_PHASES.length} ${info.label}`}
     </span>
   );
 }

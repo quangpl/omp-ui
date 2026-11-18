@@ -21,14 +21,14 @@
 //                         then succeeds. "todos_feedback" does the same without waiting for a steer (the
 //                         feedback came with the prompt, as in a resumed run).
 //                         The sdlc_* scenarios report todo lists whose phases carry SDLC names (canonical):
-//                         "sdlc_flow" works through Planning → Design → Implementation → Testing → Deployment
+//                         "sdlc_flow" works through Analyze → Implement → Testing
 //                         (one item each, in_progress then completed, one `todo` update per step,
-//                         FAKE_OMP_STEP_MS apart), then succeeds. "sdlc_gate" reports Planning and
-//                         Implementation completed and Testing ["Run the tests" pending], then succeeds.
-//                         "sdlc_skip" reports that list plus Deployment in_progress, then succeeds on a
-//                         steer (or after 1.5 s without one). "sdlc_hold" reports Planning and Design
-//                         completed, Implementation in_progress and Testing pending, then sends nothing
-//                         until a steer or abort, like "slow".
+//                         FAKE_OMP_STEP_MS apart), then succeeds. "sdlc_gate" reports Analyze and
+//                         Implement completed and Testing ["Run the tests" pending], then succeeds.
+//                         "sdlc_skip" reports that list plus Testing in_progress while Implement is
+//                         pending, then succeeds on a steer (or after 1.5 s without one). "sdlc_hold"
+//                         reports Analyze completed, Implement in_progress and Testing pending, then
+//                         sends nothing until a steer or abort, like "slow".
 //                         "loop" repeats the same `read` call (same args, same result) every ~30 ms,
 //                         40 times, then succeeds; it stops early if the run is aborted meanwhile.
 //                         "question" succeeds with a summary that ends in a question for the user.
@@ -641,11 +641,9 @@ async function feedbackTodos(current, waitForSteer) {
 
 /** sdlc_flow: one [phase, item] per SDLC phase it works through, in order. */
 const SDLC_FLOW_PHASES = [
-  ["Planning", "Scope the change"],
-  ["Design", "Decide the API shape"],
-  ["Implementation", "Write the code"],
+  ["Analyze", "Scope the change"],
+  ["Implement", "Write the code"],
   ["Testing", "Run the tests"],
-  ["Deployment", "Update the docs"],
 ];
 
 /** The sdlc_flow list with item `active` in `status`: earlier items completed, later ones pending. */
@@ -674,22 +672,22 @@ async function sdlcFlow(current) {
 
 /** sdlc_gate: implemented, but the Testing item never ran. */
 const SDLC_GATE_PHASES = [
-  { name: "Planning", tasks: [{ content: "Scope the change", status: "completed" }] },
-  { name: "Implementation", tasks: [{ content: "Write the code", status: "completed" }] },
+  { name: "Analyze", tasks: [{ content: "Scope the change", status: "completed" }] },
+  { name: "Implement", tasks: [{ content: "Write the code", status: "completed" }] },
   { name: "Testing", tasks: [{ content: "Run the tests", status: "pending" }] },
 ];
 
-/** sdlc_skip: Deployment started while Testing is still pending. */
+/** sdlc_skip: Testing started while Implement is still pending. */
 const SDLC_SKIP_PHASES = [
-  ...SDLC_GATE_PHASES,
-  { name: "Deployment", tasks: [{ content: "Update the docs", status: "in_progress" }] },
+  { name: "Analyze", tasks: [{ content: "Scope the change", status: "completed" }] },
+  { name: "Implement", tasks: [{ content: "Write the code", status: "pending" }] },
+  { name: "Testing", tasks: [{ content: "Run the tests", status: "in_progress" }] },
 ];
 
-/** sdlc_hold: in the middle of Implementation. */
+/** sdlc_hold: in the middle of Implement. */
 const SDLC_HOLD_PHASES = [
-  { name: "Planning", tasks: [{ content: "Scope the change", status: "completed" }] },
-  { name: "Design", tasks: [{ content: "Decide the API shape", status: "completed" }] },
-  { name: "Implementation", tasks: [{ content: "Write the code", status: "in_progress" }] },
+  { name: "Analyze", tasks: [{ content: "Scope the change", status: "completed" }] },
+  { name: "Implement", tasks: [{ content: "Write the code", status: "in_progress" }] },
   { name: "Testing", tasks: [{ content: "Run the tests", status: "pending" }] },
 ];
 

@@ -318,19 +318,19 @@ describe("buildPrompt run context", () => {
 });
 
 describe("buildPrompt SDLC workflow", () => {
-  const LABELS = ["Planning", "Feasibility", "Design", "Implementation", "Testing", "Deployment", "Maintenance"];
+  const LABELS = ["Analyze", "Implement", "Testing"];
   const STAFFING = "Staff each SDLC phase";
-  const MAINTENANCE = "add a Maintenance phase to the todo list";
+  const FRESH_ROUND = "run a fresh Analyze → Implement → Testing round";
 
   function phase(name: string, status: "pending" | "in_progress" | "completed"): TodoPhase {
     return { name, tasks: [{ content: `${name} work`, status }] };
   }
 
-  it("names all seven phases in order with the Testing gate in every prompt", () => {
+  it("names all three phases in order with the Testing gate in every prompt", () => {
     const prompt = buildPrompt(task, board, [], false);
     expect(prompt).toContain(`in this order: ${LABELS.join(", ")}.`);
     expect(prompt).toContain(SDLC_PHASE_INFO.testing.gate);
-    expect(prompt).toContain("Testing must pass before Deployment.");
+    expect(prompt).toContain("Testing must pass before the work ships.");
     expect(buildPrompt(task, board, [], true)).toContain(LABELS.join(", "));
     expect(buildPrompt(task, board, [comment("Fix it")], true)).toContain(LABELS.join(", "));
   });
@@ -343,14 +343,14 @@ describe("buildPrompt SDLC workflow", () => {
     expect(buildPrompt(task, board, [comment("Fix it")], true)).not.toContain(STAFFING);
   });
 
-  it("treats feedback on delivered work as Maintenance and otherwise continues the current phase", () => {
-    const done = ["Planning", "Implementation", "Testing"].map((n) => phase(n, "completed"));
+  it("treats feedback on delivered work as a fresh round and otherwise continues the current phase", () => {
+    const done = ["Analyze", "Implement", "Testing"].map((n) => phase(n, "completed"));
     const delivered = buildPrompt({ ...task, todos: done }, board, [comment("Tweak the color")], true);
-    expect(delivered).toContain(MAINTENANCE);
+    expect(delivered).toContain(FRESH_ROUND);
 
-    const open = [phase("Planning", "completed"), phase("Implementation", "in_progress"), phase("Testing", "pending")];
+    const open = [phase("Analyze", "completed"), phase("Implement", "in_progress"), phase("Testing", "pending")];
     const ongoing = buildPrompt({ ...task, todos: open }, board, [comment("Tweak the color")], true);
-    expect(ongoing).not.toContain(MAINTENANCE);
+    expect(ongoing).not.toContain(FRESH_ROUND);
     expect(ongoing).toContain("Continue in the current SDLC phase");
 
     expect(buildPrompt(task, board, [], true)).toContain("Continue from the SDLC phase your todo list shows.");
@@ -370,7 +370,7 @@ describe("buildPrompt SDLC workflow", () => {
 
 describe("buildPrompt non-software tasks", () => {
   const poem = { ...task, title: "Write a poem about the ocean", description: "Four stanzas, free verse." };
-  const PHASES = "Planning, Feasibility, Design, Implementation, Testing, Deployment, Maintenance";
+  const PHASES = "Analyze, Implement, Testing";
   const DIRECT = "This is not a software-development task";
   const STAFFING = "Staff each SDLC phase";
 
@@ -379,7 +379,7 @@ describe("buildPrompt non-software tasks", () => {
     expect(prompt).toContain(DIRECT);
     expect(prompt).toContain("do the task directly right away");
     expect(prompt).not.toContain(PHASES);
-    expect(prompt).not.toContain("Testing must pass before Deployment.");
+    expect(prompt).not.toContain("Testing must pass before the work ships.");
     expect(prompt).not.toContain(STAFFING);
     // A software task still gets the lifecycle.
     expect(buildPrompt(task, board, [], false)).toContain(PHASES);
@@ -390,7 +390,7 @@ describe("buildPrompt non-software tasks", () => {
     expect(withFeedback).toContain(DIRECT);
     expect(withFeedback).not.toContain(PHASES);
     expect(withFeedback).not.toContain("Continue in the current SDLC phase");
-    expect(withFeedback).not.toContain("add a Maintenance phase to the todo list");
+    expect(withFeedback).not.toContain("run a fresh Analyze → Implement → Testing round");
 
     const resume = buildPrompt(poem, board, [], true);
     expect(resume).toContain(DIRECT);

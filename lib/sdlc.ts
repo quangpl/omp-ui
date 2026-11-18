@@ -1,93 +1,53 @@
 import type { TodoPhase } from "@/lib/types";
 
 /**
- * The seven SDLC phases, in order (https://www.atlassian.com/agile/software-development/sdlc).
- * Card agents name their todo phases after them; progress, transitions and the release gate are
- * all derived from `Task.todos`, so nothing about the SDLC is persisted.
+ * The three SDLC phases, in order. Card agents name their todo phases after them; progress,
+ * transitions and the release gate are all derived from `Task.todos`, so nothing about the SDLC
+ * is persisted.
  */
-export const SDLC_PHASES = [
-  "planning",
-  "feasibility",
-  "design",
-  "implementation",
-  "testing",
-  "deployment",
-  "maintenance",
-] as const;
+export const SDLC_PHASES = ["analyze", "implement", "testing"] as const;
 
 export type SdlcPhaseId = (typeof SDLC_PHASES)[number];
 
 /** Static description of one SDLC phase. */
 export interface SdlcPhaseInfo {
   id: SdlcPhaseId;
-  /** 1..7 */
+  /** 1..3 */
   step: number;
   label: string;
   /** One line: what happens in the phase, adapted to a coding agent. */
   description: string;
   /** Exit criteria = the quality gate to leave the phase; lowercase sentence fragment, no final period. */
   gate: string;
-  /** Always part of a run (implementation, testing); the others only when the task needs them. */
+  /** Always part of a run; every phase of this simple SDLC is required. */
   required: boolean;
 }
 
 /** Label, description, quality gate and requiredness of every SDLC phase. */
 export const SDLC_PHASE_INFO: Record<SdlcPhaseId, SdlcPhaseInfo> = {
-  planning: {
-    id: "planning",
+  analyze: {
+    id: "analyze",
     step: 1,
-    label: "Planning",
-    description: "Optional: pin down scope and acceptance criteria and split the work into steps; card agents skip it and start right away.",
-    gate: "goal, scope and acceptance criteria are clear and the work is split into steps",
-    required: false,
+    label: "Analyze",
+    description: "Understand the task and the relevant code until the requirement, scope and approach are clear.",
+    gate: "the requirement, scope and approach are clear before any code changes",
+    required: true,
   },
-  feasibility: {
-    id: "feasibility",
+  implement: {
+    id: "implement",
     step: 2,
-    label: "Feasibility",
-    description: "Check the approach is technically viable: analyse risks and unknowns, spike or prototype when unsure.",
-    gate: "risks, unknowns and the approach are settled (spike or prototype if needed)",
-    required: false,
-  },
-  design: {
-    id: "design",
-    step: 3,
-    label: "Design",
-    description: "Decide the architecture, interfaces, data shapes and UI the code will follow and stay compatible with.",
-    gate: "interfaces, data shapes and UI are decided before any code depends on them",
-    required: false,
-  },
-  implementation: {
-    id: "implementation",
-    step: 4,
-    label: "Implementation",
-    description: "Write the code to the design: complete, secure, maintainable and in the project's style.",
+    label: "Implement",
+    description: "Write the change: complete, secure, maintainable and in the project's style.",
     gate: "the change is complete, with no stubs or TODOs, and follows the project's patterns",
     required: true,
   },
   testing: {
     id: "testing",
-    step: 5,
+    step: 3,
     label: "Testing",
     description: "Verify the change fast: type-check, run only the tests covering the changed code and check the changed behavior once.",
     gate: "type checks and the tests covering the change pass and the changed behavior was checked once",
     required: true,
-  },
-  deployment: {
-    id: "deployment",
-    step: 6,
-    label: "Deployment",
-    description: "Release the work: update docs and changelog, write the report and ship it when asked.",
-    gate: "docs and changelog are updated, the report is written and the work is released when asked",
-    required: false,
-  },
-  maintenance: {
-    id: "maintenance",
-    step: 7,
-    label: "Maintenance",
-    description: "Support the delivered work: fix feedback and bugs, then re-verify and report after release.",
-    gate: "the feedback is fixed, re-tested and reported without regressions",
-    required: false,
   },
 };
 
@@ -111,17 +71,17 @@ export interface SdlcPhaseProgress {
 
 /** A breach of the SDLC transition rules. */
 export interface SdlcViolation {
-  /** The phase that started too early (or Deployment without Testing). */
+  /** The phase that started too early. */
   phase: SdlcPhaseId;
   /** The phase that had to be complete first. */
   requires: SdlcPhaseId;
-  /** e.g. "Deployment started before Testing was complete", "Deployment started without a Testing phase" */
+  /** e.g. "Testing started before Implement was complete" */
   message: string;
 }
 
 /** SDLC view of a card's todo list. */
 export interface SdlcProgress {
-  /** Always 7 entries, SDLC order. */
+  /** Always 3 entries, SDLC order. */
   phases: SdlcPhaseProgress[];
   /** Phase the agent is in; null when every included phase is done. */
   current: SdlcPhaseId | null;
@@ -139,9 +99,8 @@ export interface SdlcProgress {
 export const QUALITY_GATE_PREFIX = "**Quality gate:** ";
 
 const PHASE_COUNT = SDLC_PHASES.length;
-const IMPLEMENTATION = SDLC_PHASES.indexOf("implementation");
+const IMPLEMENT = SDLC_PHASES.indexOf("implement");
 const TESTING = SDLC_PHASES.indexOf("testing");
-const DEPLOYMENT = SDLC_PHASES.indexOf("deployment");
 
 /** Regex alternation of literal words; a space matches any run of whitespace. */
 function alternation(words: readonly string[]): string {
@@ -150,13 +109,9 @@ function alternation(words: readonly string[]): string {
 
 /** Canonical names per phase; a name must start with one, followed by a non-letter or its end. */
 const CANONICAL_ALIASES: Record<SdlcPhaseId, readonly string[]> = {
-  planning: ["planning", "plan"],
-  feasibility: ["feasibility"],
-  design: ["system design", "design"],
-  implementation: ["implementation", "implement", "development"],
+  analyze: ["analyze", "analysis"],
+  implement: ["implementation", "implement", "development"],
   testing: ["testing", "tests", "test", "qa", "verification"],
-  deployment: ["deployment", "deploy", "release"],
-  maintenance: ["maintenance", "maintain"],
 };
 
 /**
@@ -171,14 +126,6 @@ const CANONICAL_RE = new RegExp(
 
 /** Inference keywords; the table order breaks ties between keywords starting at the same position. */
 const INFER_TABLE: readonly (readonly [SdlcPhaseId, readonly string[]])[] = [
-  ["maintenance", ["maintain", "maintenance", "support", "monitor", "follow-up", "followup"]],
-  [
-    "deployment",
-    [
-      "deploy", "release", "ship", "rollout", "publish", "commit", "push", "merge", "handoff", "hand off",
-      "deliver", "docs", "documentation", "changelog", "cleanup", "clean up", "finalize", "wrap up", "report",
-    ],
-  ],
   [
     "testing",
     [
@@ -186,17 +133,23 @@ const INFER_TABLE: readonly (readonly [SdlcPhaseId, readonly string[]])[] = [
       "typecheck", "smoke", "e2e", "regression",
     ],
   ],
-  ["design", ["design", "architect", "architecture", "spec", "schema", "contract", "interface", "mockup", "wireframe", "ui", "ux"]],
-  ["feasibility", ["feasib", "risk", "spike", "prototype", "poc", "proof of concept", "evaluate", "assess"]],
   [
-    "planning",
-    ["plan", "scope", "requirement", "ingest", "research", "investigate", "explore", "discover", "understand", "context", "triage", "analy"],
+    "analyze",
+    [
+      "plan", "scope", "requirement", "ingest", "research", "investigate", "explore", "discover", "understand",
+      "context", "triage", "analy", "design", "architect", "architecture", "spec", "schema", "contract",
+      "interface", "mockup", "wireframe", "ui", "ux", "feasib", "risk", "spike", "prototype", "poc",
+      "proof of concept", "evaluate", "assess",
+    ],
   ],
   [
-    "implementation",
+    "implement",
     [
       "implement", "build", "develop", "code", "write", "edit", "fix", "refactor", "migrate", "wire", "integrate",
       "add", "create", "update", "change", "dispatch",
+      "deploy", "release", "ship", "rollout", "publish", "commit", "push", "merge", "handoff", "hand off",
+      "deliver", "docs", "documentation", "changelog", "cleanup", "clean up", "finalize", "wrap up", "report",
+      "maintain", "maintenance", "support", "monitor", "follow-up", "followup",
     ],
   ],
 ];
@@ -339,8 +292,8 @@ export function sdlcProgress(todos: readonly TodoPhase[]): SdlcProgress | null {
     if (current < 0) current = index;
   }
 
-  // 7: one violation per started phase (its earliest unfinished predecessor), plus Deployment
-  // without Testing; the pairs are unique by construction, so no dedupe pass is needed.
+  // 7: one violation per started phase (its earliest unfinished predecessor); the pairs are unique
+  // by construction, so no dedupe pass is needed.
   const violations: SdlcViolation[] = [];
   for (let index = 1; index < PHASE_COUNT; index++) {
     const status = phases[index].status;
@@ -355,9 +308,6 @@ export function sdlcProgress(todos: readonly TodoPhase[]): SdlcProgress | null {
         message: `${label} started before ${SDLC_PHASE_INFO[SDLC_PHASES[before]].label} was complete`,
       });
       break;
-    }
-    if (index === DEPLOYMENT && phases[TESTING].status === "skipped" && phases[IMPLEMENTATION].status !== "skipped") {
-      violations.push({ phase: "deployment", requires: "testing", message: "Deployment started without a Testing phase" });
     }
   }
 
@@ -376,9 +326,9 @@ export function releaseGate(progress: SdlcProgress | null): string | null {
   if (!progress?.canonical) return null;
   const testing = progress.phases[TESTING];
   if (testing.status === "skipped") {
-    return progress.phases[IMPLEMENTATION].status === "skipped"
+    return progress.phases[IMPLEMENT].status === "skipped"
       ? null
-      : "No Testing phase: the implementation was never tested";
+      : "No Testing phase: the change was never tested";
   }
   if (testing.status !== "done") return `Testing is not complete (${testing.done} of ${testing.total} items done)`;
   return null;

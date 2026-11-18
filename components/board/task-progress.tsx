@@ -94,7 +94,7 @@ export function progressLabel(status: TaskStatus, progress: TodoProgress | null,
 }
 
 /**
- * "SDLC: Testing (phase 5 of 7) · 3 of 5 phases done", plus the process violations: the
+ * "SDLC: Testing (phase 3 of 3) · 3 of 3 phases done", plus the process violations: the
  * tooltip and accessible name of the card's SDLC track.
  */
 function sdlcSummary(sdlc: SdlcProgress): string {
@@ -106,16 +106,6 @@ function sdlcSummary(sdlc: SdlcProgress): string {
   return label;
 }
 
-/**
- * Whether shipping went (or is going) past an unmet release gate: Testing isn't complete while
- * Deployment already started or the card is Done.
- */
-function releaseGateBreached(sdlc: SdlcProgress, status: TaskStatus): boolean {
-  if (releaseGate(sdlc) === null) return false;
-  const deployment = sdlc.phases[SDLC_PHASE_INFO.deployment.step - 1];
-  return status === "done" || deployment.status === "active" || deployment.status === "done";
-}
-
 const TRACK_SEGMENT: Record<SdlcPhaseProgress["status"], string> = {
   done: "h-1.5 w-2.5 bg-success",
   active: "h-1.5 w-2.5 bg-primary",
@@ -125,8 +115,8 @@ const TRACK_SEGMENT: Record<SdlcPhaseProgress["status"], string> = {
 
 /**
  * A card's compact SDLC track: one segment per phase (done, current, pending, skipped) with a
- * release-gate tick between Testing and Deployment that turns amber when the process was
- * breached. Renders nothing when the todo list maps to no SDLC phase.
+ * release-gate tick after Testing that turns amber when the process was breached. Renders nothing
+ * when the todo list maps to no SDLC phase.
  */
 export function SdlcTrack({
   task,
@@ -140,8 +130,9 @@ export function SdlcTrack({
   const label = sdlcSummary(sdlc);
   const running = task.agentState === "running" && task.status !== "done";
   const testing = sdlc.phases[SDLC_PHASE_INFO.testing.step - 1];
+  const releaseBreached = releaseGate(sdlc) !== null && task.status === "done";
   const gateTone =
-    sdlc.violations.length > 0 || releaseGateBreached(sdlc, task.status)
+    sdlc.violations.length > 0 || releaseBreached
       ? "bg-amber-500"
       : testing.status === "done"
         ? "bg-success"
@@ -160,9 +151,6 @@ export function SdlcTrack({
         const look = current && phase.status === "pending" ? "active" : phase.status;
         return (
           <Fragment key={phase.id}>
-            {phase.id === "deployment" && (
-              <span aria-hidden className={cn("mx-px h-2.5 w-px shrink-0 rounded-full", gateTone)} />
-            )}
             <span
               aria-hidden
               className={cn(
@@ -171,6 +159,9 @@ export function SdlcTrack({
                 current && running && "motion-safe:animate-pulse",
               )}
             />
+            {phase.id === "testing" && phase.status !== "skipped" && (
+              <span aria-hidden className={cn("mx-px h-2.5 w-px shrink-0 rounded-full", gateTone)} />
+            )}
           </Fragment>
         );
       })}
@@ -263,14 +254,11 @@ const STEP_ICON: Record<SdlcPhaseProgress["status"], { icon: typeof Circle; clas
 };
 
 /**
- * The seven SDLC phases in order, the current one highlighted, with a quality-gate checkpoint
+ * The three SDLC phases in order, the current one highlighted, with a quality-gate checkpoint
  * between consecutive included phases: passed once the earlier phase is done, amber when the
- * later phase started through an open gate (or shipped past the release gate).
+ * later phase started through an open gate.
  */
-function SdlcStepper({ sdlc, running, status }: { sdlc: SdlcProgress; running: boolean; status: TaskStatus }) {
-  const releaseBreached =
-    releaseGateBreached(sdlc, status) ||
-    sdlc.violations.some((violation) => violation.phase === "deployment" && violation.requires === "testing");
+function SdlcStepper({ sdlc, running }: { sdlc: SdlcProgress; running: boolean }) {
   let previous: SdlcPhaseProgress | null = null;
   return (
     <ol aria-label="SDLC phases" className="flex flex-wrap items-center gap-x-1 gap-y-1.5">
@@ -284,7 +272,7 @@ function SdlcStepper({ sdlc, running, status }: { sdlc: SdlcProgress; running: b
         if (phase.status !== "skipped") previous = phase;
         return (
           <li key={phase.id} className="flex items-center gap-1">
-            {from && <QualityGate from={from} to={phase} releaseBreached={releaseBreached} />}
+            {from && <QualityGate from={from} to={phase} />}
             <span
               title={`${info.step}. ${info.label}: ${info.description}`}
               aria-current={current ? "step" : undefined}
@@ -319,24 +307,13 @@ function SdlcStepper({ sdlc, running, status }: { sdlc: SdlcProgress; running: b
   );
 }
 
-/** The checkpoint between two consecutive included SDLC phases; the one into Deployment is the release gate. */
-function QualityGate({
-  from,
-  to,
-  releaseBreached,
-}: {
-  from: SdlcPhaseProgress;
-  to: SdlcPhaseProgress;
-  releaseBreached: boolean;
-}) {
-  const release = to.id === "deployment";
+/** The checkpoint between two consecutive included SDLC phases. */
+function QualityGate({ from, to }: { from: SdlcPhaseProgress; to: SdlcPhaseProgress }) {
   const passed = from.status === "done";
-  const breached =
-    (!passed && (to.status === "active" || to.status === "done")) || (release && releaseBreached);
+  const breached = !passed && (to.status === "active" || to.status === "done");
   const state = breached ? "breached" : passed ? "passed" : "open";
   const Icon = breached ? ShieldAlert : passed ? ShieldCheck : Shield;
-  const name = release ? "Release gate" : "Quality gate";
-  const title = `${name} ${state}: ${SDLC_PHASE_INFO[from.id].label} → ${SDLC_PHASE_INFO[to.id].label}. Exit criteria: ${SDLC_PHASE_INFO[from.id].gate}`;
+  const title = `Quality gate ${state}: ${SDLC_PHASE_INFO[from.id].label} → ${SDLC_PHASE_INFO[to.id].label}. Exit criteria: ${SDLC_PHASE_INFO[from.id].gate}`;
   return (
     <span
       title={title}
@@ -346,7 +323,6 @@ function QualityGate({
       )}
     >
       <Icon aria-hidden className="size-3 shrink-0" />
-      {release && <span aria-hidden className="max-sm:hidden">Release gate</span>}
       <span className="sr-only">{title}</span>
     </span>
   );
@@ -368,7 +344,7 @@ function SdlcCallout({ title, children }: { title: string; children?: ReactNode 
   );
 }
 
-/** The SDLC phase a legacy-named todo phase counts toward, next to its heading ("BUILD · Implementation"). */
+/** The SDLC phase a legacy-named todo phase counts toward, next to its heading ("BUILD · Implement"). */
 function SdlcPhaseBadge({ phase }: { phase: SdlcPhaseId | null | undefined }) {
   if (!phase) return null;
   return (
@@ -422,7 +398,7 @@ export function TodoListSection({
       <div className="flex flex-col gap-3 rounded-xl border px-3.5 py-3">
         {sdlc && (
           <div className="flex min-w-0 flex-col gap-2 border-b pb-3">
-            <SdlcStepper sdlc={sdlc} running={running && task.status !== "done"} status={task.status} />
+            <SdlcStepper sdlc={sdlc} running={running && task.status !== "done"} />
             {sdlc.violations.length > 0 && (
               <SdlcCallout title="SDLC process not followed">
                 <ul className="mt-0.5 flex list-disc flex-col gap-0.5 pl-4">

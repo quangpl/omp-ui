@@ -182,16 +182,16 @@ export function floorPlan(
 }
 
 /**
- * SDLC phase a subagent role works in: explorers and planners plan, designers design, builders
- * implement, reviewers and security test. null = no phase of its own: it works in its lead's phase.
+ * SDLC phase a subagent role works in: explorers and planners analyze, builders implement,
+ * reviewers and security test. null = no phase of its own: it works in its lead's phase.
  */
 export const ROLE_PHASE: Record<AgentRole, SdlcPhaseId | null> = {
-  scout: "planning",
-  planner: "planning",
-  oracle: "planning",
-  designer: "design",
-  worker: "implementation",
-  sprinter: "implementation",
+  scout: "analyze",
+  planner: "analyze",
+  oracle: "analyze",
+  designer: "analyze",
+  worker: "implement",
+  sprinter: "implement",
   reviewer: "testing",
   guard: "testing",
   lead: null,
@@ -199,14 +199,14 @@ export const ROLE_PHASE: Record<AgentRole, SdlcPhaseId | null> = {
 };
 
 /**
- * SDLC station a card's agent stands at: its current phase; "planning" while it has no plan
+ * SDLC station a card's agent stands at: its current phase; "analyze" while it has no plan
  * (`sdlc` null); the last included phase once every included phase is done (`current` null), or
- * "planning" when nothing is included at all.
+ * "analyze" when nothing is included at all.
  */
 export function sdlcStation(sdlc: SdlcProgress | null): SdlcPhaseId {
-  if (!sdlc) return "planning";
+  if (!sdlc) return "analyze";
   if (sdlc.current) return sdlc.current;
-  return sdlc.phases.findLast((phase) => phase.status !== "skipped")?.id ?? "planning";
+  return sdlc.phases.findLast((phase) => phase.status !== "skipped")?.id ?? "analyze";
 }
 
 /** Someone standing at an SDLC station: a running card's agent or one of its busy subagents. */
@@ -235,7 +235,7 @@ export interface PipelineStation {
 
 export interface SdlcPipeline {
   stations: Record<SdlcPhaseId, PipelineStation>;
-  /** Cards waiting in line, not started yet (before Planning). */
+  /** Cards waiting in line, not started yet (before Analyze). */
   backlog: number;
   /** Phases the pipeline draws, in SDLC order: the required ones, plus when-needed phases that some running card includes (non-skipped) or that someone works in. */
   visible: SdlcPhaseId[];
@@ -243,8 +243,8 @@ export interface SdlcPipeline {
 
 /**
  * Who stands at which SDLC station. A running card stands at `sdlcStation(entry.sdlc)`: its
- * current phase, Planning while it has no plan, its last included phase once all are done. A busy
- * subagent (running/pending) stands at its role's phase (ROLE_PHASE: scouts plan, builders
+ * current phase, Analyze while it has no plan, its last included phase once all are done. A busy
+ * subagent (running/pending) stands at its role's phase (ROLE_PHASE: scouts analyze, builders
  * implement, reviewers test, …), or at its lead's station when the role has none (helpers).
  * Violations of running cards raise `alerts` on the phase that started too early and `breaches`
  * on every gate they crossed; `backlog` counts the queued cards; `visible` lists the phases to

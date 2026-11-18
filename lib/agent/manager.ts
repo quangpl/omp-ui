@@ -89,6 +89,7 @@ import {
   QUALITY_GATE_PREFIX,
   releaseGate,
   SDLC_PHASE_INFO,
+  SDLC_PHASES,
   sdlcChange,
   sdlcProgress,
   type SdlcViolation,
@@ -2691,7 +2692,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       }
       if (change.entered) {
         const info = SDLC_PHASE_INFO[change.entered];
-        await this.event(run, "status", `▸ SDLC phase ${info.step}/7: ${info.label}`);
+        await this.event(run, "status", `▸ SDLC phase ${info.step}/${SDLC_PHASES.length}: ${info.label}`);
       }
       // Free-form (legacy) lists are only classified for display, never enforced.
       if (!after?.canonical) return;
@@ -2980,7 +2981,7 @@ function sdlcSteerMessage(violation: SdlcViolation): string {
   return (
     `Quality gate (SDLC): ${violation.message}. Finish the ${required.label} phase first ` +
     `(exit criteria: ${required.gate}), then continue with ${SDLC_PHASE_INFO[violation.phase].label}. ` +
-    "Keep your todo phases in SDLC order: Planning, Feasibility, Design, Implementation, Testing, Deployment, Maintenance."
+    `Keep your todo phases in SDLC order: ${SDLC_PHASES.map((id) => SDLC_PHASE_INFO[id].label).join(", ")}.`
   );
 }
 
