@@ -23,6 +23,7 @@ function usage(...exhausted: string[]): AiStats {
   const resetsAt = new Date(Date.now() + HOUR).toISOString();
   return {
     generatedAt: new Date().toISOString(),
+    balances: [],
     quota: {
       available: true,
       error: null,

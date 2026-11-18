@@ -25,7 +25,7 @@ import { useNow, type AiState } from "@/components/stats/use-stats";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { AiModelUsage, AiProviderQuota, AiQuotaLimit, AiStats } from "@/lib/types";
+import type { AiModelUsage, AiProviderBalance, AiProviderQuota, AiQuotaLimit, AiStats } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const GAUGE_SIZE = 52;
@@ -157,6 +157,55 @@ function ProviderPanel({ provider, now, index }: { provider: AiProviderQuota; no
   );
 }
 
+/** A provider balance amount in its currency, e.g. "¥110.00"; falls back to a plain decimal. */
+function formatBalance(value: number, currency: string | null): string {
+  if (currency) {
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(value);
+    } catch {
+      // Unknown currency code: fall through to the plain decimal.
+    }
+  }
+  return `${value.toFixed(2)}${currency ? ` ${currency}` : ""}`;
+}
+
+function BalanceRow({ label, value, currency }: { label: string; value: number | null; currency: string | null }) {
+  return (
+    <li className="flex items-baseline justify-between gap-4 px-4 py-3.5 sm:px-5">
+      <span className="min-w-0 truncate text-sm font-medium">{label}</span>
+      <span className="shrink-0 font-mono text-sm font-semibold tracking-tight tabular-nums">
+        {value === null ? "Not reported" : formatBalance(value, currency)}
+      </span>
+    </li>
+  );
+}
+
+/** A prepaid-balance provider (DeepSeek): its current balance, granted and topped-up amounts. */
+function BalancePanel({ balance, index }: { balance: AiProviderBalance; index: number }) {
+  return (
+    <div className={cn(PANEL, "animate-card-in")} style={stagger(4 + index)}>
+      <PanelHeader
+        title={providerName(balance.provider)}
+        note={balance.available === false ? <Badge variant="destructive">Unavailable</Badge> : undefined}
+      />
+      <ul className="divide-y">
+        <BalanceRow label="Balance" value={balance.total} currency={balance.currency} />
+        {balance.granted !== null && (
+          <BalanceRow label="Granted balance" value={balance.granted} currency={balance.currency} />
+        )}
+        {balance.toppedUp !== null && (
+          <BalanceRow label="Topped up balance" value={balance.toppedUp} currency={balance.currency} />
+        )}
+      </ul>
+    </div>
+  );
+}
+
 const CALLOUT_TONE = {
   warning: "bg-amber-500/[0.08] ring-amber-500/25",
   destructive: "bg-destructive/[0.07] ring-destructive/25",
@@ -204,7 +253,15 @@ function TightestLimit({ providers, now }: { providers: AiProviderQuota[]; now: 
   );
 }
 
-function QuotaList({ quota, now }: { quota: AiStats["quota"]; now: number }) {
+function QuotaList({
+  quota,
+  balances,
+  now,
+}: {
+  quota: AiStats["quota"];
+  balances: AiProviderBalance[];
+  now: number;
+}) {
   if (!quota.available) {
     return (
       <Notice tone="error" title={quota.error ?? "Could not read provider quota."}>
@@ -219,7 +276,7 @@ function QuotaList({ quota, now }: { quota: AiStats["quota"]; now: number }) {
       </Notice>
     );
   }
-  if (quota.providers.length === 0) {
+  if (quota.providers.length === 0 && balances.length === 0) {
     return (
       <EmptyState icon={<GaugeIcon />} title="No provider quota reported">
         Sign in to a provider with <code className="font-mono text-xs">omp</code> on this server to see its
@@ -233,6 +290,9 @@ function QuotaList({ quota, now }: { quota: AiStats["quota"]; now: number }) {
       <div className="grid gap-4 @2xl:grid-cols-2 @2xl:items-start">
         {quota.providers.map((provider, index) => (
           <ProviderPanel key={`${provider.provider}-${index}`} provider={provider} now={now} index={index} />
+        ))}
+        {balances.map((balance, index) => (
+          <BalancePanel key={balance.provider} balance={balance} index={quota.providers.length + index} />
         ))}
       </div>
     </div>
@@ -562,7 +622,7 @@ export function AiSection({ ai }: { ai: AiState }) {
         <div className="@container">
           {/* Without omp there is no usage either; one notice is enough, and it gets the full width. */}
           <div className={stats.quota.error === OMP_MISSING ? undefined : SPLIT}>
-            <QuotaList quota={stats.quota} now={now} />
+            <QuotaList quota={stats.quota} balances={stats.balances} now={now} />
             {stats.quota.error !== OMP_MISSING && <UsageByModel usage={stats.usage} />}
           </div>
         </div>

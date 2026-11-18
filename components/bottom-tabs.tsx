@@ -17,21 +17,19 @@ import {
   SettingsIcon,
   SquareTerminalIcon,
 } from "lucide-react";
-import { RunningCountBadge } from "@/components/containers/running-containers-button";
 import { isMenuHrefVisible, useVisibleDashboardMenus } from "@/lib/dashboard-menus";
 import { cn } from "@/lib/utils";
 
 /**
  * Top-level sections: the sidebar's "Navigate" list. `phoneTab` ones are also bottom tabs on
- * phones; the rest stay in the sidebar sheet so the bar keeps eight tabs that still fit a 360px phone
- * (labels truncate).
+ * phones; the rest stay in the sidebar sheet (the bar keeps only the sections most used on a phone).
  */
 export const TOP_TABS = [
   { href: "/", label: "Projects", icon: LayoutGridIcon, phoneTab: true },
   { href: "/schedulers", label: "Schedulers", icon: CalendarClockIcon, phoneTab: true },
-  { href: "/visualize", label: "Visualize", icon: RadarIcon, phoneTab: true },
-  { href: "/containers", label: "Containers", icon: ContainerIcon, phoneTab: true },
-  { href: "/terminal", label: "Terminal", icon: SquareTerminalIcon, phoneTab: true },
+  { href: "/visualize", label: "Visualize", icon: RadarIcon, phoneTab: false },
+  { href: "/containers", label: "Containers", icon: ContainerIcon, phoneTab: false },
+  { href: "/terminal", label: "Terminal", icon: SquareTerminalIcon, phoneTab: false },
   { href: "/files", label: "Files", icon: FolderCodeIcon, phoneTab: false },
   { href: "/artifacts", label: "Artifacts", icon: PackageCheckIcon, phoneTab: false },
   { href: "/memory", label: "Memory", icon: BrainIcon, phoneTab: false },
@@ -98,7 +96,7 @@ export function BottomTabs() {
           {tabs.map(({ href, label, icon: Icon }) => {
             const active = pathname === href;
             return (
-              // `min-w-0` lets eight tabs share a 360px bar; long labels truncate instead of widening it.
+              // `min-w-0` lets the tabs share a 360px bar; long labels truncate instead of widening it.
               <li key={href} className="relative min-w-0 flex-1">
                 <Link
                   href={href}
@@ -115,7 +113,6 @@ export function BottomTabs() {
                         active && "scale-110",
                       )}
                     />
-                    {href === "/containers" && <RunningCountBadge className="absolute top-0 right-1" />}
                   </span>
                   <span className={LABEL}>{label}</span>
                 </Link>

@@ -148,7 +148,12 @@ export function buildPrompt(
   openFeedback: Comment[],
   isResume: boolean,
   context?: RunContext,
+  useSystemPrompt = true,
 ): string {
+  if (!useSystemPrompt) {
+    // The system prompt is off: forward the task to omp as written, with nothing added.
+    return taskSection(task);
+  }
   const senders = context?.senders ?? {};
   const feedback = openFeedback.filter((c) => c.author === "user" && !c.resolved);
   const folders = projectFolders(board);

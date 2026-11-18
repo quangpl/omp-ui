@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { currentResourcePressure } from "@/lib/agent/resource-guard";
 import type { AgentManager } from "@/lib/agent/types";
+import { fetchDeepSeekBalance } from "@/lib/ai-balance";
 import { childEnv } from "@/lib/child-env";
 import type { Repository } from "@/lib/db/types";
 import {
@@ -275,15 +276,18 @@ function mapUsage(data: unknown): Pick<AiStats["usage"], "totals" | "byModel"> {
 }
 
 async function loadAiStats(ompPath: string): Promise<AiStats> {
-  const [usage, stats] = await Promise.all([
+  const env = childEnv();
+  const [usage, stats, deepseek] = await Promise.all([
     runOmpJson(ompPath, ["usage", "--json"]),
     runOmpJson(ompPath, ["stats", "--json"]),
+    fetchDeepSeekBalance(env),
   ]);
   return {
     generatedAt: new Date().toISOString(),
     quota: usage.ok
       ? { available: true, error: null, providers: mapQuota(usage.data) }
       : { available: false, error: usage.error, providers: [] },
+    balances: deepseek ? [deepseek] : [],
     usage: stats.ok
       ? { available: true, error: null, ...mapUsage(stats.data) }
       : { available: false, error: stats.error, totals: null, byModel: [] },
