@@ -361,6 +361,47 @@ describe("buildPrompt SDLC workflow", () => {
   });
 });
 
+describe("buildPrompt non-software tasks", () => {
+  const poem = { ...task, title: "Write a poem about the ocean", description: "Four stanzas, free verse." };
+  const PHASES = "Planning, Feasibility, Design, Implementation, Testing, Deployment, Maintenance";
+  const DIRECT = "This is not a software-development task";
+  const STAFFING = "Staff each SDLC phase";
+
+  it("runs straight instead of applying the SDLC workflow", () => {
+    const prompt = buildPrompt(poem, board, [], false);
+    expect(prompt).toContain(DIRECT);
+    expect(prompt).toContain("do the task directly right away");
+    expect(prompt).not.toContain(PHASES);
+    expect(prompt).not.toContain("Testing must pass before Deployment.");
+    expect(prompt).not.toContain(STAFFING);
+    // A software task still gets the lifecycle.
+    expect(buildPrompt(task, board, [], false)).toContain(PHASES);
+  });
+
+  it("skips the SDLC phases on resume, with and without feedback", () => {
+    const withFeedback = buildPrompt(poem, board, [comment("Make it shorter")], true);
+    expect(withFeedback).toContain(DIRECT);
+    expect(withFeedback).not.toContain(PHASES);
+    expect(withFeedback).not.toContain("Continue in the current SDLC phase");
+    expect(withFeedback).not.toContain("add a Maintenance phase to the todo list");
+
+    const resume = buildPrompt(poem, board, [], true);
+    expect(resume).toContain(DIRECT);
+    expect(resume).not.toContain(PHASES);
+    expect(resume).not.toContain("Continue from the SDLC phase your todo list shows.");
+  });
+
+  it("omits SDLC role staffing even for an orchestrated non-software task", () => {
+    const large = {
+      ...poem,
+      description: "Write:\n- Poem about the ocean\n- Poem about the mountains\n- Poem about the forest\n- Poem about the desert",
+    };
+    const prompt = buildPrompt(large, board, [], false);
+    expect(prompt).toMatch(KEYWORD);
+    expect(prompt).not.toContain(STAFFING);
+  });
+});
+
 describe("buildPrompt cleanup policy", () => {
   it("asks every run to clean up its temporary artifacts before pushing and before the summary", () => {
     const CLEANUP = "clean up everything you created only to do this task";
