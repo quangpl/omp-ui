@@ -19,6 +19,8 @@ export const CREDENTIAL_PROVIDER_IDS = [
   // Productivity
   "slack",
   "notion",
+  "smtp",
+  "telegram",
   // Cloud
   "aws",
   "cloudflare",
