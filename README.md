@@ -208,6 +208,8 @@ A card has two ship buttons. Each acts on every project folder with changes; nei
 | **Create PR/MR** (recommended) | Commits to a new `omp/<card>` branch, pushes it, and opens a pull request (GitHub) or merge request (GitLab) | `git` plus [`gh`](https://cli.github.com) for GitHub or [`glab`](https://gitlab.com/gitlab-org/cli) for GitLab, signed in |
 | **Push to main** | Commits and pushes directly to the project's push branch: `main` unless you change **Push branch** under **Project settings → More options** (created on the remote if missing). **Create PR/MR** still targets the repo's default branch | `git` with push access |
 
+**Discard all changes.** When a project (or a card's workspace) has uncommitted changes, a **Discard all changes** button appears next to the header's change count and in the card's **Ship changes** panel. After a confirmation it resets tracked and staged edits and deletes new untracked files; unpushed commits and git checkpoints are left alone. It is blocked while an agent on the board is running or queued.
+
 To authenticate, either:
 
 - Run `gh auth login` and/or `glab auth login` once.

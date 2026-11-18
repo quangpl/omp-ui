@@ -1599,6 +1599,20 @@ export interface BoardPushResult {
   results: GitRepoActionResult[];
 }
 
+/** Outcome for one folder of a discard-changes action (POST /boards/:id/git/discard, /tasks/:id/git/discard). */
+export interface GitDiscardFolderResult {
+  folder: string;
+  /** Uncommitted files discarded (tracked, staged and untracked); 0 when the folder was clean or failed. */
+  discardedFiles: number;
+  /** Error for this folder; other folders still proceed. */
+  error: string | null;
+}
+
+/** POST /boards/:id/git/discard and POST /tasks/:id/git/discard: per-repo result of discarding uncommitted changes. */
+export interface GitDiscardResult {
+  results: GitDiscardFolderResult[];
+}
+
 /** GET /system/restart — can the "Restart server" button restart this server, and the last restart. */
 export interface RestartStatus {
   /** Whether the button can restart this server; `reason` says why not. */

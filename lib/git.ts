@@ -317,6 +317,23 @@ export async function gitStatus(folder: string): Promise<GitStatus> {
 }
 
 // ---------------------------------------------------------------------------
+// Discard
+
+/**
+ * Discard every uncommitted change in `folder`: `git reset --hard HEAD` restores tracked and
+ * staged files, `git clean -fd` deletes untracked files and directories. Unpushed commits, git
+ * checkpoints (refs/agentman/…) and ignored files are left alone.
+ */
+export async function discardChanges(folder: string): Promise<void> {
+  return withFolderLock(folder, async () => {
+    const reset = await git(folder, ["reset", "--hard", "HEAD"]);
+    if (!reset.ok) throw new HttpError(400, explain("git", reset));
+    const clean = await git(folder, ["clean", "-fd"]);
+    if (!clean.ok) throw new HttpError(400, explain("git", clean));
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Branches
 
 /** Short names of the refs under `prefix`, most recent commit first. */

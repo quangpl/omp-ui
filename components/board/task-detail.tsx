@@ -911,6 +911,10 @@ function TaskDetailBody({
                 if (board.worktrees) workspaceGit.refresh();
                 onGitChanged();
               }}
+              onDiscarded={() => {
+                if (board.worktrees) workspaceGit.refresh();
+                onGitChanged();
+              }}
             />
           )}
 

@@ -9,6 +9,7 @@ import { api, env, freshEnv, setupAdmin, teardown, tempDir, waitFor } from "./he
 import * as boardGitRoute from "@/app/api/v1/boards/[id]/git/route";
 import * as boardRoute from "@/app/api/v1/boards/[id]/route";
 import * as boardPushRoute from "@/app/api/v1/boards/[id]/git/push/route";
+import * as boardDiscardRoute from "@/app/api/v1/boards/[id]/git/discard/route";
 import * as boardBranchesRoute from "@/app/api/v1/boards/[id]/git/branches/route";
 import * as boardTasksRoute from "@/app/api/v1/boards/[id]/tasks/route";
 import * as boardsRoute from "@/app/api/v1/boards/route";
@@ -19,6 +20,7 @@ import * as initRoute from "@/app/api/v1/git/init/route";
 import * as repoRoute from "@/app/api/v1/git/repo/route";
 import * as taskPrRoute from "@/app/api/v1/tasks/[id]/git/pr/route";
 import * as taskPushRoute from "@/app/api/v1/tasks/[id]/git/push/route";
+import * as taskDiscardRoute from "@/app/api/v1/tasks/[id]/git/discard/route";
 import * as taskRoute from "@/app/api/v1/tasks/[id]/route";
 import * as taskRunRoute from "@/app/api/v1/tasks/[id]/run/route";
 import * as taskStopRoute from "@/app/api/v1/tasks/[id]/stop/route";
@@ -30,6 +32,7 @@ import type {
   FsEntry,
   GitActionResult,
   GitBranches,
+  GitDiscardResult,
   GitStatus,
   GitSwitchResult,
   Task,
@@ -107,6 +110,20 @@ async function boardPush(boardId: string) {
   return api<BoardPushResult & { error?: string }>(boardPushRoute, "POST", `/boards/${boardId}/git/push`, {
     body: {},
     params: { id: boardId },
+  });
+}
+
+async function boardDiscard(boardId: string) {
+  return api<GitDiscardResult & { error?: string }>(boardDiscardRoute, "POST", `/boards/${boardId}/git/discard`, {
+    body: {},
+    params: { id: boardId },
+  });
+}
+
+async function taskDiscard(taskId: string) {
+  return api<GitDiscardResult & { error?: string }>(taskDiscardRoute, "POST", `/tasks/${taskId}/git/discard`, {
+    body: {},
+    params: { id: taskId },
   });
 }
 
@@ -512,6 +529,104 @@ describe("git status and quick actions", () => {
       } finally {
         process.env.PATH = originalPath;
       }
+    },
+    GIT_TIMEOUT,
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("discard changes", () => {
+  let app: Repo;
+  let lib: Repo;
+  let notes: string;
+  let board: Board;
+  let task: Task;
+
+  beforeAll(async () => {
+    await freshEnv();
+    await setupAdmin();
+    app = makeRepo("app");
+    lib = makeRepo("lib");
+    notes = tempDir(path.join("projects", "notes"));
+    board = await createBoard({ name: "Repos", workdir: app.work, extraFolders: [lib.work, notes], autoRun: false });
+    task = await createTask(board.id, "Discard me");
+  });
+
+  it(
+    "discards tracked, staged and untracked changes but keeps unpushed commits and skips non-repos",
+    async () => {
+      writeFileSync(path.join(app.work, "README.md"), "# app\n\nedited\n");
+      writeFileSync(path.join(app.work, "staged.txt"), "staged\n");
+      git(app.work, "add", "staged.txt");
+      writeFileSync(path.join(app.work, "untracked.txt"), "untracked\n");
+      mkdirSync(path.join(app.work, "newdir"));
+      writeFileSync(path.join(app.work, "newdir", "inner.txt"), "inner\n");
+      // An unpushed local commit in the extra repo must survive.
+      writeFileSync(path.join(lib.work, "lib.txt"), "lib\n");
+      git(lib.work, "add", "-A");
+      git(lib.work, "commit", "-m", "Local lib change");
+      const libCommit = git(lib.work, "rev-parse", "HEAD");
+
+      const res = await boardDiscard(board.id);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.results).toEqual([
+        { folder: app.work, discardedFiles: 4, error: null },
+        { folder: lib.work, discardedFiles: 0, error: null },
+      ]);
+
+      expect(git(app.work, "status", "--porcelain")).toBe("");
+      expect(existsSync(path.join(app.work, "untracked.txt"))).toBe(false);
+      expect(existsSync(path.join(app.work, "newdir"))).toBe(false);
+      expect(git(lib.work, "rev-parse", "HEAD")).toBe(libCommit);
+      expect(git(lib.work, "status", "--porcelain")).toBe("");
+
+      const again = await boardDiscard(board.id);
+      expect(again.status).toBe(200);
+      expect(again.body.results.every((r) => r.discardedFiles === 0 && r.error === null)).toBe(true);
+    },
+    GIT_TIMEOUT,
+  );
+
+  it("discards the task's folders via the task route", async () => {
+    writeFileSync(path.join(app.work, "task.txt"), "task\n");
+    writeFileSync(path.join(lib.work, "lib2.txt"), "lib2\n");
+
+    const res = await taskDiscard(task.id);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.results).toEqual([
+      { folder: app.work, discardedFiles: 1, error: null },
+      { folder: lib.work, discardedFiles: 1, error: null },
+    ]);
+    expect(git(app.work, "status", "--porcelain")).toBe("");
+    expect(git(lib.work, "status", "--porcelain")).toBe("");
+
+    const missing = await taskDiscard(MISSING_ID);
+    expect(missing.status).toBe(404);
+  });
+
+  it("rejects a board with no git repositories", async () => {
+    const noRepo = await createBoard({ name: "No repos", workdir: notes, extraFolders: [], autoRun: false });
+    const res = await boardDiscard(noRepo.id);
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: "This project's folders aren't git repositories, so there is nothing to discard.",
+    });
+  });
+
+  it(
+    "answers 409 while an agent on the board is running",
+    async () => {
+      const busy = await createTask(board.id, "Busy agent [fake:slow]");
+      await api<Task>(taskRunRoute, "POST", `/tasks/${busy.id}/run`, { params: { id: busy.id } });
+      await waitFor(async () => {
+        const res = await api<{ task: Task }>(taskRoute, "GET", `/tasks/${busy.id}`, { params: { id: busy.id } });
+        return res.body.task.agentState === "running";
+      }, 20_000);
+      const res = await boardDiscard(board.id);
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({ error: "Wait for the agent to finish first." });
+      await api<Task>(taskStopRoute, "POST", `/tasks/${busy.id}/stop`, { params: { id: busy.id } });
     },
     GIT_TIMEOUT,
   );
