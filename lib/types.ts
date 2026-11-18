@@ -1929,6 +1929,12 @@ export interface AiStats {
   };
 }
 
+/** GET /stats/ai: the omp numbers plus the providers agents run on (Settings → AI Providers → Provider priority). */
+export interface AiStatsResponse extends AiStats {
+  /** Active provider ids in priority order; empty when no priority is configured. */
+  activeProviders: string[];
+}
+
 /** A value omp's config.yml holds for one editable key; null = not set (omp's default applies). */
 export type OmpConfigValue = string | number | boolean | null;
 

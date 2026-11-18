@@ -247,6 +247,7 @@ async function runAdvisor(scope: AdvisorScope, prompt: string): Promise<string> 
       ["advisor", roles?.advisor],
       ["slow", roles?.slow],
     ],
+    modelRoles: roles,
   });
   signal.throwIfAborted();
   return runOmpHelper({

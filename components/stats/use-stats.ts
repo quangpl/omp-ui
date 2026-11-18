@@ -4,7 +4,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { errorMessage } from "@/components/stats/shared";
 import { api } from "@/lib/api-client";
-import type { AiStats, SystemStats } from "@/lib/types";
+import type { AiStatsResponse, SystemStats } from "@/lib/types";
 
 export const SYSTEM_REFRESH_MS = 5000;
 /** Samples kept for live charts: 60 × 5 s = the last 5 minutes. */
@@ -35,7 +35,7 @@ export interface SystemState {
 }
 
 export interface AiState {
-  stats: AiStats | null;
+  stats: AiStatsResponse | null;
   error: string | null;
   refreshing: boolean;
   reload: () => void;

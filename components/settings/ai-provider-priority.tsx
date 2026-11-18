@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { ArrowDownIcon, ArrowUpIcon, PlusIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { formatDateTime } from "@/components/board/format";
-import { ModelSelect } from "@/components/settings/model-select";
 import { SettingsGroup, SettingsPanel, SettingsSaveBar } from "@/components/settings/settings-section";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,14 +11,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { AI_OTHER_OAUTH_LOGINS, AI_PROVIDERS, type AiProvidersResponse } from "@/lib/ai-providers";
 import { api } from "@/lib/api-client";
-import { quotaBlocks, selectorProvider, type ProviderPriorityEntry } from "@/lib/provider-priority";
-import type { OmpModel } from "@/lib/types";
+import { providerRoleModel, quotaBlocks, selectorProvider, type ProviderPriorityEntry } from "@/lib/provider-priority";
+import type { ModelRoles } from "@/lib/agent/model-select";
+import type { OmpSettingValue } from "@/lib/types";
 
 /** An omp provider runs can use: it is authenticated and omp lists models for it. */
 interface ProviderOption {
   id: string;
   label: string;
-  models: OmpModel[];
 }
 
 let seq = 0;
@@ -31,17 +30,15 @@ interface Row extends ProviderPriorityEntry {
 
 /**
  * omp providers (the first segment of model selectors) of the authenticated catalog providers and
- * of the providers omp uses outside the catalog, each with its models.
+ * of the providers omp uses outside the catalog.
  */
 function providerOptions(data: AiProvidersResponse): ProviderOption[] {
   const options = new Map<string, ProviderOption>();
-  const add = (label: (id: string) => string, models: { selector: string; name: string }[]) => {
+  const add = (label: (id: string) => string, models: { selector: string }[]) => {
     for (const model of models) {
       const id = selectorProvider(model.selector);
       if (!id) continue;
-      const option = options.get(id) ?? { id, label: label(id), models: [] };
-      option.models.push({ selector: model.selector, name: model.name, provider: id, thinking: [] });
-      options.set(id, option);
+      if (!options.has(id)) options.set(id, { id, label: label(id) });
     }
   };
   for (const provider of AI_PROVIDERS) {
@@ -55,9 +52,18 @@ function providerOptions(data: AiProvidersResponse): ProviderOption[] {
   return [...options.values()];
 }
 
+/** omp's `modelRoles` (role → model selector) out of GET /omp-config `settings`; null when it sets none. */
+function rolesOf(value: OmpSettingValue | undefined): ModelRoles | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const roles: ModelRoles = {};
+  for (const [role, selector] of Object.entries(value)) if (typeof selector === "string") roles[role] = selector;
+  return roles;
+}
+
 /**
  * Settings → AI Providers → Provider priority: the Main provider agents run on, and the providers
  * that take over, in order, only while the ones above are out of quota (lib/provider-priority.ts).
+ * Only providers are chosen here: each runs the model of one of omp's model roles.
  */
 export function AiProviderPriority({ data }: { data: AiProvidersResponse }) {
   const options = useMemo(() => providerOptions(data), [data]);
@@ -66,6 +72,8 @@ export function AiProviderPriority({ data }: { data: AiProvidersResponse }) {
   const [draft, setDraft] = useState<Row[] | null>(null);
   const initialRows = useMemo(() => (saved ?? []).map((entry) => ({ ...entry, id: nextId() })), [saved]);
   const [saving, setSaving] = useState(false);
+  /** omp's model roles; null until read (or when omp's config could not be read: no hints then). */
+  const [roles, setRoles] = useState<ModelRoles | null | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | null>(null);
   /** omp provider → when its exhausted quota resets (ms epoch), per `omp usage`. */
   const [outOfQuota, setOutOfQuota] = useState<Map<string, number>>(new Map());
@@ -80,6 +88,15 @@ export function AiProviderPriority({ data }: { data: AiProvidersResponse }) {
       .catch((err: unknown) => {
         if (!cancelled) setLoadError(err instanceof Error && err.message ? err.message : "Could not load settings.");
       });
+    // The roles are a hint here: a failed read just shows no model notes.
+    api.ompConfig
+      .get()
+      .then((config) => {
+        if (!cancelled) setRoles(rolesOf(config.settings.modelRoles) ?? {});
+      })
+      .catch(() => {
+        if (!cancelled) setRoles(null);
+      });
     // Quota is a hint here: a failed read just shows no "out of quota" badges.
     api.stats
       .ai()
@@ -93,12 +110,12 @@ export function AiProviderPriority({ data }: { data: AiProvidersResponse }) {
   }, []);
 
   const rows = draft ?? initialRows;
-  const entries = rows.map(({ provider, model }) => ({ provider, model }));
-  const incomplete = rows.some((row) => !row.provider || selectorProvider(row.model) !== row.provider);
+  const entries = rows.map(({ provider }) => ({ provider }));
+  const incomplete = rows.some((row) => !row.provider);
   const dirty = saved !== null && JSON.stringify(entries) !== JSON.stringify(saved);
 
   const edit = (fn: (rows: Row[]) => Row[]) => setDraft(fn(rows));
-  const editRow = (id: number, patch: Partial<ProviderPriorityEntry>) =>
+  const editRow = (id: number, patch: ProviderPriorityEntry) =>
     edit((list) => list.map((row) => (row.id === id ? { ...row, ...patch } : row)));
   const move = (index: number, delta: number) =>
     edit((list) => {
@@ -111,7 +128,7 @@ export function AiProviderPriority({ data }: { data: AiProvidersResponse }) {
 
   function addRow() {
     const option = unused[0];
-    edit((list) => [...list, { id: nextId(), provider: option?.id ?? "", model: option?.models[0]?.selector ?? "" }]);
+    edit((list) => [...list, { id: nextId(), provider: option?.id ?? "" }]);
   }
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -138,8 +155,10 @@ export function AiProviderPriority({ data }: { data: AiProvidersResponse }) {
         <SettingsGroup title="Provider priority">
           <p className="-mt-2 text-xs text-pretty text-muted-foreground">
             Agents run on the Main provider. Only while it is out of quota (omp reports a used-up limit, or a run
-            fails on one) do runs move to the next provider below, also in the middle of a run; they go back to Main
-            once its quota resets. Replaces the default model; a model pinned on a board still wins.
+            fails on one) do runs move to the next provider below; a run that fails on a provider error — a usage
+            limit, or the provider being unavailable — continues on the next provider's model. They go back to Main
+            once its quota resets. Models are not chosen here: each provider runs the model of one of your omp model
+            roles (OMP config); a model pinned on a board still wins.
           </p>
           {loadError ? (
             <p role="alert" className="text-xs text-destructive">
@@ -166,12 +185,7 @@ export function AiProviderPriority({ data }: { data: AiProvidersResponse }) {
                       </Badge>
                       <Select
                         value={row.provider}
-                        onValueChange={(provider) =>
-                          editRow(row.id, {
-                            provider,
-                            model: options.find((o) => o.id === provider)?.models[0]?.selector ?? "",
-                          })
-                        }
+                        onValueChange={(provider) => editRow(row.id, { provider })}
                         disabled={saving}
                       >
                         <SelectTrigger
@@ -193,16 +207,6 @@ export function AiProviderPriority({ data }: { data: AiProvidersResponse }) {
                           ))}
                         </SelectContent>
                       </Select>
-                      <ModelSelect
-                        value={row.model}
-                        onChange={(model) => editRow(row.id, { model })}
-                        models={option?.models ?? []}
-                        status="ready"
-                        placeholder="Pick a model"
-                        ariaLabel={`${index === 0 ? "Main" : `Backup ${index}`} model`}
-                        disabled={saving || !row.provider}
-                        className="min-w-44 flex-1 basis-52"
-                      />
                       <div className="flex items-center gap-1">
                         <Button
                           type="button"
@@ -248,6 +252,9 @@ export function AiProviderPriority({ data }: { data: AiProvidersResponse }) {
                         Not authenticated: omp lists no models for {row.provider}, so its runs fail over to the next provider.
                       </p>
                     )}
+                    {row.provider && option && roles !== undefined && roles !== null && (
+                      <RoleNote provider={row.provider} roles={roles} />
+                    )}
                     {until !== undefined && (
                       <p className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300">
                         <TriangleAlertIcon className="size-3.5 shrink-0" aria-hidden="true" />
@@ -280,5 +287,23 @@ export function AiProviderPriority({ data }: { data: AiProvidersResponse }) {
         />
       </SettingsPanel>
     </form>
+  );
+}
+
+/** What a provider runs: the model of the omp role that uses it, or why it is skipped. */
+function RoleNote({ provider, roles }: { provider: string; roles: ModelRoles }) {
+  const model = providerRoleModel(roles, provider);
+  if (!model) {
+    return (
+      <p className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300">
+        <TriangleAlertIcon className="size-3.5 shrink-0" aria-hidden="true" />
+        No omp model role uses {provider}: runs skip it. Set a role to one of its models in OMP config.
+      </p>
+    );
+  }
+  return (
+    <p className="text-xs text-muted-foreground">
+      Model from omp roles: <span className="font-mono">{model}</span>
+    </p>
   );
 }

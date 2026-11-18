@@ -1520,14 +1520,13 @@ class OmpAgentManager implements AgentManager, RunControl {
     const sessionFile = task.sessionFile;
     // An automatic retry after a failed run: the prompt tells the agent what went wrong.
     const retriedRunId = task.autoRetries > 0 ? task.lastRunId : null;
-    const [workspace, taskFiles, boardFiles, comments, foundSession, retriedRun, providerPick] = await Promise.all([
+    const [workspace, taskFiles, boardFiles, comments, foundSession, retriedRun] = await Promise.all([
       board.worktrees ? ensureWorkspace(board, task) : null,
       ensureFilesFolder("tasks", task.id),
       ensureFilesFolder("boards", board.id),
       repo.listComments(task.id),
       sessionFile ? stat(sessionFile).then(() => sessionFile, () => null) : null,
       retriedRunId ? repo.getRun(retriedRunId) : null,
-      chooseProvider(settings, board.model),
     ]);
     const quotaRetry = retriedRun?.status === "failed" && isQuotaError(retriedRun.error);
     // Only the agent's own failures: a quota error or a lost node is not something it can fix.
@@ -1621,10 +1620,14 @@ class OmpAgentManager implements AgentManager, RunControl {
         : null;
     // Memory off for this card: the run config drops agentmemory's extension and MCP server.
     const memoryOff = task.ignoreMemory ? memoryOffOverlay(settings.ompPath, workdir) : null;
+    // The provider priority runs the model of an omp role on its provider, so it needs the roles too.
+    const needRoles = (autoSelect && resumeFile === null) || (settings.providerPriority.length > 0 && !board.model?.trim());
+    const roles = needRoles ? await readModelRoles(settings.ompPath, workdir, childEnv()) : null;
+    const providerPick = await chooseProvider(settings, board.model, roles);
+    if (run.finished) return;
     const overlay = runConfigOverlay(settings, taskFiles, subagents, providerPick);
-    const [workdirFound, roles, configFile, memoryProject, memoryOffSettings] = await Promise.all([
+    const [workdirFound, configFile, memoryProject, memoryOffSettings] = await Promise.all([
       isDirectory(workdir),
-      autoSelect && resumeFile === null ? readModelRoles(settings.ompPath, workdir, childEnv()) : null,
       memoryOff
         ? memoryOff.then((off) => writeRunConfig(task.id, { ...overlay, ...off }))
         : writeRunConfig(task.id, overlay),
@@ -3070,8 +3073,9 @@ export type RunConfigSettings = Pick<
  * depth, runtime of each) and context compaction once the context fills a share of the model's
  * window. `subagents` is the run's subagent cap (lib/agent/concurrency.ts subagentConcurrency);
  * null uses the ceiling `subagentMaxConcurrency` (a remote node's machine is not sampled here).
- * `pick` (provider priority): when its provider's model hits a usage limit mid-run, omp switches
- * to the backup providers' models (fallbackRetryConfig); other errors keep retrying the same model.
+ * `pick` (provider priority): when its provider's model fails mid-run on a provider error — a
+ * usage limit or the provider being unavailable — omp switches to the backup providers' models
+ * (fallbackRetryConfig); agent-caused failures keep retrying the same model.
  */
 export function runConfigOverlay(
   settings: RunConfigSettings,

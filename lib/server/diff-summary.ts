@@ -140,7 +140,7 @@ async function generate(
     const env = childEnv();
     const roles = await readModelRoles(settings.ompPath, cwd, env);
     // The fast `smol` role when configured; otherwise the usual model, thinking briefly.
-    const { model, role, config } = await chooseHelperModel({ settings, pinned: board.model, roles: [["smol", roles?.smol]] });
+    const { model, role, config } = await chooseHelperModel({ settings, pinned: board.model, roles: [["smol", roles?.smol]], modelRoles: roles });
     const reply = await runOmpHelper({
       command: settings.ompPath,
       cwd,

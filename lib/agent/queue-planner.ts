@@ -64,7 +64,7 @@ export async function planQueue(options: PlanQueueOptions): Promise<QueuePlan> {
   ]);
   if (!found) throw new Error(`Project folder not found: ${workdir}`);
   // The fast `smol` role when configured; otherwise the usual model, thinking briefly.
-  const { model, role, config } = await chooseHelperModel({ settings, pinned: board.model, roles: [["smol", roles?.smol]] });
+  const { model, role, config } = await chooseHelperModel({ settings, pinned: board.model, roles: [["smol", roles?.smol]], modelRoles: roles });
   const thinking = role ? null : "low";
   signal.throwIfAborted();
 

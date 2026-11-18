@@ -5,6 +5,8 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { readModelRoles, type ModelRoles } from "@/lib/agent/model-select";
+import { childEnv } from "@/lib/child-env";
 import { dataDir } from "@/lib/files";
 import {
   QUOTA_COOLDOWN_MS,
@@ -12,6 +14,7 @@ import {
   helperModel,
   pickProvider,
   quotaBlocks,
+  resolveProviders,
   type ProviderPick,
 } from "@/lib/provider-priority";
 import { getAiStats } from "@/lib/stats";
@@ -55,30 +58,40 @@ export async function outOfQuotaProviders(ompPath: string): Promise<Map<string, 
 }
 
 /**
- * The provider priority's pick for a run or helper agent: the first entry with quota. Null when
- * the list is empty or `pinned` (the board's model) is set: a pinned model is an explicit choice,
- * so it skips the quota check. Never rejects.
+ * The provider priority's pick for a run or helper agent: the first provider with quota, running
+ * the model of one of omp's model `roles` on it (providers no role uses are skipped). Null when
+ * the list is empty, no listed provider has a role or `pinned` (the board's model) is set: a
+ * pinned model is an explicit choice, so it skips the quota check. Never rejects.
  */
 export async function chooseProvider(
   settings: Pick<AppSettings, "ompPath" | "providerPriority">,
   pinned: string | null | undefined,
+  roles: ModelRoles | null,
 ): Promise<ProviderPick | null> {
   if (settings.providerPriority.length === 0 || pinned?.trim()) return null;
-  return pickProvider(settings.providerPriority, await outOfQuotaProviders(settings.ompPath), Date.now());
+  const entries = resolveProviders(settings.providerPriority, roles);
+  if (entries.length === 0) return null;
+  return pickProvider(entries, await outOfQuotaProviders(settings.ompPath), Date.now());
 }
 
 /**
  * Model and `--config` overlay of a helper agent (lib/provider-priority.ts helperModel), from the
  * provider priority's pick: the overlay holds the pick's mid-run fallback to the backup providers
  * (fallbackRetryConfig). It is written once per distinct content, so pooled helper workers with
- * the same pick are reused. `config` is null without fallbacks.
+ * the same pick are reused. `config` is null without fallbacks. `modelRoles`: the roles omp
+ * resolves for the helper; read here (global config) when not given.
  */
 export async function chooseHelperModel(input: {
   settings: Pick<AppSettings, "ompPath" | "providerPriority" | "defaultModel">;
   pinned: string | null | undefined;
   roles: readonly (readonly [name: string, selector: string | undefined])[];
+  modelRoles?: ModelRoles | null;
 }): Promise<{ model: string | null; role: string | null; config: string | null }> {
-  const pick = await chooseProvider(input.settings, input.pinned);
+  const modelRoles =
+    input.modelRoles !== undefined || input.settings.providerPriority.length === 0
+      ? (input.modelRoles ?? null)
+      : await readModelRoles(input.settings.ompPath, dataDir(), childEnv());
+  const pick = await chooseProvider(input.settings, input.pinned, modelRoles);
   const choice = helperModel({ ...input, pick });
   // The chain's key is "<provider>/*": a role model on the picked provider falls back too.
   const retry = fallbackRetryConfig(pick);

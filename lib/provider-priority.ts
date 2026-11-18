@@ -3,15 +3,24 @@
 // A provider counts as out of quota while `omp usage` reports one of its limits exhausted (until
 // that limit resets) or after one of our runs on it failed on a quota error (QUOTA_COOLDOWN_MS);
 // runs then use the next provider that still has quota, and go back to Main once it has quota
-// again. Inside a run, omp's own `retry.fallbackChains` (fallbackOn: usage-limit) switches to the
-// next providers when Main runs out mid-run (lib/agent/manager.ts runConfigOverlay).
+// again. Inside a run, omp's own `retry.fallbackChains` (fallbackOn: any) switches to the next
+// providers' models when Main fails on a provider error mid-run — a usage limit or the provider
+// being unavailable, so an unavailable Main never fails the run (lib/agent/manager.ts
+// runConfigOverlay).
+// The list holds providers only: the model a provider runs is role based, taken from the model
+// roles of omp's config (resolveProviders).
 // Shared by the client and the server: no Node imports.
+import type { ModelRoles } from "@/lib/agent/model-select";
 import type { AiProviderQuota } from "@/lib/types";
 
 export interface ProviderPriorityEntry {
-  /** omp provider id: the first segment of the model selector, e.g. "anthropic" or "openai-codex". */
+  /** omp provider id: the first segment of a model selector, e.g. "anthropic" or "openai-codex". */
   provider: string;
-  /** Model this provider runs: an omp selector "provider/model-id" (optionally ":thinking"). */
+}
+
+/** A listed provider with the model it runs: the omp selector of one of its model roles. */
+export interface ProviderEntry extends ProviderPriorityEntry {
+  /** An omp selector "provider/model-id" (optionally ":thinking"). */
   model: string;
 }
 
@@ -30,7 +39,35 @@ export function selectorProvider(selector: string): string | null {
   return value.slice(0, slash);
 }
 
-/** The validated list, or an error message: unique providers, each model one of its own selectors. */
+/**
+ * The model of an omp role that runs on `provider`: `preferredRole` first, then `default`, then
+ * the other roles in their configured order. Null when no role uses the provider.
+ */
+export function providerRoleModel(roles: ModelRoles | null, provider: string, preferredRole?: string): string | null {
+  if (!roles) return null;
+  const names = [...new Set([...(preferredRole ? [preferredRole] : []), "default", ...Object.keys(roles)])];
+  for (const name of names) {
+    const selector = roles[name]?.trim();
+    if (selector && selectorProvider(selector) === provider) return selector;
+  }
+  return null;
+}
+
+/**
+ * The priority list with each provider's model, from omp's model roles. A provider no role uses
+ * has no model to run (an authenticated provider's models are only chosen through roles) and is
+ * left out, as is everything while the roles are unknown.
+ */
+export function resolveProviders(priority: readonly ProviderPriorityEntry[], roles: ModelRoles | null): ProviderEntry[] {
+  const entries: ProviderEntry[] = [];
+  for (const { provider } of priority) {
+    const model = providerRoleModel(roles, provider);
+    if (model) entries.push({ provider, model });
+  }
+  return entries;
+}
+
+/** The validated list, or an error message: unique omp provider ids. */
 export function parseProviderPriority(value: unknown): { ok: true; entries: ProviderPriorityEntry[] } | { ok: false; error: string } {
   if (!Array.isArray(value)) return { ok: false, error: "providerPriority must be an array" };
   if (value.length > MAX_PROVIDER_PRIORITY) {
@@ -40,16 +77,12 @@ export function parseProviderPriority(value: unknown): { ok: true; entries: Prov
   for (const [index, raw] of value.entries()) {
     const item = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
     const provider = typeof item.provider === "string" ? item.provider.trim() : "";
-    const model = typeof item.model === "string" ? item.model.trim() : "";
     const where = `providerPriority[${index}]`;
     if (!PROVIDER_ID.test(provider)) return { ok: false, error: `${where}.provider must be an omp provider id` };
-    if (!model || model.length > 200 || selectorProvider(model) !== provider) {
-      return { ok: false, error: `${where}.model must be a "${provider}/<model>" selector` };
-    }
     if (entries.some((entry) => entry.provider === provider)) {
       return { ok: false, error: `${where}: ${provider} is listed twice` };
     }
-    entries.push({ provider, model });
+    entries.push({ provider });
   }
   return { ok: true, entries };
 }
@@ -74,7 +107,7 @@ export function quotaBlocks(quota: readonly AiProviderQuota[], now: number): Map
 
 export interface ProviderPick {
   /** The entry this run uses. */
-  entry: ProviderPriorityEntry;
+  entry: ProviderEntry;
   /** Its position: 0 = Main. */
   index: number;
   /** Earlier entries passed over, with when their quota resets (ms epoch). */
@@ -90,12 +123,12 @@ export interface ProviderPick {
  * epoch; entries whose time passed have quota again). Null for an empty list.
  */
 export function pickProvider(
-  priority: readonly ProviderPriorityEntry[],
+  priority: readonly ProviderEntry[],
   outOfQuota: ReadonlyMap<string, number>,
   now: number,
 ): ProviderPick | null {
   if (priority.length === 0) return null;
-  const blockedUntil = (entry: ProviderPriorityEntry) => {
+  const blockedUntil = (entry: ProviderEntry) => {
     const until = outOfQuota.get(entry.provider) ?? 0;
     return until > now ? until : null;
   };
@@ -108,14 +141,18 @@ export function pickProvider(
 
 /**
  * omp `retry` config (a `--config` overlay section) of a pick: when the active provider's model
- * hits a usage limit mid-run, omp switches to the later providers' models, in order, and back once
- * the limit's cooldown expires. Null without a pick or fallbacks.
+ * fails on a provider error mid-run — a usage limit or the provider being unavailable — omp
+ * switches to the later providers' models, in order, and back once the failed provider's
+ * suppression window ends. `fallbackOn: any` is omp's own default: it covers usage limits and
+ * every other provider error, so a backup also takes over when Main is not available at all.
+ * Agent-caused failures (a bad request, a tool error) are not provider errors and keep retrying
+ * the same model. Null without a pick or fallbacks.
  */
 export function fallbackRetryConfig(pick: ProviderPick | null): Record<string, unknown> | null {
   if (!pick || pick.fallbacks.length === 0) return null;
   return {
     modelFallback: true,
-    fallbackOn: "usage-limit",
+    fallbackOn: "any",
     fallbackRevertPolicy: "cooldown-expiry",
     fallbackChains: { [`${pick.entry.provider}/*`]: pick.fallbacks },
   };
