@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, type Mock, vi } from "vitest";
+import net from "node:net";
+
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 import type { CredentialField, CredentialProvider, CredentialProviderId } from "@/lib/credential-types";
 import { probeCredential } from "@/lib/server/credential-checks";
@@ -26,6 +28,8 @@ const github = provider("github", ["token"], ["host"]);
 const slack = provider("slack", ["token"]);
 const aws = provider("aws", ["accessKeyId", "secretAccessKey", "sessionToken"], ["region"]);
 const mcpHttp = provider("mcp-http", ["token"], ["url", "headerName"]);
+const smtp = provider("smtp", ["password"], ["host", "port", "username", "security"]);
+const telegram = provider("telegram", ["token"]);
 
 const GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
 
@@ -252,5 +256,99 @@ describe("probeCredential: mcp-http", () => {
     const fetchImpl = mockFetch(respond("<html>hello</html>", { headers: { "content-type": "text/html" } }));
     const result = await probeCredential(mcpHttp, { url: "https://mcp.example.com/mcp" }, { fetchImpl });
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("probeCredential: telegram", () => {
+  const TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw";
+
+  it("authenticates with getMe and names the bot", async () => {
+    const fetchImpl = mockFetch(respond({ ok: true, result: { id: 1, is_bot: true, first_name: "AgentMan", username: "agentman_bot" } }));
+    const result = await probeCredential(telegram, { token: TOKEN }, { fetchImpl });
+
+    expect(result).toEqual({ ok: true, message: "Authenticated as @agentman_bot" });
+    expect(sent(fetchImpl).url).toBe(`https://api.telegram.org/bot${TOKEN}/getMe`);
+  });
+
+  it("turns a rejected token into a failure without leaking it", async () => {
+    const fetchImpl = mockFetch(respond({ ok: false, description: "Unauthorized" }, { status: 401, statusText: "Unauthorized" }));
+    const result = await probeCredential(telegram, { token: TOKEN }, { fetchImpl });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/Telegram rejected the token/);
+    expect(result.message).not.toContain(TOKEN);
+  });
+});
+
+describe("probeCredential: smtp", () => {
+  const PASSWORD = "hunter2-secret-password";
+
+  let server: net.Server;
+  let port: number;
+
+  beforeEach(async () => {
+    server = net.createServer((socket) => {
+      socket.setEncoding("utf8");
+      socket.write("220 test.local ESMTP ready\r\n");
+      let buffer = "";
+      socket.on("data", (chunk: string) => {
+        buffer += chunk;
+        let end: number;
+        while ((end = buffer.indexOf("\r\n")) >= 0) {
+          const line = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          const space = line.indexOf(" ");
+          const command = (space >= 0 ? line.slice(0, space) : line).toUpperCase();
+          const argument = space >= 0 ? line.slice(space + 1) : "";
+          if (command === "EHLO") {
+            socket.write("250-test.local\r\n250-AUTH PLAIN LOGIN\r\n250 STARTTLS\r\n");
+          } else if (command === "AUTH" && argument.startsWith("PLAIN ")) {
+            const password = Buffer.from(argument.slice(6), "base64").toString("utf8").split("\u0000")[2];
+            socket.write(
+              password === PASSWORD
+                ? "235 2.7.0 Authentication successful\r\n"
+                : "535 5.7.8 Authentication credentials invalid\r\n",
+            );
+          } else if (command === "QUIT") {
+            socket.write("221 2.0.0 Bye\r\n");
+            socket.end();
+          } else {
+            socket.write("500 5.5.1 Command unrecognized\r\n");
+          }
+        }
+      });
+    });
+    const { promise, resolve } = Promise.withResolvers<void>();
+    server.listen(0, "127.0.0.1", resolve);
+    await promise;
+    port = (server.address() as net.AddressInfo).port;
+  });
+
+  afterEach(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    server.close(() => resolve());
+    await promise;
+  });
+
+  it("authenticates with AUTH PLAIN", async () => {
+    const result = await probeCredential(
+      smtp,
+      { host: "127.0.0.1", port: String(port), username: "alice@example.com", password: PASSWORD, security: "none" },
+      { timeoutMs: 2000 },
+    );
+
+    expect(result).toEqual({ ok: true, message: "SMTP login accepted (alice@example.com)" });
+  });
+
+  it("rejects bad credentials without leaking the password", async () => {
+    const result = await probeCredential(
+      smtp,
+      { host: "127.0.0.1", port: String(port), username: "alice@example.com", password: "wrong-password", security: "none" },
+      { timeoutMs: 2000 },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/authentication rejected/);
+    expect(result.message).not.toContain("wrong-password");
   });
 });

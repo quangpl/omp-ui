@@ -3,6 +3,8 @@
 // node:crypto, Postgres pg.
 import { createHash, createHmac } from "node:crypto";
 import { STATUS_CODES } from "node:http";
+import { connect as netConnect, type Socket } from "node:net";
+import { connect as tlsConnect } from "node:tls";
 
 import pg from "pg";
 
@@ -136,6 +138,10 @@ async function runProbe(
       return probeFirecrawl(ctx, key());
     case "mcp-http":
       return probeMcpHttp(ctx, fields);
+    case "smtp":
+      return probeSmtp(fields, ctx.timeoutMs);
+    case "telegram":
+      return probeTelegram(ctx, need(value(fields, "token"), "bot token"));
     case "custom-api":
       return probeCustomApi(ctx, fields);
     default: {
@@ -583,6 +589,243 @@ async function probePostgres(connectionString: string, timeoutMs: number): Promi
     setTimeout(resolve, 1000).unref();
     await Promise.race([client.end().catch(() => {}), gaveUp]);
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// SMTP
+
+type SmtpSocket = Socket; // tls.TLSSocket extends net.Socket
+
+/** Reads CRLF-terminated SMTP lines from a paused socket without over-reading. */
+class SmtpReader {
+  private buffer = "";
+  private lines: string[] = [];
+  private waiters: Array<{ resolve: (line: string) => void; reject: (err: Error) => void }> = [];
+  private failed: Error | null = null;
+
+  constructor(
+    private readonly socket: SmtpSocket,
+    timeoutMs: number,
+  ) {
+    socket.on("readable", () => this.pump());
+    socket.on("error", (err) => this.abort(err));
+    socket.on("close", () => this.abort(new Error("Connection closed by the server")));
+    socket.setTimeout(timeoutMs, () => this.abort(new Error(`Timed out after ${formatDuration(timeoutMs)}`)));
+  }
+
+  /** Move whatever the socket has buffered into `buffer` and split off complete lines. */
+  private pump(): void {
+    for (;;) {
+      const chunk = this.socket.read() as Buffer | null;
+      if (chunk === null) break;
+      this.buffer += chunk.toString("utf8");
+    }
+    let end: number;
+    while ((end = this.buffer.indexOf("\r\n")) >= 0) {
+      this.lines.push(this.buffer.slice(0, end));
+      this.buffer = this.buffer.slice(end + 2);
+    }
+    this.deliver();
+  }
+
+  /** Pair queued lines with waiting readers. */
+  private deliver(): void {
+    while (this.lines.length > 0 && this.waiters.length > 0) {
+      const waiter = this.waiters.shift()!;
+      waiter.resolve(this.lines.shift()!);
+    }
+  }
+
+  private abort(err: Error): void {
+    this.failed = err;
+    while (this.waiters.length > 0) this.waiters.shift()!.reject(err);
+  }
+
+  line(): Promise<string> {
+    if (this.failed) return Promise.reject(this.failed);
+    this.pump();
+    const { promise, resolve, reject } = Promise.withResolvers<string>();
+    this.waiters.push({ resolve, reject });
+    this.deliver();
+    return promise;
+  }
+
+  /** Detach before handing the socket to the TLS layer, so it owns the data stream. */
+  detach(): void {
+    this.socket.removeAllListeners("readable");
+    this.socket.removeAllListeners("error");
+    this.socket.removeAllListeners("close");
+    this.socket.setTimeout(0);
+  }
+}
+
+/** One SMTP conversation over a connected socket; supports a STARTTLS upgrade mid-session. */
+class SmtpConversation {
+  private socket: SmtpSocket;
+  private reader: SmtpReader;
+
+  constructor(
+    socket: SmtpSocket,
+    private readonly host: string,
+    private readonly timeoutMs: number,
+  ) {
+    this.socket = socket;
+    this.reader = new SmtpReader(socket, timeoutMs);
+  }
+
+  write(command: string): void {
+    this.socket.write(`${command}\r\n`);
+  }
+
+  /** One reply: its 3-digit code plus the text of each line (multi-line replies included). */
+  private async reply(): Promise<{ code: number; lines: string[] }> {
+    const lines: string[] = [];
+    for (;;) {
+      const line = await this.reader.line();
+      if (!/^\d{3}[- ]/.test(line)) continue;
+      const code = Number(line.slice(0, 3));
+      lines.push(line.slice(4));
+      if (line[3] === " ") return { code, lines };
+    }
+  }
+
+  async command(cmd: string | null): Promise<{ code: number; lines: string[] }> {
+    if (cmd !== null) this.write(cmd);
+    return this.reply();
+  }
+
+  /** The EHLO capability names, uppercased. */
+  async ehlo(): Promise<Set<string>> {
+    const res = await this.command(`EHLO ${USER_AGENT}`);
+    if (res.code !== 250) throw new ProbeFailure(`EHLO failed: ${res.code} ${res.lines.join(" ").trim()}`.trim());
+    const caps = new Set<string>();
+    for (const line of res.lines) {
+      const name = line.trim().toUpperCase();
+      if (name) caps.add(name);
+    }
+    return caps;
+  }
+
+  /** Upgrade the plain connection to TLS (STARTTLS); only after the server's 220 go-ahead. */
+  async startTls(): Promise<void> {
+    const res = await this.command("STARTTLS");
+    if (res.code !== 220) throw new ProbeFailure(`STARTTLS rejected: ${res.code} ${res.lines.join(" ").trim()}`.trim());
+    this.reader.detach();
+    this.socket = tlsConnect({ socket: this.socket, servername: this.host, timeout: this.timeoutMs });
+    this.reader = new SmtpReader(this.socket, this.timeoutMs);
+    await awaitSmtpConnect(this.socket, true);
+  }
+
+  async auth(username: string, password: string): Promise<CredentialProbeResult> {
+    const accepted = () => pass(`SMTP login accepted (${username})`);
+    const plain = Buffer.from(`\u0000${username}\u0000${password}`, "utf8").toString("base64");
+    let res = await this.command(`AUTH PLAIN ${plain}`);
+    if (res.code === 235) return accepted();
+    if (res.code === 334) {
+      res = await this.command(plain);
+      if (res.code === 235) return accepted();
+    }
+    if (res.code === 535) return fail("SMTP authentication rejected: check the username and password");
+    // 504/502/…: the server does not speak AUTH PLAIN — fall back to AUTH LOGIN.
+    const login = await this.command("AUTH LOGIN");
+    if (login.code === 334) {
+      const user = await this.command(Buffer.from(username, "utf8").toString("base64"));
+      if (user.code === 334) {
+        const passRes = await this.command(Buffer.from(password, "utf8").toString("base64"));
+        if (passRes.code === 235) return accepted();
+        if (passRes.code === 535) return fail("SMTP authentication rejected: check the username and password");
+        return fail(`SMTP authentication failed: ${passRes.code} ${passRes.lines.join(" ").trim()}`.trim());
+      }
+      return fail(`SMTP authentication failed: ${user.code} ${user.lines.join(" ").trim()}`.trim());
+    }
+    return fail(`SMTP authentication failed: ${login.code} ${login.lines.join(" ").trim()}`.trim());
+  }
+}
+
+function smtpSocket(host: string, port: number, security: string, timeoutMs: number): SmtpSocket {
+  return security === "tls"
+    ? tlsConnect({ host, port, servername: host, timeout: timeoutMs })
+    : netConnect({ host, port, timeout: timeoutMs });
+}
+
+/** Resolves once the socket is connected, or the TLS handshake has completed. */
+function awaitSmtpConnect(socket: SmtpSocket, encrypted: boolean): Promise<void> {
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const onReady = () => {
+    cleanup();
+    resolve();
+  };
+  const onError = (err: Error) => {
+    cleanup();
+    reject(err);
+  };
+  const cleanup = () => {
+    socket.removeListener(encrypted ? "secureConnect" : "connect", onReady);
+    socket.removeListener("error", onError);
+  };
+  socket.once(encrypted ? "secureConnect" : "connect", onReady);
+  socket.once("error", onError);
+  return promise;
+}
+
+async function probeSmtp(fields: Record<string, string>, timeoutMs: number): Promise<CredentialProbeResult> {
+  const host = need(value(fields, "host"), "SMTP host");
+  const portText = value(fields, "port");
+  const port = portText ? Number(portText) : 587;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return fail(`Invalid port: ${portText || "empty"}`);
+  const username = need(value(fields, "username"), "username");
+  const password = need(value(fields, "password"), "password");
+  const security = value(fields, "security") || "starttls";
+
+  // Overall deadline: a hung connect or a silent server must not hold the check open.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref();
+  const socket = smtpSocket(host, port, security, timeoutMs);
+  socket.on("error", () => {}); // never let a connect/teardown error crash the process
+  controller.signal.addEventListener(
+    "abort",
+    () => socket.destroy(new Error(`Timed out after ${formatDuration(timeoutMs)}`)),
+    { once: true },
+  );
+
+  try {
+    await awaitSmtpConnect(socket, security === "tls");
+    const talk = new SmtpConversation(socket, host, timeoutMs);
+    const greeting = await talk.command(null);
+    if (greeting.code !== 220) {
+      return fail(`${greeting.code} ${greeting.lines.join(" ").trim()}`.trim() || `Unexpected greeting (${greeting.code})`);
+    }
+    if (security === "starttls") {
+      const caps = await talk.ehlo();
+      if (!caps.has("STARTTLS")) return fail("The server does not advertise STARTTLS; try the TLS or None encryption setting");
+      await talk.startTls();
+      await talk.ehlo();
+    } else {
+      await talk.ehlo();
+    }
+    return await talk.auth(username, password);
+  } catch (err) {
+    return fail(describeError(err, timeoutMs));
+  } finally {
+    clearTimeout(timer);
+    socket.destroy();
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Telegram
+
+async function probeTelegram(ctx: ProbeContext, token: string): Promise<CredentialProbeResult> {
+  const res = await request(ctx, `https://api.telegram.org/bot${token}/getMe`);
+  const body = res.body as { ok?: unknown } | undefined;
+  if (!res.ok || body?.ok === false) {
+    const description = str(get(body, "description"));
+    return fail(`Telegram rejected the token${description ? ` (${description})` : ""} — check it with @BotFather (/token)`);
+  }
+  const username = str(get(body, "result", "username"));
+  const firstName = str(get(body, "result", "first_name"));
+  return authenticatedAs(username ? `@${username}` : firstName);
 }
 
 async function probeStripe(ctx: ProbeContext, key: string): Promise<CredentialProbeResult> {
