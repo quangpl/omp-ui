@@ -209,6 +209,8 @@ A card has two ship buttons. Each acts on every project folder with changes; nei
 | **Push to main** | Commits and pushes directly to the project's push branch: `main` unless you change **Push branch** under **Project settings → More options** (created on the remote if missing). **Create PR/MR** still targets the repo's default branch (**Default branches** under **Project settings → More options**) | `git` with push access |
 | **Push to current branch** | Same as **Push to main**, but each repo pushes to the branch it is already on (created on the remote if missing); a repo on a detached HEAD is reported as an error | `git` with push access |
 
+Both push buttons commit first, then merge the remote branch into the folder (the pull that keeps a remote which moved on from rejecting the push) and push. If the merge conflicts, it is aborted, the folder is left exactly as it was, and the card reports the conflict — **Create PR/MR** is the way out.
+
 **Discard all changes.** When a project (or a card's workspace) has uncommitted changes, a **Discard all changes** button appears next to the header's change count and in the card's **Ship changes** panel. After a confirmation it resets tracked and staged edits and deletes new untracked files; unpushed commits and git checkpoints are left alone. It is blocked while an agent on the board is running or queued.
 
 To authenticate, either:
