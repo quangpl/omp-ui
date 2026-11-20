@@ -105,9 +105,8 @@ export function logSchemaMigrations(driver: DbDriver, before: SchemaSnapshot, af
 }
 
 /**
- * A stored string list (board `extraFolders`, task `blockedBy`): a JSON array string (SQL
- * drivers) or an array (MongoDB). Anything malformed or missing yields `[]`; non-string entries
- * are dropped.
+ * A stored string list (board `extraFolders`): a JSON array string (SQL drivers) or an array
+ * (MongoDB). Anything malformed or missing yields `[]`; non-string entries are dropped.
  */
 export function parseFolderList(value: unknown): string[] {
   let list = value;

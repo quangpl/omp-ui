@@ -122,7 +122,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   question TEXT,
   session_file TEXT,
   last_run_id TEXT,
-  blocked_by TEXT NOT NULL DEFAULT '[]',
   created_by_task_id TEXT,
   pushed_at TEXT,
   auto_retries INTEGER NOT NULL DEFAULT 0,
@@ -138,7 +137,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at TEXT NOT NULL,
   user_id TEXT
 );
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS blocked_by TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by_task_id TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pushed_at TEXT;
@@ -279,7 +277,6 @@ interface TaskRow {
   question: string | null;
   session_file: string | null;
   last_run_id: string | null;
-  blocked_by: string;
   created_by_task_id: string | null;
   pushed_at: string | null;
   auto_retries: number;
@@ -410,7 +407,6 @@ function toTask(r: TaskRow): Task {
     question: r.question,
     sessionFile: r.session_file,
     lastRunId: r.last_run_id,
-    blockedBy: parseFolderList(r.blocked_by),
     createdByTaskId: r.created_by_task_id,
     pushedAt: r.pushed_at,
     autoRetries: Number(r.auto_retries),
@@ -588,13 +584,13 @@ const TABLE_SPECS: { [T in DataTable]: TableSpec<T> } = {
     },
     columns: [
       "id", "board_id", "title", "description", "status", "position", "agent_state", "agent_error", "question",
-      "session_file", "last_run_id", "blocked_by", "created_by_task_id", "pushed_at", "auto_retries", "retry_at",
+      "session_file", "last_run_id", "created_by_task_id", "pushed_at", "auto_retries", "retry_at",
       "todos", "review", "resources", "session_usage", "scheduler_id", "parallelize", "ignore_memory",
       "created_at", "updated_at", "user_id",
     ],
     values: (t) => [
       t.id, t.boardId, t.title, t.description, t.status, t.position, t.agentState, t.agentError, t.question,
-      t.sessionFile, t.lastRunId, JSON.stringify(t.blockedBy), t.createdByTaskId, t.pushedAt, t.autoRetries,
+      t.sessionFile, t.lastRunId, t.createdByTaskId, t.pushedAt, t.autoRetries,
       t.retryAt, JSON.stringify(t.todos), jsonOrNull(t.review), jsonOrNull(t.resources), jsonOrNull(t.usage),
       t.schedulerId, t.parallelize, t.ignoreMemory, t.createdAt, t.updatedAt, t.userId,
     ],
@@ -991,8 +987,8 @@ export class PostgresRepository implements Repository {
         position = max == null ? POSITION_STEP : Number(max) + POSITION_STEP;
       }
       await this.query(
-        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, blocked_by, created_by_task_id, scheduler_id, parallelize, ignore_memory, created_at, updated_at, user_id)
-         VALUES ($1, $2, $3, $4, $5, $6, 'idle', $7, $8, $9, $10, $11, $12, $12, (SELECT user_id FROM boards WHERE id = $2))`,
+        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, created_by_task_id, scheduler_id, parallelize, ignore_memory, created_at, updated_at, user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, 'idle', $7, $8, $9, $10, $11, $11, (SELECT user_id FROM boards WHERE id = $2))`,
         [
           id,
           input.boardId,
@@ -1000,7 +996,6 @@ export class PostgresRepository implements Repository {
           input.description ?? "",
           status,
           position,
-          JSON.stringify(input.blockedBy ?? []),
           input.createdByTaskId ?? null,
           input.schedulerId ?? null,
           input.parallelize ?? null,
@@ -1026,7 +1021,6 @@ export class PostgresRepository implements Repository {
       ["question", patch.question],
       ["session_file", patch.sessionFile],
       ["last_run_id", patch.lastRunId],
-      ["blocked_by", patch.blockedBy === undefined ? undefined : JSON.stringify(patch.blockedBy)],
       ["pushed_at", patch.pushedAt],
       ["auto_retries", patch.autoRetries],
       ["retry_at", patch.retryAt],
