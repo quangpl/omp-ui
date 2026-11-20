@@ -670,7 +670,6 @@ export const api = {
         description?: string;
         status?: TaskStatus;
         position?: number;
-        blockedBy?: string[];
         /** Whether the run prompt invites parallel subagents; null/omitted = on. */
         parallelize?: boolean | null;
         /** Whether the card's runs start omp without agentmemory (no recall, capture or memory tools); omitted = false. */
@@ -694,7 +693,6 @@ export const api = {
         description: string;
         status: TaskStatus;
         position: number;
-        blockedBy: string[];
         /** Run omp without agentmemory from the card's next run. */
         ignoreMemory: boolean;
         /** Only null is accepted: dismisses the agent's question. */

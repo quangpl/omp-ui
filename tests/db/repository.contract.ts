@@ -464,7 +464,6 @@ export function runRepositoryContract(
           agentError: null,
           sessionFile: null,
           lastRunId: null,
-          blockedBy: [],
           createdByTaskId: null,
           schedulerId: null,
           parallelize: null,
@@ -480,28 +479,14 @@ export function runRepositoryContract(
         expect(await repo.getTask(task.id)).toEqual(task);
       });
 
-      it("round-trips blockedBy and createdByTaskId, and updates blockedBy", async () => {
+      it("round-trips createdByTaskId", async () => {
         const board = await newBoard();
         const parent = await repo.createTask({ boardId: board.id, title: "parent" });
-        const dep = await repo.createTask({ boardId: board.id, title: "dep" });
-        const child = await repo.createTask({
-          boardId: board.id,
-          title: "child",
-          blockedBy: [dep.id, parent.id],
-          createdByTaskId: parent.id,
-        });
+        const child = await repo.createTask({ boardId: board.id, title: "child", createdByTaskId: parent.id });
 
-        expect(child).toMatchObject({ blockedBy: [dep.id, parent.id], createdByTaskId: parent.id });
+        expect(child).toMatchObject({ createdByTaskId: parent.id });
         expect(await repo.getTask(child.id)).toEqual(child);
         expect((await repo.listTasks(board.id)).find((t) => t.id === child.id)).toEqual(child);
-
-        const narrowed = await repo.updateTask(child.id, { blockedBy: [dep.id] });
-        expect(narrowed).toMatchObject({ blockedBy: [dep.id], createdByTaskId: parent.id });
-        expect(await repo.getTask(child.id)).toEqual(narrowed);
-
-        const cleared = await repo.updateTask(child.id, { blockedBy: [] });
-        expect(cleared!.blockedBy).toEqual([]);
-        expect(await repo.getTask(child.id)).toEqual(cleared);
       });
 
       it("round-trips the agent's todo list", async () => {
@@ -1787,7 +1772,6 @@ export function runRepositoryContract(
           boardId: board.id,
           title: "child",
           status: "in_progress",
-          blockedBy: [parent.id],
           createdByTaskId: parent.id,
           parallelize: false,
           ignoreMemory: true,

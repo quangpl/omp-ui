@@ -116,7 +116,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   question TEXT,
   session_file TEXT,
   last_run_id TEXT,
-  blocked_by TEXT NOT NULL DEFAULT '[]',
   created_by_task_id TEXT,
   pushed_at TEXT,
   auto_retries INTEGER NOT NULL DEFAULT 0,
@@ -264,7 +263,6 @@ function toTask(r: Row): Task {
     question: strOrNull(r.question),
     sessionFile: strOrNull(r.session_file),
     lastRunId: strOrNull(r.last_run_id),
-    blockedBy: parseFolderList(r.blocked_by),
     createdByTaskId: strOrNull(r.created_by_task_id),
     pushedAt: strOrNull(r.pushed_at),
     autoRetries: num(r.auto_retries),
@@ -480,7 +478,6 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       "question",
       "session_file",
       "last_run_id",
-      "blocked_by",
       "created_by_task_id",
       "pushed_at",
       "auto_retries",
@@ -512,7 +509,6 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       t.question,
       t.sessionFile,
       t.lastRunId,
-      JSON.stringify(t.blockedBy),
       t.createdByTaskId,
       t.pushedAt,
       t.autoRetries,
@@ -667,7 +663,6 @@ export class SqliteRepository implements Repository {
       ["user_id", "TEXT"],
     ]);
     this.addMissingColumns("tasks", [
-      ["blocked_by", "TEXT NOT NULL DEFAULT '[]'"],
       ["created_by_task_id", "TEXT"],
       ["question", "TEXT"],
       ["pushed_at", "TEXT"],
@@ -1013,8 +1008,8 @@ export class SqliteRepository implements Repository {
       }
       // The card inherits its board's owner.
       this.stmt(
-        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, blocked_by, created_by_task_id, scheduler_id, parallelize, ignore_memory, user_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, created_by_task_id, scheduler_id, parallelize, ignore_memory, user_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         id,
         input.boardId,
@@ -1022,7 +1017,6 @@ export class SqliteRepository implements Repository {
         input.description ?? "",
         status,
         position,
-        JSON.stringify(input.blockedBy ?? []),
         input.createdByTaskId ?? null,
         input.schedulerId ?? null,
         input.parallelize == null ? null : input.parallelize ? 1 : 0,
@@ -1048,7 +1042,6 @@ export class SqliteRepository implements Repository {
       ["question", patch.question],
       ["session_file", patch.sessionFile],
       ["last_run_id", patch.lastRunId],
-      ["blocked_by", patch.blockedBy === undefined ? undefined : JSON.stringify(patch.blockedBy)],
       ["pushed_at", patch.pushedAt],
       ["auto_retries", patch.autoRetries],
       ["retry_at", patch.retryAt],

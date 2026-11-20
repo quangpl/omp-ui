@@ -118,8 +118,6 @@ interface TaskDoc {
   question?: string | null;
   sessionFile: string | null;
   lastRunId: string | null;
-  /** Missing on documents created before card dependencies. */
-  blockedBy?: string[];
   createdByTaskId?: string | null;
   /** Missing on documents created before "pushed" cards. */
   pushedAt?: string | null;
@@ -283,7 +281,6 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     question: d.question ?? null,
     sessionFile: d.sessionFile ?? null,
     lastRunId: d.lastRunId ?? null,
-    blockedBy: parseFolderList(d.blockedBy),
     createdByTaskId: d.createdByTaskId ?? null,
     pushedAt: d.pushedAt ?? null,
     autoRetries: d.autoRetries ?? 0,
@@ -410,7 +407,6 @@ const TASK_PATCH_KEYS = [
   "question",
   "sessionFile",
   "lastRunId",
-  "blockedBy",
   "pushedAt",
   "autoRetries",
   "retryAt",
@@ -573,8 +569,8 @@ export class MongoRepository implements Repository {
 
   /**
    * Not transactional (standalone servers lack transactions). Documents keep the domain field
-   * names; JSON fields (todos, review, resources, usage, blockedBy, extraFolders) stay native
-   * BSON values exactly as createTask/updateTask store them.
+   * names; JSON fields (todos, review, resources, usage, extraFolders) stay native BSON values
+   * exactly as createTask/updateTask store them.
    */
   async replaceAllData(data: DataSnapshot): Promise<void> {
     for (const table of [...DATA_TABLES].reverse()) await this.dataCollection(table).coll.deleteMany({});
@@ -850,7 +846,6 @@ export class MongoRepository implements Repository {
       question: null,
       sessionFile: null,
       lastRunId: null,
-      blockedBy: input.blockedBy ?? [],
       createdByTaskId: input.createdByTaskId ?? null,
       pushedAt: null,
       autoRetries: 0,

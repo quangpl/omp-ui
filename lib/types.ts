@@ -141,11 +141,6 @@ export interface Task {
   /** omp session JSONL path; reused with `--resume` so feedback keeps context. */
   sessionFile: string | null;
   lastRunId: string | null;
-  /**
-   * Task queue dependencies: ids of cards on the same board that must be Done before this
-   * card's agent starts. While any is not Done, a queued run waits. Default [].
-   */
-  blockedBy: string[];
   /** Card whose agent created this card (agent-to-agent delegation); null when a person did. */
   createdByTaskId: string | null;
   /**
@@ -536,8 +531,7 @@ export interface AppSettings {
   providerPriority: ProviderPriorityEntry[];
   /**
    * Smart queue: when several cards of a project wait in the agent queue, a planner agent orders
-   * them (prerequisites and quick unblockers first) and adds the "Runs after" links it finds, so
-   * independent cards run in parallel and dependent ones wait for what they build on.
+   * them (quick wins and urgent work first). Cards run independently: no card waits for another.
    */
   smartQueue: boolean;
   /** What a card's agent may do with a web browser (omp's `browser` tool). */
@@ -1094,8 +1088,6 @@ export interface QueueEntry {
   boardName: string;
   title: string;
   state: "running" | "queued";
-  /** Blocking cards (Task.blockedBy) that are not Done yet; the run waits for them. */
-  waitingFor: string[];
   /** Held until the smart-queue planner has ordered its project's queued cards. */
   planning: boolean;
   /** Why the smart-queue planner put the card where it is (one line); null when not planned. */

@@ -1392,7 +1392,7 @@ describe("AgentManager scheduling and project folders", () => {
   });
 });
 
-describe("AgentManager collaboration, dependencies and workspaces", () => {
+describe("AgentManager collaboration and workspaces", () => {
   it("lets an agent delegate a card and wait for it, lending its slot while it waits", async () => {
     await updateAppSettings(repo, { maxConcurrentAgents: 1 });
     const calls = [
@@ -1419,22 +1419,20 @@ describe("AgentManager collaboration, dependencies and workspaces", () => {
     expect(commands("set_host_tools", spawned?.pid).length).toBe(1);
   });
 
-  it("keeps a queued card waiting until every card in blockedBy is Done", async () => {
-    const blocker = await createTask("Blocker");
-    const waiting = await repo.createTask({ boardId: board.id, title: "Waiting", blockedBy: [blocker.id] });
+  it("runs queued cards side by side: no card waits for another", async () => {
+    await updateAppSettings(repo, { maxConcurrentAgents: 2 });
+    const first = await createTask("First");
+    const second = await createTask("Second");
     const manager = await getAgentManager();
 
-    await manager.start(waiting.id);
-    await sleep(250);
-    expect(argvEntries()).toHaveLength(0);
-    expect((await manager.queueSnapshot()).queued).toEqual([
-      expect.objectContaining({ taskId: waiting.id, waitingFor: [blocker.id] }),
-    ]);
+    await manager.start(first.id);
+    await manager.start(second.id);
 
-    const done = (await repo.updateTask(blocker.id, { status: "done" }))!;
-    await manager.onTaskMoved(done, "todo");
-    await waitDone(waiting.id);
-    expect(argvEntries()).toHaveLength(1);
+    // Both agents run at once: starting a card never waits for another card's agent.
+    await waitFor(() => argvEntries().length === 2, "both agents to be spawned");
+    expect((await manager.queueSnapshot()).queued).toEqual([]);
+    await waitDone(first.id);
+    await waitDone(second.id);
   });
 
   it("runs a card of a worktrees board in its own git worktree and branch", async () => {
@@ -1458,7 +1456,7 @@ describe("AgentManager collaboration, dependencies and workspaces", () => {
 });
 
 describe("AgentManager smart queue", () => {
-  it("plans a burst of queued cards once: prerequisites first, inferred dependencies persisted", async () => {
+  it("plans a burst of queued cards once: highest priority first, no card held back", async () => {
     await updateAppSettings(repo, { maxConcurrentAgents: 1 });
     const a = await createTask("Build the settings page", "Uses the settings API.");
     const b = await createTask("Fix the footer typo");
@@ -1466,8 +1464,8 @@ describe("AgentManager smart queue", () => {
     process.env.FAKE_OMP_PLAN = JSON.stringify({
       order: [c.id, a.id, b.id],
       cards: [
-        { id: c.id, waitFor: [], reason: "The settings page needs this API." },
-        { id: a.id, waitFor: [c.id], reason: "Waits for the settings API." },
+        { id: c.id, reason: "Lands before the page that uses it." },
+        { id: a.id, reason: "Waits on the settings API." },
       ],
     });
     const manager = await getAgentManager();
@@ -1485,13 +1483,11 @@ describe("AgentManager smart queue", () => {
 
     await waitPromptReceived();
     expect(await repo.listRuns(c.id)).toHaveLength(1);
-    expect(await repo.listRuns(a.id)).toHaveLength(0);
-    expect((await getTask(a.id)).blockedBy).toEqual([c.id]);
     const planned = await manager.queueSnapshot();
     expect(planned.planning).toEqual([]);
     expect(planned.queued).toEqual([
-      expect.objectContaining({ taskId: a.id, planning: false, waitingFor: [c.id], planNote: "Waits for the settings API." }),
-      expect.objectContaining({ taskId: b.id, planning: false, waitingFor: [], planNote: null }),
+      expect.objectContaining({ taskId: a.id, planning: false, planNote: "Waits on the settings API." }),
+      expect.objectContaining({ taskId: b.id, planning: false, planNote: null }),
     ]);
 
     // Finish C (the slow scenario completes after a steer); A and B follow in plan order.

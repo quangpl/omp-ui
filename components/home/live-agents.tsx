@@ -11,7 +11,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { api } from "@/lib/api-client";
 import type { DashboardLiveAgent, QueueEntry, QueueSnapshot } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { EmptyState, FOCUS_RING, Panel, SectionTitle, cardHref, plural, useEntrance } from "./shared";
+import { EmptyState, FOCUS_RING, Panel, SectionTitle, cardHref, useEntrance } from "./shared";
 
 /** Rows shown; the rest are summarized with a link to the visual overview. */
 const MAX_ROWS = 6;
@@ -72,9 +72,7 @@ function AgentRow({
     ? null
     : entry.planning
       ? "being ordered by the smart queue"
-      : entry.waitingFor.length > 0
-        ? `waits for ${plural(entry.waitingFor.length, "card")}`
-        : `#${position} in queue`;
+      : `#${position} in queue`;
   const enter = useEntrance()(index);
 
   return (

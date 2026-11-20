@@ -393,7 +393,6 @@ const PARSERS: { [T in DataTable]: (f: Fields) => DataRows[T] } = {
     question: f.strOrNull("question"),
     sessionFile: f.strOrNull("sessionFile"),
     lastRunId: f.strOrNull("lastRunId"),
-    blockedBy: parseFolderList(f.raw("blockedBy")),
     createdByTaskId: f.strOrNull("createdByTaskId"),
     pushedAt: f.strOrNull("pushedAt"),
     autoRetries: f.num("autoRetries"),

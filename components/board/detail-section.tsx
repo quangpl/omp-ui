@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 export const DETAIL_HEADING_CLASS =
   "flex min-w-0 items-center gap-1.5 text-[13px] font-semibold tracking-tight text-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground";
 
-/** A titled block in the card detail panel (dependencies, workspace, files…). */
+/** A titled block in the card detail panel (workspace, files, delegation…). */
 export function DetailSection({
   icon: Icon,
   title,
