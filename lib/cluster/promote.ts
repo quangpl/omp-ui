@@ -180,7 +180,12 @@ async function migrateBoards(repo: Repository): Promise<void> {
     const extraFolders: string[] = [];
     for (const folder of board.extraFolders) extraFolders.push(await relocate(folder));
     if (workdir === board.workdir && extraFolders.every((f, i) => f === board.extraFolders[i])) continue;
-    await repo.updateBoard(board.id, { workdir, extraFolders });
+    // Default branches are keyed by folder: move each entry with the folder it names.
+    const defaultBranches: Record<string, string> = {};
+    for (const [folder, branch] of Object.entries(board.defaultBranches)) {
+      defaultBranches[await relocate(folder)] = branch;
+    }
+    await repo.updateBoard(board.id, { workdir, extraFolders, defaultBranches });
   }
 }
 

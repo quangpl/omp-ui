@@ -51,11 +51,19 @@ export interface CreateBoardInput {
   worktrees?: boolean;
   /** Default "main" (DEFAULT_PUSH_BRANCH). Must already be a valid branch name. */
   pushBranch?: string;
+  /**
+   * Default {}. Folder (absolute) → branch; keys must be among workdir + extraFolders and every
+   * branch must already be a valid branch name.
+   */
+  defaultBranches?: Record<string, string>;
   /** Owning user (users.id). Default null (unowned: only admins see it until boot assigns it). */
   userId?: string | null;
 }
 export type UpdateBoardInput = Partial<
-  Pick<Board, "name" | "workdir" | "extraFolders" | "model" | "autoRun" | "worktrees" | "pinned" | "pushBranch">
+  Pick<
+    Board,
+    "name" | "workdir" | "extraFolders" | "model" | "autoRun" | "worktrees" | "pinned" | "pushBranch" | "defaultBranches"
+  >
 >;
 
 export interface CreateTaskInput {

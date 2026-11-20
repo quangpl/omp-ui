@@ -5,7 +5,9 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { childEnv } from "@/lib/child-env";
+import { boardDefaultBranch } from "@/lib/default-branch";
 import { dataDir } from "@/lib/files";
+import { defaultBranchRef, repoDefaultBranch } from "@/lib/git";
 import type { Board, Task, TaskWorkspace, WorkspaceFolder } from "@/lib/types";
 
 const GIT_TIMEOUT_MS = 60_000;
@@ -121,9 +123,13 @@ export async function ensureWorkspace(
     await fs.mkdir(path.dirname(target), { recursive: true });
     await git(source, ["worktree", "prune"]);
     const hasBranch = (await git(source, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])).ok;
+    // Start from the repo's default branch (`Board.defaultBranches`, else the repo's own), so a
+    // card never inherits whatever the shared folder happened to be checked out on.
+    const name = boardDefaultBranch(board, source) ?? (await repoDefaultBranch(source));
+    const base = await defaultBranchRef(source, name);
     const added = await git(
       source,
-      hasBranch ? ["worktree", "add", target, branch] : ["worktree", "add", "-b", branch, target, "HEAD"],
+      hasBranch ? ["worktree", "add", target, branch] : ["worktree", "add", "-b", branch, target, base],
     );
     if (!added.ok) {
       notes.push(`Could not create a worktree of ${source} (${added.stderr.trim() || "git failed"}); the agent shares it.`);
@@ -162,8 +168,19 @@ export async function removeWorkspace(board: Board | null, task: Pick<Task, "id"
   return problems;
 }
 
+/**
+ * Folders the card ships from: its existing worktrees, else the board's folders. Each with the
+ * board folder it belongs to (`source`), which names its default branch (`Board.defaultBranches`).
+ */
+export async function shipTargets(
+  board: Board,
+  task: Pick<Task, "id" | "title">,
+): Promise<{ source: string; path: string }[]> {
+  const workspace = await getWorkspace(board, task);
+  return workspace.folders.map((f) => ({ source: f.source, path: f.isolated && f.exists ? f.path : f.source }));
+}
+
 /** Folders the card ships from: its existing worktrees, else the board's folders. */
 export async function shipFolders(board: Board, task: Pick<Task, "id" | "title">): Promise<string[]> {
-  const workspace = await getWorkspace(board, task);
-  return workspace.folders.map((f) => (f.isolated && f.exists ? f.path : f.source));
+  return (await shipTargets(board, task)).map((t) => t.path);
 }

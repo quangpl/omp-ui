@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { childEnv } from "@/lib/child-env";
+import { DEFAULT_BRANCH } from "@/lib/default-branch";
 import { HttpError } from "@/lib/server/http";
 import { isValidBranchName } from "@/lib/push-branch";
 import type { GitBranches, GitProvider, GitRepoActionResult, GitStatus, GitSwitchResult } from "@/lib/types";
@@ -252,7 +253,27 @@ async function resolveDefaultBranch(folder: string, current: string | null): Pro
       if ((await git(folder, ["rev-parse", "--verify", "--quiet", `${ref}${name}`])).ok) return name;
     }
   }
-  return current ?? "main";
+  return current ?? DEFAULT_BRANCH;
+}
+
+/**
+ * The repo's own default branch: origin/HEAD, then a local/remote main or master, then the
+ * checked-out branch, then "main".
+ */
+export async function repoDefaultBranch(folder: string): Promise<string> {
+  const head = await git(folder, ["symbolic-ref", "--short", "-q", "HEAD"]);
+  return resolveDefaultBranch(folder, (head.ok && head.stdout.trim()) || null);
+}
+
+/**
+ * The ref a worktree of `folder` should be created from: `branch` as a local branch, else as
+ * `origin/<branch>`, else HEAD (a repo without that branch keeps today's behavior).
+ */
+export async function defaultBranchRef(folder: string, branch: string): Promise<string> {
+  for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {
+    if ((await git(folder, ["rev-parse", "--verify", "--quiet", ref])).ok) return ref;
+  }
+  return "HEAD";
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +289,14 @@ export async function isGitRepo(folder: string): Promise<boolean> {
   return result.ok && result.stdout.trim() === "true";
 }
 
-export async function gitStatus(folder: string): Promise<GitStatus> {
+/**
+ * Git status of `folder`. `options.defaultBranch` overrides the branch resolved from the repo
+ * itself (the project's per-repo default branch); it is never empty.
+ */
+export async function gitStatus(
+  folder: string,
+  options?: { defaultBranch?: string | null },
+): Promise<GitStatus> {
   const empty: GitStatus = {
     folder,
     isRepo: false,
@@ -304,7 +332,7 @@ export async function gitStatus(folder: string): Promise<GitStatus> {
     ...empty,
     isRepo: true,
     branch,
-    defaultBranch: await resolveDefaultBranch(folder, branch),
+    defaultBranch: options?.defaultBranch || (await resolveDefaultBranch(folder, branch)),
     remoteUrl: remote ? redactRemote(remote) : null,
     webUrl,
     provider,
@@ -383,7 +411,11 @@ async function pullCurrent(folder: string): Promise<Pick<GitSwitchResult, "pulle
  * upstream (fast-forward only). Uncommitted changes carry over unless they conflict, in which case
  * git refuses and nothing changes. A failed pull leaves the switch in place and is reported.
  */
-export function switchBranch(folder: string, name: string): Promise<GitSwitchResult> {
+export function switchBranch(
+  folder: string,
+  name: string,
+  defaultBranch?: string | null,
+): Promise<GitSwitchResult> {
   return withFolderLock(folder, async () => {
     const { current, branches } = await listBranches(folder);
     const branch = branches.find((b) => b.name === name);
@@ -396,7 +428,7 @@ export function switchBranch(folder: string, name: string): Promise<GitSwitchRes
       if (!result.ok) throw new HttpError(400, explain("git", result));
     }
     const pull = await pullCurrent(folder);
-    return { ...(await gitStatus(folder)), ...pull };
+    return { ...(await gitStatus(folder, { defaultBranch })), ...pull };
   });
 }
 
@@ -614,16 +646,17 @@ function findUrl(output: string): string | null {
 
 /**
  * Commit to a new branch `branchName` from the current HEAD, push it, and open a PR (gh) / MR
- * (glab). Without the CLI, the branch is still pushed and the provider's "new PR" link returned.
+ * (glab) against `baseBranch` (the project's default branch for that repo, else the repo's own).
+ * Without the CLI, the branch is still pushed and the provider's "new PR" link returned.
  */
 export function createPullRequest(
   folder: string,
-  input: { title: string; body: string; branchName: string },
+  input: { title: string; body: string; branchName: string; baseBranch?: string | null },
 ): Promise<GitFolderOutcome> {
   return withFolderLock(folder, async () => {
     const result = baseResult(folder);
     const name = label(folder);
-    const status = await gitStatus(folder);
+    const status = await gitStatus(folder, { defaultBranch: input.baseBranch });
     if (!status.isRepo) {
       return { result: { ...result, skipped: true, output: "Not a git repository." }, summary: `${name}: not a git repository, skipped.` };
     }
@@ -631,7 +664,7 @@ export function createPullRequest(
       const error = "This folder has no “origin” remote, so a pull request can't be opened.";
       return { result: { ...result, error }, summary: `Couldn't open a PR for ${name}: ${error}` };
     }
-    const base = status.defaultBranch ?? "main";
+    const base = status.defaultBranch ?? DEFAULT_BRANCH;
     const { log, step } = makeRunner(folder);
     try {
       await step("git", ["fetch", "origin", base], NETWORK_TIMEOUT_MS, true);

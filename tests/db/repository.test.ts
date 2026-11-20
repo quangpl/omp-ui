@@ -76,6 +76,7 @@ describe("sqlite migration", () => {
           extraFolders: [],
           worktrees: false,
           pushBranch: "main",
+          defaultBranches: {},
           userId: null,
         });
         expect(await repo.getTask("t1")).toMatchObject({ blockedBy: [], createdByTaskId: null, userId: null });

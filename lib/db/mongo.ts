@@ -56,6 +56,7 @@ import {
   nowIso,
   parseAgentResources,
   parseTaskUsage,
+  parseBranchMap,
   parseFolderList,
   parseTaskReview,
   touchesTask,
@@ -92,6 +93,8 @@ interface BoardDoc {
   worktrees?: boolean;
   /** Missing on documents created before configurable push branches. */
   pushBranch?: string | null;
+  /** Per-repo default branch, folder → branch. Missing on documents created before it existed. */
+  defaultBranches?: Record<string, string> | null;
   /** Missing on documents created before projects could be pinned. */
   pinned?: boolean;
   /** Missing until the board is first opened. */
@@ -258,6 +261,7 @@ function toBoard(d: BoardDoc): Board {
     autoRun: d.autoRun,
     worktrees: d.worktrees ?? false,
     pushBranch: d.pushBranch ?? DEFAULT_PUSH_BRANCH,
+    defaultBranches: parseBranchMap(d.defaultBranches),
     pinned: d.pinned ?? false,
     lastAccessedAt: d.lastAccessedAt ?? null,
     userId: d.userId ?? null,
@@ -393,6 +397,7 @@ const BOARD_PATCH_KEYS = [
   "autoRun",
   "worktrees",
   "pushBranch",
+  "defaultBranches",
   "pinned",
 ] as const satisfies readonly (keyof UpdateBoardInput)[];
 const TASK_PATCH_KEYS = [
@@ -749,6 +754,7 @@ export class MongoRepository implements Repository {
       autoRun: input.autoRun ?? true,
       worktrees: input.worktrees ?? false,
       pushBranch: input.pushBranch ?? DEFAULT_PUSH_BRANCH,
+      defaultBranches: input.defaultBranches ?? {},
       pinned: false,
       lastAccessedAt: null,
       userId: input.userId ?? null,

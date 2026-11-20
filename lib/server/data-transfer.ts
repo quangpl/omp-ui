@@ -21,7 +21,7 @@ import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { holdNewRuns } from "@/lib/agent/manager";
 import type { AgentManager } from "@/lib/agent/types";
 import { forgetAuthSecret } from "@/lib/auth";
-import { parseAgentResources, parseFolderList, parseTaskReview, parseTaskUsage } from "@/lib/db/util";
+import { parseAgentResources, parseBranchMap, parseFolderList, parseTaskReview, parseTaskUsage } from "@/lib/db/util";
 import { DATA_TABLES, type DataRows, type DataSnapshot, type DataTable, type DbDriver, type Repository } from "@/lib/db/types";
 import { dataDir } from "@/lib/files";
 import { loadAiProviderEnv } from "@/lib/server/ai-providers";
@@ -374,6 +374,7 @@ const PARSERS: { [T in DataTable]: (f: Fields) => DataRows[T] } = {
     autoRun: f.bool("autoRun"),
     worktrees: f.bool("worktrees"),
     pushBranch: f.str("pushBranch"),
+    defaultBranches: parseBranchMap(f.raw("defaultBranches")),
     pinned: f.bool("pinned"),
     lastAccessedAt: f.strOrNull("lastAccessedAt"),
     userId: f.strOrNull("userId"),

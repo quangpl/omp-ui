@@ -549,6 +549,7 @@ export const api = {
       autoRun?: boolean;
       worktrees?: boolean;
       pushBranch?: string;
+      defaultBranches?: Record<string, string>;
     }) =>
       request<Board>("/boards", { method: "POST", json: input }),
     update: (
@@ -561,6 +562,7 @@ export const api = {
         autoRun: boolean;
         worktrees: boolean;
         pushBranch: string;
+        defaultBranches: Record<string, string>;
         pinned: boolean;
       }>,
     ) => request<Board>(`/boards/${id}`, { method: "PATCH", json: patch }),

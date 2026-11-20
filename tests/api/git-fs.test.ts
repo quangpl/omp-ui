@@ -21,6 +21,7 @@ import * as repoRoute from "@/app/api/v1/git/repo/route";
 import * as taskPrRoute from "@/app/api/v1/tasks/[id]/git/pr/route";
 import * as taskPushRoute from "@/app/api/v1/tasks/[id]/git/push/route";
 import * as taskDiscardRoute from "@/app/api/v1/tasks/[id]/git/discard/route";
+import * as taskGitRoute from "@/app/api/v1/tasks/[id]/git/route";
 import * as taskRoute from "@/app/api/v1/tasks/[id]/route";
 import * as taskRunRoute from "@/app/api/v1/tasks/[id]/run/route";
 import * as taskStopRoute from "@/app/api/v1/tasks/[id]/stop/route";
@@ -37,6 +38,7 @@ import type {
   GitSwitchResult,
   Task,
 } from "@/lib/types";
+import { ensureWorkspace } from "@/lib/workspaces";
 
 interface Repo {
   work: string;
@@ -493,8 +495,15 @@ describe("git status and quick actions", () => {
       // Looks like GitHub to the server, but pushes go to the local bare repo (no network).
       git(repo.work, "remote", "set-url", "origin", "ssh://git@github.invalid/acme/widgets.git");
       git(repo.work, "remote", "set-url", "--push", "origin", repo.bare);
-      // A push branch other than main: Create PR still targets the repo's default branch.
-      const ghBoard = await createBoard({ name: "Widgets", workdir: repo.work, autoRun: false, pushBranch: "release" });
+      // A push branch other than main, and a default branch the project chose: Create PR targets
+      // the configured branch for that repo, not the push branch nor the repo's own HEAD/main.
+      const ghBoard = await createBoard({
+        name: "Widgets",
+        workdir: repo.work,
+        autoRun: false,
+        pushBranch: "release",
+        defaultBranches: { [repo.work]: "develop" },
+      });
       const ghTask = await createTask(ghBoard.id, "Widget polish");
       writeFileSync(path.join(repo.work, "widget.txt"), "shiny\n");
 
@@ -508,6 +517,7 @@ describe("git status and quick actions", () => {
         const status = await boardGit(ghBoard.id);
         expect(status.body[0]).toMatchObject({
           provider: "github",
+          defaultBranch: "develop",
           // The ssh login name is not a secret: it stays in the displayed remote.
           remoteUrl: "ssh://git@github.invalid/acme/widgets.git",
           webUrl: "https://github.invalid/acme/widgets",
@@ -520,7 +530,7 @@ describe("git status and quick actions", () => {
         expect(result.error).toBeNull();
         const branch = result.branch as string;
         expect(branch).toMatch(/^omp\/widget-polish-[0-9a-f]{6}$/);
-        expect(result.url).toBe(`https://github.invalid/acme/widgets/compare/main...${branch}?expand=1`);
+        expect(result.url).toBe(`https://github.invalid/acme/widgets/compare/develop...${branch}?expand=1`);
         expect(remoteHead(repo.bare, `refs/heads/${branch}`)).toMatchObject({
           sha: result.commit,
           subject: "Widget polish",
