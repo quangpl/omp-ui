@@ -546,7 +546,7 @@ export function useTaskGitStatus(
   return { statuses, refresh };
 }
 
-export type ShipAction = "pr" | "push";
+export type ShipAction = "pr" | "push" | "push-current";
 
 /** User-facing names for a set of repos: "PR" vs GitLab's "MR", and the project's push branch a push lands on. */
 export function shipLabels(statuses: GitStatus[], pushBranch: string): { prNoun: string; pushTarget: string } {
@@ -563,8 +563,8 @@ export function canShip(statuses: GitStatus[] | null): boolean {
 }
 
 /**
- * Runs Create PR / Push to main for a card and toasts the outcome. Resolves the server's result,
- * or null when the request itself failed (already toasted).
+ * Runs Create PR / Push to main / Push to current branch for a card and toasts the outcome.
+ * Resolves the server's result, or null when the request itself failed (already toasted).
  */
 export async function shipTask(
   action: ShipAction,
@@ -572,9 +572,17 @@ export async function shipTask(
   { prNoun, pushTarget }: { prNoun: string; pushTarget: string },
 ): Promise<GitActionResult | null> {
   try {
-    const outcome = action === "pr" ? await api.git.pr(taskId) : await api.git.push(taskId);
+    const outcome =
+      action === "pr"
+        ? await api.git.pr(taskId)
+        : action === "push-current"
+          ? await api.git.pushCurrent(taskId)
+          : await api.git.push(taskId);
     const failed = outcome.results.filter((r) => r.error);
     const done = outcome.results.filter((r) => !r.error && !r.skipped);
+    const branches = [...new Set(done.flatMap((r) => (r.branch ? [r.branch] : [])))];
+    const pushedTo =
+      branches.length === 1 ? branches[0] : action === "push-current" ? "the current branch" : pushTarget;
     if (done.length === 0 && failed.length === 0) {
       toast("Nothing to ship", { description: "No uncommitted or unpushed changes were found." });
     } else if (done.length === 0) {
@@ -587,7 +595,7 @@ export async function shipTask(
         { description: `${failed.length} folder${failed.length === 1 ? "" : "s"} failed — see details.` },
       );
     } else {
-      toast.success(action === "pr" ? `${prNoun} created` : `Pushed to ${pushTarget}`);
+      toast.success(action === "pr" ? `${prNoun} created` : `Pushed to ${pushedTo}`);
     }
     return outcome;
   } catch (err) {
@@ -602,9 +610,9 @@ export async function shipTask(
 }
 
 /**
- * "Ship" panel on a card: open a PR/MR or push straight to the project's push branch.
- * Acts on every project folder with changes (or the card's worktrees when `fromWorkspace`);
- * results link out per folder.
+ * "Ship" panel on a card: open a PR/MR, push straight to the project's push branch, or push to the
+ * branch each repo is already on. Acts on every project folder with changes (or the card's
+ * worktrees when `fromWorkspace`); results link out per folder.
  */
 export function ShipActions({
   task,
@@ -633,6 +641,8 @@ export function ShipActions({
   const agentActive = task.agentState === "running" || task.agentState === "queued";
   const hasChanges = repos.some((repo) => repo.dirty || repo.ahead > 0);
   const noRemote = !canShip(repos);
+  /** A folder on a detached HEAD has no branch to push to; the button needs at least one that has. */
+  const hasCurrentBranch = repos.some((repo) => repo.branch !== null);
   // Without gh/glab the server pushes the branch and returns a pre-filled compare / new-MR page.
   const prOpensBrowser = !noRemote && !repos.some((repo) => repo.remoteUrl && repo.prCliAvailable);
 
@@ -677,7 +687,7 @@ export function ShipActions({
         ? "No uncommitted or unpushed changes."
         : prOpensBrowser
           ? "Opens a pre-filled PR page in your browser"
-          : `Commits all changes${repos.length > 1 ? ` in ${repos.length} folders` : ""}, then opens a ${prNoun} or pushes to ${pushTarget}.`;
+          : `Commits all changes${repos.length > 1 ? ` in ${repos.length} folders` : ""}, then opens a ${prNoun} or pushes to ${pushTarget} / the current branch.`;
   const workspaceBranches = [
     ...new Set(repos.flatMap((repo) => (repo.branch ? [repo.branch] : []))),
   ];
@@ -711,9 +721,9 @@ export function ShipActions({
           </span>
         </p>
       )}
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,auto)]">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         <Button
-          className="h-11 w-full min-w-0 transition-transform active:scale-[0.98] md:h-9"
+          className="h-11 w-full min-w-0 transition-transform active:scale-[0.98] sm:col-span-2 md:h-9"
           disabled={agentActive || busy !== null || noRemote}
           onClick={() => void run("pr")}
         >
@@ -728,6 +738,18 @@ export function ShipActions({
         >
           {busy === "push" ? <LoaderCircle className="animate-spin" /> : <Upload />}
           <span className="truncate">{busy === "push" ? "Pushing…" : `Push to ${pushTarget}`}</span>
+        </Button>
+        <Button
+          variant="outline"
+          className="h-11 w-full min-w-0 transition-transform active:scale-[0.98] md:h-9"
+          disabled={agentActive || busy !== null || noRemote || !hasCurrentBranch}
+          onClick={() => void run("push-current")}
+          title="Commit the changes and push them to the branch each repo is already on"
+        >
+          {busy === "push-current" ? <LoaderCircle className="animate-spin" /> : <GitBranch />}
+          <span className="truncate">
+            {busy === "push-current" ? "Pushing…" : "Push to current branch"}
+          </span>
         </Button>
       </div>
       {changedFiles > 0 && (

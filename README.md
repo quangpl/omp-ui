@@ -29,7 +29,7 @@ omp                                      # run once, sign in to a provider
 2. **Add a task.** Describe the task in your own words, any length (logs, specs, links). It lands in **In progress** immediately; a background agent turns it into a title and brief, then an omp agent works on it in your project folders. Watch it live.
 3. **Comment to give feedback.** The agent picks up comments, marks them resolved, and moves the card to **Done** when finished. Commenting on a Done card reopens it; the agent continues where it left off.
 
-Ship the result with one tap: **Create PR/MR** or **Push to main**.
+Ship the result with one tap: **Create PR/MR**, **Push to main** or **Push to current branch**.
 
 **Quick actions.** Cards move between columns on their own as the agent works; you can't drag them across columns or set a status (dragging only reorders within a column). Manual controls: **Start**, **Resume** or **Retry** (run the agent), **Stop** (the card stays put) and **Revert to To do** (stop the agent, move the card back to To do). An unpushed Done card also shows a **Push to main** icon (git repo with a remote only); once pushed, its title is struck through and the icon disappears. Hover, right-click or open a card, or focus it and press <kbd>R</kbd> (Start/Resume/Retry), <kbd>S</kbd> (Stop), <kbd>Z</kbd> (Revert) or <kbd>P</kbd> (Push to main). On phones, the card's main button is its first quick action; the rest are in its **⋯** menu. Failed cards keep **Retry** pinned.
 
@@ -76,7 +76,6 @@ Ship the result with one tap: **Create PR/MR** or **Push to main**.
 
 ### Agents working together
 
-- **Dedicated workspaces.** With **Dedicated workspace per card** on in a project's settings, each card's agent works in its own git worktree (`DATA_DIR/workspaces`, branch `omp/<card>`), so several agents can change the same repo at once. **Create PR/MR** and **Push to main** ship from that worktree. Deleting the card (or **Remove workspace**) removes the worktree and its local branch.
 - **Dedicated workspaces.** With **Dedicated workspace per card** on in a project's settings, each card's agent works in its own git worktree (`DATA_DIR/workspaces`, branch `omp/<card>`), so several agents can change the same repo at once. Each repo starts from its default branch — pick one per repo under **Project settings → More options → Default branches** (`main` when nothing is detected or chosen). **Create PR/MR**, **Push to main** and **Push to current branch** ship from that worktree. Deleting the card (or **Remove workspace**) removes the worktree and its local branch.
 - **Run after.** Pick the cards a card should wait for; its agent stays queued until all of them are Done.
 - **Files.** Upload files to a card for its agent to read; the agent saves reports, exports and screenshots there. **Shared files** (board menu) are available to every card's agent in the project.
@@ -208,6 +207,7 @@ A card has two ship buttons. Each acts on every project folder with changes; nei
 | --- | --- | --- |
 | **Create PR/MR** (recommended) | Commits to a new `omp/<card>` branch, pushes it, and opens a pull request (GitHub) or merge request (GitLab) | `git` plus [`gh`](https://cli.github.com) for GitHub or [`glab`](https://gitlab.com/gitlab-org/cli) for GitLab, signed in |
 | **Push to main** | Commits and pushes directly to the project's push branch: `main` unless you change **Push branch** under **Project settings → More options** (created on the remote if missing). **Create PR/MR** still targets the repo's default branch (**Default branches** under **Project settings → More options**) | `git` with push access |
+| **Push to current branch** | Same as **Push to main**, but each repo pushes to the branch it is already on (created on the remote if missing); a repo on a detached HEAD is reported as an error | `git` with push access |
 
 **Discard all changes.** When a project (or a card's workspace) has uncommitted changes, a **Discard all changes** button appears next to the header's change count and in the card's **Ship changes** panel. After a confirmation it resets tracked and staged edits and deletes new untracked files; unpushed commits and git checkpoints are left alone. It is blocked while an agent on the board is running or queued.
 
