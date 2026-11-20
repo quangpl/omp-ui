@@ -1,9 +1,17 @@
-// Shared handler for the task "Push to main" / "Create PR" buttons.
+// Shared handler for the task "Push to main" / "Push to current branch" / "Create PR" buttons.
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { boardDefaultBranch } from "@/lib/default-branch";
 import { publish } from "@/lib/events";
-import { createPullRequest, discardChanges, gitStatus, isGitRepo, pushToBranch, type GitFolderOutcome } from "@/lib/git";
+import {
+  createPullRequest,
+  discardChanges,
+  gitStatus,
+  isGitRepo,
+  pushToBranch,
+  pushToCurrentBranch,
+  type GitFolderOutcome,
+} from "@/lib/git";
 import { buildPrBody } from "@/lib/pr-body";
 import { HttpError, json, readJson, type ApiContext } from "@/lib/server/http";
 import { requireBoard, requireTask } from "@/lib/server/validate";
@@ -39,13 +47,13 @@ async function defaultPrBody(ctx: ApiContext<{ id: string }>, task: Task): Promi
 }
 
 /**
- * Push (to the project's push branch, Board.pushBranch) or open PR/MRs (against each repo's default
- * branch) for the task's project folders, one folder at a time, then post one resolved agent
- * comment summarising what happened.
+ * Push to the project's push branch (Board.pushBranch), push to each repo's current branch, or open
+ * PR/MRs (against each repo's default branch) for the task's project folders, one folder at a time,
+ * then post one resolved agent comment summarising what happened.
  */
 export async function runTaskGitAction(
   ctx: ApiContext<{ id: string }>,
-  action: "push" | "pr",
+  action: "push" | "push-current" | "pr",
 ): Promise<Response> {
   const { req, repo, params } = ctx;
   const task = await requireTask(repo, params.id);
@@ -81,9 +89,12 @@ export async function runTaskGitAction(
   }
 
   let run: (folder: string) => Promise<GitFolderOutcome>;
-  if (action === "push") {
+  if (action === "push" || action === "push-current") {
     const message = optionalText(body.message, "message", 5000) ?? task.title;
-    run = (folder) => pushToBranch(folder, board.pushBranch, message);
+    run =
+      action === "push"
+        ? (folder) => pushToBranch(folder, board.pushBranch, message)
+        : (folder) => pushToCurrentBranch(folder, message);
   } else {
     const title = optionalText(body.title, "title", 200) ?? task.title;
     const prBody = optionalText(body.body, "body", MAX_PR_BODY) ?? (await defaultPrBody(ctx, task));
@@ -113,9 +124,18 @@ export async function runTaskGitAction(
   }
 
   const results = outcomes.map((o) => o.result);
-  const heading = action === "push" ? `**Push to ${board.pushBranch}**` : "**Create PR**";
+  const heading =
+    action === "push"
+      ? `**Push to ${board.pushBranch}**`
+      : action === "push-current"
+        ? "**Push to current branch**"
+        : "**Create PR**";
   const lines = results.every((r) => r.skipped)
-    ? [action === "push" ? "Nothing to push — there are no changes." : "Nothing to put in a pull request — there are no changes."]
+    ? [
+        action === "pr"
+          ? "Nothing to put in a pull request — there are no changes."
+          : "Nothing to push — there are no changes.",
+      ]
     : outcomes.filter((_, i) => repoFlags[i]).map((o) => `- ${o.summary}`);
   const comment = await repo.addComment({
     taskId: task.id,
@@ -124,9 +144,13 @@ export async function runTaskGitAction(
     resolved: true,
   });
   publish({ type: "comment.added", comment, boardId: task.boardId });
-  // A clean push (something landed, nothing failed) marks the card as pushed: its title is struck through.
+  // A clean push marks the card as pushed (its title is struck through) only when every folder
+  // landed on the project's push branch; "Push to current branch" counts when that is where it went.
+  const landed = results.filter((r) => !r.skipped && !r.error);
   const pushed =
-    action === "push" && results.some((r) => !r.skipped && !r.error) && !results.some((r) => r.error);
+    landed.length > 0 &&
+    !results.some((r) => r.error) &&
+    landed.every((r) => r.branch === board.pushBranch);
   const fresh = pushed
     ? await repo.updateTask(task.id, { pushedAt: new Date().toISOString() })
     : await repo.getTask(task.id);

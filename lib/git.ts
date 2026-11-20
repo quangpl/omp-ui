@@ -576,53 +576,82 @@ function baseResult(folder: string): GitRepoActionResult {
 }
 
 /**
+ * Commit uncommitted changes (if any) and push HEAD to `target` on origin, creating it there if
+ * missing. Callers hold the folder lock.
+ */
+async function pushHeadTo(folder: string, target: string, message: string): Promise<GitFolderOutcome> {
+  const result = baseResult(folder);
+  const name = label(folder);
+  if (!isValidBranchName(target)) {
+    const error = `“${target}” isn't a valid branch name. Change the project's push branch in its settings.`;
+    return { result: { ...result, error }, summary: `Couldn't push ${name}: ${error}` };
+  }
+  const status = await gitStatus(folder);
+  if (!status.isRepo) {
+    return { result: { ...result, skipped: true, output: "Not a git repository." }, summary: `${name}: not a git repository, skipped.` };
+  }
+  if (!status.remoteUrl) {
+    const error = "This folder has no “origin” remote, so there is nowhere to push.";
+    return { result: { ...result, error }, summary: `Couldn't push ${name}: ${error}` };
+  }
+  const { log, step } = makeRunner(folder);
+  try {
+    result.branch = target;
+    await step("git", ["fetch", "origin", `refs/heads/${target}`], NETWORK_TIMEOUT_MS, true);
+    result.commit = await commitAll(folder, step, message);
+    if (!result.commit && (await unpushedCount(folder, target)) === 0) {
+      return {
+        result: { ...result, branch: null, skipped: true, output: log.join("\n") },
+        summary: `Nothing to push in ${name}`,
+      };
+    }
+    await step("git", ["push", "origin", `HEAD:refs/heads/${target}`], NETWORK_TIMEOUT_MS);
+    const sha = (await step("git", ["rev-parse", "HEAD"])).stdout.trim();
+    if (status.webUrl && status.provider === "github") result.url = `${status.webUrl}/commit/${sha}`;
+    else if (status.webUrl && status.provider === "gitlab") result.url = `${status.webUrl}/-/commit/${sha}`;
+    else result.url = status.webUrl;
+    result.output = log.join("\n");
+    return {
+      result,
+      summary: `Pushed to ${target} in ${name}${result.url ? ` — ${result.url}` : ""}`,
+    };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    return {
+      result: { ...result, output: log.join("\n"), error },
+      summary: `Couldn't push ${name} to ${target}: ${error}`,
+    };
+  }
+}
+
+/**
  * Commit uncommitted changes (if any) and push HEAD to `target` on origin (the project's push
  * branch), creating it there if missing.
  */
 export function pushToBranch(folder: string, target: string, message: string): Promise<GitFolderOutcome> {
+  return withFolderLock(folder, () => pushHeadTo(folder, target, message));
+}
+
+/**
+ * Commit uncommitted changes (if any) and push HEAD to the branch the folder is already on,
+ * creating it on `origin` if missing. A detached HEAD has no current branch, so it is reported as
+ * an error for that folder.
+ */
+export function pushToCurrentBranch(folder: string, message: string): Promise<GitFolderOutcome> {
   return withFolderLock(folder, async () => {
-    const result = baseResult(folder);
     const name = label(folder);
-    if (!isValidBranchName(target)) {
-      const error = `“${target}” isn't a valid branch name. Change the project's push branch in its settings.`;
-      return { result: { ...result, error }, summary: `Couldn't push ${name}: ${error}` };
-    }
     const status = await gitStatus(folder);
     if (!status.isRepo) {
-      return { result: { ...result, skipped: true, output: "Not a git repository." }, summary: `${name}: not a git repository, skipped.` };
-    }
-    if (!status.remoteUrl) {
-      const error = "This folder has no “origin” remote, so there is nowhere to push.";
-      return { result: { ...result, error }, summary: `Couldn't push ${name}: ${error}` };
-    }
-    const { log, step } = makeRunner(folder);
-    try {
-      result.branch = target;
-      await step("git", ["fetch", "origin", `refs/heads/${target}`], NETWORK_TIMEOUT_MS, true);
-      result.commit = await commitAll(folder, step, message);
-      if (!result.commit && (await unpushedCount(folder, target)) === 0) {
-        return {
-          result: { ...result, branch: null, skipped: true, output: log.join("\n") },
-          summary: `Nothing to push in ${name}`,
-        };
-      }
-      await step("git", ["push", "origin", `HEAD:refs/heads/${target}`], NETWORK_TIMEOUT_MS);
-      const sha = (await step("git", ["rev-parse", "HEAD"])).stdout.trim();
-      if (status.webUrl && status.provider === "github") result.url = `${status.webUrl}/commit/${sha}`;
-      else if (status.webUrl && status.provider === "gitlab") result.url = `${status.webUrl}/-/commit/${sha}`;
-      else result.url = status.webUrl;
-      result.output = log.join("\n");
       return {
-        result,
-        summary: `Pushed to ${target} in ${name}${result.url ? ` — ${result.url}` : ""}`,
-      };
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        result: { ...result, output: log.join("\n"), error },
-        summary: `Couldn't push ${name} to ${target}: ${error}`,
+        result: { ...baseResult(folder), skipped: true, output: "Not a git repository." },
+        summary: `${name}: not a git repository, skipped.`,
       };
     }
+    if (!status.branch) {
+      const error = "This folder is on a detached HEAD, so it has no current branch to push.";
+      return { result: { ...baseResult(folder), error }, summary: `Couldn't push ${name}: ${error}` };
+    }
+    return pushHeadTo(folder, status.branch, message);
   });
 }
 

@@ -1601,11 +1601,12 @@ export interface GitRepoActionResult {
 }
 
 /**
- * POST /tasks/:id/git/push and POST /tasks/:id/git/pr. Acts on every project folder that is a
- * git repo with changes (uncommitted or unpushed), or only on `folders` when given.
+ * POST /tasks/:id/git/push, /tasks/:id/git/push-current and /tasks/:id/git/pr. Acts on every
+ * project folder that is a git repo with changes (uncommitted or unpushed), or only on `folders`
+ * when given.
  */
 export interface GitActionResult {
-  action: "push" | "pr";
+  action: "push" | "push-current" | "pr";
   results: GitRepoActionResult[];
   /** The agent comment posted on the task describing the result (links included). */
   comment: Comment;

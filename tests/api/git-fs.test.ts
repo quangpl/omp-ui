@@ -20,6 +20,7 @@ import * as initRoute from "@/app/api/v1/git/init/route";
 import * as repoRoute from "@/app/api/v1/git/repo/route";
 import * as taskPrRoute from "@/app/api/v1/tasks/[id]/git/pr/route";
 import * as taskPushRoute from "@/app/api/v1/tasks/[id]/git/push/route";
+import * as taskPushCurrentRoute from "@/app/api/v1/tasks/[id]/git/push-current/route";
 import * as taskDiscardRoute from "@/app/api/v1/tasks/[id]/git/discard/route";
 import * as taskGitRoute from "@/app/api/v1/tasks/[id]/git/route";
 import * as taskRoute from "@/app/api/v1/tasks/[id]/route";
@@ -93,13 +94,12 @@ async function createTask(boardId: string, title: string): Promise<Task> {
   return res.body;
 }
 
-async function gitAction(action: "push" | "pr", taskId: string, body: Record<string, unknown> = {}) {
-  return api<GitActionResult & { error?: string }>(
-    action === "push" ? taskPushRoute : taskPrRoute,
-    "POST",
-    `/tasks/${taskId}/git/${action}`,
-    { body, params: { id: taskId } },
-  );
+async function gitAction(action: "push" | "push-current" | "pr", taskId: string, body: Record<string, unknown> = {}) {
+  const route = { push: taskPushRoute, "push-current": taskPushCurrentRoute, pr: taskPrRoute }[action];
+  return api<GitActionResult & { error?: string }>(route, "POST", `/tasks/${taskId}/git/${action}`, {
+    body,
+    params: { id: taskId },
+  });
 }
 
 async function boardGit(boardId: string) {
@@ -539,6 +539,95 @@ describe("git status and quick actions", () => {
       } finally {
         process.env.PATH = originalPath;
       }
+    },
+    GIT_TIMEOUT,
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("push to current branch", () => {
+  let app: Repo;
+  let lib: Repo;
+  let board: Board;
+  let task: Task;
+
+  beforeAll(async () => {
+    await freshEnv();
+    await setupAdmin();
+    app = makeRepo("app");
+    lib = makeRepo("lib");
+    board = await createBoard({ name: "Repos", workdir: app.work, extraFolders: [lib.work], autoRun: false });
+    task = await createTask(board.id, "Ship the widget");
+  });
+
+  it(
+    "pushes each folder to the branch it is on, not the project's push branch",
+    async () => {
+      // app is on a feature branch that does not exist on origin yet; lib stays on main.
+      git(app.work, "switch", "-c", "feature/widget");
+      writeFileSync(path.join(app.work, "widget.txt"), "widget\n");
+      writeFileSync(path.join(lib.work, "lib.txt"), "lib\n");
+      git(lib.work, "add", "-A");
+      git(lib.work, "commit", "-m", "Local lib change");
+
+      const res = await gitAction("push-current", task.id);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.action).toBe("push-current");
+      const [appResult, libResult] = res.body.results;
+      expect(appResult).toMatchObject({ folder: app.work, branch: "feature/widget", error: null, skipped: false });
+      expect(appResult.commit).toMatch(SHA);
+
+      // The feature branch is created on origin; main keeps its initial commit.
+      const pushed = remoteHead(app.bare, "refs/heads/feature/widget");
+      expect(pushed.sha).toBe(appResult.commit);
+      expect(pushed.subject).toBe("Ship the widget");
+      expect(remoteHead(app.bare, "main").subject).toBe("Initial commit");
+
+      // A folder already on the push branch is pushed in place, without a new commit.
+      expect(libResult).toMatchObject({ folder: lib.work, branch: "main", commit: null, error: null, skipped: false });
+      expect(remoteHead(lib.bare, "main").subject).toBe("Local lib change");
+
+      expect(res.body.comment.body).toContain("Push to current branch");
+      expect(res.body.comment.body).toContain("Pushed to feature/widget in app/");
+      // app/ landed off the push branch, so the card is not marked as pushed.
+      expect((await taskDetail(task.id)).task.pushedAt).toBeNull();
+
+      const nothing = await gitAction("push-current", task.id);
+      expect(nothing.status).toBe(200);
+      expect(nothing.body.results.every((r) => r.skipped)).toBe(true);
+      expect(nothing.body.comment.body).toContain("Nothing to push");
+    },
+    GIT_TIMEOUT,
+  );
+
+  it(
+    "marks the card as pushed when every folder lands on the project's push branch",
+    async () => {
+      git(app.work, "switch", "main");
+      writeFileSync(path.join(app.work, "main.txt"), "main\n");
+
+      const res = await gitAction("push-current", task.id);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.results[0]).toMatchObject({ folder: app.work, branch: "main", error: null, skipped: false });
+      expect(remoteHead(app.bare, "main").subject).toBe("Ship the widget");
+      expect((await taskDetail(task.id)).task.pushedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    },
+    GIT_TIMEOUT,
+  );
+
+  it(
+    "reports a folder on a detached HEAD instead of pushing it",
+    async () => {
+      const before = remoteHead(app.bare, "main").sha;
+      git(app.work, "checkout", "--detach", git(app.work, "rev-parse", "HEAD"));
+      writeFileSync(path.join(app.work, "detached.txt"), "x\n");
+
+      const res = await gitAction("push-current", task.id);
+      expect(res.status).toBe(200);
+      expect(res.body.results[0]).toMatchObject({ folder: app.work, error: expect.stringContaining("detached HEAD") });
+      expect(res.body.results[0].skipped).toBe(false);
+      expect(remoteHead(app.bare, "main").sha).toBe(before);
     },
     GIT_TIMEOUT,
   );
@@ -1211,4 +1300,50 @@ describe("git init", () => {
     expect(res.body[0]).toMatchObject({ folder: main, isRepo: true, remoteUrl: null, dirty: false });
     expect(res.body[1]).toMatchObject({ folder: extra, isRepo: true, remoteUrl: null, dirty: false });
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("card worktrees", () => {
+  it(
+    "ships from the card's worktree and targets that repo's configured default branch",
+    async () => {
+      await freshEnv();
+      await setupAdmin();
+      const repo = makeRepo("wt-app");
+      // Looks like GitHub to the server, so Create PR links a compare page; pushes go to the
+      // local bare repo (no network).
+      git(repo.work, "remote", "set-url", "origin", "ssh://git@github.invalid/acme/wt-app.git");
+      git(repo.work, "remote", "set-url", "--push", "origin", repo.bare);
+      const board = await createBoard({
+        name: "Worktrees",
+        workdir: repo.work,
+        autoRun: false,
+        worktrees: true,
+        defaultBranches: { [repo.work]: "develop" },
+      });
+      const task = await createTask(board.id, "Worktree polish");
+
+      const { workspace } = await ensureWorkspace(board, task);
+      const worktree = workspace.folders[0].path;
+      expect(worktree).not.toBe(repo.work);
+      writeFileSync(path.join(worktree, "wt.txt"), "worktree change\n");
+
+      const status = await api<GitStatus[]>(taskGitRoute, "GET", `/tasks/${task.id}/git`, {
+        params: { id: task.id },
+      });
+      expect(status.body).toEqual([expect.objectContaining({ folder: worktree, isRepo: true, defaultBranch: "develop" })]);
+
+      const res = await gitAction("pr", task.id);
+      expect(res.status).toBe(200);
+      const [result] = res.body.results;
+      expect(result.folder).toBe(worktree);
+      expect(result.error).toBeNull();
+      const branch = result.branch as string;
+      expect(branch).toMatch(/^omp\/worktree-polish-[0-9a-f]{6}$/);
+      // The repo's own default branch is main (origin/HEAD): the project's choice wins.
+      expect(result.url).toBe(`https://github.invalid/acme/wt-app/compare/develop...${branch}?expand=1`);
+    },
+    GIT_TIMEOUT,
+  );
 });
