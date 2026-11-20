@@ -15,6 +15,7 @@ const board: Board = {
   autoRun: true,
   worktrees: false,
   pushBranch: "main",
+  defaultBranches: {},
   pinned: false,
   lastAccessedAt: null,
   userId: null,

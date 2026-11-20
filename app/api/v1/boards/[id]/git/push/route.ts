@@ -19,7 +19,9 @@ export const POST = withApi<{ id: string }>(async ({ repo, params }) => {
     }
   }
 
-  const statuses = await Promise.all([board.workdir, ...board.extraFolders].map(gitStatus));
+  const statuses = await Promise.all(
+    [board.workdir, ...board.extraFolders].map((folder) => gitStatus(folder)),
+  );
   const repos = statuses.filter((s) => s.isRepo);
   if (repos.length === 0) {
     throw new HttpError(400, "This project's folders aren't git repositories, so there is nothing to push.");

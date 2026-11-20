@@ -98,6 +98,13 @@ export interface Board {
    * A valid git branch name (`isValidBranchName` in lib/push-branch.ts). Default "main".
    */
   pushBranch: string;
+  /**
+   * Default branch per project repo, keyed by folder (`workdir` + `extraFolders`, absolute). It is
+   * the branch a card's worktree is created from and the base "Create PR" targets. A repo with no
+   * entry uses its own origin/HEAD, then a local/remote `main`/`master`, then "main" (see
+   * `lib/default-branch.ts`). Keys are always a subset of the project's folders. Default {}.
+   */
+  defaultBranches: Record<string, string>;
   /** Pinned projects lead the home dashboard; the rest follow under "Other projects". Default false. */
   pinned: boolean;
   /** When the project's board was last opened (ISO); null until first opened. Orders the sidebar's "Your projects". */
@@ -1534,7 +1541,10 @@ export interface GitStatus {
   folder: string;
   isRepo: boolean;
   branch: string | null;
-  /** origin's default branch (origin/HEAD), falling back to "main"/"master". */
+  /**
+   * The project's default branch for this repo (Board.defaultBranches), else the repo's own
+   * (origin/HEAD, falling back to "main"/"master", then its checked-out branch).
+   */
   defaultBranch: string | null;
   remoteUrl: string | null;
   /** https URL of the repository web page, if derivable from the remote. */

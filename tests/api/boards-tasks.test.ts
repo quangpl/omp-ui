@@ -287,6 +287,37 @@ describe("boards", () => {
     expect(board.extraFolders).toEqual([projectB, projectC]);
   });
 
+  it("sets a per-repo default branch and rejects folders or branches that aren't part of the project", async () => {
+    const notObject = await postBoard({ name: "B", workdir: projectA, defaultBranches: ["main"] });
+    expect(notObject.status).toBe(400);
+    expect(notObject.body.error).toBe("defaultBranches must be an object of folder → branch.");
+
+    const unknown = await postBoard({ name: "B", workdir: projectA, defaultBranches: { [projectB]: "main" } });
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.error).toContain("can only name the project's folders");
+
+    const badName = await postBoard({ name: "B", workdir: projectA, defaultBranches: { [projectA]: "..bad" } });
+    expect(badName.status).toBe(400);
+    expect(badName.body.error).toContain("isn't a valid git branch name");
+
+    const board = await createBoard({
+      name: "Branches",
+      workdir: projectA,
+      extraFolders: [projectB],
+      defaultBranches: { [projectA]: "develop", [projectB]: " release/1.x " },
+    });
+    expect(board.defaultBranches).toEqual({ [projectA]: "develop", [projectB]: "release/1.x" });
+
+    // A folder that leaves the project takes its default branch with it.
+    const removed = await patchBoard(board.id, { extraFolders: [] });
+    expect(removed.body.defaultBranches).toEqual({ [projectA]: "develop" });
+
+    // An empty branch clears that repo's entry.
+    const cleared = await patchBoard(board.id, { defaultBranches: { [projectA]: "" } });
+    expect(cleared.body.defaultBranches).toEqual({});
+    expect(cleared.body.workdir).toBe(projectA);
+  });
+
   it("rejects non-boolean autoRun and non-string model", async () => {
     const autoRun = await postBoard({ name: "A", workdir: projectA, autoRun: "yes" });
     expect(autoRun.status).toBe(400);

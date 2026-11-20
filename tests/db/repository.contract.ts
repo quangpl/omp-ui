@@ -274,7 +274,8 @@ export function runRepositoryContract(
         expect(await repo.getBoard(board.id)).toEqual(board);
       });
 
-      it("round-trips explicit fields including extraFolders, worktrees and pushBranch", async () => {
+      it("round-trips explicit fields including extraFolders, worktrees, pushBranch and defaultBranches", async () => {
+        const branches = { "/work/front": "develop", "/work/back": "release/2.x" };
         const board = await repo.createBoard({
           name: "Full",
           workdir: "/work/front",
@@ -283,6 +284,7 @@ export function runRepositoryContract(
           autoRun: false,
           worktrees: true,
           pushBranch: "release/1.x",
+          defaultBranches: branches,
         });
 
         expect(board).toMatchObject({
@@ -291,11 +293,17 @@ export function runRepositoryContract(
           autoRun: false,
           worktrees: true,
           pushBranch: "release/1.x",
+          defaultBranches: branches,
         });
         expect(await repo.getBoard(board.id)).toEqual(board);
 
         const off = await repo.updateBoard(board.id, { worktrees: false });
-        expect(off).toMatchObject({ worktrees: false, autoRun: false, pushBranch: "release/1.x" });
+        expect(off).toMatchObject({
+          worktrees: false,
+          autoRun: false,
+          pushBranch: "release/1.x",
+          defaultBranches: branches,
+        });
         expect(await repo.getBoard(board.id)).toEqual(off);
 
         const develop = await repo.updateBoard(board.id, { pushBranch: "develop" });
@@ -305,8 +313,13 @@ export function runRepositoryContract(
           model: "sonnet",
           autoRun: false,
           worktrees: false,
+          defaultBranches: branches,
         });
         expect(await repo.getBoard(board.id)).toEqual(develop);
+
+        const cleared = await repo.updateBoard(board.id, { defaultBranches: {} });
+        expect(cleared).toMatchObject({ defaultBranches: {} });
+        expect(await repo.getBoard(board.id)).toEqual(cleared);
       });
 
       it("assigns distinct ids", async () => {

@@ -122,6 +122,28 @@ export function parseFolderList(value: unknown): string[] {
 }
 
 /**
+ * A stored folder → branch map (board `defaultBranches`): a JSON object string (SQL drivers) or an
+ * object (MongoDB). Anything malformed or missing yields `{}`; non-string and empty values are
+ * dropped.
+ */
+export function parseBranchMap(value: unknown): Record<string, string> {
+  let raw = value;
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+  const branches: Record<string, string> = {};
+  for (const [folder, branch] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof branch === "string" && branch) branches[folder] = branch;
+  }
+  return branches;
+}
+
+/**
  * A stored task review: a JSON object string (SQL drivers) or an object (MongoDB). Anything
  * missing, malformed or with an unknown decision yields null.
  */

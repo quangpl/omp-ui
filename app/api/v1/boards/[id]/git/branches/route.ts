@@ -1,4 +1,5 @@
 import path from "node:path";
+import { boardDefaultBranch } from "@/lib/default-branch";
 import { listBranches, switchBranch } from "@/lib/git";
 import { HttpError, json, readJson, withApi } from "@/lib/server/http";
 import { requireBoard } from "@/lib/server/validate";
@@ -33,5 +34,5 @@ export const POST = withApi<{ id: string }>(async ({ req, repo, params }) => {
   if (tasks.some((t) => t.agentState === "queued" || t.agentState === "running")) {
     throw new HttpError(409, "Wait for the agent to finish first.");
   }
-  return json(await switchBranch(folder, body.branch.trim()));
+  return json(await switchBranch(folder, body.branch.trim(), boardDefaultBranch(board, folder)));
 });

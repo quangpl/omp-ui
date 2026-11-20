@@ -43,6 +43,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/lib/api-client";
+import { DEFAULT_BRANCH } from "@/lib/default-branch";
 import { DEFAULT_PUSH_BRANCH, isValidBranchName, PUSH_BRANCH_MAX } from "@/lib/push-branch";
 import type { Board } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -94,6 +95,10 @@ export function BoardFormDialog({
   const [extraFolders, setExtraFolders] = useState<string[]>([]);
   const [model, setModel] = useState("");
   const [pushBranch, setPushBranch] = useState(DEFAULT_PUSH_BRANCH);
+  // Per-repo default branch: folder → branch ("" or an absent folder = the repo's own default).
+  const [defaultBranches, setDefaultBranches] = useState<Record<string, string>>({});
+  // Branch names of a saved project's folders, for the branch suggestions; filled on first expand.
+  const [repoBranches, setRepoBranches] = useState<Record<string, string[]>>({});
   const [worktrees, setWorktrees] = useState(false);
   const [autoRun, setAutoRun] = useState(true);
   const [showMore, setShowMore] = useState(false);
@@ -123,19 +128,36 @@ export function BoardFormDialog({
       Boolean(board?.model) ||
         board?.autoRun === false ||
         Boolean(board?.worktrees) ||
-        (board != null && board.pushBranch !== DEFAULT_PUSH_BRANCH),
+        (board != null && board.pushBranch !== DEFAULT_PUSH_BRANCH) ||
+        Object.keys(board?.defaultBranches ?? {}).length > 0,
     );
     setBusy(false);
     setSaving(false);
     setError(null);
     setRepoState({});
     setInitGit([]);
+    setDefaultBranches(board?.defaultBranches ?? {});
+    setRepoBranches({});
   }, [open, board]);
 
-  /** Drop a folder's git state and init choice (removed or replaced). */
+  // Branch suggestions for a saved project's folders, once the section holding them is open.
+  useEffect(() => {
+    if (!open || !showMore || !board) return;
+    for (const folder of [board.workdir, ...board.extraFolders]) {
+      if (repoBranches[folder]) continue;
+      setRepoBranches((map) => ({ ...map, [folder]: [] }));
+      api.git.branches(board.id, folder).then(
+        (res) => setRepoBranches((map) => ({ ...map, [folder]: res.branches.map((b) => b.name) })),
+        () => {},
+      );
+    }
+  }, [open, showMore, board, repoBranches]);
+
+  /** Drop a folder's git state, init choice and default branch (removed or replaced). */
   function forgetFolder(path: string) {
     setRepoState((s) => Object.fromEntries(Object.entries(s).filter(([f]) => f !== path)));
     setInitGit((list) => list.filter((f) => f !== path));
+    setDefaultBranches((map) => Object.fromEntries(Object.entries(map).filter(([f]) => f !== path)));
   }
 
   /** Look up whether a freshly picked folder is a git repo; `known` skips the request (e.g. clones). */
@@ -206,6 +228,12 @@ export function BoardFormDialog({
     e.preventDefault();
     if (saving) return;
     const branch = pushBranch.trim();
+    const projectFolders = [workdir.trim(), ...extraFolders].filter(Boolean);
+    const branches: Record<string, string> = {};
+    for (const folder of projectFolders) {
+      const name = (defaultBranches[folder] ?? "").trim();
+      if (name) branches[folder] = name;
+    }
     const input = {
       name: name.trim(),
       workdir: workdir.trim(),
@@ -214,6 +242,7 @@ export function BoardFormDialog({
       worktrees,
       autoRun,
       pushBranch: branch,
+      defaultBranches: branches,
     };
     if (!input.workdir) {
       setError({ message: "Choose the project folder first.", field: "workdir" });
@@ -230,6 +259,14 @@ export function BoardFormDialog({
           ? `“${branch}” isn't a valid git branch name. Try something like main or release/1.x.`
           : "Enter the branch Push to main should land on, e.g. main.",
         field: "pushBranch",
+      });
+      return;
+    }
+    const badBranch = Object.entries(branches).find(([, name]) => !isValidBranchName(name));
+    if (badBranch) {
+      setShowMore(true);
+      setError({
+        message: `“${badBranch[1]}” isn't a valid git branch name (default branch of ${basename(badBranch[0])}/).`,
       });
       return;
     }
@@ -371,6 +408,8 @@ export function BoardFormDialog({
   const folderError = error?.field === "workdir" ? error.message : null;
   const pushBranchError = error?.field === "pushBranch" ? error.message : null;
   const formError = error && !error.field ? error.message : null;
+  // The project's repos in display order; a brand-new dialog may not have picked its first one yet.
+  const folderList = [workdir.trim(), ...extraFolders].filter(Boolean);
 
   const detailsView = (
     <form id={formId} onSubmit={onSubmit} noValidate className="space-y-5">
@@ -547,6 +586,52 @@ export function BoardFormDialog({
                 missing). Create PR still targets each repo&apos;s default branch.
               </p>
             </div>
+            {folderList.length > 0 && (
+              <div className="space-y-2">
+                <span className="text-sm font-medium">Default branches</span>
+                <ul className="space-y-2.5">
+                  {folderList.map((folder, i) => (
+                    <li key={folder} className="space-y-1.5">
+                      <label
+                        htmlFor={`${formId}-default-branch-${i}`}
+                        className="flex items-center gap-2 text-xs text-muted-foreground"
+                      >
+                        <GitBranchIcon className="size-3.5 shrink-0" aria-hidden="true" />
+                        <span className="min-w-0 truncate font-mono" title={folder}>
+                          {basename(folder) || folder}
+                        </span>
+                      </label>
+                      <Input
+                        id={`${formId}-default-branch-${i}`}
+                        value={defaultBranches[folder] ?? ""}
+                        onChange={(e) => setDefaultBranches((map) => ({ ...map, [folder]: e.target.value }))}
+                        placeholder={DEFAULT_BRANCH}
+                        list={repoBranches[folder]?.length ? `${formId}-branch-list-${i}` : undefined}
+                        autoComplete="off"
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        maxLength={PUSH_BRANCH_MAX}
+                        disabled={saving}
+                        className="h-11 md:h-9"
+                      />
+                      {repoBranches[folder]?.length ? (
+                        <datalist id={`${formId}-branch-list-${i}`}>
+                          {repoBranches[folder].map((name) => (
+                            <option key={name} value={name} />
+                          ))}
+                        </datalist>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-muted-foreground">
+                  The branch each repo starts a card&apos;s dedicated workspace from, and the base Create PR
+                  targets. Empty uses the repo&apos;s own default branch (origin/HEAD), else{" "}
+                  <code className="font-mono">{DEFAULT_BRANCH}</code>.
+                </p>
+              </div>
+            )}
             <label
               htmlFor={`${formId}-autorun`}
               className="flex min-h-12 cursor-pointer items-center gap-4"

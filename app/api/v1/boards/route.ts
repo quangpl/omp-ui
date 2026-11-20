@@ -5,6 +5,7 @@ import { json, readJson, withApi } from "@/lib/server/http";
 import {
   parseBoardName,
   parseBoolean,
+  parseDefaultBranches,
   parseExtraFolders,
   parseModel,
   parsePushBranch,
@@ -23,6 +24,12 @@ export const POST = withApi(async ({ req, repo, user }) => {
   };
   if (body.extraFolders !== undefined) {
     input.extraFolders = parseExtraFolders(body.extraFolders, input.workdir);
+  }
+  if (body.defaultBranches !== undefined) {
+    input.defaultBranches = parseDefaultBranches(body.defaultBranches, [
+      input.workdir,
+      ...(input.extraFolders ?? []),
+    ]);
   }
   // Project files are read, written and deleted through the board: never the data directory.
   for (const folder of [input.workdir, ...(input.extraFolders ?? [])]) {

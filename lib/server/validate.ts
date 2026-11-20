@@ -208,6 +208,35 @@ export function parseExtraFolders(value: unknown, workdir: string): string[] {
   return [...folders];
 }
 
+/**
+ * Per-repo default branches: folder → branch, keyed by an absolute folder of the project (other
+ * folders are a 400) with a valid branch name as value. An empty branch clears that repo's entry.
+ */
+export function parseDefaultBranches(value: unknown, folders: readonly string[]): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new HttpError(400, "defaultBranches must be an object of folder → branch.");
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > folders.length) {
+    throw new HttpError(400, "defaultBranches can only name the project's folders.");
+  }
+  const branches: Record<string, string> = {};
+  for (const [key, branch] of entries) {
+    const folder = path.resolve(key.trim());
+    if (!folders.includes(folder)) {
+      throw new HttpError(400, `defaultBranches can only name the project's folders: ${key}`);
+    }
+    if (branch === undefined || branch === null || (typeof branch === "string" && !branch.trim())) continue;
+    if (typeof branch !== "string") throw new HttpError(400, `The default branch of ${folder} must be a string.`);
+    const name = branch.trim();
+    if (name.length > PUSH_BRANCH_MAX || !isValidBranchName(name)) {
+      throw new HttpError(400, `“${name}” isn't a valid git branch name (default branch of ${folder}).`);
+    }
+    branches[folder] = name;
+  }
+  return branches;
+}
+
 export async function requireBoard(repo: Repository, id: string): Promise<Board> {
   const board = await repo.getBoard(id);
   if (!board) throw new HttpError(404, "Board not found");

@@ -77,6 +77,7 @@ Ship the result with one tap: **Create PR/MR** or **Push to main**.
 ### Agents working together
 
 - **Dedicated workspaces.** With **Dedicated workspace per card** on in a project's settings, each card's agent works in its own git worktree (`DATA_DIR/workspaces`, branch `omp/<card>`), so several agents can change the same repo at once. **Create PR/MR** and **Push to main** ship from that worktree. Deleting the card (or **Remove workspace**) removes the worktree and its local branch.
+- **Dedicated workspaces.** With **Dedicated workspace per card** on in a project's settings, each card's agent works in its own git worktree (`DATA_DIR/workspaces`, branch `omp/<card>`), so several agents can change the same repo at once. Each repo starts from its default branch — pick one per repo under **Project settings → More options → Default branches** (`main` when nothing is detected or chosen). **Create PR/MR**, **Push to main** and **Push to current branch** ship from that worktree. Deleting the card (or **Remove workspace**) removes the worktree and its local branch.
 - **Run after.** Pick the cards a card should wait for; its agent stays queued until all of them are Done.
 - **Files.** Upload files to a card for its agent to read; the agent saves reports, exports and screenshots there. **Shared files** (board menu) are available to every card's agent in the project.
 - **Browser control.** **Settings → Browser control** sets agent browser access: off, headless (default), a visible window on the server, or your own Chrome via `omp browser-relay`. Screenshots land in the card's files.
@@ -206,7 +207,7 @@ A card has two ship buttons. Each acts on every project folder with changes; nei
 | Button | What happens | Needs |
 | --- | --- | --- |
 | **Create PR/MR** (recommended) | Commits to a new `omp/<card>` branch, pushes it, and opens a pull request (GitHub) or merge request (GitLab) | `git` plus [`gh`](https://cli.github.com) for GitHub or [`glab`](https://gitlab.com/gitlab-org/cli) for GitLab, signed in |
-| **Push to main** | Commits and pushes directly to the project's push branch: `main` unless you change **Push branch** under **Project settings → More options** (created on the remote if missing). **Create PR/MR** still targets the repo's default branch | `git` with push access |
+| **Push to main** | Commits and pushes directly to the project's push branch: `main` unless you change **Push branch** under **Project settings → More options** (created on the remote if missing). **Create PR/MR** still targets the repo's default branch (**Default branches** under **Project settings → More options**) | `git` with push access |
 
 **Discard all changes.** When a project (or a card's workspace) has uncommitted changes, a **Discard all changes** button appears next to the header's change count and in the card's **Ship changes** panel. After a confirmation it resets tracked and staged edits and deletes new untracked files; unpushed commits and git checkpoints are left alone. It is blocked while an agent on the board is running or queued.
 

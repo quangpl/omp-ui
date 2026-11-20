@@ -1,11 +1,13 @@
 import type { UpdateBoardInput } from "@/lib/db/types";
 import { publish } from "@/lib/events";
+import { pruneDefaultBranches } from "@/lib/default-branch";
 import { deleteBoardWithData } from "@/lib/server/delete-board";
 import { assertFsAccess } from "@/lib/server/fs-guard";
 import { error, json, readJson, withApi } from "@/lib/server/http";
 import {
   parseBoardName,
   parseBoolean,
+  parseDefaultBranches,
   parseExtraFolders,
   parseModel,
   parsePushBranch,
@@ -42,6 +44,15 @@ export const PATCH = withApi<Params>(async ({ req, repo, params, user }) => {
   if (body.autoRun !== undefined) patch.autoRun = parseBoolean(body.autoRun, "autoRun");
   if (body.worktrees !== undefined) patch.worktrees = parseBoolean(body.worktrees, "worktrees");
   if (body.pushBranch !== undefined) patch.pushBranch = parsePushBranch(body.pushBranch);
+  // Default branches describe the project's folders: the ones a folder that left the project had
+  // are dropped, so a stale entry can never name a repo again.
+  const folders = [patch.workdir ?? current.workdir, ...(patch.extraFolders ?? current.extraFolders)];
+  if (body.defaultBranches !== undefined) {
+    patch.defaultBranches = parseDefaultBranches(body.defaultBranches, folders);
+  } else {
+    const pruned = pruneDefaultBranches(current.defaultBranches, folders);
+    if (pruned) patch.defaultBranches = pruned;
+  }
   if (body.pinned !== undefined) patch.pinned = parseBoolean(body.pinned, "pinned");
   if (Object.keys(patch).length === 0) return json(current);
   const board = await repo.updateBoard(params.id, patch);

@@ -52,6 +52,7 @@ import {
   nowIso,
   parseAgentResources,
   parseTaskUsage,
+  parseBranchMap,
   parseFolderList,
   parseTaskReview,
   touchesTask,
@@ -91,6 +92,7 @@ CREATE TABLE IF NOT EXISTS boards (
   auto_run BOOLEAN NOT NULL DEFAULT TRUE,
   worktrees BOOLEAN NOT NULL DEFAULT FALSE,
   push_branch TEXT NOT NULL DEFAULT 'main',
+  default_branches TEXT NOT NULL DEFAULT '{}',
   pinned BOOLEAN NOT NULL DEFAULT FALSE,
   last_accessed_at TEXT,
   created_at TEXT NOT NULL,
@@ -101,6 +103,7 @@ CREATE TABLE IF NOT EXISTS boards (
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS extra_folders TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS worktrees BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS push_branch TEXT NOT NULL DEFAULT 'main';
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS default_branches TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS last_accessed_at TEXT;
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS user_id TEXT;
@@ -256,6 +259,7 @@ interface BoardRow {
   auto_run: boolean;
   worktrees: boolean;
   push_branch: string | null;
+  default_branches: string | null;
   pinned: boolean;
   last_accessed_at: string | null;
   created_at: string;
@@ -384,6 +388,7 @@ function toBoard(r: BoardRow): Board {
     autoRun: r.auto_run,
     worktrees: r.worktrees,
     pushBranch: r.push_branch ?? DEFAULT_PUSH_BRANCH,
+    defaultBranches: parseBranchMap(r.default_branches),
     pinned: r.pinned,
     lastAccessedAt: r.last_accessed_at ?? null,
     createdAt: r.created_at,
@@ -567,12 +572,12 @@ const TABLE_SPECS: { [T in DataTable]: TableSpec<T> } = {
     key: "id",
     toRow: toBoard,
     columns: [
-      "id", "name", "workdir", "extra_folders", "model", "auto_run", "worktrees", "push_branch", "pinned",
-      "last_accessed_at", "created_at", "updated_at", "user_id",
+      "id", "name", "workdir", "extra_folders", "model", "auto_run", "worktrees", "push_branch",
+      "default_branches", "pinned", "last_accessed_at", "created_at", "updated_at", "user_id",
     ],
     values: (b) => [
       b.id, b.name, b.workdir, JSON.stringify(b.extraFolders), b.model, b.autoRun, b.worktrees, b.pushBranch,
-      b.pinned, b.lastAccessedAt, b.createdAt, b.updatedAt, b.userId,
+      JSON.stringify(b.defaultBranches), b.pinned, b.lastAccessedAt, b.createdAt, b.updatedAt, b.userId,
     ],
   },
   tasks: {
@@ -887,8 +892,8 @@ export class PostgresRepository implements Repository {
   async createBoard(input: CreateBoardInput): Promise<Board> {
     const now = nowIso();
     const res = await this.query<BoardRow>(
-      `INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, push_branch, created_at, updated_at, user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10) RETURNING *`,
+      `INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, push_branch, default_branches, created_at, updated_at, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $11) RETURNING *`,
       [
         newId(),
         input.name,
@@ -898,6 +903,7 @@ export class PostgresRepository implements Repository {
         input.autoRun ?? true,
         input.worktrees ?? false,
         input.pushBranch ?? DEFAULT_PUSH_BRANCH,
+        JSON.stringify(input.defaultBranches ?? {}),
         now,
         input.userId ?? null,
       ],
@@ -914,6 +920,10 @@ export class PostgresRepository implements Repository {
       ["auto_run", patch.autoRun],
       ["worktrees", patch.worktrees],
       ["push_branch", patch.pushBranch],
+      [
+        "default_branches",
+        patch.defaultBranches === undefined ? undefined : JSON.stringify(patch.defaultBranches),
+      ],
       ["pinned", patch.pinned],
       ["updated_at", boardPatchUpdatedAt(patch)],
     ]);
