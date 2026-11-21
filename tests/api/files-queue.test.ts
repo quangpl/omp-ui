@@ -167,25 +167,7 @@ describe("shared files", () => {
   });
 });
 
-describe("task queue dependencies", () => {
-  it("accepts cards of the same board and rejects itself, unknown cards and cycles", async () => {
-    const a = await createTask("A");
-    const b = await createTask("B", { blockedBy: [a.id] });
-    expect(b.blockedBy).toEqual([a.id]);
-
-    const patch = (task: Task, blockedBy: string[]) =>
-      api<Task & { error?: string }>(taskRoute, "PATCH", `/tasks/${task.id}`, {
-        body: { blockedBy },
-        params: { id: task.id },
-      });
-    expect((await patch(a, [a.id])).status).toBe(400);
-    expect((await patch(a, ["00000000-0000-0000-0000-000000000000"])).status).toBe(400);
-    const cycle = await patch(a, [b.id]);
-    expect(cycle.status).toBe(400);
-    expect(cycle.body.error).toMatch(/wait for each other/);
-    expect((await patch(b, [])).body.blockedBy).toEqual([]);
-  });
-
+describe("queue", () => {
   it("reports the queue and refuses to move a card that is not queued", async () => {
     const res = await api<QueueSnapshot>(queueRoute, "GET", "/queue");
     expect(res.status).toBe(200);

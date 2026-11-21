@@ -417,7 +417,6 @@ class OmpAgentManager implements AgentManager, RunControl {
         boardName: await boardName(task.boardId),
         title: task.title,
         state,
-        waitingFor: state === "queued" ? await this.pendingBlockers(task) : [],
         planning: state === "queued" && this.awaitsPlan(taskId),
         planNote: this.planNotes.get(taskId) ?? null,
         createdByTaskId: task.createdByTaskId ?? null,
@@ -863,15 +862,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     return true;
   }
 
-  /** Blockers of the card (Task.blockedBy) that exist and are not Done yet. */
-  private async pendingBlockers(task: Task): Promise<string[]> {
-    const blockers = await Promise.all(task.blockedBy.map((id) => this.repo.getTask(id)));
-    return task.blockedBy.filter((_, index) => {
-      const blocker = blockers[index];
-      return blocker && blocker.status !== "done";
-    });
-  }
-
   /** Forgets the smart-queue state of a card that left the queue (launched, stopped, deleted). */
   private leftQueue(taskId: string): void {
     const boardId = this.plannable.get(taskId);
@@ -932,8 +922,8 @@ class OmpAgentManager implements AgentManager, RunControl {
   }
 
   /**
-   * Has the planner order the board's plannable queued cards and infer their prerequisites, then
-   * releases the held ones. A failed plan keeps the queue order; nothing stays held.
+   * Has the planner order the board's plannable queued cards, then releases the held ones. A
+   * failed plan keeps the queue order; nothing stays held.
    */
   private async runPlan(boardId: string, state: BoardPlan): Promise<void> {
     state.timer = undefined;
@@ -945,19 +935,20 @@ class OmpAgentManager implements AgentManager, RunControl {
       const settings = await getAppSettings(this.repo);
       const board = await this.repo.getBoard(boardId);
       if (!board || !settings.smartQueue || sent.size < 2 || !this.hasUnplanned(boardId)) return;
-      // Queued cards that launched meanwhile count as running: possible prerequisites only.
+      // Running cards are context for the planner (what is already in flight); only queued cards
+      // are ordered.
       const queued: PlanCard[] = [];
       const running: PlanCard[] = [];
       for (const id of [...sent, ...this.active.keys()]) {
         const task = await this.repo.getTask(id);
         if (task?.boardId !== boardId) continue;
-        const card = { id: task.id, title: task.title, description: task.description, blockedBy: task.blockedBy };
+        const card = { id: task.id, title: task.title, description: task.description };
         (this.active.has(id) ? running : queued).push(card);
       }
       this.publishQueue();
       const plan = await planQueue({ board, queued, running, settings, signal: controller.signal });
       if (controller.signal.aborted) return;
-      await this.applyPlan(plan, state);
+      this.applyPlan(plan, state);
     } catch (err) {
       if (!controller.signal.aborted) {
         console.error(`[agent] queue planner failed for board ${boardId}; keeping the queue order:`, err);
@@ -979,20 +970,10 @@ class OmpAgentManager implements AgentManager, RunControl {
   }
 
   /**
-   * Persists the inferred prerequisites (before the held cards are released, so none launches
-   * early), then refills the queue slots of the planned cards in the plan's order; cards the user
-   * moved meanwhile keep their place.
+   * Refills the queue slots of the planned cards in the plan's order; cards the user moved
+   * meanwhile keep their place. The planner's reason is kept per card for the UI.
    */
-  private async applyPlan(plan: QueuePlan, state: BoardPlan): Promise<void> {
-    for (const [taskId, deps] of Object.entries(plan.dependencies)) {
-      if (!state.sent.has(taskId)) continue;
-      const task = await this.repo.getTask(taskId);
-      if (!task) continue;
-      const added = [...new Set(deps)].filter((id) => id !== taskId && !task.blockedBy.includes(id));
-      if (added.length === 0) continue;
-      const updated = await this.repo.updateTask(taskId, { blockedBy: [...task.blockedBy, ...added] });
-      if (updated) publish({ type: "task.updated", task: updated });
-    }
+  private applyPlan(plan: QueuePlan, state: BoardPlan): void {
     const queued = new Set([...state.sent].filter((id) => !state.pinned.has(id) && this.queue.includes(id)));
     const order = [...new Set([...plan.order, ...state.sent])].filter((id) => queued.has(id));
     let next = 0;
@@ -1057,21 +1038,12 @@ class OmpAgentManager implements AgentManager, RunControl {
         this.boundBy = concurrency.boundBy;
         if (this.queue.length === 0 || this.holding) break;
         if (this.active.size - this.lent >= this.limit) continue;
-        // Start order, skipping cards that wait for unfinished cards (Task.blockedBy) or for their
-        // board's smart-queue plan. The queued cards' blockers are read in parallel.
+        // Start order, skipping cards that still wait for their board's smart-queue plan.
         const candidates = [...this.queue];
-        const blocked = await Promise.all(
-          candidates.map(async (taskId) => {
-            const task = await this.repo.getTask(taskId);
-            return task !== null && (await this.pendingBlockers(task)).length > 0;
-          }),
-        );
         // Cluster mode: among equally good replicas, a card prefers the node of its last run.
         const lastNodes = cluster ? await Promise.all(candidates.map((taskId) => this.lastRunNode(taskId))) : [];
         for (const [index, taskId] of candidates.entries()) {
           if (this.active.size - this.lent >= this.limit) break;
-          if (blocked[index]) continue;
-          // Checked after the reads: the card may have been stopped and queued anew meanwhile.
           if (this.isHeld(taskId)) continue;
           // Cluster mode: place the card before it leaves the queue. No placement means no node can
           // safely take a card now, or the pump's count is ahead of the nodes' (e.g. a remote run's
@@ -1521,14 +1493,18 @@ class OmpAgentManager implements AgentManager, RunControl {
     const sessionFile = task.sessionFile;
     // An automatic retry after a failed run: the prompt tells the agent what went wrong.
     const retriedRunId = task.autoRetries > 0 ? task.lastRunId : null;
-    const [workspace, taskFiles, boardFiles, comments, foundSession, retriedRun] = await Promise.all([
+    const [workspace, taskFiles, boardFiles, comments, foundSession, retriedRun, scheduler] = await Promise.all([
       board.worktrees ? ensureWorkspace(board, task) : null,
       ensureFilesFolder("tasks", task.id),
       ensureFilesFolder("boards", board.id),
       repo.listComments(task.id),
       sessionFile ? stat(sessionFile).then(() => sessionFile, () => null) : null,
       retriedRunId ? repo.getRun(retriedRunId) : null,
+      task.schedulerId ? repo.getScheduler(task.schedulerId) : null,
     ]);
+    // A scheduler's model is pinned like the project's and wins over it, for the cards it created.
+    const pinnedModel = scheduler?.model?.trim() || board.model?.trim() || null;
+    const modelBoard = { model: pinnedModel };
     const quotaRetry = retriedRun?.status === "failed" && isQuotaError(retriedRun.error);
     // Only the agent's own failures: a quota error or a lost node is not something it can fix.
     const previousFailure =
@@ -1606,6 +1582,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     if (running) publish({ type: "task.updated", task: running });
     if (run.finished) return;
 
+
     const remote = placement && !placement.local ? placement : null;
     // A local run's subagents share this machine: their cap is the run's fair share of it, as of
     // now. A remote node's machine is not sampled here, so its runs get the ceiling.
@@ -1621,9 +1598,9 @@ class OmpAgentManager implements AgentManager, RunControl {
     const memoryOff = task.ignoreMemory ? memoryOffOverlay(settings.ompPath, workdir) : null;
     // The provider priority runs the model of an omp role on its provider, so it needs the roles,
     // read per run: the user may reconfigure omp, and project `.omp` configs differ.
-    const needRoles = settings.providerPriority.length > 0 && !board.model?.trim();
+    const needRoles = settings.providerPriority.length > 0 && !pinnedModel;
     const roles = needRoles ? await readModelRoles(settings.ompPath, workdir, childEnv()) : null;
-    const providerPick = await chooseProvider(settings, board.model, roles);
+    const providerPick = await chooseProvider(settings, pinnedModel, roles);
     if (run.finished) return;
     const overlay = runConfigOverlay(settings, taskFiles, subagents, providerPick);
     const [workdirFound, configFile, memoryProject, memoryOffSettings] = await Promise.all([
@@ -1639,7 +1616,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       throw new Error(`Board directory not found: ${workdir}`);
     }
     const choice = chooseModel({
-      board,
+      board: modelBoard,
       settings,
       isResume: resumeFile !== null,
       provider: providerPick,

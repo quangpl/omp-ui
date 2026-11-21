@@ -118,8 +118,6 @@ interface TaskDoc {
   question?: string | null;
   sessionFile: string | null;
   lastRunId: string | null;
-  /** Missing on documents created before card dependencies. */
-  blockedBy?: string[];
   createdByTaskId?: string | null;
   /** Missing on documents created before "pushed" cards. */
   pushedAt?: string | null;
@@ -202,6 +200,8 @@ interface SchedulerDoc {
   lastStatus: SchedulerRunStatus | null;
   lastTaskId: string | null;
   lastError: string | null;
+  /** Missing on documents created before schedulers could pin a model. */
+  model?: string | null;
   /** Copied from the board on create/move. Missing on documents created before multi-user support. */
   userId?: string | null;
   createdAt: string;
@@ -283,7 +283,6 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     question: d.question ?? null,
     sessionFile: d.sessionFile ?? null,
     lastRunId: d.lastRunId ?? null,
-    blockedBy: parseFolderList(d.blockedBy),
     createdByTaskId: d.createdByTaskId ?? null,
     pushedAt: d.pushedAt ?? null,
     autoRetries: d.autoRetries ?? 0,
@@ -361,6 +360,7 @@ function toScheduler(d: SchedulerDoc): Scheduler {
     lastStatus: d.lastStatus ?? null,
     lastTaskId: d.lastTaskId ?? null,
     lastError: d.lastError ?? null,
+    model: d.model ?? null,
     userId: d.userId ?? null,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
@@ -410,7 +410,6 @@ const TASK_PATCH_KEYS = [
   "question",
   "sessionFile",
   "lastRunId",
-  "blockedBy",
   "pushedAt",
   "autoRetries",
   "retryAt",
@@ -435,6 +434,7 @@ const SCHEDULER_PATCH_KEYS = [
   "lastStatus",
   "lastTaskId",
   "lastError",
+  "model",
 ] as const satisfies readonly (keyof UpdateSchedulerInput)[];
 const USER_PATCH_KEYS = [
   "username",
@@ -573,8 +573,8 @@ export class MongoRepository implements Repository {
 
   /**
    * Not transactional (standalone servers lack transactions). Documents keep the domain field
-   * names; JSON fields (todos, review, resources, usage, blockedBy, extraFolders) stay native
-   * BSON values exactly as createTask/updateTask store them.
+   * names; JSON fields (todos, review, resources, usage, extraFolders) stay native BSON values
+   * exactly as createTask/updateTask store them.
    */
   async replaceAllData(data: DataSnapshot): Promise<void> {
     for (const table of [...DATA_TABLES].reverse()) await this.dataCollection(table).coll.deleteMany({});
@@ -850,7 +850,6 @@ export class MongoRepository implements Repository {
       question: null,
       sessionFile: null,
       lastRunId: null,
-      blockedBy: input.blockedBy ?? [],
       createdByTaskId: input.createdByTaskId ?? null,
       pushedAt: null,
       autoRetries: 0,
@@ -1086,6 +1085,7 @@ export class MongoRepository implements Repository {
       lastStatus: null,
       lastTaskId: null,
       lastError: null,
+      model: input.model ?? null,
       userId: board.userId ?? null,
       createdAt: now,
       updatedAt: now,
