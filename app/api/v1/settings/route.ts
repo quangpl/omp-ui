@@ -142,10 +142,6 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
     }
     patch.defaultModel = model.trim();
   }
-  if (body.autoModel !== undefined) {
-    if (typeof body.autoModel !== "boolean") throw new HttpError(400, "autoModel must be a boolean");
-    patch.autoModel = body.autoModel;
-  }
   if (body.providerPriority !== undefined) {
     const parsed = parseProviderPriority(body.providerPriority);
     if (!parsed.ok) throw new HttpError(400, parsed.error);

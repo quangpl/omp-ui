@@ -600,7 +600,7 @@ export const api = {
     list: (boardId?: string) =>
       request<Scheduler[]>(`/schedulers${boardId ? `?boardId=${encodeURIComponent(boardId)}` : ""}`),
     get: (id: string) => request<Scheduler>(`/schedulers/${id}`),
-    /** `name` defaults to the prompt's first line; `timezone` to UTC; `enabled` to true; `maxRuns` to null. */
+    /** `name` defaults to the prompt's first line; `timezone` to UTC; `enabled` to true; `maxRuns` and `model` (omp selector) to null. */
     create: (input: {
       boardId: string;
       prompt: string;
@@ -609,6 +609,7 @@ export const api = {
       name?: string;
       enabled?: boolean;
       maxRuns?: number | null;
+      model?: string | null;
     }) => request<Scheduler>("/schedulers", { method: "POST", json: input }),
     update: (
       id: string,
@@ -620,6 +621,7 @@ export const api = {
         timezone: string;
         enabled: boolean;
         maxRuns: number | null;
+        model: string | null;
       }>,
     ) => request<Scheduler>(`/schedulers/${id}`, { method: "PATCH", json: patch }),
     remove: (id: string) => request<{ ok: true }>(`/schedulers/${id}`, { method: "DELETE" }),
@@ -670,7 +672,6 @@ export const api = {
         description?: string;
         status?: TaskStatus;
         position?: number;
-        blockedBy?: string[];
         /** Whether the run prompt invites parallel subagents; null/omitted = on. */
         parallelize?: boolean | null;
         /** Whether the card's runs start omp without agentmemory (no recall, capture or memory tools); omitted = false. */
@@ -694,7 +695,6 @@ export const api = {
         description: string;
         status: TaskStatus;
         position: number;
-        blockedBy: string[];
         /** Run omp without agentmemory from the card's next run. */
         ignoreMemory: boolean;
         /** Only null is accepted: dismisses the agent's question. */

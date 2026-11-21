@@ -107,7 +107,7 @@ export interface Board {
   defaultBranches: Record<string, string>;
   /** Pinned projects lead the home dashboard; the rest follow under "Other projects". Default false. */
   pinned: boolean;
-  /** When the project's board was last opened (ISO); null until first opened. Orders the sidebar's "Your projects". */
+  /** When the project's board was last opened (ISO); null until first opened. Picks the sidebar's "Your projects". */
   lastAccessedAt: string | null;
   /**
    * Owning user (users.id). Null only for rows created before users existed, until boot assigns
@@ -141,11 +141,6 @@ export interface Task {
   /** omp session JSONL path; reused with `--resume` so feedback keeps context. */
   sessionFile: string | null;
   lastRunId: string | null;
-  /**
-   * Task queue dependencies: ids of cards on the same board that must be Done before this
-   * card's agent starts. While any is not Done, a queued run waits. Default [].
-   */
-  blockedBy: string[];
   /** Card whose agent created this card (agent-to-agent delegation); null when a person did. */
   createdByTaskId: string | null;
   /**
@@ -428,6 +423,11 @@ export interface Scheduler {
   lastTaskId: string | null;
   /** Error of the last run when it failed. */
   lastError: string | null;
+  /**
+   * omp model selector ("provider/model-id", optionally ":thinking") every card this scheduler creates
+   * runs on, taking precedence over the project's model; null = the project's model or auto selection.
+   */
+  model: string | null;
   /** Owning user, inherited from the board (see Board.userId). */
   userId: string | null;
   createdAt: string;
@@ -481,6 +481,7 @@ export interface SchedulerDraft {
   timezone: string;
   enabled: boolean;
   maxRuns: number | null;
+  model: string | null;
 }
 
 /** One turn of the "Create with Agent" conversation (POST /api/v1/schedulers/chat). */
@@ -523,11 +524,6 @@ export interface AppSettings {
   approvalMode: ApprovalMode;
   /** Default `--model` when a board has none. Empty = omp default. */
   defaultModel: string;
-  /**
-   * When a board has no model: pick one per run from the task (omp's `smol` role for small edits,
-   * `slow` for hard problems, `designer` for UI work), falling back to `defaultModel`.
-   */
-  autoModel: boolean;
   /**
    * Authenticated providers agents run on, in order (lib/provider-priority.ts): the first is the
    * Main provider, used while it has quota; later ones only take over while it is out of quota.
@@ -867,7 +863,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ompPath: "omp",
   approvalMode: "yolo",
   defaultModel: "",
-  autoModel: true,
   providerPriority: [],
   browser: "headless",
   useSystemPrompt: true,
@@ -1088,8 +1083,6 @@ export interface QueueEntry {
   boardName: string;
   title: string;
   state: "running" | "queued";
-  /** Blocking cards (Task.blockedBy) that are not Done yet; the run waits for them. */
-  waitingFor: string[];
   /** Card whose agent created this card (Task.createdByTaskId); null when a person did. */
   createdByTaskId: string | null;
   /** SDLC progress derived from the card's todo list (lib/sdlc.ts); null until the agent keeps one. */
