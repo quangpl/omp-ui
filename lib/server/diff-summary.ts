@@ -1,8 +1,9 @@
-// The one/two-sentence summary on top of the Review tab. A quick read-only omp helper run
-// (pooled `omp --mode rpc`, the fast `smol` role when configured) writes it from the diffstat and a truncated
-// patch; results are cached by the diff's hash in memory and under DATA_DIR/runtime, so reopening
-// a card is instant. Until the summary agent answers (or when it can't), a deterministic line
-// ("3 files changed (+120 −14): app/page.tsx, lib/x.ts …") stands in.
+// The one/two-sentence summary on top of the Review tab, written on request only. A quick read-only
+// omp helper run (pooled `omp --mode rpc`, the fast `smol` role when configured) writes it from the
+// diffstat and a truncated patch; results are cached by the diff's hash in memory and under
+// DATA_DIR/runtime, so reopening a card is instant. Without a cached summary (and while the agent
+// works or after it fails), a deterministic line ("3 files changed (+120 −14): app/page.tsx,
+// lib/x.ts …") stands in; opening the tab never spends tokens.
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -170,9 +171,10 @@ async function generate(
 }
 
 /**
- * The summary of `diff`: cached when known, else starts the summary agent and waits up to
- * `waitMs` for it. Answers the deterministic fallback with `pending: true` while it still works;
- * the caller asks again. `force` drops a cached summary (or failure) and writes a new one.
+ * The summary of `diff`: the cached one when known. The summary agent (which costs tokens) starts
+ * only on `force` (the user asked to write it, dropping a cached summary or failure); then it waits
+ * up to `waitMs` for it and answers the deterministic fallback with `pending: true` while it still
+ * works, and the caller asks again. A read without `force` never starts an agent: the fallback.
  */
 export async function diffSummary(
   diff: TaskDiff,
@@ -205,6 +207,7 @@ export async function diffSummary(
 
   let inflight = state.inflight.get(hash);
   if (!inflight) {
+    if (!options.force) return fallback(false, null);
     // Every slot busy: the fallback for now; the next ask tries again.
     if (state.running >= MAX_CONCURRENT) return fallback(true, null);
     state.running++;

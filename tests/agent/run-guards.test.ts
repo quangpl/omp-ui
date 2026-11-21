@@ -42,7 +42,6 @@ const ENV_KEYS = [
   "FAKE_OMP_SCENARIO",
   "FAKE_OMP_SESSION_DIR",
   "FAKE_OMP_MODEL_ROLES",
-  "FAKE_OMP_PLAN",
   "FAKE_OMP_COST_PER_MESSAGE",
   "OMP_UI_RETRY_BASE_MS",
   "OMP_UI_QUOTA_RETRY_BASE_MS",
@@ -249,7 +248,6 @@ describe("evaluateWrapUp", () => {
     const time = wrapUpSteerMessage({ guard: "time", percent: 85, detail: "102 of 120 min" });
     expect(time).toContain("85% of your run time limit (102 of 120 min)");
     expect(time).toMatch(/do not start new work/);
-    expect(time).toMatch(/Report/);
     expect(wrapUpSteerMessage({ guard: "budget", percent: 90, detail: "$4.50 of $5.00" })).toContain(
       "90% of your run budget ($4.50 of $5.00)",
     );
@@ -396,7 +394,6 @@ describe("run guards through the agent manager", () => {
     delete process.env.MAX_AGENTS;
     delete process.env.OMP_EXTRA_ARGS;
     delete process.env.FAKE_OMP_MODEL_ROLES;
-    delete process.env.FAKE_OMP_PLAN;
     delete process.env.FAKE_OMP_COST_PER_MESSAGE;
     delete process.env.OMP_UI_QUOTA_RETRY_BASE_MS;
     process.env.OMP_UI_RETRY_BASE_MS = "50";

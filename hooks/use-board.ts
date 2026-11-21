@@ -234,10 +234,6 @@ export interface NewCardInput {
    * new cards on auto-run boards skip To do and start right away.
    */
   start?: boolean;
-  /** Whether the run prompt invites parallel subagents; null/omitted = on. */
-  parallelize?: boolean | null;
-  /** Whether the card's runs start omp without agentmemory; omitted = false. */
-  ignoreMemory?: boolean;
 }
 
 /**
@@ -256,8 +252,6 @@ export async function createCard(
     task = await api.tasks.create(board.id, {
       title: input.title,
       description: input.description || undefined,
-      parallelize: input.parallelize,
-      ignoreMemory: input.ignoreMemory,
       status: start ? "in_progress" : "todo",
       position: options.position,
     });
@@ -285,20 +279,10 @@ export async function createCard(
 export async function createCardFromText(
   boardId: string,
   text: string,
-  options: {
-    position?: number;
-    onCreated?: (task: Task) => void;
-    parallelize?: boolean;
-    ignoreMemory?: boolean;
-  } = {},
+  options: { position?: number; onCreated?: (task: Task) => void } = {},
 ): Promise<Task | null> {
   try {
-    const task = await api.tasks.createFromText(boardId, {
-      text,
-      position: options.position,
-      parallelize: options.parallelize,
-      ignoreMemory: options.ignoreMemory,
-    });
+    const task = await api.tasks.createFromText(boardId, { text, position: options.position });
     options.onCreated?.(task);
     return task;
   } catch (err) {
@@ -342,7 +326,7 @@ export interface BoardController {
    * A card from free text, in In progress with its agent started. Toasts and resolves `null` on
    * failure.
    */
-  createFromText: (text: string, options?: { parallelize?: boolean; ignoreMemory?: boolean }) => Promise<Task | null>;
+  createFromText: (text: string) => Promise<Task | null>;
   /** Start / stop a card's agent; toasts on failure. */
   runAgent: (taskId: string) => Promise<void>;
   stopAgent: (taskId: string) => Promise<void>;
@@ -722,11 +706,9 @@ export function useBoard(boardId: string, options: UseBoardOptions = {}): BoardC
   );
 
   const createFromText = useCallback(
-    async (text: string, options: { parallelize?: boolean; ignoreMemory?: boolean } = {}): Promise<Task | null> => {
+    async (text: string): Promise<Task | null> => {
       const task = await createCardFromText(boardId, text, {
         position: endPosition("in_progress"),
-        parallelize: options.parallelize,
-        ignoreMemory: options.ignoreMemory,
         onCreated: upsertTask,
       });
       if (task) onCardAddedRef.current?.(task);

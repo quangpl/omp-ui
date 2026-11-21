@@ -5,7 +5,6 @@ import Link from "next/link";
 import {
   AlignLeft,
   ArrowUp,
-  BrainOff,
   CalendarClock,
   ChevronRight,
   CircleHelp,
@@ -57,7 +56,6 @@ import {
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Kbd } from "@/components/ui/kbd";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -599,7 +597,6 @@ function TaskDetailBody({
   const save = async (patch: {
     title?: string;
     description?: string;
-    ignoreMemory?: boolean;
   }) => {
     try {
       const updated = await api.tasks.update(task.id, patch);
@@ -807,15 +804,6 @@ function TaskDetailBody({
                 Pushed
               </span>
             )}
-            {task.ignoreMemory && (
-              <span
-                title="Agent memory off for this card"
-                className="inline-flex h-6 items-center gap-1 rounded-full bg-muted px-2 text-xs font-medium text-muted-foreground"
-              >
-                <BrainOff className="size-3" />
-                Memory off
-              </span>
-            )}
           </div>
           {task.createdByTaskId && (
             <div className="mt-2">
@@ -958,22 +946,6 @@ function TaskDetailBody({
               ) : (
                 <span className="text-muted-foreground">Not yet</span>
               )}
-            </MetaItem>
-            <MetaItem label="Agent memory">
-              <span
-                className="inline-flex items-center gap-2"
-                title="Ignore memory: no recall, nothing saved. Takes effect from the next run."
-              >
-                <Switch
-                  size="sm"
-                  checked={Boolean(task.ignoreMemory)}
-                  onCheckedChange={(checked) => void save({ ignoreMemory: checked })}
-                  aria-label="Ignore memory"
-                />
-                <span className={task.ignoreMemory ? undefined : "text-muted-foreground"}>
-                  {task.ignoreMemory ? "Ignored" : "Used"}
-                </span>
-              </span>
             </MetaItem>
           </dl>
 

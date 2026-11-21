@@ -12,16 +12,12 @@ import {
 } from "@/components/ui/dialog";
 import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useComposerAutocomplete } from "@/components/board/composer-autocomplete";
 import { cn } from "@/lib/utils";
 
 /** Resolves true when the card was created (the form then resets). */
-export type CreateFromText = (
-  text: string,
-  options: { parallelize: boolean; ignoreMemory: boolean },
-) => Promise<boolean>;
+export type CreateFromText = (text: string) => Promise<boolean>;
 
 /** Default footer hint: what happens on create, then the composer keys. */
 const DEFAULT_HINT = (
@@ -35,9 +31,8 @@ const DEFAULT_HINT = (
 
 /**
  * New task from free text: the user writes as much as they like and creates it right away. The
- * card lands in In progress with the text as typed and its agent starts at once. The "Parallelize"
- * switch lets the user keep the agent from splitting the work across subagents; "Ignore memory"
- * runs the card without recalling or saving agent memory.
+ * card lands in In progress with the text as typed and its agent starts at once, with omp's own
+ * defaults for everything else.
  *
  * `layout="page"` fills its flex-column parent (the phone "New task" page): the textarea takes
  * all the free height and scrolls inside, and Create is a full-width bar pinned to the bottom.
@@ -63,8 +58,6 @@ export function NewTaskForm({
   canSubmit = true,
   resetOnSubmit = true,
   autoFocus = true,
-  parallelizeToggle = true,
-  memoryToggle = true,
 }: {
   onSubmit: CreateFromText;
   onCancel?: () => void;
@@ -93,19 +86,12 @@ export function NewTaskForm({
   /** Clear the text after a successful submit. */
   resetOnSubmit?: boolean;
   autoFocus?: boolean;
-  /** Show the "Parallelize" switch (on by default); hidden, submits always parallelize. */
-  parallelizeToggle?: boolean;
-  /** Show the "Ignore memory" switch (off by default); hidden, submits always with memory on. */
-  memoryToggle?: boolean;
 }) {
   const id = useId();
   const [text, setTextState] = useState(initialText);
   const [busy, setBusy] = useState(false);
   /** The last submit failed (the caller toasted why); cleared as soon as the text changes. */
   const [failed, setFailed] = useState(false);
-  /** Kept across submits so a run of tasks shares the choice. */
-  const [parallelize, setParallelize] = useState(true);
-  const [ignoreMemory, setIgnoreMemory] = useState(false);
   const composeRef = useRef<HTMLTextAreaElement>(null);
   const setText = (next: string) => {
     setTextState(next);
@@ -120,11 +106,7 @@ export function NewTaskForm({
     if (!value || busy || !canSubmit) return;
     setBusy(true);
     setFailed(false);
-    // Without the toggle the choice is not the user's to make: parallel stays on.
-    const ok = await onSubmit(value, {
-      parallelize: parallelizeToggle ? parallelize : true,
-      ignoreMemory: memoryToggle ? ignoreMemory : false,
-    });
+    const ok = await onSubmit(value);
     setBusy(false);
     if (!ok) setFailed(true);
     else if (resetOnSubmit) setText("");
@@ -192,48 +174,6 @@ export function NewTaskForm({
     </>
   );
   const disabled = !text.trim() || busy || !canSubmit;
-  const parallelizeNode = parallelizeToggle && (
-    <div className="flex items-start gap-3">
-      <Switch
-        id={`${id}-parallelize`}
-        className="mt-0.5"
-        checked={parallelize}
-        onCheckedChange={setParallelize}
-        disabled={busy}
-        aria-describedby={`${id}-parallelize-hint`}
-      />
-      <div className="flex flex-col gap-0.5">
-        <Label htmlFor={`${id}-parallelize`}>Parallelize</Label>
-        <p id={`${id}-parallelize-hint`} className="text-xs text-muted-foreground">
-          Let the agent split the work across parallel subagents.
-        </p>
-      </div>
-    </div>
-  );
-  const memoryNode = memoryToggle && (
-    <div className="flex items-start gap-3">
-      <Switch
-        id={`${id}-ignore-memory`}
-        className="mt-0.5"
-        checked={ignoreMemory}
-        onCheckedChange={setIgnoreMemory}
-        disabled={busy}
-        aria-describedby={`${id}-ignore-memory-hint`}
-      />
-      <div className="flex flex-col gap-0.5">
-        <Label htmlFor={`${id}-ignore-memory`}>Ignore memory</Label>
-        <p id={`${id}-ignore-memory-hint`} className="text-xs text-muted-foreground">
-          No recall from past sessions, and nothing from this task is saved to memory.
-        </p>
-      </div>
-    </div>
-  );
-  const togglesNode = (parallelizeNode || memoryNode) && (
-    <div className="flex flex-col gap-3">
-      {parallelizeNode}
-      {memoryNode}
-    </div>
-  );
 
   if (page) {
     return (
@@ -258,7 +198,6 @@ export function NewTaskForm({
             )}
           </div>
           {children}
-          {togglesNode}
         </div>
         {/* `--new-card-bottom-inset` lets the page drop the home-indicator gap while the keyboard covers it. */}
         <div className="px-safe glass-edge shrink-0 border-t bg-background/85 backdrop-blur-lg supports-backdrop-filter:bg-background/70">
@@ -299,7 +238,6 @@ export function NewTaskForm({
         </p>
       </div>
       {children}
-      {togglesNode}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
         {onCancel && (
           <Button type="button" variant="ghost" className="h-11 pressable md:h-9 sm:mr-auto" onClick={onCancel}>
@@ -329,8 +267,8 @@ export function NewTaskDialog({
   /** Project whose files the "@" picker searches. */
   boardId?: string | null;
 }) {
-  const submit: CreateFromText = async (text, options) => {
-    const ok = await onCreate(text, options);
+  const submit: CreateFromText = async (text) => {
+    const ok = await onCreate(text);
     if (ok) onOpenChange(false);
     return ok;
   };
