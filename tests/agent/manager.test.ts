@@ -289,7 +289,7 @@ describe("AgentManager run lifecycle", () => {
     expect(run).toMatchObject({ status: "succeeded", summary: SUCCESS_SUMMARY, error: null });
     expect(run.endedAt).not.toBeNull();
     expect(run.prompt).toContain("# Task: Add a login page");
-    expect(run.prompt).toContain("1. Please add tests");
+    expect(run.prompt).toContain("Please add tests");
 
     expect(done.lastRunId).toBe(run.id);
     expect(done.agentError).toBeNull();
@@ -390,66 +390,6 @@ describe("AgentManager run lifecycle", () => {
     const [written, testing] = done.todos[0]!.tasks;
     expect(Date.parse(written!.startedAt!)).toBeLessThanOrEqual(Date.parse(written!.completedAt!));
     expect(testing!.startedAt).toBe(written!.completedAt);
-  });
-
-  it("answers the agent's ask_advisor call with the advisor's decision", async () => {
-    const calls = [
-      { toolName: "ask_advisor", arguments: { question: "Offset or cursor pagination?", options: ["offset", "cursor"] } },
-    ];
-    const task = await createTask("Add paging", `[fake:board_tools] <calls>${JSON.stringify(calls)}</calls>`);
-    const manager = await getAgentManager();
-    await manager.start(task.id);
-    await waitDone(task.id);
-
-    const run = await latestRun(task.id);
-    const [result] = JSON.parse((run.summary ?? "").replace(/^Tool results: /, "")) as { isError: boolean; text: string }[];
-    expect(result).toMatchObject({ isError: false });
-    expect(result!.text).toContain("Advisor's decision: Use offset pagination with 20 items per page");
-    const [advisor] = readLog().filter((e) => e.kind === "helper");
-    expect(flagValues(advisor?.argv, "--tools")).toEqual(["read,grep,glob"]);
-    expect(advisor?.cwd).toBe(workdir);
-    expect(advisor?.prompt).toContain("Offset or cursor pagination?");
-    expect(advisor?.prompt).toContain("Title: Add paging");
-    const texts = (await runEvents(run.id)).map((e) => e.text);
-    expect(texts).toContain("Agent asked the advisor: Offset or cursor pagination?");
-    expect(texts).toContain("Advisor: Use offset pagination with 20 items per page");
-  });
-
-  it("lets the advisor answer the run's question and send the agent back to work once", async () => {
-    const task = await createTask("Decide paging", "[fake:question] [fake-advisor:answer]");
-    const manager = await getAgentManager();
-    await manager.start(task.id);
-    // Run 1 asks, the advisor answers with a follow-up; run 2 asks again and the guard stops the loop.
-    const done = await waitTask(
-      task.id,
-      (t) => t.status === "done" && t.agentState === "idle" && t.question !== null,
-      "the second run to finish",
-    );
-    await waitIdleManager(manager);
-
-    expect(done.question).toBe("Should pagination default to 20 or 50 items per page?");
-    expect(await repo.listRuns(task.id)).toHaveLength(2);
-    expect(readLog().filter((e) => e.kind === "helper")).toHaveLength(2);
-    const comments = await repo.listComments(task.id);
-    const followUp = comments.find((c) => c.author === "user");
-    expect(followUp).toMatchObject({ resolved: true });
-    expect(followUp?.body).toMatch(/^\*\*Advisor:\*\* Set the default page size to 20/);
-    expect(comments.filter((c) => c.body.startsWith("**Advisor** answered"))).toHaveLength(2);
-    // The follow-up went to the resumed session as feedback.
-    expect(commands("prompt")[1]?.command?.message).toContain("Set the default page size to 20");
-  });
-
-  it("leaves the question to the user when the advisor fails", async () => {
-    const task = await createTask("Decide paging", "[fake:question] [fake-advisor:fail]");
-    const manager = await getAgentManager();
-    await manager.start(task.id);
-    const done = await waitDone(task.id);
-    await waitIdleManager(manager);
-
-    expect(done.question).toBe("Should pagination default to 20 or 50 items per page?");
-    expect(await repo.listRuns(task.id)).toHaveLength(1);
-    const texts = (await runEvents((await latestRun(task.id)).id)).map((e) => e.text);
-    expect(texts.some((t) => t.startsWith("Advisor could not review the questions"))).toBe(true);
   });
 
   it("closes the omp process after a successful run", async () => {
@@ -751,8 +691,7 @@ describe("AgentManager feedback", () => {
     expect(secondDone.lastRunId).toBe(secondRun.id);
     expect(secondDone.sessionFile).toBe(sessionFile);
     expect(secondRun.status).toBe("succeeded");
-    expect(secondRun.prompt.startsWith("New feedback on this task:")).toBe(true);
-    expect(secondRun.prompt).toContain("1. Please rename the button");
+    expect(secondRun.prompt).toBe("Please rename the button");
     expect(secondRun.prompt).not.toContain("# Task:");
 
     const spawned = argvEntries();
@@ -852,7 +791,7 @@ describe("AgentManager feedback", () => {
     await waitIdleManager(manager);
     const secondRun = await latestRun(task.id);
     expect(secondRun.id).not.toBe(firstRun.id);
-    expect(secondRun.prompt.startsWith("New feedback on this task:")).toBe(true);
+    expect(secondRun.prompt.startsWith("Please rename the button")).toBe(true);
 
     expect(publishedAgentStates(task.id)).toEqual(["queued", "running", "idle", "queued", "running", "idle"]);
     const updates = taskUpdates(task.id, from);
@@ -1053,7 +992,7 @@ describe("AgentManager omp session events", () => {
     const steer = commands("prompt", pid).find((e) => e.command?.message?.startsWith("Also update the README"))?.command;
     const message = steer?.message ?? "";
     // Sent word for word, like typing into omp mid-run.
-    expect(message.split("\n\n")[0]).toBe("Also update the README");
+    expect(message).toBe("Also update the README");
     const update = (steering: string[]) => ({ type: "queue_update", steering, followUp: [], liveSteered: 0 });
     await sendFrames(pid, runId, update([message]), update([]));
     expect(steerStates()).toEqual(["sent", "delivered"]);
@@ -1149,7 +1088,7 @@ describe("AgentManager SDLC quality gates", () => {
     expect((await repo.listComments(task.id)).filter((c) => c.author === "user")).toEqual([]);
   });
 
-  it("sends a card whose Testing phase is not complete back once, then ships it with a warning", async () => {
+  it("ships a card whose Testing phase is not complete at once, with no gate feedback or resend", async () => {
     const task = await createTask("Ship untested", "[fake:sdlc_gate]");
     const manager = await getAgentManager();
     await manager.start(task.id);
@@ -1157,44 +1096,22 @@ describe("AgentManager SDLC quality gates", () => {
     await waitIdleManager(manager);
 
     expect(done.status).toBe("done");
-    const runs = await repo.listRuns(task.id);
-    expect(runs).toHaveLength(2);
-    const gate = (await repo.listComments(task.id)).filter((c) => c.author === "user");
-    expect(gate).toHaveLength(1);
-    expect(gate[0]!.body.startsWith("**Quality gate:** Testing is not complete")).toBe(true);
-    // The second run addressed it as feedback.
-    expect(gate[0]).toMatchObject({ resolved: true, resolvedByRunId: runs[0]!.id });
-    expect(commands("prompt")[1]?.command?.message).toContain("Testing is not complete");
-
-    // listRuns is newest first: the first run sent the card back, the second shipped it.
-    const shippedPrefix = "⚠ Shipped without passing the release gate: Testing is not complete";
-    const [second, first] = await Promise.all(runs.map(async (r) => (await runEvents(r.id)).map((e) => e.text)));
-    expect(first!.some((t) => t.startsWith(shippedPrefix))).toBe(false);
-    expect(second!.filter((t) => t.startsWith(shippedPrefix))).toHaveLength(1);
+    expect(await repo.listRuns(task.id)).toHaveLength(1);
+    expect((await repo.listComments(task.id)).filter((c) => c.author === "user")).toEqual([]);
   });
 
-  it("steers an agent that starts Testing before Implement is complete back into the process", async () => {
+  it("logs, but never steers, an agent that starts Testing before Implement is complete", async () => {
     const task = await createTask("Skip the tests", "[fake:sdlc_skip]");
     const manager = await getAgentManager();
     await manager.start(task.id);
-    const pid = await waitPromptReceived();
-    const steer = await waitFor(
-      () => readLog().find((e) => e.kind === "steer" && e.pid === pid),
-      "the quality-gate steer",
-    );
-    expect(steer.message).toContain("Quality gate (SDLC): Testing started before Implement was complete");
-    expect(steer).toMatchObject({ via: "prompt", streamingBehavior: "steer" });
-
-    // Testing is still incomplete when it succeeds: the release gate sends it back once before it ships.
     await waitDone(task.id);
     await waitIdleManager(manager);
     const runs = await repo.listRuns(task.id);
-    const first = runs.at(-1)!;
-    expect((await runEvents(first.id)).map((e) => e.text)).toContain(
+    expect(runs).toHaveLength(1);
+    expect((await runEvents(runs[0]!.id)).map((e) => e.text)).toContain(
       "⚠ Quality gate: Testing started before Implement was complete",
     );
-    // Each violation is steered once.
-    expect(readLog().filter((e) => e.kind === "steer" && e.message?.startsWith("Quality gate (SDLC)"))).toHaveLength(1);
+    expect(readLog().filter((e) => e.kind === "steer")).toEqual([]);
   });
 
   it("reports a running card's SDLC progress in the queue snapshot", async () => {
@@ -1265,7 +1182,6 @@ describe("AgentManager scheduling and project folders", () => {
     ]);
     expect(spawned?.argv).not.toContain(missing);
     const run = await latestRun(task.id);
-    expect(run.prompt).toContain(`Project folders: primary ${workdir}, plus ${extra}.`);
     expect(run.prompt).not.toContain(missing);
     expect((await runEvents(run.id)).map((e) => e.text)).toContain(`Skipped missing folder ${missing}`);
   });
@@ -1327,32 +1243,6 @@ describe("AgentManager scheduling and project folders", () => {
 });
 
 describe("AgentManager collaboration and workspaces", () => {
-  it("lets an agent delegate a card and wait for it, lending its slot while it waits", async () => {
-    await updateAppSettings(repo, { maxConcurrentAgents: 1 });
-    const calls = [
-      { toolName: "board_create_card", arguments: { title: "Child", description: "[fake:success] do the part" } },
-      { toolName: "board_wait_for_cards", arguments: { cardIds: ["$created"], timeoutSeconds: 20 } },
-    ];
-    const parent = await createTask("Parent", `[fake:board_tools] <calls>${JSON.stringify(calls)}</calls>`);
-    const manager = await getAgentManager();
-
-    await manager.start(parent.id);
-    await waitDone(parent.id);
-
-    const child = (await repo.listTasks(board.id)).find((t) => t.title === "Child");
-    expect(child).toMatchObject({ status: "done", agentState: "idle", createdByTaskId: parent.id });
-    const summary = (await latestRun(parent.id)).summary ?? "";
-    const results = JSON.parse(summary.replace(/^Tool results: /, "")) as { toolName: string; isError: boolean; text: string }[];
-    expect(results.map((r) => [r.toolName, r.isError])).toEqual([
-      ["board_create_card", false],
-      ["board_wait_for_cards", false],
-    ]);
-    const waited = JSON.parse(results[1]!.text) as { cards: { id: string; status: string; summary: string }[] };
-    expect(waited.cards).toEqual([expect.objectContaining({ id: child!.id, status: "done", summary: SUCCESS_SUMMARY })]);
-    const [spawned] = argvEntries();
-    expect(commands("set_host_tools", spawned?.pid).length).toBe(1);
-  });
-
   it("runs queued cards side by side: no card waits for another", async () => {
     await updateAppSettings(repo, { maxConcurrentAgents: 2 });
     const first = await createTask("First");
@@ -1385,7 +1275,6 @@ describe("AgentManager collaboration and workspaces", () => {
     expect(flagValues(spawned?.argv, "--cwd")).toEqual([target]);
     const branch = execFileSync("git", ["branch", "--show-current"], { cwd: target }).toString().trim();
     expect(branch).toMatch(/^omp\/isolated-change-/);
-    expect((await latestRun(task.id)).prompt).toContain(`dedicated git worktree on branch \`${branch}\``);
   });
 });
 
@@ -1400,8 +1289,7 @@ describe("AgentManager token cost", () => {
     expect(readLog().filter((e) => e.kind === "helper")).toEqual([]);
   });
 
-  it("with the system prompt off: no board or advisor tools and no advisor review", async () => {
-    await updateAppSettings(repo, { useSystemPrompt: false });
+  it("sends no board or advisor tools and starts no advisor review", async () => {
     const asking = await createTask("Decide paging", "[fake:question]");
     const manager = await getAgentManager();
     await manager.start(asking.id);
@@ -1415,8 +1303,7 @@ describe("AgentManager token cost", () => {
     expect(commands("prompt")[0]?.command?.message).toBe("# Task: Decide paging\n\n[fake:question]");
   });
 
-  it("with the system prompt off: steers feedback into the live session as typed", async () => {
-    await updateAppSettings(repo, { useSystemPrompt: false });
+  it("steers feedback into the live session as typed", async () => {
     const slow = await createTask("Steer me", "[fake:slow]");
     const manager = await getAgentManager();
     await manager.start(slow.id);
@@ -1426,14 +1313,6 @@ describe("AgentManager token cost", () => {
     await waitDone(slow.id);
     const steers = readLog().filter((e) => e.kind === "steer" && e.pid === pid);
     expect(steers.map((e) => e.message)).toEqual(["Also update the README"]);
-  });
-
-  it("with the system prompt on: registers the board and advisor tools", async () => {
-    const task = await createTask("Tools on");
-    const manager = await getAgentManager();
-    await manager.start(task.id);
-    await waitDone(task.id);
-    expect(commands("set_host_tools")).toHaveLength(1);
   });
 });
 

@@ -132,7 +132,6 @@ function sanitize(s: AppSettings, knownMenus: readonly unknown[]): AppSettings {
     defaultModel: String(s.defaultModel ?? "").trim(),
     providerPriority: storedPriority(s.providerPriority),
     browser: BROWSER_MODES.includes(s.browser) ? s.browser : DEFAULT_SETTINGS.browser,
-    useSystemPrompt: bool(s, "useSystemPrompt"),
     autoRetry: typeof s.autoRetry === "boolean" ? s.autoRetry : DEFAULT_SETTINGS.autoRetry,
     maxAutoRetries: Number.isFinite(Number(s.maxAutoRetries))
       ? Math.min(20, Math.max(0, Math.floor(Number(s.maxAutoRetries))))

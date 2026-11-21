@@ -169,10 +169,6 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
     }
     patch.browser = mode as BrowserMode;
   }
-  if (body.useSystemPrompt !== undefined) {
-    if (typeof body.useSystemPrompt !== "boolean") throw new HttpError(400, "useSystemPrompt must be a boolean");
-    patch.useSystemPrompt = body.useSystemPrompt;
-  }
   if (body.cleanupSchedule !== undefined) {
     const schedule = body.cleanupSchedule;
     if (typeof schedule !== "string" || !(CLEANUP_SCHEDULES as readonly string[]).includes(schedule)) {
