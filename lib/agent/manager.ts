@@ -1564,8 +1564,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     if (running) publish({ type: "task.updated", task: running });
     if (run.finished) return;
 
-    // Roles are read per run: the user may reconfigure omp, and project `.omp` configs differ.
-    const autoSelect = !pinnedModel && settings.autoModel;
+
     const remote = placement && !placement.local ? placement : null;
     // A local run's subagents share this machine: their cap is the run's fair share of it, as of
     // now. A remote node's machine is not sampled here, so its runs get the ceiling.
@@ -1579,8 +1578,9 @@ class OmpAgentManager implements AgentManager, RunControl {
         : null;
     // Memory off for this card: the run config drops agentmemory's extension and MCP server.
     const memoryOff = task.ignoreMemory ? memoryOffOverlay(settings.ompPath, workdir) : null;
-    // The provider priority runs the model of an omp role on its provider, so it needs the roles too.
-    const needRoles = (autoSelect && resumeFile === null) || (settings.providerPriority.length > 0 && !pinnedModel);
+    // The provider priority runs the model of an omp role on its provider, so it needs the roles,
+    // read per run: the user may reconfigure omp, and project `.omp` configs differ.
+    const needRoles = settings.providerPriority.length > 0 && !pinnedModel;
     const roles = needRoles ? await readModelRoles(settings.ompPath, workdir, childEnv()) : null;
     const providerPick = await chooseProvider(settings, pinnedModel, roles);
     if (run.finished) return;
@@ -1600,15 +1600,12 @@ class OmpAgentManager implements AgentManager, RunControl {
     const choice = chooseModel({
       board: modelBoard,
       settings,
-      task,
-      feedback,
       isResume: resumeFile !== null,
-      roles,
       provider: providerPick,
       quotaRetry,
     });
     if (run.finished) return;
-    const { model, thinking } = choice;
+    const { model } = choice;
     const args = [
       "--mode",
       "rpc",
@@ -1623,7 +1620,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     if (sessionDir) args.push("--session-dir", sessionDir);
     for (const folder of [...extraFolders, taskFiles, boardFiles]) args.push("--add-dir", folder);
     if (model) args.push("--model", model);
-    if (thinking) args.push("--thinking", thinking);
     if (resumeFile) args.push("--resume", resumeFile);
     if (memoryOff && !memoryOffSettings) args.push("--no-extensions");
     const extra = process.env.OMP_EXTRA_ARGS?.trim();
@@ -1641,11 +1637,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       await this.event(run, "status", providerNote(providerPick));
       if (run.finished) return;
     }
-    if (choice.source === "auto") {
-      await this.event(run, "status", `Model auto-selected: ${model ?? "omp default"} (${choice.reason})`);
-      if (run.finished) return;
-    }
-    const modelNote = [model && `model ${model}`, thinking && `thinking ${thinking}`].filter(Boolean).join(", ");
+    const modelNote = model ? `model ${model}` : "";
     await this.event(
       run,
       "status",
