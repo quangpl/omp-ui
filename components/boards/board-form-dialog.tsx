@@ -99,7 +99,6 @@ export function BoardFormDialog({
   const [defaultBranches, setDefaultBranches] = useState<Record<string, string>>({});
   // Branch names of a saved project's folders, for the branch suggestions; filled on first expand.
   const [repoBranches, setRepoBranches] = useState<Record<string, string[]>>({});
-  const [worktrees, setWorktrees] = useState(false);
   const [autoRun, setAutoRun] = useState(true);
   const [showMore, setShowMore] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -122,12 +121,10 @@ export function BoardFormDialog({
     setExtraFolders(board?.extraFolders ?? []);
     setModel(board?.model ?? "");
     setAutoRun(board?.autoRun ?? true);
-    setWorktrees(board?.worktrees ?? false);
     setPushBranch(board?.pushBranch ?? DEFAULT_PUSH_BRANCH);
     setShowMore(
       Boolean(board?.model) ||
         board?.autoRun === false ||
-        Boolean(board?.worktrees) ||
         (board != null && board.pushBranch !== DEFAULT_PUSH_BRANCH) ||
         Object.keys(board?.defaultBranches ?? {}).length > 0,
     );
@@ -239,7 +236,6 @@ export function BoardFormDialog({
       workdir: workdir.trim(),
       extraFolders,
       model: model.trim() || null,
-      worktrees,
       autoRun,
       pushBranch: branch,
       defaultBranches: branches,
@@ -625,8 +621,7 @@ export function BoardFormDialog({
                   ))}
                 </ul>
                 <p className="text-xs text-muted-foreground">
-                  The branch each repo starts a card&apos;s dedicated workspace from, and the base Create PR
-                  targets. Empty uses the repo&apos;s own default branch (origin/HEAD), else{" "}
+                  The base Create PR targets: its branch holds this default branch plus only the card&apos;s changes. Empty uses the repo&apos;s own default branch (origin/HEAD), else{" "}
                   <code className="font-mono">{DEFAULT_BRANCH}</code>.
                 </p>
               </div>
@@ -645,24 +640,6 @@ export function BoardFormDialog({
                 id={`${formId}-autorun`}
                 checked={autoRun}
                 onCheckedChange={setAutoRun}
-                disabled={saving}
-              />
-            </label>
-            <label
-              htmlFor={`${formId}-worktrees`}
-              className="flex min-h-12 cursor-pointer items-center gap-4"
-            >
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium">Dedicated workspace per card</span>
-                <span className="block text-xs text-muted-foreground">
-                  Each card gets its own git worktree on branch omp/&lt;card&gt;, so agents can work
-                  on one repo in parallel. Ship from the card.
-                </span>
-              </span>
-              <Switch
-                id={`${formId}-worktrees`}
-                checked={worktrees}
-                onCheckedChange={setWorktrees}
                 disabled={saving}
               />
             </label>

@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getAgentManager } from "@/lib/agent/manager";
 import type { OmpRpcProcess, RpcFrame } from "@/lib/agent/rpc";
@@ -1259,22 +1259,25 @@ describe("AgentManager collaboration and workspaces", () => {
     await waitDone(second.id);
   });
 
-  it("runs a card of a worktrees board in its own git worktree and branch", async () => {
-    const git = (...args: string[]) => execFileSync("git", args, { cwd: workdir, stdio: "pipe" });
-    git("init", "-q");
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init");
-    board = (await repo.updateBoard(board.id, { worktrees: true }))!;
-    const task = await createTask("Isolated change");
+  it("runs a card in the project folder on its checked-out branch and records where the run started and ended", async () => {
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: workdir, stdio: "pipe" }).toString().trim();
+    git("init", "-q", "-b", "main");
+    git("commit", "-q", "--allow-empty", "-m", "init");
+    git("checkout", "-q", "-b", "feature");
+    const task = await createTask("Shared change");
     const manager = await getAgentManager();
 
     await manager.start(task.id);
     await waitDone(task.id);
 
-    const target = path.join(root, "workspaces", task.id, path.basename(workdir));
     const [spawned] = argvEntries();
-    expect(flagValues(spawned?.argv, "--cwd")).toEqual([target]);
-    const branch = execFileSync("git", ["branch", "--show-current"], { cwd: target }).toString().trim();
-    expect(branch).toMatch(/^omp\/isolated-change-/);
+    expect(flagValues(spawned?.argv, "--cwd")).toEqual([workdir]);
+    expect(git("branch", "--show-current")).toBe("feature");
+    const refs = () => git("for-each-ref", "--format=%(refname)", `refs/agentman/task-runs/${task.id}/`).split("\n");
+    // The end snapshot is taken right after the run is released.
+    await vi.waitFor(() => expect(refs().filter((ref) => ref.endsWith("/end"))).toHaveLength(1), { timeout: 20_000 });
+    expect(refs().filter((ref) => ref.endsWith("/start"))).toHaveLength(1);
   });
 });
 

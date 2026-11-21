@@ -25,7 +25,7 @@ export interface DiffFile {
 }
 
 export interface RepoDiff {
-  /** Folder the diff was taken in: the card's worktree, else the project folder. */
+  /** Folder the diff was taken in: the project folder. */
   folder: string;
   /** Display name: the folder's base name. */
   name: string;

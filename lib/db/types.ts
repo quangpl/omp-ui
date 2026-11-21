@@ -47,8 +47,6 @@ export interface CreateBoardInput {
   extraFolders?: string[];
   model?: string | null;
   autoRun?: boolean;
-  /** Default false. */
-  worktrees?: boolean;
   /** Default "main" (DEFAULT_PUSH_BRANCH). Must already be a valid branch name. */
   pushBranch?: string;
   /**
@@ -62,7 +60,7 @@ export interface CreateBoardInput {
 export type UpdateBoardInput = Partial<
   Pick<
     Board,
-    "name" | "workdir" | "extraFolders" | "model" | "autoRun" | "worktrees" | "pinned" | "pushBranch" | "defaultBranches"
+    "name" | "workdir" | "extraFolders" | "model" | "autoRun" | "pinned" | "pushBranch" | "defaultBranches"
   >
 >;
 

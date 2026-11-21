@@ -17,9 +17,9 @@ const REF_ROOT = "refs/agentman/checkpoints";
 /** Newest snapshots kept per card and repository; older refs are deleted. */
 export const MAX_CHECKPOINTS_PER_TASK = 20;
 /** Task ids and checkpoint ids become ref name segments: keep them to safe characters. */
-const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+export const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 /** Snapshots are AgentMan's own commits: no identity lookup, never signed (no prompts). */
-const COMMIT_CONFIG = ["-c", "user.name=AgentMan", "-c", "user.email=agentman@localhost", "-c", "commit.gpgsign=false"];
+export const COMMIT_CONFIG = ["-c", "user.name=AgentMan", "-c", "user.email=agentman@localhost", "-c", "commit.gpgsign=false"];
 const GITLINK_MODE = "160000";
 
 export const BEFORE_RESTORE_LABEL = "Before restore";
@@ -30,7 +30,7 @@ interface GitResult {
   stderr: string;
 }
 
-function git(cwd: string, args: string[], env: Record<string, string> = {}): Promise<GitResult> {
+export function git(cwd: string, args: string[], env: Record<string, string> = {}): Promise<GitResult> {
   const { promise, resolve } = Promise.withResolvers<GitResult>();
   execFile(
     "git",
@@ -49,7 +49,7 @@ function git(cwd: string, args: string[], env: Record<string, string> = {}): Pro
 }
 
 /** Like git(), but a failing command throws with git's own explanation. */
-async function mustGit(cwd: string, args: string[], env: Record<string, string> = {}): Promise<string> {
+export async function mustGit(cwd: string, args: string[], env: Record<string, string> = {}): Promise<string> {
   const result = await git(cwd, args, env);
   if (!result.ok) throw new Error(`git ${args[0]} failed in ${cwd}: ${result.stderr.trim() || "unknown error"}`);
   return result.stdout;
@@ -172,36 +172,53 @@ async function seedIndex(folder: string, parent: string | null, indexFile: strin
   else await mustGit(folder, ["rm", "--cached", "-r", "-f", "-q", "--ignore-unmatch", ...outside], env);
 }
 
-/** Snapshot `folder` (resolved, caller holds its lock); null when it is not inside a git work tree. */
-async function snapshot(folder: string, meta: CheckpointMeta): Promise<TaskCheckpoint | null> {
+/**
+ * Record `folder`'s files (except ignored ones) as a tree through a private index; `head` is the
+ * commit HEAD points to (null on an unborn branch). Null when `folder` is not inside a git work
+ * tree. The caller holds the folder lock.
+ */
+async function snapshotTreeLocked(folder: string): Promise<{ tree: string; head: string | null } | null> {
   if (!(await git(folder, ["rev-parse", "--show-toplevel"])).ok) return null;
-  const head = await git(folder, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
-  const parent = head.ok ? head.stdout.trim() : null;
+  const headResult = await git(folder, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+  const head = headResult.ok ? headResult.stdout.trim() : null;
 
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "agentman-checkpoint-"));
   try {
     // A private index: `git add -A` then records the folder's tracked and untracked files (minus
     // ignored ones) as they are in the working tree, without disturbing what the user has staged.
     const env = { GIT_INDEX_FILE: path.join(tmp, "index") };
-    await seedIndex(folder, parent, env.GIT_INDEX_FILE);
+    await seedIndex(folder, head, env.GIT_INDEX_FILE);
     await mustGit(folder, ["add", "-A", "--", "."], env);
     const tree = (await mustGit(folder, ["write-tree"], env)).trim();
-
-    // Strictly increasing in this process, so snapshots taken within one millisecond still sort.
-    const stamp = (lastStamp = Math.max(Date.now(), lastStamp + 1));
-    const createdAt = new Date(stamp).toISOString();
-    const filesChanged = await countChangedFiles(folder, parent, tree);
-    const message = commitMessage(folder, meta, createdAt, filesChanged);
-    const sha = (
-      await mustGit(folder, [...COMMIT_CONFIG, "commit-tree", tree, ...(parent ? ["-p", parent] : []), "-m", message])
-    ).trim();
-    const id = `${stamp}-${randomBytes(3).toString("hex")}`;
-    await mustGit(folder, ["update-ref", `${taskPrefix(meta.taskId)}${id}`, sha]);
-    await prune(folder, meta.taskId);
-    return { id, folder, sha, runId: meta.runId, label: meta.label, createdAt, filesChanged };
+    return { tree, head };
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
+}
+
+/** The working state of `folder` as a git tree (see snapshotTreeLocked); never touches the user's index. */
+export function snapshotTree(folder: string): Promise<{ tree: string; head: string | null } | null> {
+  const dir = path.resolve(folder);
+  return withFolderLock(dir, () => snapshotTreeLocked(dir));
+}
+
+/** Snapshot `folder` (resolved, caller holds its lock); null when it is not inside a git work tree. */
+async function snapshot(folder: string, meta: CheckpointMeta): Promise<TaskCheckpoint | null> {
+  const recorded = await snapshotTreeLocked(folder);
+  if (!recorded) return null;
+  const { tree, head: parent } = recorded;
+  // Strictly increasing in this process, so snapshots taken within one millisecond still sort.
+  const stamp = (lastStamp = Math.max(Date.now(), lastStamp + 1));
+  const createdAt = new Date(stamp).toISOString();
+  const filesChanged = await countChangedFiles(folder, parent, tree);
+  const message = commitMessage(folder, meta, createdAt, filesChanged);
+  const sha = (
+    await mustGit(folder, [...COMMIT_CONFIG, "commit-tree", tree, ...(parent ? ["-p", parent] : []), "-m", message])
+  ).trim();
+  const id = `${stamp}-${randomBytes(3).toString("hex")}`;
+  await mustGit(folder, ["update-ref", `${taskPrefix(meta.taskId)}${id}`, sha]);
+  await prune(folder, meta.taskId);
+  return { id, folder, sha, runId: meta.runId, label: meta.label, createdAt, filesChanged };
 }
 
 /**

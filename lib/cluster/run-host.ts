@@ -8,8 +8,7 @@
 // runs, upstream folders are pushed back every RUN_SYNC_INTERVAL_MS and on `run.flush`; on exit a
 // final push precedes `run.exit`.
 //
-// Runs on one node can share folders (a board's workdir without worktrees, the git common dir of
-// worktree boards, the omp agent dir). A folder another hosted run already claimed is left out of
+// Runs on one node can share folders (a board's workdir, the omp agent dir). A folder another hosted run already claimed is left out of
 // the newcomer's down push — it is present and live, like a workdir two local runs share — so the
 // newcomer never resets files a running omp is working on.
 import { mkdir, writeFile } from "node:fs/promises";

@@ -1,9 +1,9 @@
 import path from "node:path";
+import { boardFolders } from "@/lib/board-folders";
 import { publish } from "@/lib/events";
 import { BEFORE_RESTORE_LABEL, restoreCheckpoint } from "@/lib/server/checkpoints";
 import { HttpError, json, readJson, withApi } from "@/lib/server/http";
 import { requireBoard, requireTask } from "@/lib/server/validate";
-import { shipFolders } from "@/lib/workspaces";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +21,7 @@ export const POST = withApi<{ id: string }>(async ({ req, repo, params }) => {
   if (typeof body.folder !== "string" || !body.folder.trim()) throw new HttpError(400, "folder must be a folder path.");
   const board = await requireBoard(repo, task.boardId);
   const folder = path.resolve(body.folder.trim());
-  const folders = (await shipFolders(board, task)).map((f) => path.resolve(f));
+  const folders = boardFolders(board).map((f) => path.resolve(f));
   if (!folders.includes(folder)) throw new HttpError(400, `This folder is not part of the project: ${folder}`);
 
   const result = await restoreCheckpoint(folder, task.id, body.id.trim());

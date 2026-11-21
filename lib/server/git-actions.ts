@@ -1,6 +1,7 @@
 // Shared handler for the task "Push to main" / "Push to current branch" / "Create PR" buttons.
 import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { boardFolders } from "@/lib/board-folders";
 import { boardDefaultBranch } from "@/lib/default-branch";
 import { publish } from "@/lib/events";
 import {
@@ -16,7 +17,6 @@ import { buildPrBody } from "@/lib/pr-body";
 import { HttpError, json, readJson, type ApiContext } from "@/lib/server/http";
 import { requireBoard, requireTask } from "@/lib/server/validate";
 import type { GitActionResult, GitDiscardFolderResult, Task } from "@/lib/types";
-import { shipTargets } from "@/lib/workspaces";
 
 const MAX_PR_BODY = 60_000;
 
@@ -48,7 +48,7 @@ async function defaultPrBody(ctx: ApiContext<{ id: string }>, task: Task): Promi
 
 /**
  * Push to the project's push branch (Board.pushBranch), push to each repo's current branch, or open
- * PR/MRs (against each repo's default branch) for the task's project folders, one folder at a time,
+ * PR/MRs (against each repo's default branch, with only this card's changes) for the project folders, one folder at a time,
  * then post one resolved agent comment summarising what happened.
  */
 export async function runTaskGitAction(
@@ -61,9 +61,7 @@ export async function runTaskGitAction(
     throw new HttpError(409, "Wait for the agent to finish first.");
   }
   const board = await requireBoard(repo, task.boardId);
-  // A card with a dedicated workspace ships from its own worktrees.
-  const targets = await shipTargets(board, task);
-  const projectFolders = targets.map((t) => t.path);
+  const projectFolders = boardFolders(board);
   const body = await readJson(req);
 
   let folders = projectFolders;
@@ -99,14 +97,13 @@ export async function runTaskGitAction(
     const title = optionalText(body.title, "title", 200) ?? task.title;
     const prBody = optionalText(body.body, "body", MAX_PR_BODY) ?? (await defaultPrBody(ctx, task));
     const branchName = branchNameFor(task);
-    // A worktree belongs to the board folder it was created from: that folder's default branch.
-    const sourceOf = new Map(targets.map((t) => [t.path, t.source]));
     run = (folder) =>
       createPullRequest(folder, {
+        taskId: task.id,
         title,
         body: prBody,
         branchName,
-        baseBranch: boardDefaultBranch(board, sourceOf.get(folder) ?? folder),
+        baseBranch: boardDefaultBranch(board, folder),
       });
   }
 

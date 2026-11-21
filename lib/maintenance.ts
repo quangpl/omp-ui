@@ -36,7 +36,6 @@ import type {
   StorageUsage,
   Task,
 } from "@/lib/types";
-import { removeWorkspace } from "@/lib/workspaces";
 
 const CPU_SAMPLE_MS = 500;
 const DU_TIMEOUT_MS = 20_000;
@@ -505,8 +504,6 @@ interface Scan {
   paths: string[];
   count: number;
   bytes: number | null;
-  /** shipped-workspaces: the cards whose worktrees go. */
-  tasks?: Task[];
 }
 
 interface Context {
@@ -639,8 +636,8 @@ const TARGETS: Target[] = [
   },
   {
     id: "orphan-workspaces",
-    label: "Worktrees of deleted cards",
-    description: "Git worktrees of deleted cards; their source repos are pruned too.",
+    label: "Leftover worktrees of deleted cards",
+    description: "Git worktrees that cards created before dedicated workspaces were removed; their source repos are pruned too.",
     risk: "safe",
     async scan(ctx) {
       return sizedScan(await orphanFolders(["workspaces"], async (id) => (await ctx.repo.getTask(id)) !== null));
@@ -648,37 +645,6 @@ const TARGETS: Target[] = [
     async clean(_ctx, scan) {
       for (const root of scan.paths) await removeOrphanWorktree(root);
       return { message: `Removed ${scan.count} worktree folder${scan.count === 1 ? "" : "s"}.`, freedBytes: scan.bytes };
-    },
-  },
-  {
-    id: "shipped-workspaces",
-    label: "Worktrees of shipped cards",
-    description: "Worktrees and branches of pushed Done cards. Rerunning a card starts a fresh worktree from the base branch.",
-    risk: "review",
-    async scan(ctx) {
-      const tasks: Task[] = [];
-      for (const id of await listDir(path.join(dataDir(), "workspaces"))) {
-        if (!ID_RE.test(id)) continue;
-        const task = await ctx.repo.getTask(id);
-        if (task && task.status === "done" && task.pushedAt && (task.agentState === "idle" || task.agentState === "error")) {
-          tasks.push(task);
-        }
-      }
-      const scan = await sizedScan(tasks.map((t) => path.join(dataDir(), "workspaces", t.id)));
-      return { ...scan, tasks };
-    },
-    async clean(ctx, scan) {
-      const problems: string[] = [];
-      for (const task of scan.tasks ?? []) {
-        problems.push(...(await removeWorkspace(await ctx.repo.getBoard(task.boardId), task)));
-      }
-      const removed = scan.count;
-      return {
-        message: problems.length
-          ? `Removed with problems: ${problems.slice(0, 3).join("; ")}`
-          : `Removed the worktrees of ${removed} card${removed === 1 ? "" : "s"}.`,
-        freedBytes: problems.length ? null : scan.bytes,
-      };
     },
   },
   {
@@ -798,7 +764,7 @@ async function otherUsage(): Promise<StorageUsage[]> {
   const home = os.homedir();
   const data = dataDir();
   const entries: Omit<StorageUsage, "bytes">[] = [
-    { label: "Card worktrees", path: path.join(data, "workspaces"), note: "All dedicated worktrees, in use or not." },
+    { label: "Card worktrees", path: path.join(data, "workspaces"), note: "Leftover worktrees from cards run before dedicated workspaces were removed." },
     { label: "Shared files", path: path.join(data, "files"), note: "Card and project files (delete them on the card)." },
     {
       label: "omp sessions",

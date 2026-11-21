@@ -42,7 +42,6 @@ export const PATCH = withApi<Params>(async ({ req, repo, params, user }) => {
   }
   if (body.model !== undefined) patch.model = parseModel(body.model);
   if (body.autoRun !== undefined) patch.autoRun = parseBoolean(body.autoRun, "autoRun");
-  if (body.worktrees !== undefined) patch.worktrees = parseBoolean(body.worktrees, "worktrees");
   if (body.pushBranch !== undefined) patch.pushBranch = parsePushBranch(body.pushBranch);
   // Default branches describe the project's folders: the ones a folder that left the project had
   // are dropped, so a stale entry can never name a repo again.

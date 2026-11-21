@@ -42,7 +42,7 @@ export const PATCH = withApi<Params>(async ({ req, repo, manager, params }) => {
   return json((await repo.getTask(task.id)) ?? task);
 });
 
-/** Deletes the card with its agent run, files and dedicated workspace (worktrees + branch). */
+/** Deletes the card with its agent run, files and git change snapshots. */
 export const DELETE = withApi<Params>(async ({ repo, manager, params }) => {
   const task = await requireTask(repo, params.id);
   await deleteCard(repo, manager, task, await repo.getBoard(task.boardId));

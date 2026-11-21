@@ -94,7 +94,6 @@ CREATE TABLE IF NOT EXISTS boards (
   extra_folders TEXT NOT NULL DEFAULT '[]',
   model TEXT,
   auto_run INTEGER NOT NULL DEFAULT 1,
-  worktrees INTEGER NOT NULL DEFAULT 0,
   push_branch TEXT NOT NULL DEFAULT 'main',
   default_branches TEXT NOT NULL DEFAULT '{}',
   pinned INTEGER NOT NULL DEFAULT 0,
@@ -238,7 +237,6 @@ function toBoard(r: Row): Board {
     extraFolders: parseFolderList(r.extra_folders),
     model: strOrNull(r.model),
     autoRun: num(r.auto_run) !== 0,
-    worktrees: num(r.worktrees) !== 0,
     pushBranch: strOrNull(r.push_branch) ?? DEFAULT_PUSH_BRANCH,
     defaultBranches: parseBranchMap(r.default_branches),
     pinned: num(r.pinned) !== 0,
@@ -435,7 +433,6 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       "extra_folders",
       "model",
       "auto_run",
-      "worktrees",
       "push_branch",
       "default_branches",
       "pinned",
@@ -452,7 +449,6 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       JSON.stringify(b.extraFolders),
       b.model,
       bit(b.autoRun),
-      bit(b.worktrees),
       b.pushBranch,
       JSON.stringify(b.defaultBranches),
       bit(b.pinned),
@@ -651,7 +647,6 @@ export class SqliteRepository implements Repository {
     // Migrations for databases created before these columns existed.
     this.addMissingColumns("boards", [
       ["extra_folders", "TEXT NOT NULL DEFAULT '[]'"],
-      ["worktrees", "INTEGER NOT NULL DEFAULT 0"],
       ["push_branch", "TEXT NOT NULL DEFAULT 'main'"],
       ["default_branches", "TEXT NOT NULL DEFAULT '{}'"],
       ["pinned", "INTEGER NOT NULL DEFAULT 0"],
@@ -900,7 +895,6 @@ export class SqliteRepository implements Repository {
       extraFolders: input.extraFolders ?? [],
       model: input.model ?? null,
       autoRun: input.autoRun ?? true,
-      worktrees: input.worktrees ?? false,
       pushBranch: input.pushBranch ?? DEFAULT_PUSH_BRANCH,
       defaultBranches: input.defaultBranches ?? {},
       pinned: false,
@@ -910,7 +904,7 @@ export class SqliteRepository implements Repository {
       updatedAt: now,
     };
     this.stmt(
-      "INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, push_branch, default_branches, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, push_branch, default_branches, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       board.id,
       board.name,
@@ -918,7 +912,6 @@ export class SqliteRepository implements Repository {
       JSON.stringify(board.extraFolders),
       board.model,
       board.autoRun ? 1 : 0,
-      board.worktrees ? 1 : 0,
       board.pushBranch,
       JSON.stringify(board.defaultBranches),
       board.userId,
@@ -935,7 +928,6 @@ export class SqliteRepository implements Repository {
       ["extra_folders", patch.extraFolders === undefined ? undefined : JSON.stringify(patch.extraFolders)],
       ["model", patch.model],
       ["auto_run", patch.autoRun === undefined ? undefined : patch.autoRun ? 1 : 0],
-      ["worktrees", patch.worktrees === undefined ? undefined : patch.worktrees ? 1 : 0],
       ["push_branch", patch.pushBranch],
       [
         "default_branches",

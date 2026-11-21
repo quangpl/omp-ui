@@ -259,7 +259,7 @@ export class RemoteRunTransport implements RpcTransport {
       folderSpec("omp-agent", [path.resolve(pack), paths.ompAgentDir], "raw", false),
       folderSpec("auth", [path.resolve(auth.dir), authDir], "raw", false),
     ];
-    // The node's copy of this server's data dir (replicated card/board files, workspaces) is the
+    // The node's copy of this server's data dir (replicated card/board files) is the
     // shortest pair, so every more specific folder above wins the longest-prefix mapping.
     const map = new PathMap([
       ...folders.map((f): [string, string] => [f.primaryPath, f.nodePath]),
