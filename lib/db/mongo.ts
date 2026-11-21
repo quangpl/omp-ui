@@ -200,6 +200,8 @@ interface SchedulerDoc {
   lastStatus: SchedulerRunStatus | null;
   lastTaskId: string | null;
   lastError: string | null;
+  /** Missing on documents created before schedulers could pin a model. */
+  model?: string | null;
   /** Copied from the board on create/move. Missing on documents created before multi-user support. */
   userId?: string | null;
   createdAt: string;
@@ -358,6 +360,7 @@ function toScheduler(d: SchedulerDoc): Scheduler {
     lastStatus: d.lastStatus ?? null,
     lastTaskId: d.lastTaskId ?? null,
     lastError: d.lastError ?? null,
+    model: d.model ?? null,
     userId: d.userId ?? null,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
@@ -431,6 +434,7 @@ const SCHEDULER_PATCH_KEYS = [
   "lastStatus",
   "lastTaskId",
   "lastError",
+  "model",
 ] as const satisfies readonly (keyof UpdateSchedulerInput)[];
 const USER_PATCH_KEYS = [
   "username",
@@ -1081,6 +1085,7 @@ export class MongoRepository implements Repository {
       lastStatus: null,
       lastTaskId: null,
       lastError: null,
+      model: input.model ?? null,
       userId: board.userId ?? null,
       createdAt: now,
       updatedAt: now,

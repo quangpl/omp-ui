@@ -600,7 +600,7 @@ export const api = {
     list: (boardId?: string) =>
       request<Scheduler[]>(`/schedulers${boardId ? `?boardId=${encodeURIComponent(boardId)}` : ""}`),
     get: (id: string) => request<Scheduler>(`/schedulers/${id}`),
-    /** `name` defaults to the prompt's first line; `timezone` to UTC; `enabled` to true; `maxRuns` to null. */
+    /** `name` defaults to the prompt's first line; `timezone` to UTC; `enabled` to true; `maxRuns` and `model` (omp selector) to null. */
     create: (input: {
       boardId: string;
       prompt: string;
@@ -609,6 +609,7 @@ export const api = {
       name?: string;
       enabled?: boolean;
       maxRuns?: number | null;
+      model?: string | null;
     }) => request<Scheduler>("/schedulers", { method: "POST", json: input }),
     update: (
       id: string,
@@ -620,6 +621,7 @@ export const api = {
         timezone: string;
         enabled: boolean;
         maxRuns: number | null;
+        model: string | null;
       }>,
     ) => request<Scheduler>(`/schedulers/${id}`, { method: "PATCH", json: patch }),
     remove: (id: string) => request<{ ok: true }>(`/schedulers/${id}`, { method: "DELETE" }),

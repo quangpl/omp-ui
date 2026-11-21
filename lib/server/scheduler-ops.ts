@@ -12,6 +12,7 @@ import {
   parseCronExpression,
   parseEnabled,
   parseMaxRuns,
+  parseModel,
   parseSchedulerName,
   parseTimeZone,
   requireBoard,
@@ -25,8 +26,8 @@ const NAME_MAX = 100;
 
 /**
  * Validated scheduler from a create body `{ boardId, prompt, cron, timezone?, name?, enabled?,
- * maxRuns? }`: `name` defaults to the prompt's first line, `timezone` to UTC, `enabled` to true
- * and `maxRuns` to null (forever). Nothing is saved.
+ * maxRuns?, model? }`: `name` defaults to the prompt's first line, `timezone` to UTC, `enabled` to
+ * true, `maxRuns` to null (forever) and `model` to null (the project's model). Nothing is saved.
  */
 export async function parseNewScheduler(repo: Repository, body: Body): Promise<SchedulerDraft> {
   if (typeof body.boardId !== "string" || !body.boardId) throw new HttpError(400, "boardId is required");
@@ -41,6 +42,7 @@ export async function parseNewScheduler(repo: Repository, body: Body): Promise<S
     timezone: body.timezone === undefined ? "UTC" : parseTimeZone(body.timezone),
     enabled: body.enabled === undefined ? true : parseEnabled(body.enabled),
     maxRuns: body.maxRuns === undefined ? null : parseMaxRuns(body.maxRuns),
+    model: body.model === undefined ? null : parseModel(body.model),
   };
 }
 
@@ -57,7 +59,7 @@ export async function createScheduler(repo: Repository, body: Body): Promise<Sch
 }
 
 /**
- * Apply `Partial<{ boardId, name, prompt, cron, timezone, enabled, maxRuns }>` to `current`. The
+ * Apply `Partial<{ boardId, name, prompt, cron, timezone, enabled, maxRuns, model }>` to `current`. The
  * next fire time is recomputed from now whenever the schedule changes (cron, timezone, enabled,
  * maxRuns). Enabling one whose run limit is reached is refused (400). An empty patch changes nothing.
  */
@@ -73,6 +75,7 @@ export async function updateScheduler(repo: Repository, current: Scheduler, body
   if (body.timezone !== undefined) patch.timezone = parseTimeZone(body.timezone);
   if (body.enabled !== undefined) patch.enabled = parseEnabled(body.enabled);
   if (body.maxRuns !== undefined) patch.maxRuns = parseMaxRuns(body.maxRuns);
+  if (body.model !== undefined) patch.model = parseModel(body.model);
   if (Object.keys(patch).length === 0) return current;
 
   const next = { ...current, ...patch };
