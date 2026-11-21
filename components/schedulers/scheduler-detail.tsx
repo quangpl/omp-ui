@@ -30,6 +30,7 @@ import {
 } from "@/components/schedulers/schedule-fields";
 import { RunResultBadge, SchedulerHistory, schedulerCardHref } from "@/components/schedulers/scheduler-history";
 import { SchedulerLogs } from "@/components/schedulers/scheduler-logs";
+import { SchedulerModelField } from "@/components/schedulers/scheduler-model-field";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -536,13 +537,14 @@ interface ConfigDraft {
   timezone: string;
   enabled: boolean;
   maxRuns: number | null;
+  model: string | null;
 }
 
-const DRAFT_KEYS = ["name", "boardId", "cron", "timezone", "enabled", "maxRuns"] as const;
+const DRAFT_KEYS = ["name", "boardId", "cron", "timezone", "enabled", "maxRuns", "model"] as const;
 
 function draftOf(scheduler: Scheduler): ConfigDraft {
-  const { name, boardId, cron, timezone, enabled, maxRuns } = scheduler;
-  return { name, boardId, cron, timezone, enabled, maxRuns };
+  const { name, boardId, cron, timezone, enabled, maxRuns, model } = scheduler;
+  return { name, boardId, cron, timezone, enabled, maxRuns, model };
 }
 
 /**
@@ -594,6 +596,7 @@ function SchedulerConfig({
         timezone: draft.timezone.trim(),
         enabled: draft.enabled,
         maxRuns: draft.maxRuns,
+        model: draft.model,
       });
       const saved = draftOf(next);
       baseRef.current = saved;
@@ -646,6 +649,10 @@ function SchedulerConfig({
               boards={boards}
               value={draft.boardId}
               onValueChange={(boardId) => setDraft((current) => ({ ...current, boardId }))}
+            />
+            <SchedulerModelField
+              value={draft.model}
+              onChange={(model) => setDraft((current) => ({ ...current, model }))}
             />
           </div>
         }

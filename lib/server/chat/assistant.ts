@@ -620,7 +620,6 @@ function cardSummary(task: Task): Json {
     title: task.title,
     column: STATUS_LABELS[task.status],
     agentState: task.agentState,
-    ...(task.blockedBy.length > 0 ? { waitsFor: task.blockedBy } : {}),
   };
 }
 
