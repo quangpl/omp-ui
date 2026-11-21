@@ -26,7 +26,6 @@ import { LoopDetector, loopSteerMessage, type LoopDetection } from "@/lib/agent/
 import { chooseModel, readModelRoles } from "@/lib/agent/model-select";
 import { chooseProvider, markOutOfQuota } from "@/lib/agent/provider-quota";
 import { buildPrompt, buildSteerMessage } from "@/lib/agent/prompt";
-import { planQueue, type PlanCard, type QueuePlan } from "@/lib/agent/queue-planner";
 import { listProcesses, nextResources, treeTotals } from "@/lib/agent/resources";
 import {
   emptyUsage,
@@ -149,8 +148,6 @@ const DELTA_THROTTLE_MS = 120;
 const MAX_THINKING_DELTA = 4_000;
 /** Live `run.agent` progress: at most one per subagent per window (status changes are persisted). */
 const SUBAGENT_LIVE_THROTTLE_MS = 300;
-/** Smart queue: a board's plan waits this long after its latest queued card, so a burst is planned together. */
-const PLAN_DEBOUNCE_MS = 1_500;
 /**
  * Automatic retries of a failed run: 15 s, 30 s, 1 min, 2 min, 4 min, … at most 10 min apart.
  * Quota failures wait longer instead (QUOTA_RETRY_STEPS_MS: 5, 10, 15, 30 min, then hourly).
@@ -235,8 +232,10 @@ interface ActiveRun {
   subagents: Map<string, TrackedSubagent>;
   /** Board tool calls in flight (`host_tool_call` id → abort). */
   hostCalls: Map<string, AbortController>;
-  /** What the advisor needs to answer this run's questions; set once the run has started. */
+  /** What the advisor needs to answer this run's questions; set once the run has started with the system prompt on. */
   advisor: Omit<AdvisorScope, "signal" | "onActivity"> | null;
+  /** The settings' system prompt was on at launch: only then do the board tools, the advisor and the SDLC steers add tokens. */
+  systemPrompt: boolean;
   /** This run addresses advisor feedback: its own questions go to the user, not back to the agent. */
   advisorFollowUp: boolean;
   /** This run addresses a release-gate comment (QUALITY_GATE_PREFIX): missing the gate again ships the card anyway. */
@@ -311,16 +310,6 @@ interface ActiveRun {
   chain: Promise<void>;
 }
 
-/** Smart-queue plan of one board: pending (debounce timer) or in flight (planner running). */
-interface BoardPlan {
-  timer: NodeJS.Timeout | undefined;
-  controller: AbortController | null;
-  /** Queued cards the in-flight plan orders; a card that leaves the queue drops out (queued anew, it waits for the next plan). */
-  sent: Set<string>;
-  /** Cards of `sent` the user moved meanwhile: the plan keeps them where the user put them. */
-  pinned: Set<string>;
-}
-
 type Json = Record<string, unknown>;
 
 class OmpAgentManager implements AgentManager, RunControl {
@@ -335,14 +324,6 @@ class OmpAgentManager implements AgentManager, RunControl {
   private lent = 0;
   /** Last published `queue.updated` (deduplicates). */
   private lastQueue = "";
-  /** Queued cards that take part in the smart queue (not created by an agent) → their board. */
-  private readonly plannable = new Map<string, string>();
-  /** Plannable queued cards not ordered by a plan yet; held while their board's plan is pending. */
-  private readonly unplanned = new Set<string>();
-  /** Boards with a pending or in-flight plan. */
-  private readonly plans = new Map<string, BoardPlan>();
-  /** The planner's one-line reason per queued card. */
-  private readonly planNotes = new Map<string, string>();
   /** Failed cards waiting for their automatic retry → its timer. */
   private readonly retryTimers = new Map<string, NodeJS.Timeout>();
 
@@ -411,8 +392,6 @@ class OmpAgentManager implements AgentManager, RunControl {
         boardName: await boardName(task.boardId),
         title: task.title,
         state,
-        planning: state === "queued" && this.awaitsPlan(taskId),
-        planNote: this.planNotes.get(taskId) ?? null,
         createdByTaskId: task.createdByTaskId ?? null,
         sdlc: sdlcProgress(task.todos),
         node: state === "running" ? this.nodeOf(taskId) : null,
@@ -423,11 +402,8 @@ class OmpAgentManager implements AgentManager, RunControl {
     const queued = (
       await Promise.all([...this.claiming, ...this.queue].map((id) => entry(id, "queued")))
     ).filter(isEntry);
-    const planning = await Promise.all(
-      [...this.plans.keys()].map(async (boardId) => ({ boardId, boardName: await boardName(boardId) })),
-    );
     const concurrency = this.resolveLimit(settings);
-    return { limit: concurrency.limit, concurrency, running, queued, planning };
+    return { limit: concurrency.limit, concurrency, running, queued };
   }
 
   /** The node a running card was placed on (cluster mode); null on a standalone server. */
@@ -510,14 +486,6 @@ class OmpAgentManager implements AgentManager, RunControl {
   moveInQueue(taskId: string, position: number): boolean {
     if (!this.removeFromQueue(taskId)) return false;
     this.queue.splice(Math.max(0, Math.min(this.queue.length, Math.floor(position))), 0, taskId);
-    // The user's explicit choice: the card no longer waits for its board's plan, and a plan in
-    // flight keeps it where the user put it.
-    const boardId = this.plannable.get(taskId);
-    if (boardId !== undefined) {
-      const state = this.plans.get(boardId);
-      if (state?.sent.has(taskId)) state.pinned.add(taskId);
-      if (this.unplanned.delete(taskId)) this.dropIdlePlan(boardId);
-    }
     void this.pump();
     return true;
   }
@@ -541,7 +509,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     this.cancelRetry(taskId);
     this.claiming.add(taskId);
     let task: Task | null;
-    let smart = false;
     try {
       const current = await this.repo.getTask(taskId);
       if (!current) throw new Error("Task not found");
@@ -553,7 +520,6 @@ class OmpAgentManager implements AgentManager, RunControl {
       }
       task = await this.repo.updateTask(taskId, patch);
       if (!task) throw new Error("Task not found");
-      smart = task.createdByTaskId === null && (await getAppSettings(this.repo)).smartQueue;
     } catch (err) {
       this.claiming.delete(taskId);
       throw err;
@@ -565,14 +531,6 @@ class OmpAgentManager implements AgentManager, RunControl {
       return idle ?? task;
     }
     this.queue.push(taskId);
-    // Cards an agent created (board_create_card) are coordinated by their creator: never planned.
-    if (task.createdByTaskId === null) {
-      this.plannable.set(taskId, task.boardId);
-      if (smart) {
-        this.unplanned.add(taskId);
-        this.schedulePlan(task.boardId);
-      }
-    }
     publish({ type: "task.updated", task });
     void this.pump();
     return task;
@@ -582,7 +540,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     this.cancelRetry(taskId);
     const wasClaiming = this.claiming.delete(taskId);
     if (this.removeFromQueue(taskId) || wasClaiming) {
-      this.leftQueue(taskId);
       this.publishQueue();
       return this.setIdle(taskId);
     }
@@ -679,7 +636,7 @@ class OmpAgentManager implements AgentManager, RunControl {
   async onTaskDeleted(taskId: string): Promise<void> {
     this.cancelRetry(taskId);
     this.claiming.delete(taskId);
-    if (this.removeFromQueue(taskId)) this.leftQueue(taskId);
+    this.removeFromQueue(taskId);
     const run = this.active.get(taskId);
     if (!run) {
       void this.pump();
@@ -856,131 +813,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     return true;
   }
 
-  /** Forgets the smart-queue state of a card that left the queue (launched, stopped, deleted). */
-  private leftQueue(taskId: string): void {
-    const boardId = this.plannable.get(taskId);
-    this.plannable.delete(taskId);
-    this.unplanned.delete(taskId);
-    this.planNotes.delete(taskId);
-    if (boardId === undefined) return;
-    const state = this.plans.get(boardId);
-    state?.sent.delete(taskId);
-    state?.pinned.delete(taskId);
-    this.dropIdlePlan(boardId);
-  }
-
-  /** The card waits for its board's smart-queue plan before it may launch. */
-  private isHeld(taskId: string): boolean {
-    return this.awaitsPlan(taskId);
-  }
-
-  /** The card waits for its board's pending or in-flight plan. */
-  private awaitsPlan(taskId: string): boolean {
-    const boardId = this.plannable.get(taskId);
-    return boardId !== undefined && this.unplanned.has(taskId) && this.plans.has(boardId);
-  }
-
-  private hasUnplanned(boardId: string): boolean {
-    for (const id of this.unplanned) if (this.plannable.get(id) === boardId) return true;
-    return false;
-  }
-
-  /** (Re)starts the board's plan debounce; a plan in flight re-schedules itself when it ends. */
-  private schedulePlan(boardId: string): void {
-    let state = this.plans.get(boardId);
-    if (!state) {
-      state = { timer: undefined, controller: null, sent: new Set(), pinned: new Set() };
-      this.plans.set(boardId, state);
-    }
-    if (state.controller) return;
-    this.debouncePlan(boardId, state);
-  }
-
-  private debouncePlan(boardId: string, state: BoardPlan): void {
-    clearTimeout(state.timer);
-    state.timer = setTimeout(() => void this.runPlan(boardId, state), PLAN_DEBOUNCE_MS);
-  }
-
-  /**
-   * Ends the board's plan once nothing needs it: aborts it when none of the board's cards is
-   * queued anymore, and drops a pending debounce when no card waits for it.
-   */
-  private dropIdlePlan(boardId: string): void {
-    const state = this.plans.get(boardId);
-    if (!state) return;
-    const queued = [...this.plannable.values()].includes(boardId);
-    if (queued && (state.controller || this.hasUnplanned(boardId))) return;
-    clearTimeout(state.timer);
-    state.controller?.abort();
-    this.plans.delete(boardId);
-  }
-
-  /**
-   * Has the planner order the board's plannable queued cards, then releases the held ones. A
-   * failed plan keeps the queue order; nothing stays held.
-   */
-  private async runPlan(boardId: string, state: BoardPlan): Promise<void> {
-    state.timer = undefined;
-    const controller = new AbortController();
-    state.controller = controller;
-    const sent = state.sent;
-    for (const id of this.queue) if (this.plannable.get(id) === boardId) sent.add(id);
-    try {
-      const settings = await getAppSettings(this.repo);
-      const board = await this.repo.getBoard(boardId);
-      if (!board || !settings.smartQueue || sent.size < 2 || !this.hasUnplanned(boardId)) return;
-      // Running cards are context for the planner (what is already in flight); only queued cards
-      // are ordered.
-      const queued: PlanCard[] = [];
-      const running: PlanCard[] = [];
-      for (const id of [...sent, ...this.active.keys()]) {
-        const task = await this.repo.getTask(id);
-        if (task?.boardId !== boardId) continue;
-        const card = { id: task.id, title: task.title, description: task.description };
-        (this.active.has(id) ? running : queued).push(card);
-      }
-      this.publishQueue();
-      const plan = await planQueue({ board, queued, running, settings, signal: controller.signal });
-      if (controller.signal.aborted) return;
-      this.applyPlan(plan, state);
-    } catch (err) {
-      if (!controller.signal.aborted) {
-        console.error(`[agent] queue planner failed for board ${boardId}; keeping the queue order:`, err);
-      }
-    } finally {
-      if (this.plans.get(boardId) === state) {
-        // Only cards still in `sent`: one stopped and queued anew meanwhile waits for the next plan.
-        for (const id of sent) this.unplanned.delete(id);
-        sent.clear();
-        state.pinned.clear();
-        state.controller = null;
-        // Cards queued while the planner ran get a plan of their own.
-        if (this.hasUnplanned(boardId)) this.debouncePlan(boardId, state);
-        else this.plans.delete(boardId);
-      }
-      this.publishQueue();
-      void this.pump();
-    }
-  }
-
-  /**
-   * Refills the queue slots of the planned cards in the plan's order; cards the user moved
-   * meanwhile keep their place. The planner's reason is kept per card for the UI.
-   */
-  private applyPlan(plan: QueuePlan, state: BoardPlan): void {
-    const queued = new Set([...state.sent].filter((id) => !state.pinned.has(id) && this.queue.includes(id)));
-    const order = [...new Set([...plan.order, ...state.sent])].filter((id) => queued.has(id));
-    let next = 0;
-    for (let i = 0; i < this.queue.length; i++) {
-      if (queued.has(this.queue[i]!)) this.queue[i] = order[next++]!;
-    }
-    for (const id of state.sent) {
-      const reason = plan.reasons[id];
-      if (reason) this.planNotes.set(id, reason);
-      else this.planNotes.delete(id);
-    }
-  }
-
   private publishQueue(): void {
     const running = [...this.active.keys()];
     const queued = [...this.claiming, ...this.queue];
@@ -990,16 +822,12 @@ class OmpAgentManager implements AgentManager, RunControl {
       const node = this.nodeOf(taskId);
       if (node) nodes[taskId] = node;
     }
-    // Planning state is part of the key: the UI re-reads the snapshot when a plan starts or ends.
-    const held = queued.filter((id) => this.isHeld(id));
     // So are the limit and what bounds it: an automatic one changes with the machine's free
     // resources, and a resource-guard hold/resume must reach the UI even when the limit stays.
     const key = JSON.stringify([
       running,
       queued,
       nodes,
-      [...this.plans.keys()],
-      held,
       this.limit,
       this.boundBy,
     ]);
@@ -1032,13 +860,11 @@ class OmpAgentManager implements AgentManager, RunControl {
         this.boundBy = concurrency.boundBy;
         if (this.queue.length === 0 || this.holding) break;
         if (this.active.size - this.lent >= this.limit) continue;
-        // Start order, skipping cards that still wait for their board's smart-queue plan.
         const candidates = [...this.queue];
         // Cluster mode: among equally good replicas, a card prefers the node of its last run.
         const lastNodes = cluster ? await Promise.all(candidates.map((taskId) => this.lastRunNode(taskId))) : [];
         for (const [index, taskId] of candidates.entries()) {
           if (this.active.size - this.lent >= this.limit) break;
-          if (this.isHeld(taskId)) continue;
           // Cluster mode: place the card before it leaves the queue. No placement means no node can
           // safely take a card now, or the pump's count is ahead of the nodes' (e.g. a remote run's
           // transport still closing), so the rest stay queued too (the sampler and refreshQueue re-pump,
@@ -1059,7 +885,6 @@ class OmpAgentManager implements AgentManager, RunControl {
             if (!placement) break;
           }
           if (this.removeFromQueue(taskId)) {
-            this.leftQueue(taskId);
             this.launch(taskId, settings, placement);
           } else if (placement) {
             cancelPlacement(placement);
@@ -1117,6 +942,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       subagents: new Map(),
       hostCalls: new Map(),
       advisor: null,
+      systemPrompt: settings.useSystemPrompt,
       advisorFollowUp: false,
       qualityGateFollowUp: false,
       todos: null,
@@ -1561,7 +1387,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     run.runId = created.id;
     run.promptId = `prompt-${created.id}`;
     for (const c of feedback) run.feedbackIds.add(c.id);
-    run.advisor = { task, board, workdir, extraFolders, settings };
+    if (settings.useSystemPrompt) run.advisor = { task, board, workdir, extraFolders, settings };
     run.advisorFollowUp = feedback.some((c) => c.body.startsWith(ADVISOR_FEEDBACK_PREFIX));
     run.qualityGateFollowUp = feedback.some((c) => c.body.startsWith(QUALITY_GATE_PREFIX));
     publish({ type: "run.updated", run: created, boardId: run.boardId });
@@ -1771,12 +1597,15 @@ class OmpAgentManager implements AgentManager, RunControl {
     await proc.send({ type: "set_subagent_subscription", level: "progress" }).catch(() => undefined);
     if (run.finished) return;
 
-    // Agent-to-agent collaboration tools and the advisor, executed by onHostTool.
-    try {
-      await proc.send({ type: "set_host_tools", tools: [...BOARD_TOOLS, ADVISOR_TOOL] });
-    } catch (err) {
-      if (run.finished) return;
-      await this.event(run, "error", `Board tools are unavailable in this run: ${errorMessage(err, run.ompPath)}`);
+    // Agent-to-agent collaboration tools and the advisor, executed by onHostTool. Their schemas ride
+    // on every request, so they are registered only with the system prompt, which describes them.
+    if (run.systemPrompt) {
+      try {
+        await proc.send({ type: "set_host_tools", tools: [...BOARD_TOOLS, ADVISOR_TOOL] });
+      } catch (err) {
+        if (run.finished) return;
+        await this.event(run, "error", `Board tools are unavailable in this run: ${errorMessage(err, run.ompPath)}`);
+      }
     }
 
     run.promptSent = true;
@@ -2482,7 +2311,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       // The release gate (SDLC Testing phase) sends the card back once; missing it again ships it with a
       // warning. A question for the user wins: resuming the agent would drop it unanswered.
       const latestTodos = run.stampedTodos?.list ?? (await repo.getTask(run.taskId))?.todos ?? [];
-      const gate = releaseGate(sdlcProgress(latestTodos));
+      const gate = run.systemPrompt ? releaseGate(sdlcProgress(latestTodos)) : null;
       const gateFollowUp = gate !== null && !run.qualityGateFollowUp && question === null;
       if (gateFollowUp) {
         const feedback = await repo.addComment({
@@ -2646,7 +2475,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       for (const violation of change.violations) {
         await this.event(run, "status", `⚠ Quality gate: ${violation.message}`);
         const key = `${violation.phase}:${violation.requires}`;
-        if (run.finished || run.sdlcNudges.has(key)) continue;
+        if (run.finished || !run.systemPrompt || run.sdlcNudges.has(key)) continue;
         run.sdlcNudges.add(key);
         try {
           // Steered like the loop detector's nudge (see onLoop); its own id keeps the response apart from the run's prompt.
@@ -3172,7 +3001,7 @@ class DormantAgentManager implements AgentManager, RunControl {
 
   async queueSnapshot(): Promise<QueueSnapshot> {
     const concurrency = { ...resolveConcurrency(0, 0), reason: "Replica: cards run on the primary" };
-    return { limit: 0, concurrency, running: [], queued: [], planning: [] };
+    return { limit: 0, concurrency, running: [], queued: [] };
   }
 
   moveInQueue(): boolean {

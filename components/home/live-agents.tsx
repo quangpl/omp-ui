@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type CSSProperties } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { ArrowRightIcon, BotIcon, CpuIcon, LoaderCircleIcon, SquareIcon, ZapIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -18,21 +18,6 @@ const MAX_ROWS = 6;
 
 /** Latest activity per card from live `run.event`s, newer than the dashboard payload's. */
 export type LiveActivity = Record<string, { activity: string; at: string }>;
-
-/** Staggered ellipsis for work in progress without a measurable step (the smart queue ordering). */
-function WorkingDots() {
-  return (
-    <span aria-hidden="true" className="inline-flex gap-0.5">
-      {[0, 1, 2].map((dot) => (
-        <span
-          key={dot}
-          className="animate-working-dot size-1 rounded-full bg-current"
-          style={{ "--dot": dot } as CSSProperties}
-        />
-      ))}
-    </span>
-  );
-}
 
 function AgentRow({
   entry,
@@ -70,8 +55,6 @@ function AgentRow({
 
   const status = running
     ? null
-    : entry.planning
-      ? "being ordered by the smart queue"
       : `#${position} in queue`;
   const enter = useEntrance()(index);
 
@@ -84,7 +67,6 @@ function AgentRow({
           running
             ? "bg-primary/10"
             : "bg-muted text-[10px] font-medium text-muted-foreground/70",
-          !running && entry.planning && "animate-shimmer",
         )}
       >
         {running ? (
@@ -122,19 +104,16 @@ function AgentRow({
             <span className="inline-flex min-w-0 items-center gap-1.5">
               <span aria-hidden="true">·</span>
               <span className="truncate">{status}</span>
-              {entry.planning && <WorkingDots />}
             </span>
           )}
         </span>
-        {running ? (
+        {running && (
           <span
             className="mt-1.5 block truncate border-l-2 border-primary/30 pl-2 text-xs text-muted-foreground"
             title={activity ? `${activity}${activityAt ? ` · ${formatRelative(activityAt, now)}` : ""}` : undefined}
           >
             {activity ?? "Starting…"}
           </span>
-        ) : (
-          entry.planNote && <span className="mt-0.5 block truncate text-xs text-muted-foreground italic">{entry.planNote}</span>
         )}
       </Link>
       <Button
@@ -162,7 +141,7 @@ export function LiveAgents({
   liveActivity: LiveActivity;
 }) {
   const openNewCard = useNewCard();
-  const { running, queued, limit, planning } = queue;
+  const { running, queued, limit } = queue;
   // Elapsed times tick every second only while something runs.
   const now = useNow(running.length > 0 ? 1000 : 60_000);
   const busy = Math.min(running.length, limit);
@@ -202,14 +181,6 @@ export function LiveAgents({
             )}
           </span>
         </div>
-        {planning.length > 0 && (
-          <p className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-            <span className="shrink-0 text-primary">
-              <WorkingDots />
-            </span>
-            <span className="truncate">Ordering the queue of {planning.map((p) => p.boardName).join(", ")}</span>
-          </p>
-        )}
         {entries.length === 0 ? (
           <div className="mt-3">
             <EmptyState

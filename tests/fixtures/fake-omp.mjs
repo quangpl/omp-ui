@@ -51,8 +51,6 @@
 //   FAKE_OMP_PROTOCOLS    Comma-separated supportedProtocolVersions advertised in ready (default "1,2").
 //   FAKE_OMP_MODEL_ROLES  JSON object `omp config get modelRoles --json` reports (default {});
 //                         "fail" makes that command exit 1. Logged as a "config" entry, not "argv".
-//   FAKE_OMP_PLAN         Reply text of the queue planner (a helper prompt starting with "You are the
-//                         queue planner"); default {"order":[],"cards":[]}; "fail" exits 1 without an answer.
 //   FAKE_OMP_SKILLS       JSON array of {name, description} that `omp skill list --json` reports as
 //                         {"skills": [...]} (default []). Logged as a "skill" entry, not "argv".
 //   `omp models --json`   Prints {"models": [...]}: each provider's chat models only when its key is
@@ -72,7 +70,7 @@
 //                         prints a device URL and "Enter code: FAKE-1234" and logs in after
 //                         FAKE_OMP_LOGIN_DEVICE_MS (default 300).
 //
-// Helper workers (started with --no-session: advisor, queue planner, chat assistant) are
+// Helper workers (started with --no-session: advisor, summary agent, chat assistant) are
 // pooled and reused across prompts via new_session. They log "helper_argv" at startup instead of
 // "argv", every prompt as a "helper" entry {argv, cwd, prompt}, and other commands as
 // "helper_command" instead of "command", so card-run assertions only see card runs. A helper prompt
@@ -185,21 +183,16 @@ if (argv[0] === "login") {
   await new Promise(() => undefined);
 }
 
-// Helper replies (advisor and queue planner prompts on a helper worker): one assistant message
+// Helper replies (advisor prompts on a helper worker): one assistant message
 // chosen by a `[fake-advisor:<mode>]` marker in the prompt (the card's text is part of it):
 //   (none)       consult: a decision; triage: every question left for the user, unchanged.
 //   user         consult: marked for the user.
 //   answer       triage: answers the question and sends the agent back to work (followUp); the
 //                followUp carries "[fake:question] [fake-advisor:answer]", so the next run asks again.
 //   fail         exits 1 without an answer.
-// A queue planner prompt ("You are the queue planner…") is answered with FAKE_OMP_PLAN instead, a
-// code-changes summary prompt ("You summarise code changes…") with a fixed one-line summary.
+// A code-changes summary prompt ("You summarise code changes…") is answered with a fixed one-line summary.
 // Returns the reply text, or { fail: stderr line }.
 function helperReply(prompt) {
-  if (prompt.startsWith("You are the queue planner")) {
-    const plan = process.env.FAKE_OMP_PLAN || '{"order":[],"cards":[]}';
-    return plan === "fail" ? { fail: "fake omp: planner exploded" } : plan;
-  }
   if (prompt.startsWith("You summarise code changes for a reviewer.")) {
     return "Adds a Changes tab that shows the card's diff with a short summary.";
   }
@@ -224,7 +217,7 @@ function helperReply(prompt) {
   return JSON.stringify(reply);
 }
 
-/** A pooled helper worker (advisor, queue planner, chat assistant) rather than a card run. */
+/** A pooled helper worker (advisor, summary agent, chat assistant) rather than a card run. */
 const helper = argv.includes("--no-session");
 
 /** Environment variables whose values the "argv" entry records (credentials in, AgentMan secrets out). */
