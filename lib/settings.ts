@@ -132,7 +132,6 @@ function sanitize(s: AppSettings, knownMenus: readonly unknown[]): AppSettings {
     defaultModel: String(s.defaultModel ?? "").trim(),
     autoModel: typeof s.autoModel === "boolean" ? s.autoModel : DEFAULT_SETTINGS.autoModel,
     providerPriority: storedPriority(s.providerPriority),
-    smartQueue: typeof s.smartQueue === "boolean" ? s.smartQueue : DEFAULT_SETTINGS.smartQueue,
     browser: BROWSER_MODES.includes(s.browser) ? s.browser : DEFAULT_SETTINGS.browser,
     useSystemPrompt: bool(s, "useSystemPrompt"),
     autoRetry: typeof s.autoRetry === "boolean" ? s.autoRetry : DEFAULT_SETTINGS.autoRetry,

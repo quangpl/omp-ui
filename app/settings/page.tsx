@@ -268,7 +268,6 @@ function AgentSettingsSection() {
       saved.approvalMode !== draft.approvalMode ||
       saved.defaultModel !== draft.defaultModel ||
       saved.autoModel !== draft.autoModel ||
-      saved.smartQueue !== draft.smartQueue ||
       saved.autoRetry !== draft.autoRetry ||
       saved.persistentRetry !== draft.persistentRetry ||
       saved.maxAutoRetries !== draft.maxAutoRetries ||
@@ -294,7 +293,6 @@ function AgentSettingsSection() {
         approvalMode: draft.approvalMode,
         defaultModel: draft.defaultModel.trim(),
         autoModel: draft.autoModel,
-        smartQueue: draft.smartQueue,
         autoRetry: draft.autoRetry,
         persistentRetry: draft.persistentRetry,
         maxAutoRetries: draft.maxAutoRetries,
@@ -432,7 +430,7 @@ function AgentSettingsSection() {
               <SettingsToggle
                 htmlFor="use-system-prompt"
                 title="Use AgentMan's system prompt"
-                description="Prepend the workflow, quality gates, cleanup, summary and report instructions to every task sent to omp. When off, the task is forwarded to omp exactly as written, with nothing added."
+                description="Prepend the workflow, quality gates, cleanup, summary and report instructions to every task sent to omp, and give agents the board and advisor tools. When off, the task is forwarded to omp exactly as written, with nothing added: the run costs what the same text typed into omp costs."
               >
                 <Switch
                   id="use-system-prompt"
@@ -511,19 +509,6 @@ function AgentSettingsSection() {
               </SettingsField>
 
               <SettingsRows>
-                <SettingsToggle
-                  htmlFor="smart-queue"
-                  title="Smart queue"
-                  description="When you add several cards, an agent orders them and links dependencies. Independent cards run in parallel; the rest wait on what they depend on."
-                >
-                  <Switch
-                    id="smart-queue"
-                    checked={draft.smartQueue}
-                    onCheckedChange={(checked) => setDraft({ ...draft, smartQueue: checked })}
-                    disabled={saving}
-                  />
-                </SettingsToggle>
-
                 <SettingsToggle
                   htmlFor="auto-retry"
                   title="Retry failed runs automatically"

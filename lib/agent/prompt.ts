@@ -140,6 +140,7 @@ const ORCHESTRATE_CUES = [
  * - First run: the full task plus any feedback already left on the card.
  * - Resume run (same omp session via `--resume`): the agent already has the task in context,
  *   so only the new feedback is sent (or a "continue" nudge when there is none).
+ * - System prompt off: only the task and the user's open feedback, with no instructions added.
  */
 export function buildPrompt(
   task: Task,
@@ -150,8 +151,7 @@ export function buildPrompt(
   useSystemPrompt = true,
 ): string {
   if (!useSystemPrompt) {
-    // The system prompt is off: forward the task to omp as written, with nothing added.
-    return taskSection(task);
+    return plainPrompt(task, openFeedback, isResume, context?.senders ?? {});
   }
   const senders = context?.senders ?? {};
   const feedback = openFeedback.filter((c) => c.author === "user" && !c.resolved);
@@ -239,6 +239,20 @@ export function buildPrompt(
     `- ${reportInstruction(task, context)}`,
   );
   return lines.join("\n");
+}
+
+/**
+ * The prompt with AgentMan's system prompt off: what a person would type into omp. A first run gets
+ * the task and its open feedback; a resumed session already has the task, so it gets only the new
+ * feedback (one comment as typed), or the task again when there is none (it may have been edited).
+ */
+function plainPrompt(task: Task, openFeedback: Comment[], isResume: boolean, senders: Record<string, string>): string {
+  const feedback = openFeedback.filter((c) => c.author === "user" && !c.resolved);
+  if (feedback.length === 0) return taskSection(task);
+  const [only] = feedback;
+  const text = feedback.length === 1 && !only!.fromTaskId ? only!.body.trim() : numberedFeedback(feedback, senders);
+  if (isResume) return text;
+  return [taskSection(task), "", "## Feedback from the user", "", text].join("\n");
 }
 
 /**

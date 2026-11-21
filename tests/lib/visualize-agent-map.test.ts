@@ -28,8 +28,6 @@ function entry(taskId: string, state: QueueEntry["state"], extra: Partial<QueueE
     title: `Card ${taskId}`,
     state,
     waitingFor: [],
-    planning: false,
-    planNote: null,
     createdByTaskId: null,
     sdlc: null,
     node: null,
@@ -38,7 +36,7 @@ function entry(taskId: string, state: QueueEntry["state"], extra: Partial<QueueE
 }
 
 function queue(running: QueueEntry[], queued: QueueEntry[] = []): QueueSnapshot {
-  return { limit: 4, concurrency: {} as QueueSnapshot["concurrency"], running, queued, planning: [] };
+  return { limit: 4, concurrency: {} as QueueSnapshot["concurrency"], running, queued };
 }
 
 function liveAgent(extra: Partial<LiveAgent> = {}): LiveAgent {

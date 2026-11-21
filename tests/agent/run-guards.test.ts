@@ -42,7 +42,6 @@ const ENV_KEYS = [
   "FAKE_OMP_SCENARIO",
   "FAKE_OMP_SESSION_DIR",
   "FAKE_OMP_MODEL_ROLES",
-  "FAKE_OMP_PLAN",
   "FAKE_OMP_COST_PER_MESSAGE",
   "OMP_UI_RETRY_BASE_MS",
   "OMP_UI_QUOTA_RETRY_BASE_MS",
@@ -396,7 +395,6 @@ describe("run guards through the agent manager", () => {
     delete process.env.MAX_AGENTS;
     delete process.env.OMP_EXTRA_ARGS;
     delete process.env.FAKE_OMP_MODEL_ROLES;
-    delete process.env.FAKE_OMP_PLAN;
     delete process.env.FAKE_OMP_COST_PER_MESSAGE;
     delete process.env.OMP_UI_QUOTA_RETRY_BASE_MS;
     process.env.OMP_UI_RETRY_BASE_MS = "50";

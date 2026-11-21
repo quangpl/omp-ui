@@ -589,7 +589,7 @@ export async function memoryProjectName(boardWorkdir: string): Promise<string> {
 }
 
 /**
- * Env for pooled helper workers (advisor, planner): no memory capture or recall. The
+ * Env for pooled helper workers (advisor, summaries, assistants): no memory capture or recall. The
  * OMP extension has no off switch, so the helpers get no credentials: `AGENTMEMORY_CREDENTIAL_MODE=
  * explicit` without `AGENTMEMORY_SECRET` makes the authenticated server reject their health check
  * (no recall, no session) and every capture (401: dropped, not retried), and with
