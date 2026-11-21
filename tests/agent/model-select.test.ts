@@ -22,8 +22,6 @@ function card(title: string, description = ""): Task {
     blockedBy: [],
     createdByTaskId: null,
     schedulerId: null,
-    parallelize: null,
-    ignoreMemory: false,
     userId: null,
     pushedAt: null,
     autoRetries: 0,

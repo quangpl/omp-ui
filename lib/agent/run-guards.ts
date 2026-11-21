@@ -165,7 +165,7 @@ export function wrapUpSteerMessage(hit: WrapUpHit): string {
   return [
     `You have used ${hit.percent}% of your ${limit} (${hit.detail}). The run will be stopped when it reaches the limit.`,
     "Wrap up now: do not start new work, finish or safely pause the current step, and verify what is done.",
-    "Then write your final summary with its Report, listing what is left to do.",
+    "Then write your final message, listing what is left to do.",
   ].join(" ");
 }
 
