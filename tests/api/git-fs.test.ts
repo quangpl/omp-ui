@@ -500,9 +500,9 @@ describe("git status and quick actions", () => {
   );
 
   it(
-    "explains a rejected push when the remote has newer commits",
+    "pulls the remote's newer commits in before pushing",
     async () => {
-      const repo = makeRepo("diverged");
+      const repo = makeRepo("moved-on");
       const other = path.join(env().root, "other-clone");
       git(env().root, "clone", repo.bare, other);
       writeFileSync(path.join(other, "theirs.txt"), "theirs\n");
@@ -511,19 +511,59 @@ describe("git status and quick actions", () => {
       git(other, "push", "origin", "main");
       const theirs = remoteHead(repo.bare, "main").sha;
 
-      const divergedBoard = await createBoard({ name: "Diverged", workdir: repo.work, autoRun: false });
-      const divergedTask = await createTask(divergedBoard.id, "Conflicting change");
+      const movedBoard = await createBoard({ name: "Moved on", workdir: repo.work, autoRun: false });
+      const movedTask = await createTask(movedBoard.id, "My change");
       writeFileSync(path.join(repo.work, "mine.txt"), "mine\n");
 
-      const res = await gitAction("push", divergedTask.id);
+      const res = await gitAction("push", movedTask.id);
       expect(res.status).toBe(200);
       const [result] = res.body.results;
-      expect(result.skipped).toBe(false);
-      expect(result.error).toBe("The remote branch has newer commits. Pull them first, or use “Create PR” instead.");
+      expect(result).toMatchObject({ branch: "main", error: null, skipped: false });
       expect(result.commit).toMatch(SHA);
+      // The remote change was merged into the folder, then both landed on the remote.
+      expect(existsSync(path.join(repo.work, "theirs.txt"))).toBe(true);
+      const tip = remoteHead(repo.bare, "main");
+      expect(tip.sha).not.toBe(theirs);
+      expect(tip.subject).toMatch(/^Merge /);
+      expect(git(repo.bare, "--git-dir", repo.bare, "log", "-1", "--format=%P", "main").split(" ")).toEqual([
+        result.commit,
+        theirs,
+      ]);
+      expect(res.body.comment.body).toContain("Pushed to main in moved-on/");
+      expect((await taskDetail(movedTask.id)).task.pushedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    },
+    GIT_TIMEOUT,
+  );
+
+  it(
+    "aborts a conflicting pull, leaving the folder and the remote as they were",
+    async () => {
+      const repo = makeRepo("conflicting");
+      const other = path.join(env().root, "conflicting-clone");
+      git(env().root, "clone", repo.bare, other);
+      writeFileSync(path.join(other, "README.md"), "# theirs\n");
+      git(other, "add", "-A");
+      git(other, "commit", "-m", "Their edit");
+      git(other, "push", "origin", "main");
+      const theirs = remoteHead(repo.bare, "main").sha;
+
+      const conflictingBoard = await createBoard({ name: "Conflicting", workdir: repo.work, autoRun: false });
+      const conflictingTask = await createTask(conflictingBoard.id, "My edit");
+      writeFileSync(path.join(repo.work, "README.md"), "# mine\n");
+      const headBefore = git(repo.work, "rev-parse", "HEAD");
+
+      const res = await gitAction("push", conflictingTask.id);
+      expect(res.status).toBe(200);
+      const [result] = res.body.results;
+      expect(result.error).toMatch(/conflict/i);
+      expect(res.body.comment.body).toContain("Couldn't push conflicting/");
+      // The failed merge is aborted: the local commit survives, nothing is half-merged, nothing shipped.
+      expect(git(repo.work, "rev-parse", "HEAD")).not.toBe(headBefore);
+      expect(git(repo.work, "log", "-1", "--format=%s")).toBe("My edit");
+      expect(git(repo.work, "status", "--porcelain")).toBe("");
+      expect(existsSync(path.join(repo.work, ".git", "MERGE_HEAD"))).toBe(false);
       expect(remoteHead(repo.bare, "main").sha).toBe(theirs);
-      expect(res.body.comment.body).toContain("Couldn't push diverged/");
-      expect((await taskDetail(divergedTask.id)).task.pushedAt).toBeNull();
+      expect((await taskDetail(conflictingTask.id)).task.pushedAt).toBeNull();
     },
     GIT_TIMEOUT,
   );

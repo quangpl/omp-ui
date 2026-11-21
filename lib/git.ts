@@ -101,6 +101,10 @@ function explain(cmd: string, result: CommandResult): string {
       "Uncommitted changes would be overwritten by the update. Commit or discard them, then pull.",
     ],
     [
+      /conflict|automatic merge failed/i,
+      "The remote branch has commits that conflict with the local ones, so they couldn't be merged. Reconcile them (or use “Create PR” instead).",
+    ],
+    [
       /would be overwritten by checkout|commit your changes or stash them/i,
       "Uncommitted changes would be overwritten by switching. Commit or discard them first.",
     ],
@@ -557,8 +561,29 @@ function baseResult(folder: string): GitRepoActionResult {
 }
 
 /**
- * Commit uncommitted changes (if any) and push HEAD to `target` on origin, creating it there if
- * missing. Callers hold the folder lock.
+ * Merge the remote `target` branch (`origin/<target>`, fresh from the caller's fetch) into HEAD
+ * before pushing, so a remote branch that moved on doesn't reject the push. A remote branch that
+ * doesn't exist yet (first push) has nothing to pull; a conflicting merge is aborted, leaving the
+ * branch exactly as it was, and reported.
+ */
+async function mergeRemoteBeforePush(folder: string, target: string, step: Step): Promise<void> {
+  if (!(await git(folder, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${target}`])).ok) return;
+  const merging = (await git(folder, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])).ok;
+  const merge = await step(
+    "git",
+    [...(await identityArgs(folder)), "merge", "--no-edit", `origin/${target}`],
+    NETWORK_TIMEOUT_MS,
+    true,
+  );
+  if (merge.ok) return;
+  // Never abort a merge that was already in progress before this call.
+  if (!merging) await git(folder, ["merge", "--abort"]);
+  throw new CommandError(explain("git", merge));
+}
+
+/**
+ * Commit uncommitted changes (if any), merge the remote target branch in, and push HEAD to
+ * `target` on origin, creating it there if missing. Callers hold the folder lock.
  */
 async function pushHeadTo(folder: string, target: string, message: string): Promise<GitFolderOutcome> {
   const result = baseResult(folder);
@@ -578,7 +603,9 @@ async function pushHeadTo(folder: string, target: string, message: string): Prom
   const { log, step } = makeRunner(folder);
   try {
     result.branch = target;
-    await step("git", ["fetch", "origin", `refs/heads/${target}`], NETWORK_TIMEOUT_MS, true);
+    // A fetch that fails (offline, or the remote branch doesn't exist yet) leaves any old
+    // remote-tracking ref in place; only merge when the branch is known to exist right now.
+    const fetched = await step("git", ["fetch", "origin", `refs/heads/${target}`], NETWORK_TIMEOUT_MS, true);
     result.commit = await commitAll(folder, step, message);
     if (!result.commit && (await unpushedCount(folder, target)) === 0) {
       return {
@@ -586,6 +613,7 @@ async function pushHeadTo(folder: string, target: string, message: string): Prom
         summary: `Nothing to push in ${name}`,
       };
     }
+    if (fetched.ok) await mergeRemoteBeforePush(folder, target, step);
     await step("git", ["push", "origin", `HEAD:refs/heads/${target}`], NETWORK_TIMEOUT_MS);
     const sha = (await step("git", ["rev-parse", "HEAD"])).stdout.trim();
     if (status.webUrl && status.provider === "github") result.url = `${status.webUrl}/commit/${sha}`;
@@ -606,7 +634,8 @@ async function pushHeadTo(folder: string, target: string, message: string): Prom
 }
 
 /**
- * Commit uncommitted changes (if any) and push HEAD to `target` on origin (the project's push
+ * Commit uncommitted changes (if any), merge `origin/<target>` into HEAD (so a remote branch that
+ * moved on doesn't reject the push) and push HEAD to `target` on origin (the project's push
  * branch), creating it there if missing.
  */
 export function pushToBranch(folder: string, target: string, message: string): Promise<GitFolderOutcome> {
@@ -614,9 +643,9 @@ export function pushToBranch(folder: string, target: string, message: string): P
 }
 
 /**
- * Commit uncommitted changes (if any) and push HEAD to the branch the folder is already on,
- * creating it on `origin` if missing. A detached HEAD has no current branch, so it is reported as
- * an error for that folder.
+ * Commit uncommitted changes (if any), pull the folder's branch (merge `origin/<branch>` into
+ * HEAD), then push HEAD to the branch the folder is already on, creating it on `origin` if
+ * missing. A detached HEAD has no current branch, so it is reported as an error for that folder.
  */
 export function pushToCurrentBranch(folder: string, message: string): Promise<GitFolderOutcome> {
   return withFolderLock(folder, async () => {

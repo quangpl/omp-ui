@@ -18,7 +18,6 @@ import {
   GlobeIcon,
   InboxIcon,
   LightbulbIcon,
-  LockIcon,
   MessagesSquareIcon,
   PackageCheckIcon,
   ServerIcon,
@@ -135,8 +134,6 @@ function linkSentence(link: CardLink, titleOf: TitleOf): string {
       return `${from} read ${to}`;
     case "delegate":
       return `${from} created ${to}`;
-    case "depends":
-      return `${to} needs ${from} done first`;
   }
 }
 
@@ -422,31 +419,20 @@ function viewOf(
     case "queued": {
       const { entry, position } = worker;
       const { name, hue } = workerIdentity(entry.taskId);
-      const waiting = entry.waitingFor.length;
-      const blocked = waiting > 0 ? `waits on ${plural(waiting, "card")}` : null;
       return {
         href: cardHref({ boardId: entry.boardId, id: entry.taskId }),
         name,
-        caption: blocked ? (
-          <span className="inline-flex items-center gap-0.5">
-            <LockIcon className="size-2.5" />#{position}
-          </span>
-        ) : entry.planning ? (
-          `#${position} planning`
-        ) : (
-          `#${position} in line`
-        ),
+        caption: entry.planning ? `#${position} planning` : `#${position} in line`,
         mood: "waiting",
         role: "lead",
         roleLabel: LEAD,
         hue,
-        label: `${name}, #${position} in line: ${entry.title} in ${entry.boardName}${blocked ? `; ${blocked}` : ""}`,
+        label: `${name}, #${position} in line: ${entry.title} in ${entry.boardName}`,
         details: (
           <Details
             title={entry.title}
             lines={[
               `${name} · ${LEAD} · ${entry.boardName} · #${position} in line`,
-              blocked && `Blocked: ${blocked}`,
               entry.planning && "Being planned",
               entry.planNote,
               ...(links.get(entry.taskId) ?? []).map((link) => linkSentence(link, titleOf)),

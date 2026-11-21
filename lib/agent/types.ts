@@ -32,11 +32,11 @@ export interface AgentManager {
   onTaskDeleted(taskId: string): Promise<void>;
   /** Snapshot for /health and the UI. */
   stats(): { running: string[]; queued: string[] };
-  /** Running and queued cards (queued in start order) with titles and unfinished blockers. */
+  /** Running and queued cards (queued in start order) with titles and agent state. */
   queueSnapshot(): Promise<QueueSnapshot>;
   /** Move a queued card to `position` (0 = next). False when the card is not queued. */
   moveInQueue(taskId: string, position: number): boolean;
-  /** Re-check queued cards, e.g. after a card's blockedBy changed. */
+  /** Re-check queued cards (e.g. after a cluster placement or resource hold changed). */
   refreshQueue(): void;
   /** Context window fill of the task's running run; null when unknown or not running. */
   contextUsage(taskId: string): ContextUsage | null;
