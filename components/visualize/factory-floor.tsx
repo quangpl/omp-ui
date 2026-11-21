@@ -431,8 +431,6 @@ function viewOf(
           <span className="inline-flex items-center gap-0.5">
             <LockIcon className="size-2.5" />#{position}
           </span>
-        ) : entry.planning ? (
-          `#${position} planning`
         ) : (
           `#${position} in line`
         ),
@@ -447,8 +445,6 @@ function viewOf(
             lines={[
               `${name} · ${LEAD} · ${entry.boardName} · #${position} in line`,
               blocked && `Blocked: ${blocked}`,
-              entry.planning && "Being planned",
-              entry.planNote,
               ...(links.get(entry.taskId) ?? []).map((link) => linkSentence(link, titleOf)),
             ]}
           />

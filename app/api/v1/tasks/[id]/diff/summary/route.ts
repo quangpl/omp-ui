@@ -16,8 +16,8 @@ async function summarize({ repo, params }: ApiContext<{ id: string }>, force: bo
   return json(await diffSummary(diff, { board, task, settings }, { force, waitMs: WAIT_MS }));
 }
 
-/** One/two-sentence summary of the card's changes (cached by the diff's hash). */
+/** The cached one/two-sentence summary of the card's changes (by the diff's hash), else the file-count line. Never starts the summary agent. */
 export const GET = withApi<{ id: string }>((ctx) => summarize(ctx, false));
 
-/** Write the summary again (drops the cached one). */
+/** Write the summary with the summary agent (drops the cached one). */
 export const POST = withApi<{ id: string }>((ctx) => summarize(ctx, true));
