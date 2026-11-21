@@ -3,7 +3,6 @@ import { publish } from "@/lib/events";
 import { deleteCard } from "@/lib/server/delete-card";
 import { error, json, readJson, withApi } from "@/lib/server/http";
 import {
-  parseBlockedBy,
   parseDescription,
   parsePosition,
   parseQuestionClear,
@@ -32,16 +31,11 @@ export const PATCH = withApi<Params>(async ({ req, repo, manager, params }) => {
   if (body.status !== undefined) patch.status = parseStatus(body.status);
   if (body.position !== undefined) patch.position = parsePosition(body.position);
   if (body.question !== undefined) patch.question = parseQuestionClear(body.question);
-  if (body.blockedBy !== undefined) {
-    patch.blockedBy = await parseBlockedBy(repo, body.blockedBy, previous.boardId, previous.id);
-  }
   if (Object.keys(patch).length === 0) return json(previous);
 
   const task = await repo.updateTask(previous.id, patch);
   if (!task) return error(404, "Task not found");
   publish({ type: "task.updated", task });
-  // New or removed blockers can let a queued card start (or hold it back).
-  if (patch.blockedBy) manager.refreshQueue();
   if (task.status === previous.status) return json(task);
 
   await manager.onTaskMoved(task, previous.status);

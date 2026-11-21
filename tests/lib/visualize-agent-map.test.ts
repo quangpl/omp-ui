@@ -27,7 +27,6 @@ function entry(taskId: string, state: QueueEntry["state"], extra: Partial<QueueE
     boardName: "Project",
     title: `Card ${taskId}`,
     state,
-    waitingFor: [],
     planning: false,
     planNote: null,
     createdByTaskId: null,
@@ -142,9 +141,9 @@ describe("buildLinks", () => {
   const recent = new Date(now - 60_000).toISOString();
   const expired = new Date(now - CONTACT_TTL_MS - 1).toISOString();
 
-  it("links dependencies, delegations and recent contacts", () => {
+  it("links delegations and recent contacts", () => {
     const q = queue([entry(A, "running"), entry(B, "running", { createdByTaskId: A })], [
-      entry(C, "queued", { waitingFor: [A, B], createdByTaskId: A }),
+      entry(C, "queued", { createdByTaskId: A }),
     ]);
     const live = {
       [A]: liveAgent({
@@ -157,15 +156,13 @@ describe("buildLinks", () => {
     };
     expect(buildLinks(q, live, now)).toEqual(
       expect.arrayContaining([
-        { kind: "depends", from: A, to: C },
-        { kind: "depends", from: B, to: C },
         { kind: "delegate", from: A, to: B },
         { kind: "delegate", from: A, to: C },
         { kind: "message", from: A, to: B },
         { kind: "inspect", from: B, to: A },
       ]),
     );
-    expect(buildLinks(q, live, now)).toHaveLength(6);
+    expect(buildLinks(q, live, now)).toHaveLength(4);
   });
 
   it("drops expired contacts and self-links and dedupes repeats", () => {

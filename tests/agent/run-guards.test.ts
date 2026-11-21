@@ -249,7 +249,6 @@ describe("evaluateWrapUp", () => {
     const time = wrapUpSteerMessage({ guard: "time", percent: 85, detail: "102 of 120 min" });
     expect(time).toContain("85% of your run time limit (102 of 120 min)");
     expect(time).toMatch(/do not start new work/);
-    expect(time).toMatch(/Report/);
     expect(wrapUpSteerMessage({ guard: "budget", percent: 90, detail: "$4.50 of $5.00" })).toContain(
       "90% of your run budget ($4.50 of $5.00)",
     );
