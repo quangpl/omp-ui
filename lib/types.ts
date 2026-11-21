@@ -107,7 +107,7 @@ export interface Board {
   defaultBranches: Record<string, string>;
   /** Pinned projects lead the home dashboard; the rest follow under "Other projects". Default false. */
   pinned: boolean;
-  /** When the project's board was last opened (ISO); null until first opened. Orders the sidebar's "Your projects". */
+  /** When the project's board was last opened (ISO); null until first opened. Picks the sidebar's "Your projects". */
   lastAccessedAt: string | null;
   /**
    * Owning user (users.id). Null only for rows created before users existed, until boot assigns
@@ -1593,11 +1593,12 @@ export interface GitRepoActionResult {
 }
 
 /**
- * POST /tasks/:id/git/push and POST /tasks/:id/git/pr. Acts on every project folder that is a
- * git repo with changes (uncommitted or unpushed), or only on `folders` when given.
+ * POST /tasks/:id/git/push, /tasks/:id/git/push-current and /tasks/:id/git/pr. Acts on every
+ * project folder that is a git repo with changes (uncommitted or unpushed), or only on `folders`
+ * when given.
  */
 export interface GitActionResult {
-  action: "push" | "pr";
+  action: "push" | "push-current" | "pr";
   results: GitRepoActionResult[];
   /** The agent comment posted on the task describing the result (links included). */
   comment: Comment;

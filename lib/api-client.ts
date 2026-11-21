@@ -838,6 +838,9 @@ export const api = {
     /** Commit the task's changes and push straight to the project's push branch (all changed folders). */
     push: (taskId: string, input: { message?: string; folders?: string[] } = {}) =>
       request<GitActionResult>(`/tasks/${taskId}/git/push`, { method: "POST", json: input }),
+    /** Commit the task's changes and push to the branch each folder is already on (all changed folders). */
+    pushCurrent: (taskId: string, input: { message?: string; folders?: string[] } = {}) =>
+      request<GitActionResult>(`/tasks/${taskId}/git/push-current`, { method: "POST", json: input }),
     /** Discard the task's uncommitted changes in the folders it ships from (worktrees, else project folders). */
     discard: (taskId: string) =>
       request<GitDiscardResult>(`/tasks/${taskId}/git/discard`, { method: "POST", json: {} }),
