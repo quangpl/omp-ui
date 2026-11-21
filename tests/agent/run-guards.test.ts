@@ -68,7 +68,7 @@ function guardSettings(patch: Partial<AppSettings> = {}): AppSettings {
 }
 
 function guardState(patch: Partial<RunGuardState> = {}): RunGuardState {
-  return { launchedAt: T0, lastActivityAt: T0, waitingOnHost: false, costUsd: 0, tokens: 0, ...patch };
+  return { launchedAt: T0, lastActivityAt: T0, costUsd: 0, tokens: 0, ...patch };
 }
 
 describe("evaluateRunGuards", () => {
@@ -105,11 +105,6 @@ describe("evaluateRunGuards", () => {
       message: "No activity from the agent for 20 min (stall watchdog)",
       retry: true,
     });
-  });
-
-  it("exempts a run waiting on a board tool from the stall watchdog", () => {
-    const settings = guardSettings({ stallWatchdog: true, stallTimeoutMinutes: 20 });
-    expect(evaluateRunGuards(guardState({ waitingOnHost: true }), settings, T0 + 600 * MINUTE)).toBeNull();
   });
 
   it("stops a run over its USD or token budget without a retry; 0 means no cap", () => {
@@ -173,7 +168,7 @@ describe("evaluateWrapUp", () => {
     const settings = guardSettings({ wrapUpNudge: true, wrapUpPercent: 80, runTimeLimit: true, runTimeLimitMinutes: 120 });
     // 120 settings-minutes = 1,200 ms; 80 % = 960 ms.
     expect(evaluateWrapUp(guardState(), settings, T0 + 959)).toBeNull();
-    expect(evaluateWrapUp(guardState({ waitingOnHost: true }), settings, T0 + 960)).toEqual({
+    expect(evaluateWrapUp(guardState(), settings, T0 + 960)).toEqual({
       guard: "time",
       percent: 80,
       detail: "96 of 120 min",
@@ -325,13 +320,6 @@ describe("run guards through the agent manager", () => {
   /** Every `prompt` command card runs got, steers included. */
   function promptsReceived(): number {
     return logEntries().filter((e) => e.kind === "command" && e.command?.type === "prompt").length;
-  }
-
-  /** The prompts that started card runs (steers excluded), in order. */
-  function runPrompts(): string[] {
-    return logEntries()
-      .filter((e) => e.kind === "command" && e.command?.type === "prompt" && !e.command.streamingBehavior)
-      .map((e) => e.command?.message ?? "");
   }
 
   /** The `--config` overlay each card run was started with, in spawn order. */
@@ -528,19 +516,6 @@ describe("run guards through the agent manager", () => {
     expect(steers[0]!.message).toContain("Wrap up now");
     // The run's prompt plus the one nudge.
     expect(promptsReceived()).toBe(2);
-  });
-
-  it("tells an automatic retry why the previous run failed", async () => {
-    await updateAppSettings(repo, { stallWatchdog: true, stallTimeoutMinutes: 2, maxAutoRetries: 1 });
-    const { task } = await startCard("Hangs once", "slow");
-
-    const [first, retry] = await waitFor(() => {
-      const prompts = runPrompts();
-      return prompts.length === 2 ? prompts : null;
-    }, "the automatic retry to get its prompt");
-    expect((await getTask(task.id)).autoRetries).toBe(1);
-    expect(first).not.toContain("The previous run failed");
-    expect(retry).toContain("The previous run failed: No activity from the agent for 2 min (stall watchdog).");
   });
 
   it("passes the orchestration limits to omp in the run's config overlay", async () => {

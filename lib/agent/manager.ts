@@ -1,18 +1,6 @@
 import { copyFile, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  ADVISOR_FEEDBACK_PREFIX,
-  ADVISOR_TOOL,
-  consultAdvisor,
-  formatAnswers,
-  formatDecision,
-  parseAdvisorArgs,
-  triageQuestions,
-  type AdvisorScope,
-  type QuestionTriage,
-} from "@/lib/agent/advisor";
-import { BOARD_TOOLS, BOARD_TOOL_NAMES, runBoardTool, type BoardToolHost } from "@/lib/agent/board-tools";
-import {
   AgentMemoryModel,
   CONCURRENCY_SAMPLE_MS,
   committedMemoryBytes,
@@ -84,15 +72,7 @@ import { extractQuestion } from "@/lib/question";
 import { fallbackRetryConfig, selectorProvider, type ProviderPick } from "@/lib/provider-priority";
 import { isQuotaError, QUOTA_RETRY_STEPS_MS } from "@/lib/quota";
 import { startSchedulerService } from "@/lib/scheduler";
-import {
-  QUALITY_GATE_PREFIX,
-  releaseGate,
-  SDLC_PHASE_INFO,
-  SDLC_PHASES,
-  sdlcChange,
-  sdlcProgress,
-  type SdlcViolation,
-} from "@/lib/sdlc";
+import { SDLC_PHASE_INFO, SDLC_PHASES, sdlcChange, sdlcProgress } from "@/lib/sdlc";
 import { agentmemoryEnabled, memoryProjectName, tagMemorySession } from "@/lib/server/agentmemory";
 import { loadAiProviderEnv } from "@/lib/server/ai-providers";
 import { createCheckpoints } from "@/lib/server/checkpoints";
@@ -230,18 +210,8 @@ interface ActiveRun {
   lastError: string | null;
   /** Subagents the run delegated to, by id. */
   subagents: Map<string, TrackedSubagent>;
-  /** Board tool calls in flight (`host_tool_call` id → abort). */
-  hostCalls: Map<string, AbortController>;
-  /** What the advisor needs to answer this run's questions; set once the run has started with the system prompt on. */
-  advisor: Omit<AdvisorScope, "signal" | "onActivity"> | null;
-  /** The settings' system prompt was on at launch: only then do the board tools, the advisor and the SDLC steers add tokens. */
-  systemPrompt: boolean;
-  /** This run addresses advisor feedback: its own questions go to the user, not back to the agent. */
-  advisorFollowUp: boolean;
   /** Git folders whose start/end snapshots track what this run changes (lib/server/task-changes.ts); set once recorded. */
   changes: { key: string; folders: string[] } | null;
-  /** This run addresses a release-gate comment (QUALITY_GATE_PREFIX): missing the gate again ships the card anyway. */
-  qualityGateFollowUp: boolean;
   /** JSON of the omp todo list this run last stored on the card; repeated `todo` views write nothing. */
   todos: string | null;
   /** When this run was launched (ISO); bounds which `startedAt` todo stamps count as this run's work. */
@@ -260,8 +230,6 @@ interface ActiveRun {
   loopStrikes: number;
   /** The wrap-up nudge (settings `wrapUpNudge`) was sent: it is sent at most once per run. */
   wrapUpSent: boolean;
-  /** SDLC violations (`phase:requires`) already steered back to the agent: each is steered once per run. */
-  sdlcNudges: Set<string>;
   /** When the run's omp process was spawned (ms epoch); 0 before. The first CPU rate counts from here. */
   spawnedAt: number;
   /** Latest memory/CPU sample of the omp process tree; persisted on the task when the run is released. */
@@ -322,8 +290,6 @@ class OmpAgentManager implements AgentManager, RunControl {
   private pumping = false;
   private pumpAgain = false;
   private pumpRetry: NodeJS.Timeout | undefined;
-  /** Runs waiting in board_wait_for_cards; each lends its slot to the queue meanwhile. */
-  private lent = 0;
   /** Last published `queue.updated` (deduplicates). */
   private lastQueue = "";
   /** Failed cards waiting for their automatic retry → its timer. */
@@ -430,8 +396,8 @@ class OmpAgentManager implements AgentManager, RunControl {
       undefined,
       readLoadHold(settings),
       currentResourcePressure(),
-      // A hold launches nothing, not even into lent slots. Cluster placement counts its own free local slots.
-      cluster ? 0 : this.lent,
+      // A hold launches nothing. Cluster placement counts its own free local slots.
+      0,
       // Local runs not at their expected size yet will still take memory the free figure counts.
       {
         perAgentBytes,
@@ -854,19 +820,18 @@ class OmpAgentManager implements AgentManager, RunControl {
         // re-sample the machine so an automatic limit follows its free cores and memory, and a
         // tripped load guard holds new runs until the sampler below sees the load drop. The
         // resource guard (lib/agent/resource-guard.ts) holds them under memory/CPU pressure and
-        // re-pumps on hold/resume. (A slot lent by a run idling in board_wait_for_cards is still
-        // free to its child cards.)
+        // re-pumps on hold/resume.
         const settings = await getAppSettings(this.repo);
         const concurrency = this.resolveLimit(settings);
         this.limit = concurrency.limit;
         this.boundBy = concurrency.boundBy;
         if (this.queue.length === 0 || this.holding) break;
-        if (this.active.size - this.lent >= this.limit) continue;
+        if (this.active.size >= this.limit) continue;
         const candidates = [...this.queue];
         // Cluster mode: among equally good replicas, a card prefers the node of its last run.
         const lastNodes = cluster ? await Promise.all(candidates.map((taskId) => this.lastRunNode(taskId))) : [];
         for (const [index, taskId] of candidates.entries()) {
-          if (this.active.size - this.lent >= this.limit) break;
+          if (this.active.size >= this.limit) break;
           // Cluster mode: place the card before it leaves the queue. No placement means no node can
           // safely take a card now, or the pump's count is ahead of the nodes' (e.g. a remote run's
           // transport still closing), so the rest stay queued too (the sampler and refreshQueue re-pump,
@@ -879,8 +844,6 @@ class OmpAgentManager implements AgentManager, RunControl {
               localLimit: this.localLimit,
               runLocal: settings.clusterRunLocal,
               localHeld: this.localHeld,
-              // True only when the room comes from a slot lent by board_wait_for_cards; otherwise
-              // placeRun never puts a card on a node without a free slot.
               overflow: this.active.size >= this.limit,
               preferNodeId: lastNodes[index] ?? null,
             });
@@ -942,12 +905,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       lastStopReason: null,
       lastError: null,
       subagents: new Map(),
-      hostCalls: new Map(),
-      advisor: null,
-      systemPrompt: settings.useSystemPrompt,
-      advisorFollowUp: false,
       changes: null,
-      qualityGateFollowUp: false,
       todos: null,
       launchedAt: new Date(now).toISOString(),
       stampedTodos: null,
@@ -957,7 +915,6 @@ class OmpAgentManager implements AgentManager, RunControl {
       loop: settings.loopDetection ? new LoopDetector() : null,
       loopStrikes: 0,
       wrapUpSent: false,
-      sdlcNudges: new Set(),
       spawnedAt: 0,
       resources: null,
       treeCpuSeconds: 0,
@@ -1004,8 +961,6 @@ class OmpAgentManager implements AgentManager, RunControl {
   private release(run: ActiveRun): void {
     run.finished = true;
     this.resetDeltas(run);
-    for (const call of run.hostCalls.values()) call.abort();
-    run.hostCalls.clear();
     if (this.active.get(run.taskId) === run) this.active.delete(run.taskId);
     this.stopSupervisorIfIdle();
     this.stopResourceSamplerIfIdle();
@@ -1077,13 +1032,9 @@ class OmpAgentManager implements AgentManager, RunControl {
     const now = Date.now();
     for (const run of this.active.values()) {
       if (run.finished || !run.promptSent) continue;
-      const waitingOnHost = run.hostCalls.size > 0;
-      // A board-tool wait sends no frames: the stall clock restarts once it ends.
-      if (waitingOnHost) run.lastActivityAt = now;
       const state: RunGuardState = {
         launchedAt: Date.parse(run.launchedAt),
         lastActivityAt: run.lastActivityAt,
-        waitingOnHost,
         ...this.runUsage(run),
       };
       const hit = evaluateRunGuards(state, settings, now);
@@ -1107,7 +1058,6 @@ class OmpAgentManager implements AgentManager, RunControl {
       const state: RunGuardState = {
         launchedAt: Date.parse(run.launchedAt),
         lastActivityAt: run.lastActivityAt,
-        waitingOnHost: run.hostCalls.size > 0,
         ...usage,
       };
       this.checkWrapUp(run, state, settings, Date.now());
@@ -1320,7 +1270,7 @@ class OmpAgentManager implements AgentManager, RunControl {
 
     // Independent startup reads and folder setup run in parallel.
     const sessionFile = task.sessionFile;
-    // An automatic retry after a failed run: the prompt tells the agent what went wrong.
+    // An automatic retry after a quota failure waits for the quota instead of the normal backoff.
     const retriedRunId = task.autoRetries > 0 ? task.lastRunId : null;
     const [taskFiles, boardFiles, comments, foundSession, retriedRun, scheduler] = await Promise.all([
       ensureFilesFolder("tasks", task.id),
@@ -1334,14 +1284,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     const pinnedModel = scheduler?.model?.trim() || board.model?.trim() || null;
     const modelBoard = { model: pinnedModel };
     const quotaRetry = retriedRun?.status === "failed" && isQuotaError(retriedRun.error);
-    // Only the agent's own failures: a quota error or a lost node is not something it can fix.
-    const previousFailure =
-      retriedRun?.status === "failed" &&
-      retriedRun.error &&
-      !isQuotaError(retriedRun.error) &&
-      !retriedRun.error.endsWith(RESCHEDULED_SUFFIX)
-        ? { message: retriedRun.error, attempt: task.autoRetries }
-        : undefined;
     const workdir = board.workdir;
     const projectExtras = board.extraFolders ?? [];
     let startNotes: string[] = [];
@@ -1372,14 +1314,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     const senders: Record<string, string> = Object.fromEntries(senderIds.map((id, index) => [id, senderTitles[index]!]));
     const extraFolders = folders.filter((f) => f.ok).map((f) => f.folder);
     const missingFolders = folders.filter((f) => !f.ok).map((f) => f.folder);
-    // The prompt lists only folders the agent can actually reach.
-    const prompt = buildPrompt(task, { ...board, workdir, extraFolders }, feedback, resumeFile !== null, {
-      taskFiles,
-      boardFiles,
-      browser: settings.browser,
-      senders,
-      previousFailure,
-    }, settings.useSystemPrompt);
+    const prompt = buildPrompt(task, feedback, resumeFile !== null, senders);
     const created = await repo.createRun({
       taskId: task.id,
       prompt,
@@ -1388,9 +1323,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     run.runId = created.id;
     run.promptId = `prompt-${created.id}`;
     for (const c of feedback) run.feedbackIds.add(c.id);
-    if (settings.useSystemPrompt) run.advisor = { task, board, workdir, extraFolders, settings };
-    run.advisorFollowUp = feedback.some((c) => c.body.startsWith(ADVISOR_FEEDBACK_PREFIX));
-    run.qualityGateFollowUp = feedback.some((c) => c.body.startsWith(QUALITY_GATE_PREFIX));
     publish({ type: "run.updated", run: created, boardId: run.boardId });
     if (run.finished) return;
 
@@ -1541,11 +1473,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     run.spawnedAt = Date.now();
     proc.on("frame", (frame) => {
       run.lastActivityAt = Date.now();
-      // Board tools run outside the chain: a wait can last minutes while frames keep flowing.
-      if (frame.type === "host_tool_call" || frame.type === "host_tool_cancel") {
-        this.onHostTool(run, proc, frame);
-        return;
-      }
       this.enqueue(run, () => this.onFrame(run, frame));
     });
     proc.on("protocolError", (message) =>
@@ -1606,17 +1533,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     // `task` tool's own updates still carry progress then.
     await proc.send({ type: "set_subagent_subscription", level: "progress" }).catch(() => undefined);
     if (run.finished) return;
-
-    // Agent-to-agent collaboration tools and the advisor, executed by onHostTool. Their schemas ride
-    // on every request, so they are registered only with the system prompt, which describes them.
-    if (run.systemPrompt) {
-      try {
-        await proc.send({ type: "set_host_tools", tools: [...BOARD_TOOLS, ADVISOR_TOOL] });
-      } catch (err) {
-        if (run.finished) return;
-        await this.event(run, "error", `Board tools are unavailable in this run: ${errorMessage(err, run.ompPath)}`);
-      }
-    }
 
     run.promptSent = true;
     const response = await proc.send({ id: run.promptId, type: "prompt", message: prompt });
@@ -2065,10 +1981,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       // Already part of this run's prompt.
       if (run.feedbackIds.has(comment.id)) return;
       try {
-        const [task, sender] = await Promise.all([
-          this.repo.getTask(run.taskId),
-          comment.fromTaskId ? this.repo.getTask(comment.fromTaskId) : null,
-        ]);
+        const sender = comment.fromTaskId ? await this.repo.getTask(comment.fromTaskId) : null;
         const message = buildSteerMessage(comment, sender?.title);
         // Its own id keeps it apart from run.promptId, so its response cannot complete or fail the run.
         const taken = await this.sendSteer(run, `${STEER_ID_PREFIX}${comment.id}`, message);
@@ -2137,103 +2050,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     return true;
   }
 
-  // --- Board tools (agent-to-agent collaboration) ----------------------------------------
-
-  private toolHost(): BoardToolHost {
-    return {
-      repo: this.repo,
-      start: (taskId) => this.start(taskId),
-      onComment: (task, comment) => this.onComment(task, comment),
-      isBusy: (taskId) => this.isTracked(taskId),
-      lendSlot: (delta) => {
-        this.lent = Math.max(0, this.lent + delta);
-        void this.pump();
-      },
-    };
-  }
-
-  /** `host_tool_call`: run a board tool and answer with `host_tool_result`; `host_tool_cancel` aborts it. */
-  private onHostTool(run: ActiveRun, proc: OmpRpcProcess, frame: RpcFrame): void {
-    if (frame.type === "host_tool_cancel") {
-      const target = asString(frame.targetId);
-      if (target) run.hostCalls.get(target)?.abort();
-      return;
-    }
-    const id = asString(frame.id);
-    if (!id) return;
-    const name = asString(frame.toolName) ?? "";
-    const args = isObject(frame.arguments) ? frame.arguments : {};
-    const controller = new AbortController();
-    run.hostCalls.set(id, controller);
-    const reply = (text: string, isError: boolean) => {
-      run.hostCalls.delete(id);
-      proc.notify({
-        type: "host_tool_result",
-        id,
-        result: { content: [{ type: "text", text }] },
-        ...(isError ? { isError: true } : {}),
-      });
-    };
-    if (name === ADVISOR_TOOL.name && !run.finished) {
-      this.askAdvisor(run, args, controller.signal).then(
-        (text) => reply(text, false),
-        (err: unknown) => reply(err instanceof Error ? err.message : String(err), true),
-      );
-      return;
-    }
-    if (run.finished || !run.boardId || !BOARD_TOOL_NAMES.has(name)) {
-      reply(run.finished ? "The run has ended." : `Unknown tool ${name}`, true);
-      return;
-    }
-    runBoardTool(this.toolHost(), { taskId: run.taskId, boardId: run.boardId }, name, args, controller.signal).then(
-      (text) => reply(text, false),
-      (err: unknown) => reply(err instanceof Error ? err.message : String(err), true),
-    );
-  }
-
-  /** `ask_advisor`: the advisor decides a question the agent would otherwise leave for the user. */
-  private async askAdvisor(run: ActiveRun, args: Json, signal: AbortSignal): Promise<string> {
-    const ask = parseAdvisorArgs(args);
-    if (!run.advisor) throw new Error("The advisor is not available yet.");
-    await this.event(run, "status", truncate(`Agent asked the advisor: ${oneLineTrim(ask.question)}`, MAX_TOOL_ERROR_TEXT));
-    try {
-      const decision = await consultAdvisor({ ...run.advisor, signal }, ask);
-      await this.event(
-        run,
-        "status",
-        truncate(
-          `Advisor${decision.needsUser ? " (left for the user)" : ""}: ${oneLineTrim(decision.decision)}`,
-          MAX_TOOL_ERROR_TEXT,
-        ),
-      );
-      return formatDecision(decision);
-    } catch (err) {
-      if (!signal.aborted) await this.event(run, "error", `Advisor failed: ${errorMessage(err, run.ompPath)}`);
-      throw err;
-    }
-  }
-
-  /**
-   * The run's summary asks the user something: the advisor answers what it can and keeps for the
-   * user only what needs their judgment. Null when it could not (the question goes to the user as is).
-   */
-  private async triage(run: ActiveRun, question: string, summary: string): Promise<QuestionTriage | null> {
-    if (!run.advisor) return null;
-    await this.event(run, "status", "Advisor is reviewing the agent's questions");
-    try {
-      // The run has already ended: nothing cancels the triage (the advisor's timeout bounds it).
-      const triage = await triageQuestions({ ...run.advisor, signal: new AbortController().signal }, { question, summary });
-      await this.event(
-        run,
-        "status",
-        `Advisor answered ${triage.answers.length} question${triage.answers.length === 1 ? "" : "s"}${triage.userQuestion ? "; the rest needs you" : ""}`,
-      );
-      return triage;
-    } catch (err) {
-      await this.event(run, "error", `Advisor could not review the questions: ${errorMessage(err, run.ompPath)}`);
-      return null;
-    }
-  }
 
   /**
    * Completion with an omp that reports `yielded` on agent_end: the agent yielded, omp reported the
@@ -2274,8 +2090,6 @@ class OmpAgentManager implements AgentManager, RunControl {
         }
       }
       if (!summary) summary = run.lastText || run.currentText.trim();
-      const asked = extractQuestion(summary);
-      const triage = asked ? await this.triage(run, asked, summary) : null;
 
       if (run.runId) {
         const updated = await repo.updateRun(run.runId, {
@@ -2297,55 +2111,16 @@ class OmpAgentManager implements AgentManager, RunControl {
       });
       publish({ type: "comment.added", comment, boardId: run.boardId });
 
-      if (triage && triage.answers.length > 0) {
-        const answers = await repo.addComment({
-          taskId: run.taskId,
-          author: "agent",
-          body: formatAnswers(triage.answers),
-          resolved: true,
-        });
-        publish({ type: "comment.added", comment: answers, boardId: run.boardId });
-      }
-      // The advisor sends the agent back to work once; a second round of questions goes to the user.
-      const followUp = triage?.followUp && !run.advisorFollowUp ? triage.followUp : null;
-      if (followUp) {
-        const feedback = await repo.addComment({
-          taskId: run.taskId,
-          author: "user",
-          body: `${ADVISOR_FEEDBACK_PREFIX}${followUp}`,
-        });
-        publish({ type: "comment.added", comment: feedback, boardId: run.boardId });
-        run.restartAfter = true;
-      }
-      const question = triage ? (triage.userQuestion ?? (triage.followUp && !followUp ? asked : null)) : asked;
-      // The release gate (SDLC Testing phase) sends the card back once; missing it again ships it with a
-      // warning. A question for the user wins: resuming the agent would drop it unanswered.
-      const latestTodos = run.stampedTodos?.list ?? (await repo.getTask(run.taskId))?.todos ?? [];
-      const gate = run.systemPrompt ? releaseGate(sdlcProgress(latestTodos)) : null;
-      const gateFollowUp = gate !== null && !run.qualityGateFollowUp && question === null;
-      if (gateFollowUp) {
-        const feedback = await repo.addComment({
-          taskId: run.taskId,
-          author: "user",
-          body:
-            `${QUALITY_GATE_PREFIX}${gate}. Finish the Testing phase before the card ships: ` +
-            `${SDLC_PHASE_INFO.testing.gate}. Then complete the remaining SDLC phases and report.`,
-        });
-        publish({ type: "comment.added", comment: feedback, boardId: run.boardId });
-        run.restartAfter = true;
-      } else if (gate && !followUp) {
-        await this.event(run, "status", `⚠ Shipped without passing the release gate: ${gate}`);
-      }
-      const sentBack = followUp !== null || gateFollowUp;
+      const question = extractQuestion(summary);
 
       if (run.runId && run.feedbackIds.size > 0) {
         const resolved = await repo.resolveComments([...run.feedbackIds], run.runId);
         for (const c of resolved) publish({ type: "comment.updated", comment: c, boardId: run.boardId });
       }
 
-      // A card the advisor or the release gate sends back to work stays In progress.
       const task = await repo.updateTask(run.taskId, {
-        ...(sentBack ? {} : { status: "done" as const, position: await topPosition(repo, run.boardId, "done", run.taskId) }),
+        status: "done",
+        position: await topPosition(repo, run.boardId, "done", run.taskId),
         agentState: "idle",
         agentError: null,
         question,
@@ -2354,7 +2129,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       });
       if (task) publish({ type: "task.updated", task });
       // A run that restarts right away (feedback during wrap-up) cleans up at its own Done instead.
-      if (!sentBack && !run.restartAfter) void this.removeTaskDocker(run);
+      if (!run.restartAfter) void this.removeTaskDocker(run);
     } catch (err) {
       console.error(`[agent] failed to record the result for task ${run.taskId}:`, err);
       retryAt = await this.writeTaskError(run.taskId, `Failed to record the agent result: ${errorMessage(err, run.ompPath)}`);
@@ -2464,10 +2239,8 @@ class OmpAgentManager implements AgentManager, RunControl {
   }
 
   /**
-   * Logs the SDLC progress of a stored todo update (phase entered, quality gates passed) and, for
-   * a list named after SDLC phases, each new phase-order violation; each violation is steered back
-   * into the live session once per run, like the loop detector's nudge. Never throws: the todo list
-   * is already stored.
+   * Logs the SDLC progress of a stored todo update (phase entered, quality gates passed, phase-order
+   * violations) for display only. Never throws: the todo list is already stored.
    */
   private async trackSdlc(run: ActiveRun, previous: readonly TodoPhase[], todos: readonly TodoPhase[]): Promise<void> {
     try {
@@ -2484,15 +2257,6 @@ class OmpAgentManager implements AgentManager, RunControl {
       if (!after?.canonical) return;
       for (const violation of change.violations) {
         await this.event(run, "status", `⚠ Quality gate: ${violation.message}`);
-        const key = `${violation.phase}:${violation.requires}`;
-        if (run.finished || !run.systemPrompt || run.sdlcNudges.has(key)) continue;
-        run.sdlcNudges.add(key);
-        try {
-          // Steered like the loop detector's nudge (see onLoop); its own id keeps the response apart from the run's prompt.
-          await this.sendSteer(run, `sdlc-${run.runId}-${run.sdlcNudges.size}`, sdlcSteerMessage(violation));
-        } catch (err) {
-          console.error(`[agent] failed to steer an SDLC quality gate for task ${run.taskId}:`, err);
-        }
       }
     } catch (err) {
       console.error(`[agent] failed to track the SDLC progress of task ${run.taskId}:`, err);
@@ -2759,16 +2523,6 @@ function isDirectory(path: string): Promise<boolean> {
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-/** Steer prompt for an SDLC phase-order violation: finish the required phase (its exit criteria) first. */
-function sdlcSteerMessage(violation: SdlcViolation): string {
-  const required = SDLC_PHASE_INFO[violation.requires];
-  return (
-    `Quality gate (SDLC): ${violation.message}. Finish the ${required.label} phase first ` +
-    `(exit criteria: ${required.gate}), then continue with ${SDLC_PHASE_INFO[violation.phase].label}. ` +
-    `Keep your todo phases in SDLC order: ${SDLC_PHASES.map((id) => SDLC_PHASE_INFO[id].label).join(", ")}.`
-  );
 }
 
 interface RetryPlan {
