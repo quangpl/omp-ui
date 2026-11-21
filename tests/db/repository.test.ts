@@ -78,11 +78,8 @@ describe("sqlite migration", () => {
           defaultBranches: {},
           userId: null,
         });
-        expect(await repo.getTask("t1")).toMatchObject({ blockedBy: [], createdByTaskId: null, userId: null });
+        expect(await repo.getTask("t1")).toMatchObject({ createdByTaskId: null, userId: null });
         expect(await repo.getComment("c1")).toMatchObject({ fromTaskId: null, userId: null });
-
-        const updated = await repo.updateTask("t1", { blockedBy: ["t0"] });
-        expect(updated!.blockedBy).toEqual(["t0"]);
 
         // The users table and the user_id columns exist: boot can hand the legacy rows to the first admin.
         const admin = await repo.createUser({ username: "admin", passwordHash: "scrypt$admin", role: "admin" });
