@@ -130,7 +130,6 @@ function sanitize(s: AppSettings, knownMenus: readonly unknown[]): AppSettings {
     ompPath: String(s.ompPath || "omp").trim(),
     approvalMode: APPROVAL_MODES.includes(s.approvalMode) ? s.approvalMode : "yolo",
     defaultModel: String(s.defaultModel ?? "").trim(),
-    autoModel: typeof s.autoModel === "boolean" ? s.autoModel : DEFAULT_SETTINGS.autoModel,
     providerPriority: storedPriority(s.providerPriority),
     smartQueue: typeof s.smartQueue === "boolean" ? s.smartQueue : DEFAULT_SETTINGS.smartQueue,
     browser: BROWSER_MODES.includes(s.browser) ? s.browser : DEFAULT_SETTINGS.browser,

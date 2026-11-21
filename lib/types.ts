@@ -520,11 +520,6 @@ export interface AppSettings {
   /** Default `--model` when a board has none. Empty = omp default. */
   defaultModel: string;
   /**
-   * When a board has no model: pick one per run from the task (omp's `smol` role for small edits,
-   * `slow` for hard problems, `designer` for UI work), falling back to `defaultModel`.
-   */
-  autoModel: boolean;
-  /**
    * Authenticated providers agents run on, in order (lib/provider-priority.ts): the first is the
    * Main provider, used while it has quota; later ones only take over while it is out of quota.
    * Replaces `defaultModel` when set; a board's pinned model still wins. Empty = off.
@@ -861,7 +856,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ompPath: "omp",
   approvalMode: "yolo",
   defaultModel: "",
-  autoModel: true,
   providerPriority: [],
   smartQueue: true,
   browser: "headless",
