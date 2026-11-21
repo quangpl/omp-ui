@@ -119,6 +119,8 @@ export interface CreateSchedulerInput {
   enabled?: boolean;
   /** Default null (forever). */
   maxRuns?: number | null;
+  /** Default null: cards use the project's model. */
+  model?: string | null;
   /** Default null. Computed by the caller (lib/scheduler.ts), never by the driver. */
   nextRunAt?: string | null;
 }
@@ -138,6 +140,7 @@ export type UpdateSchedulerInput = Partial<
     | "lastStatus"
     | "lastTaskId"
     | "lastError"
+    | "model"
   >
 >;
 

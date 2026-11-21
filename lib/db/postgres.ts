@@ -224,6 +224,7 @@ CREATE TABLE IF NOT EXISTS schedulers (
   user_id TEXT
 );
 ALTER TABLE schedulers ADD COLUMN IF NOT EXISTS user_id TEXT;
+ALTER TABLE schedulers ADD COLUMN IF NOT EXISTS model TEXT;
 CREATE INDEX IF NOT EXISTS idx_schedulers_board ON schedulers (board_id);
 CREATE INDEX IF NOT EXISTS idx_schedulers_user ON schedulers (user_id);
 
@@ -353,6 +354,7 @@ interface SchedulerRow {
   created_at: string;
   updated_at: string;
   user_id: string | null;
+  model: string | null;
 }
 
 interface SchedulerRunRow {
@@ -491,6 +493,7 @@ function toScheduler(r: SchedulerRow): Scheduler {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     userId: r.user_id ?? null,
+    model: r.model ?? null,
   };
 }
 
@@ -634,11 +637,11 @@ const TABLE_SPECS: { [T in DataTable]: TableSpec<T> } = {
     toRow: toScheduler,
     columns: [
       "id", "board_id", "name", "prompt", "cron", "timezone", "enabled", "max_runs", "run_count", "last_run_at",
-      "next_run_at", "last_status", "last_task_id", "last_error", "created_at", "updated_at", "user_id",
+      "next_run_at", "last_status", "last_task_id", "last_error", "created_at", "updated_at", "user_id", "model",
     ],
     values: (s) => [
       s.id, s.boardId, s.name, s.prompt, s.cron, s.timezone, s.enabled, s.maxRuns, s.runCount, s.lastRunAt,
-      s.nextRunAt, s.lastStatus, s.lastTaskId, s.lastError, s.createdAt, s.updatedAt, s.userId,
+      s.nextRunAt, s.lastStatus, s.lastTaskId, s.lastError, s.createdAt, s.updatedAt, s.userId, s.model,
     ],
   },
   scheduler_runs: {
@@ -1234,9 +1237,9 @@ export class PostgresRepository implements Repository {
     const now = nowIso();
     const res = await this.query<SchedulerRow>(
       `INSERT INTO schedulers (id, board_id, name, prompt, cron, timezone, enabled, max_runs, run_count,
-         last_run_at, next_run_at, last_status, last_task_id, last_error, created_at, updated_at, user_id)
+         last_run_at, next_run_at, last_status, last_task_id, last_error, created_at, updated_at, user_id, model)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, NULL, $9, NULL, NULL, NULL, $10, $10,
-         (SELECT user_id FROM boards WHERE id = $2)) RETURNING *`,
+         (SELECT user_id FROM boards WHERE id = $2), $11) RETURNING *`,
       [
         newId(),
         input.boardId,
@@ -1248,6 +1251,7 @@ export class PostgresRepository implements Repository {
         input.maxRuns ?? null,
         input.nextRunAt ?? null,
         now,
+        input.model ?? null,
       ],
     );
     return toScheduler(res.rows[0]);
@@ -1268,6 +1272,7 @@ export class PostgresRepository implements Repository {
       ["last_status", patch.lastStatus],
       ["last_task_id", patch.lastTaskId],
       ["last_error", patch.lastError],
+      ["model", patch.model],
       ["updated_at", nowIso()],
     ]);
     const params = set.params;
