@@ -94,13 +94,7 @@ import {
   sdlcProgress,
   type SdlcViolation,
 } from "@/lib/sdlc";
-import {
-  agentmemoryEnabled,
-  MEMORY_OFF_ENV,
-  memoryOffOverlay,
-  memoryProjectName,
-  tagMemorySession,
-} from "@/lib/server/agentmemory";
+import { agentmemoryEnabled, memoryProjectName, tagMemorySession } from "@/lib/server/agentmemory";
 import { loadAiProviderEnv } from "@/lib/server/ai-providers";
 import { createCheckpoints } from "@/lib/server/checkpoints";
 import { startChatIntegrations } from "@/lib/server/chat/service";
@@ -1594,23 +1588,17 @@ class OmpAgentManager implements AgentManager, RunControl {
             runningAgents: this.localRuns().length,
           })
         : null;
-    // Memory off for this card: the run config drops agentmemory's extension and MCP server.
-    const memoryOff = task.ignoreMemory ? memoryOffOverlay(settings.ompPath, workdir) : null;
-    // The provider priority runs the model of an omp role on its provider, so it needs the roles,
     // read per run: the user may reconfigure omp, and project `.omp` configs differ.
     const needRoles = settings.providerPriority.length > 0 && !pinnedModel;
     const roles = needRoles ? await readModelRoles(settings.ompPath, workdir, childEnv()) : null;
     const providerPick = await chooseProvider(settings, pinnedModel, roles);
     if (run.finished) return;
     const overlay = runConfigOverlay(settings, taskFiles, subagents, providerPick);
-    const [workdirFound, configFile, memoryProject, memoryOffSettings] = await Promise.all([
+    const [workdirFound, configFile, memoryProject] = await Promise.all([
       isDirectory(workdir),
-      memoryOff
-        ? memoryOff.then((off) => writeRunConfig(task.id, { ...overlay, ...off }))
-        : writeRunConfig(task.id, overlay),
+      writeRunConfig(task.id, overlay),
       // Cards in worktrees remember under the board's project, like omp sessions in its folder.
-      memoryOff ? "" : memoryProjectName(board.workdir),
-      memoryOff,
+      memoryProjectName(board.workdir),
     ]);
     if (!workdirFound) {
       throw new Error(`Board directory not found: ${workdir}`);
@@ -1639,17 +1627,8 @@ class OmpAgentManager implements AgentManager, RunControl {
     for (const folder of [...extraFolders, taskFiles, boardFiles]) args.push("--add-dir", folder);
     if (model) args.push("--model", model);
     if (resumeFile) args.push("--resume", resumeFile);
-    if (memoryOff && !memoryOffSettings) args.push("--no-extensions");
     const extra = process.env.OMP_EXTRA_ARGS?.trim();
     if (extra) args.push(...extra.split(/\s+/));
-
-    if (memoryOff) {
-      await this.event(run, "status", "Agent memory off for this card: no recall, no capture, no memory tools");
-      if (!memoryOffSettings) {
-        await this.event(run, "status", "Couldn't read omp's extension settings; all extensions are off for this run");
-      }
-      if (run.finished) return;
-    }
 
     if (providerPick) {
       await this.event(run, "status", providerNote(providerPick));
@@ -1693,7 +1672,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     const runConfig = remote ? await readFile(configFile, "utf8") : "";
     const agentEnv = {
       ...(await mcpAgentEnv()),
-      ...(memoryOff ? MEMORY_OFF_ENV : { AGENTMEMORY_PROJECT_NAME: memoryProject }),
+      AGENTMEMORY_PROJECT_NAME: memoryProject,
     };
     if (run.finished) return;
     // Remote placement: omp runs on the node, over the cluster channel. Git checkpoints, model
@@ -1775,7 +1754,7 @@ class OmpAgentManager implements AgentManager, RunControl {
         run.usageFile = sessionFile;
       }
       // Name the card's agentmemory session after the card (best effort, not awaited).
-      if (sessionId && !memoryOff && agentmemoryEnabled()) {
+      if (sessionId && agentmemoryEnabled()) {
         void tagMemorySession({ sessionId, project: memoryProject, cwd: workdir, title: `${task.title} (card ${task.id})` });
       }
     } catch (err) {
@@ -2251,7 +2230,7 @@ class OmpAgentManager implements AgentManager, RunControl {
           this.repo.getTask(run.taskId),
           comment.fromTaskId ? this.repo.getTask(comment.fromTaskId) : null,
         ]);
-        const message = buildSteerMessage(comment, sender?.title, task?.parallelize !== false);
+        const message = buildSteerMessage(comment, sender?.title);
         // Its own id keeps it apart from run.promptId, so its response cannot complete or fail the run.
         const taken = await this.sendSteer(run, `${STEER_ID_PREFIX}${comment.id}`, message);
         if (!taken) {

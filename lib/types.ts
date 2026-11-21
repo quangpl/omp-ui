@@ -183,17 +183,6 @@ export interface Task {
   openCommentCount: number;
   /** Scheduler whose run created this card; null when a person or an agent created it. */
   schedulerId: string | null;
-  /**
-   * Whether the card's runs may split the work across parallel subagents (the New task form's
-   * "Parallelize" toggle). null (cards created without a choice) counts as true.
-   */
-  parallelize: boolean | null;
-  /**
-   * Whether the card's agent runs without agentmemory (the "Ignore memory" toggle): no recall from past
-   * sessions, nothing from its runs saved to memory, no memory tools. Default false. Takes effect from the
-   * next run.
-   */
-  ignoreMemory: boolean;
   /** Owning user, inherited from the board (see Board.userId). */
   userId: string | null;
 }

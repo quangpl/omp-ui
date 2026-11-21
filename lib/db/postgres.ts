@@ -131,8 +131,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   resources TEXT,
   session_usage TEXT,
   scheduler_id TEXT,
-  parallelize BOOLEAN,
-  ignore_memory BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   user_id TEXT
@@ -147,8 +145,6 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS resources TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS session_usage TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS scheduler_id TEXT;
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parallelize BOOLEAN;
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ignore_memory BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS user_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_tasks_board_status_position ON tasks (board_id, status, position);
 CREATE INDEX IF NOT EXISTS idx_tasks_agent_state ON tasks (agent_state);
@@ -287,8 +283,6 @@ interface TaskRow {
   resources: string | null;
   session_usage: string | null;
   scheduler_id: string | null;
-  parallelize: boolean | null;
-  ignore_memory: boolean | null;
   created_at: string;
   updated_at: string;
   comment_count: number;
@@ -418,8 +412,6 @@ function toTask(r: TaskRow): Task {
     resources: parseAgentResources(r.resources),
     usage: parseTaskUsage(r.session_usage),
     schedulerId: r.scheduler_id ?? null,
-    parallelize: r.parallelize ?? null,
-    ignoreMemory: r.ignore_memory === true,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     commentCount: Number(r.comment_count),
@@ -588,14 +580,14 @@ const TABLE_SPECS: { [T in DataTable]: TableSpec<T> } = {
     columns: [
       "id", "board_id", "title", "description", "status", "position", "agent_state", "agent_error", "question",
       "session_file", "last_run_id", "created_by_task_id", "pushed_at", "auto_retries", "retry_at",
-      "todos", "review", "resources", "session_usage", "scheduler_id", "parallelize", "ignore_memory",
+      "todos", "review", "resources", "session_usage", "scheduler_id",
       "created_at", "updated_at", "user_id",
     ],
     values: (t) => [
       t.id, t.boardId, t.title, t.description, t.status, t.position, t.agentState, t.agentError, t.question,
       t.sessionFile, t.lastRunId, t.createdByTaskId, t.pushedAt, t.autoRetries,
       t.retryAt, JSON.stringify(t.todos), jsonOrNull(t.review), jsonOrNull(t.resources), jsonOrNull(t.usage),
-      t.schedulerId, t.parallelize, t.ignoreMemory, t.createdAt, t.updatedAt, t.userId,
+      t.schedulerId, t.createdAt, t.updatedAt, t.userId,
     ],
   },
   comments: {
@@ -990,8 +982,8 @@ export class PostgresRepository implements Repository {
         position = max == null ? POSITION_STEP : Number(max) + POSITION_STEP;
       }
       await this.query(
-        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, created_by_task_id, scheduler_id, parallelize, ignore_memory, created_at, updated_at, user_id)
-         VALUES ($1, $2, $3, $4, $5, $6, 'idle', $7, $8, $9, $10, $11, $11, (SELECT user_id FROM boards WHERE id = $2))`,
+        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, created_by_task_id, scheduler_id, created_at, updated_at, user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, 'idle', $7, $8, $9, $9, (SELECT user_id FROM boards WHERE id = $2))`,
         [
           id,
           input.boardId,
@@ -1001,8 +993,6 @@ export class PostgresRepository implements Repository {
           position,
           input.createdByTaskId ?? null,
           input.schedulerId ?? null,
-          input.parallelize ?? null,
-          input.ignoreMemory ?? false,
           now,
         ],
         client,
@@ -1029,7 +1019,6 @@ export class PostgresRepository implements Repository {
       ["retry_at", patch.retryAt],
       ["todos", patch.todos === undefined ? undefined : JSON.stringify(patch.todos)],
       ["review", patch.review === undefined ? undefined : patch.review === null ? null : JSON.stringify(patch.review)],
-      ["ignore_memory", patch.ignoreMemory],
       [
         "resources",
         patch.resources === undefined ? undefined : patch.resources === null ? null : JSON.stringify(patch.resources),
