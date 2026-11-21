@@ -7,7 +7,6 @@ import {
   ArrowUpIcon,
   ChevronsUpIcon,
   GaugeIcon,
-  HourglassIcon,
   ListOrderedIcon,
   LoaderCircleIcon,
   SquareIcon,
@@ -107,7 +106,6 @@ function QueueRow({
   held?: boolean;
 }) {
   const queued = entry.state === "queued";
-  const waiting = entry.waitingFor.length;
   const iconButton = "pressable-icon size-11 shrink-0 text-muted-foreground md:size-8";
 
   return (
@@ -138,12 +136,6 @@ function QueueRow({
             >
               <GaugeIcon className="size-3" aria-hidden />
               Held<span className="sr-only">: resource pressure</span>
-            </span>
-          )}
-          {waiting > 0 && (
-            <span className="inline-flex shrink-0 items-center gap-1 text-primary">
-              <HourglassIcon className="size-3" aria-hidden />
-              Waiting for {waiting} card{waiting === 1 ? "" : "s"}
             </span>
           )}
         </span>

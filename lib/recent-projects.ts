@@ -4,9 +4,10 @@ import type { Board } from "@/lib/types";
 export const MAX_RECENT_PROJECTS = 10;
 
 /**
- * The sidebar's "Your projects": most recently opened first, then never-opened ones in their
- * given order (newest first from the API), at most `limit`. `activeId`, when given and present,
- * is always kept, in place of the last entry if it would fall past the limit.
+ * The sidebar's "Your projects": the `limit` most recently opened projects (never-opened ones only
+ * fill spots left over, in their given order), shown in the given (API) order so the list doesn't
+ * reshuffle each time a project is opened. `activeId`, when given and present, is always kept, in
+ * place of the least recently opened entry if it would fall outside the limit.
  */
 export function recentProjects<T extends Pick<Board, "id" | "lastAccessedAt">>(
   boards: readonly T[],
@@ -16,9 +17,10 @@ export function recentProjects<T extends Pick<Board, "id" | "lastAccessedAt">>(
   const opened = boards
     .filter((board) => board.lastAccessedAt !== null)
     .sort((a, b) => Date.parse(b.lastAccessedAt ?? "") - Date.parse(a.lastAccessedAt ?? ""));
-  const ordered = [...opened, ...boards.filter((board) => board.lastAccessedAt === null)];
-  const listed = ordered.slice(0, limit);
-  const active = activeId === undefined ? undefined : ordered.find((board) => board.id === activeId);
-  if (active && limit > 0 && !listed.includes(active)) listed[listed.length - 1] = active;
-  return listed;
+  const ranked = [...opened, ...boards.filter((board) => board.lastAccessedAt === null)];
+  const picked = ranked.slice(0, limit);
+  const active = activeId === undefined ? undefined : ranked.find((board) => board.id === activeId);
+  if (active && limit > 0 && !picked.includes(active)) picked[picked.length - 1] = active;
+  const keep = new Set(picked);
+  return boards.filter((board) => keep.has(board));
 }

@@ -1312,62 +1312,35 @@ describe("AgentManager scheduling and project folders", () => {
     expect(flagValues(spawned?.argv, "--approval-mode")).toEqual(["write"]);
   });
 
-  it("auto-selects the omp role that fits each card and logs why", async () => {
-    board = (await repo.updateBoard(board.id, { model: null }))!;
-    await updateAppSettings(repo, { defaultModel: "fake/default" });
-    process.env.FAKE_OMP_MODEL_ROLES = JSON.stringify({ smol: "fake/fast:low", slow: "fake/deep:xhigh" });
-    const manager = await getAgentManager();
-    const cards = [
-      ["Fix the race condition in the job queue", "Workers deadlock under load."],
-      ["Fix typo in README", ""],
-      ["Add a CSV export button", "Export the visible rows."],
-    ] as const;
-    const taskIds: string[] = [];
-    for (const [title, description] of cards) {
-      const task = await createTask(title, description);
-      taskIds.push(task.id);
-      await manager.start(task.id);
-      await waitDone(task.id);
-    }
-
-    const spawned = argvEntries();
-    expect(spawned.map((e) => flagValues(e.argv, "--model"))).toEqual([["@slow"], ["@smol"], ["fake/default"]]);
-    expect(spawned.map((e) => flagValues(e.argv, "--thinking"))).toEqual([[], [], []]);
-    const configCalls = readLog().filter((e) => e.kind === "config");
-    expect(configCalls.map((e) => [e.argv, e.cwd])).toEqual(
-      cards.map(() => [["config", "get", "modelRoles", "--json"], workdir]),
-    );
-    const texts = (await runEvents((await latestRun(taskIds[0]!)).id)).map((e) => e.text);
-    expect(texts).toContain("Model auto-selected: @slow (needs deep reasoning: concurrency → slow role (fake/deep:xhigh))");
-    expect(texts).toContain(`Starting agent in ${workdir} (model @slow)`);
-  });
-
-  it("falls back to the default model with a fitting thinking level when omp has no matching role", async () => {
-    board = (await repo.updateBoard(board.id, { model: null }))!;
-    await updateAppSettings(repo, { defaultModel: "fake/default" });
-    process.env.FAKE_OMP_MODEL_ROLES = "fail";
-    const task = await createTask("Investigate the memory leak in the SSE stream");
+  it("runs a scheduler's cards on the scheduler's model, over the board's", async () => {
+    board = (await repo.updateBoard(board.id, { model: "fake/board" }))!;
+    const scheduler = await repo.createScheduler({
+      boardId: board.id,
+      name: "Nightly",
+      prompt: "Run it",
+      cron: "0 0 1 1 *",
+      timezone: "UTC",
+      model: "fake/scheduled",
+    });
+    const task = await repo.createTask({ boardId: board.id, title: "From scheduler", schedulerId: scheduler.id });
     const manager = await getAgentManager();
 
     await manager.start(task.id);
     await waitDone(task.id);
 
     const [spawned] = argvEntries();
-    expect(flagValues(spawned?.argv, "--model")).toEqual(["fake/default"]);
-    expect(flagValues(spawned?.argv, "--thinking")).toEqual(["high"]);
-    const texts = (await runEvents((await latestRun(task.id)).id)).map((e) => e.text);
-    expect(texts).toContain(`Starting agent in ${workdir} (model fake/default, thinking high)`);
+    expect(flagValues(spawned?.argv, "--model")).toEqual(["fake/scheduled"]);
   });
 
-  it("skips auto selection for a board with a pinned model or when it is turned off", async () => {
-    process.env.FAKE_OMP_MODEL_ROLES = JSON.stringify({ slow: "fake/deep" });
+  it("leaves the model to omp when the board and settings set none, and never reads the roles", async () => {
+    process.env.FAKE_OMP_MODEL_ROLES = JSON.stringify({ smol: "fake/fast:low", slow: "fake/deep:xhigh" });
     const manager = await getAgentManager();
     const pinned = await createTask("Debug the deadlock");
     await manager.start(pinned.id);
     await waitDone(pinned.id);
 
     board = (await repo.updateBoard(board.id, { model: null }))!;
-    await updateAppSettings(repo, { defaultModel: "", autoModel: false });
+    await updateAppSettings(repo, { defaultModel: "" });
     const unpinned = await createTask("Debug the deadlock again");
     await manager.start(unpinned.id);
     await waitDone(unpinned.id);
@@ -1376,10 +1349,12 @@ describe("AgentManager scheduling and project folders", () => {
     expect(spawned.map((e) => flagValues(e.argv, "--model"))).toEqual([["fake/model-1"], []]);
     expect(spawned.flatMap((e) => flagValues(e.argv, "--thinking"))).toEqual([]);
     expect(readLog().filter((e) => e.kind === "config")).toEqual([]);
+    const texts = (await runEvents((await latestRun(unpinned.id)).id)).map((e) => e.text);
+    expect(texts).toContain(`Starting agent in ${workdir}`);
   });
 });
 
-describe("AgentManager collaboration, dependencies and workspaces", () => {
+describe("AgentManager collaboration and workspaces", () => {
   it("lets an agent delegate a card and wait for it, lending its slot while it waits", async () => {
     await updateAppSettings(repo, { maxConcurrentAgents: 1 });
     const calls = [
@@ -1406,22 +1381,20 @@ describe("AgentManager collaboration, dependencies and workspaces", () => {
     expect(commands("set_host_tools", spawned?.pid).length).toBe(1);
   });
 
-  it("keeps a queued card waiting until every card in blockedBy is Done", async () => {
-    const blocker = await createTask("Blocker");
-    const waiting = await repo.createTask({ boardId: board.id, title: "Waiting", blockedBy: [blocker.id] });
+  it("runs queued cards side by side: no card waits for another", async () => {
+    await updateAppSettings(repo, { maxConcurrentAgents: 2 });
+    const first = await createTask("First");
+    const second = await createTask("Second");
     const manager = await getAgentManager();
 
-    await manager.start(waiting.id);
-    await sleep(250);
-    expect(argvEntries()).toHaveLength(0);
-    expect((await manager.queueSnapshot()).queued).toEqual([
-      expect.objectContaining({ taskId: waiting.id, waitingFor: [blocker.id] }),
-    ]);
+    await manager.start(first.id);
+    await manager.start(second.id);
 
-    const done = (await repo.updateTask(blocker.id, { status: "done" }))!;
-    await manager.onTaskMoved(done, "todo");
-    await waitDone(waiting.id);
-    expect(argvEntries()).toHaveLength(1);
+    // Both agents run at once: starting a card never waits for another card's agent.
+    await waitFor(() => argvEntries().length === 2, "both agents to be spawned");
+    expect((await manager.queueSnapshot()).queued).toEqual([]);
+    await waitDone(first.id);
+    await waitDone(second.id);
   });
 
   it("runs a card of a worktrees board in its own git worktree and branch", async () => {

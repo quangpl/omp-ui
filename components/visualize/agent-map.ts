@@ -71,12 +71,11 @@ export type LinkKind =
   | "message" // A sent board_message_card to B (recent)
   | "wait" // A is/was waiting on B via board_wait_for_cards (recent)
   | "inspect" // A read B via board_read_card (recent)
-  | "delegate" // B was created by A (QueueEntry.createdByTaskId)
-  | "depends"; // queued B waits for A to be Done (QueueEntry.waitingFor)
+  | "delegate"; // B was created by A (QueueEntry.createdByTaskId)
 
 export interface CardLink {
   kind: LinkKind;
-  /** Source card id (sender / creator / blocker). */
+  /** Source card id (sender / creator / inspector). */
   from: string;
   /** Target card id. */
   to: string;
@@ -87,8 +86,7 @@ export const CONTACT_TTL_MS = 5 * 60_000;
 
 /**
  * Every agent-to-agent link visible right now, deduped by kind+from+to, self-links dropped:
- * dependencies of queued cards, delegations (creator → created card) and board contacts of the
- * last CONTACT_TTL_MS.
+ * delegations (creator → created card) and board contacts of the last CONTACT_TTL_MS.
  */
 export function buildLinks(queue: QueueSnapshot, live: Record<string, LiveAgent>, now: number): CardLink[] {
   const links = new Map<string, CardLink>();
@@ -96,9 +94,6 @@ export function buildLinks(queue: QueueSnapshot, live: Record<string, LiveAgent>
     const key = `${kind}:${from}:${to}`;
     if (from !== to && !links.has(key)) links.set(key, { kind, from, to });
   };
-  for (const entry of queue.queued) {
-    for (const blocker of entry.waitingFor) add("depends", blocker, entry.taskId);
-  }
   for (const entry of [...queue.running, ...queue.queued]) {
     if (entry.createdByTaskId) add("delegate", entry.createdByTaskId, entry.taskId);
   }

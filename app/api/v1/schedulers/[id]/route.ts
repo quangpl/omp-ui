@@ -10,7 +10,7 @@ type Params = { id: string };
 export const GET = withApi<Params>(async ({ repo, params }) => json(await requireScheduler(repo, params.id)));
 
 /**
- * Edit a scheduler: `Partial<{ boardId, name, prompt, cron, timezone, enabled, maxRuns }>`. Its
+ * Edit a scheduler: `Partial<{ boardId, name, prompt, cron, timezone, enabled, maxRuns, model }>`. Its
  * next fire time is recomputed from now whenever the schedule changes (cron, timezone, enabled,
  * maxRuns). Enabling one whose run limit is reached is refused (400).
  */

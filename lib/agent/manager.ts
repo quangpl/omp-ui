@@ -398,7 +398,6 @@ class OmpAgentManager implements AgentManager, RunControl {
         boardName: await boardName(task.boardId),
         title: task.title,
         state,
-        waitingFor: state === "queued" ? await this.pendingBlockers(task) : [],
         createdByTaskId: task.createdByTaskId ?? null,
         sdlc: sdlcProgress(task.todos),
         node: state === "running" ? this.nodeOf(taskId) : null,
@@ -820,15 +819,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     return true;
   }
 
-  /** Blockers of the card (Task.blockedBy) that exist and are not Done yet. */
-  private async pendingBlockers(task: Task): Promise<string[]> {
-    const blockers = await Promise.all(task.blockedBy.map((id) => this.repo.getTask(id)));
-    return task.blockedBy.filter((_, index) => {
-      const blocker = blockers[index];
-      return blocker && blocker.status !== "done";
-    });
-  }
-
   private publishQueue(): void {
     const running = [...this.active.keys()];
     const queued = [...this.claiming, ...this.queue];
@@ -876,20 +866,11 @@ class OmpAgentManager implements AgentManager, RunControl {
         this.boundBy = concurrency.boundBy;
         if (this.queue.length === 0 || this.holding) break;
         if (this.active.size - this.lent >= this.limit) continue;
-        // Start order, skipping cards that wait for unfinished cards (Task.blockedBy). The queued
-        // cards' blockers are read in parallel.
         const candidates = [...this.queue];
-        const blocked = await Promise.all(
-          candidates.map(async (taskId) => {
-            const task = await this.repo.getTask(taskId);
-            return task !== null && (await this.pendingBlockers(task)).length > 0;
-          }),
-        );
         // Cluster mode: among equally good replicas, a card prefers the node of its last run.
         const lastNodes = cluster ? await Promise.all(candidates.map((taskId) => this.lastRunNode(taskId))) : [];
         for (const [index, taskId] of candidates.entries()) {
           if (this.active.size - this.lent >= this.limit) break;
-          if (blocked[index]) continue;
           // Cluster mode: place the card before it leaves the queue. No placement means no node can
           // safely take a card now, or the pump's count is ahead of the nodes' (e.g. a remote run's
           // transport still closing), so the rest stay queued too (the sampler and refreshQueue re-pump,
@@ -1338,14 +1319,18 @@ class OmpAgentManager implements AgentManager, RunControl {
     const sessionFile = task.sessionFile;
     // An automatic retry after a failed run: the prompt tells the agent what went wrong.
     const retriedRunId = task.autoRetries > 0 ? task.lastRunId : null;
-    const [workspace, taskFiles, boardFiles, comments, foundSession, retriedRun] = await Promise.all([
+    const [workspace, taskFiles, boardFiles, comments, foundSession, retriedRun, scheduler] = await Promise.all([
       board.worktrees ? ensureWorkspace(board, task) : null,
       ensureFilesFolder("tasks", task.id),
       ensureFilesFolder("boards", board.id),
       repo.listComments(task.id),
       sessionFile ? stat(sessionFile).then(() => sessionFile, () => null) : null,
       retriedRunId ? repo.getRun(retriedRunId) : null,
+      task.schedulerId ? repo.getScheduler(task.schedulerId) : null,
     ]);
+    // A scheduler's model is pinned like the project's and wins over it, for the cards it created.
+    const pinnedModel = scheduler?.model?.trim() || board.model?.trim() || null;
+    const modelBoard = { model: pinnedModel };
     const quotaRetry = retriedRun?.status === "failed" && isQuotaError(retriedRun.error);
     // Only the agent's own failures: a quota error or a lost node is not something it can fix.
     const previousFailure =
@@ -1423,8 +1408,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     if (running) publish({ type: "task.updated", task: running });
     if (run.finished) return;
 
-    // Roles are read per run: the user may reconfigure omp, and project `.omp` configs differ.
-    const autoSelect = !board.model?.trim() && settings.autoModel;
+
     const remote = placement && !placement.local ? placement : null;
     // A local run's subagents share this machine: their cap is the run's fair share of it, as of
     // now. A remote node's machine is not sampled here, so its runs get the ceiling.
@@ -1438,10 +1422,11 @@ class OmpAgentManager implements AgentManager, RunControl {
         : null;
     // Memory off for this card: the run config drops agentmemory's extension and MCP server.
     const memoryOff = task.ignoreMemory ? memoryOffOverlay(settings.ompPath, workdir) : null;
-    // The provider priority runs the model of an omp role on its provider, so it needs the roles too.
-    const needRoles = (autoSelect && resumeFile === null) || (settings.providerPriority.length > 0 && !board.model?.trim());
+    // The provider priority runs the model of an omp role on its provider, so it needs the roles,
+    // read per run: the user may reconfigure omp, and project `.omp` configs differ.
+    const needRoles = settings.providerPriority.length > 0 && !pinnedModel;
     const roles = needRoles ? await readModelRoles(settings.ompPath, workdir, childEnv()) : null;
-    const providerPick = await chooseProvider(settings, board.model, roles);
+    const providerPick = await chooseProvider(settings, pinnedModel, roles);
     if (run.finished) return;
     const overlay = runConfigOverlay(settings, taskFiles, subagents, providerPick);
     const [workdirFound, configFile, memoryProject, memoryOffSettings] = await Promise.all([
@@ -1457,17 +1442,14 @@ class OmpAgentManager implements AgentManager, RunControl {
       throw new Error(`Board directory not found: ${workdir}`);
     }
     const choice = chooseModel({
-      board,
+      board: modelBoard,
       settings,
-      task,
-      feedback,
       isResume: resumeFile !== null,
-      roles,
       provider: providerPick,
       quotaRetry,
     });
     if (run.finished) return;
-    const { model, thinking } = choice;
+    const { model } = choice;
     const args = [
       "--mode",
       "rpc",
@@ -1482,7 +1464,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     if (sessionDir) args.push("--session-dir", sessionDir);
     for (const folder of [...extraFolders, taskFiles, boardFiles]) args.push("--add-dir", folder);
     if (model) args.push("--model", model);
-    if (thinking) args.push("--thinking", thinking);
     if (resumeFile) args.push("--resume", resumeFile);
     if (memoryOff && !memoryOffSettings) args.push("--no-extensions");
     const extra = process.env.OMP_EXTRA_ARGS?.trim();
@@ -1500,11 +1481,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       await this.event(run, "status", providerNote(providerPick));
       if (run.finished) return;
     }
-    if (choice.source === "auto") {
-      await this.event(run, "status", `Model auto-selected: ${model ?? "omp default"} (${choice.reason})`);
-      if (run.finished) return;
-    }
-    const modelNote = [model && `model ${model}`, thinking && `thinking ${thinking}`].filter(Boolean).join(", ");
+    const modelNote = model ? `model ${model}` : "";
     await this.event(
       run,
       "status",

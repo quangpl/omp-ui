@@ -35,7 +35,6 @@ const task: Task = {
   question: null,
   sessionFile: null,
   lastRunId: null,
-  blockedBy: [],
   createdByTaskId: null,
   schedulerId: null,
   parallelize: null,
