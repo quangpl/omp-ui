@@ -159,7 +159,7 @@ export function fallbackRetryConfig(pick: ProviderPick | null): Record<string, u
 }
 
 /**
- * Model of a helper agent (advisor, queue planner, summary, chat and scheduler assistants).
+ * Model of a helper agent (advisor, summary, chat and scheduler assistants).
  * `roles`: [omp role, its selector] in preference order; `pinned`: the board's model; `pick`: the
  * provider priority's pick (null when the list is empty or `pinned` is set). With an empty
  * provider priority the order stays: the first configured role, the pin, the default model. With

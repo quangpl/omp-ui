@@ -39,9 +39,7 @@ const ENV_KEYS = [
   "FAKE_OMP_SCENARIO",
   "FAKE_OMP_SESSION_DIR",
   "FAKE_OMP_MODEL_ROLES",
-  "FAKE_OMP_PLAN",
-  "FAKE_OMP_EXTENSIONS",
-  "FAKE_OMP_DISABLED_EXTENSIONS",
+
   "OMP_UI_RETRY_BASE_MS",
   "OMP_UI_QUOTA_RETRY_BASE_MS",
 ] as const;
@@ -57,7 +55,7 @@ interface LogEntry {
   /** "steer" entries: set when the message came as a `prompt` with streamingBehavior. */
   via?: string;
   streamingBehavior?: string;
-  /** "helper" entries (advisor, queue planner): the prompt a helper worker got. */
+  /** "helper" entries (advisor, summary agent): the prompt a helper worker got. */
   prompt?: string;
 }
 
@@ -183,17 +181,6 @@ function todoLines(todos: Task["todos"]): string[] {
   return todos.flatMap((phase) => phase.tasks.map((item) => `${item.content}: ${item.status}`));
 }
 
-/** "helper" entries of the smart-queue planner. */
-function plannerEntries(): LogEntry[] {
-  return readLog().filter((e) => e.kind === "helper" && e.prompt?.startsWith("You are the queue planner"));
-}
-
-/** Task ids ordered by when their (latest) run started. */
-async function runStartOrder(ids: string[]): Promise<string[]> {
-  const starts = await Promise.all(ids.map(async (id) => [id, (await latestRun(id)).startedAt] as const));
-  return starts.sort((x, y) => x[1].localeCompare(y[1])).map(([id]) => id);
-}
-
 /** An assistant message as omp reports it in message_end / agent_end. */
 function assistantMessage(text: string): Record<string, unknown> {
   return { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" };
@@ -241,7 +228,6 @@ beforeEach(async () => {
   delete process.env.MAX_AGENTS;
   delete process.env.OMP_EXTRA_ARGS;
   delete process.env.FAKE_OMP_MODEL_ROLES;
-  delete process.env.FAKE_OMP_PLAN;
   process.env.OMP_UI_RETRY_BASE_MS = "50";
   delete process.env.OMP_UI_QUOTA_RETRY_BASE_MS;
   globals.__ompUiRepo = undefined;
@@ -473,33 +459,6 @@ describe("AgentManager run lifecycle", () => {
     await waitDone(task.id);
 
     await waitFor(() => readLog().some((e) => e.kind === "stdin_closed"), "omp stdin to be closed");
-  });
-
-  it("writes the memory-off overlay into the run config only for cards that ignore memory", async () => {
-    process.env.FAKE_OMP_EXTENSIONS = JSON.stringify(["/x/agent/agentmemory", "/x/other"]);
-    process.env.FAKE_OMP_DISABLED_EXTENSIONS = JSON.stringify(["skill:foo"]);
-    try {
-      const manager = await getAgentManager();
-      const readConfig = (taskId: string) =>
-        JSON.parse(readFileSync(path.join(root, "runtime", `omp-config-${taskId}.yml`), "utf8")) as Record<string, unknown>;
-
-      const off = await repo.createTask({ boardId: board.id, title: "No memory", description: "", status: "todo", ignoreMemory: true });
-      await manager.start(off.id);
-      await waitDone(off.id);
-      const offConfig = readConfig(off.id);
-      expect(offConfig.extensions).toEqual(["/x/other"]);
-      expect(offConfig.disabledExtensions).toEqual(["skill:foo", "mcp:agentmemory"]);
-
-      const on = await createTask("With memory");
-      await manager.start(on.id);
-      await waitDone(on.id);
-      const onConfig = readConfig(on.id);
-      expect(onConfig).not.toHaveProperty("extensions");
-      expect(onConfig).not.toHaveProperty("disabledExtensions");
-    } finally {
-      delete process.env.FAKE_OMP_EXTENSIONS;
-      delete process.env.FAKE_OMP_DISABLED_EXTENSIONS;
-    }
   });
 
   it("treats start() on an active task as a no-op and rejects unknown tasks", async () => {
@@ -1093,7 +1052,7 @@ describe("AgentManager omp session events", () => {
 
     const steer = commands("prompt", pid).find((e) => e.command?.message?.startsWith("Also update the README"))?.command;
     const message = steer?.message ?? "";
-    // Sent word for word, like typing into omp mid-run (plus the Parallelize permission).
+    // Sent word for word, like typing into omp mid-run.
     expect(message.split("\n\n")[0]).toBe("Also update the README");
     const update = (steering: string[]) => ({ type: "queue_update", steering, followUp: [], liveSteered: 0 });
     await sendFrames(pid, runId, update([message]), update([]));
@@ -1427,82 +1386,57 @@ describe("AgentManager collaboration and workspaces", () => {
     expect(git("branch", "--show-current")).toBe("feature");
     const refs = () => git("for-each-ref", "--format=%(refname)", `refs/agentman/task-runs/${task.id}/`).split("\n");
     // The end snapshot is taken right after the run is released.
-    await vi.waitFor(() => expect(refs().filter((ref) => ref.endsWith("/end"))).toHaveLength(1));
+    await vi.waitFor(() => expect(refs().filter((ref) => ref.endsWith("/end"))).toHaveLength(1), { timeout: 20_000 });
     expect(refs().filter((ref) => ref.endsWith("/start"))).toHaveLength(1);
     expect((await latestRun(task.id)).prompt).toContain("Stay on that branch");
   });
 });
 
-describe("AgentManager smart queue", () => {
-  it("plans a burst of queued cards once: highest priority first, no card held back", async () => {
+describe("AgentManager token cost", () => {
+  it("starts no helper agent for cards waiting in the queue", async () => {
     await updateAppSettings(repo, { maxConcurrentAgents: 1 });
-    const a = await createTask("Build the settings page", "Uses the settings API.");
-    const b = await createTask("Fix the footer typo");
-    const c = await createTask("Add the settings API", "[fake:slow]");
-    process.env.FAKE_OMP_PLAN = JSON.stringify({
-      order: [c.id, a.id, b.id],
-      cards: [
-        { id: c.id, reason: "Lands before the page that uses it." },
-        { id: a.id, reason: "Waits on the settings API." },
-      ],
-    });
-    const manager = await getAgentManager();
-    for (const task of [a, b, c]) await manager.start(task.id);
-
-    // Held while the plan is pending: nothing launches before the planner answered.
-    const pending = await manager.queueSnapshot();
-    expect(pending.planning).toEqual([{ boardId: board.id, boardName: board.name }]);
-    expect(pending.queued.map((e) => [e.taskId, e.planning])).toEqual([
-      [a.id, true],
-      [b.id, true],
-      [c.id, true],
-    ]);
-    expect(argvEntries()).toHaveLength(0);
-
-    await waitPromptReceived();
-    expect(await repo.listRuns(c.id)).toHaveLength(1);
-    const planned = await manager.queueSnapshot();
-    expect(planned.planning).toEqual([]);
-    expect(planned.queued).toEqual([
-      expect.objectContaining({ taskId: a.id, planning: false, planNote: "Waits on the settings API." }),
-      expect.objectContaining({ taskId: b.id, planning: false, planNote: null }),
-    ]);
-
-    // Finish C (the slow scenario completes after a steer); A and B follow in plan order.
-    const comment = await repo.addComment({ taskId: c.id, author: "user", body: "wrap up" });
-    await manager.onComment(await getTask(c.id), comment);
-    await waitDone(c.id);
-    await waitDone(a.id);
-    await waitDone(b.id);
-    expect(await runStartOrder([a.id, b.id, c.id])).toEqual([c.id, a.id, b.id]);
-    const [planner] = plannerEntries();
-    expect(plannerEntries()).toHaveLength(1);
-    for (const task of [a, b, c]) expect(planner?.prompt).toContain(task.id);
-  });
-
-  it("runs the cards in queue order when the planner fails", async () => {
-    await updateAppSettings(repo, { maxConcurrentAgents: 1 });
-    process.env.FAKE_OMP_PLAN = "fail";
     const tasks = [await createTask("First"), await createTask("Second"), await createTask("Third")];
     const manager = await getAgentManager();
     for (const task of tasks) await manager.start(task.id);
 
     for (const task of tasks) await waitDone(task.id);
-    const ids = tasks.map((t) => t.id);
-    expect(await runStartOrder(ids)).toEqual(ids);
-    expect(plannerEntries()).toHaveLength(1);
-    expect((await manager.queueSnapshot()).planning).toEqual([]);
+    expect(readLog().filter((e) => e.kind === "helper")).toEqual([]);
   });
 
-  it("never holds or plans cards when the smart queue is off", async () => {
-    await updateAppSettings(repo, { smartQueue: false });
-    const tasks = [await createTask("First"), await createTask("Second")];
+  it("with the system prompt off: no board or advisor tools and no advisor review", async () => {
+    await updateAppSettings(repo, { useSystemPrompt: false });
+    const asking = await createTask("Decide paging", "[fake:question]");
     const manager = await getAgentManager();
-    for (const task of tasks) await manager.start(task.id);
+    await manager.start(asking.id);
+    const done = await waitDone(asking.id);
+    await waitIdleManager(manager);
 
-    expect((await manager.queueSnapshot()).planning).toEqual([]);
-    for (const task of tasks) await waitDone(task.id);
+    // The question goes to the user as asked, and no advisor agent reviewed it.
+    expect(done.question).toBe("Should pagination default to 20 or 50 items per page?");
     expect(readLog().filter((e) => e.kind === "helper")).toEqual([]);
+    expect(commands("set_host_tools")).toEqual([]);
+    expect(commands("prompt")[0]?.command?.message).toBe("# Task: Decide paging\n\n[fake:question]");
+  });
+
+  it("with the system prompt off: steers feedback into the live session as typed", async () => {
+    await updateAppSettings(repo, { useSystemPrompt: false });
+    const slow = await createTask("Steer me", "[fake:slow]");
+    const manager = await getAgentManager();
+    await manager.start(slow.id);
+    const pid = await waitPromptReceived();
+    const comment = await repo.addComment({ taskId: slow.id, author: "user", body: "Also update the README" });
+    await manager.onComment(await getTask(slow.id), comment);
+    await waitDone(slow.id);
+    const steers = readLog().filter((e) => e.kind === "steer" && e.pid === pid);
+    expect(steers.map((e) => e.message)).toEqual(["Also update the README"]);
+  });
+
+  it("with the system prompt on: registers the board and advisor tools", async () => {
+    const task = await createTask("Tools on");
+    const manager = await getAgentManager();
+    await manager.start(task.id);
+    await waitDone(task.id);
+    expect(commands("set_host_tools")).toHaveLength(1);
   });
 });
 

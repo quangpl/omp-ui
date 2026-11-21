@@ -24,22 +24,10 @@ export const FAILURE_STREAK_NUDGE = 3;
 /** Longest failure message quoted in the prompt. */
 const FAILURE_MESSAGE_MAX = 500;
 
-const SUMMARY_INSTRUCTION =
-  "Finish with a short, scannable summary for the user (it is shown on the card): lead with the result, then how you verified it and anything left for the user to decide, in a few plain sentences or at most 5 bullets (about 120 words before the Report). Say what changed and why at the level a reviewer needs; skip step-by-step narration, file-by-file tours, tool output, restating the task, and details the diff already shows.";
-
-/**
- * Ends the summary with a `## Report` the card renders as a report card (outcome, tests, changes,
- * screenshot gallery). Image links use the card's file URLs so the user can open and comment on them.
- */
-function reportInstruction(task: Task, context?: RunContext): string {
-  const folder = context ? `this card's shared files folder (${context.taskFiles})` : "this card's shared files folder";
-  return `When the work changes a UI, save a screenshot of the result, and save the test result files (reports, logs) your checks produced, to ${folder}. End the summary, after any question for the user, with a short \`## Report\` section holding only these lines (no extra prose): an \`Outcome:\` line (one sentence: done, partly done or failed, and why); a \`Tests:\` line with the counts you observed (e.g. \`Tests: 42 passed, 0 failed\`, or \`Tests: not run\`); a \`Changes:\` line with \`git diff --shortstat\` of your work when code changed; and one markdown image per saved screenshot, linked by its path inside that folder as \`![what it shows](/api/v1/tasks/${task.id}/files/<path>)\` (e.g. \`![cart page](/api/v1/tasks/${task.id}/files/screenshots/cart.png)\`), with other saved files linked the same way as \`[name](/api/v1/tasks/${task.id}/files/<path>)\`.`;
-}
-
 /**
  * Task artifact cleanup policy (docs/TASK-CLEANUP.md): once the work is verified, before any commit or
- * push, the agent removes what it created only to do the task, so a card's result is its summary plus the
- * files the Report links. Docker resources started only for the card are marked with the
+ * push, the agent removes what it created only to do the task, so a card's result is its final message plus the
+ * files it links. Docker resources started only for the card are marked with the
  * `agentman.task=<card id>` label or the `task-<card id>` compose project (lib/task-docker.ts); AgentMan
  * removes marked leftovers when a run moves the card to Done or the card is deleted.
  */
@@ -47,33 +35,19 @@ function cleanupInstruction(task: Task): string {
   const project = taskComposeProject(task.id);
   const label = `${TASK_DOCKER_LABEL}=${task.id}`;
   return (
-    "Once the work is done and verified, before you commit or push anything and before your final summary, clean up everything you created only to do this task: analytics and profiling output, throwaway scripts and tests, test-runner output (e.g. test-results/, playwright-report/, coverage/), scratch notes, logs and dumps, and work-in-progress files in this card's shared files folder that your Report does not link; stop the dev servers, browsers and other background processes you started; and remove the Docker containers, compose stacks, volumes, networks and images you created for it. Keep only the result: your summary with its Report, the files the Report links, and the changes the task asked for (including tests meant to stay). Never delete or remove anything you did not create: files that existed before this task, files the user uploaded, other cards' files and changes (they may share this working tree), Docker resources that were already there, or permanent project infrastructure such as test suites and Docker configuration. " +
+    "Once the work is done and verified, before you commit or push anything and before your final message, clean up everything you created only to do this task: analytics and profiling output, throwaway scripts and tests, test-runner output (e.g. test-results/, playwright-report/, coverage/), scratch notes, logs and dumps, and work-in-progress files in this card's shared files folder that your final message does not link; stop the dev servers, browsers and other background processes you started; and remove the Docker containers, compose stacks, volumes, networks and images you created for it. Keep only the result: your final message, the files it links, and the changes the task asked for (including tests meant to stay). Never delete or remove anything you did not create: files that existed before this task, files the user uploaded, other cards' files and changes (they may share this working tree), Docker resources that were already there, or permanent project infrastructure such as test suites and Docker configuration. " +
     "Put scratch files in a temporary folder outside the project (e.g. `mktemp -d`) so they are easy to remove. " +
     `Mark every Docker resource you start only for this task: run compose stacks as \`docker compose -p ${project}\` and add \`--label ${label}\` to \`docker run\`, \`docker create\`, \`docker build\`, \`docker volume create\` and \`docker network create\`. ` +
     `Before you finish, stop and remove them (\`docker compose -p ${project} down -v --remove-orphans\`, \`docker rm -f\`, \`docker volume rm\`, \`docker network rm\`, \`docker image rm\`) and check that \`docker ps -a --filter label=${label}\` and \`docker ps -a --filter label=com.docker.compose.project=${project}\` list nothing; AgentMan also removes marked leftovers when a run moves the card to Done or the card is deleted. ` +
-    "A container the task asks you to leave running is a result, not a leftover: do not mark it or the image it runs from (containers inherit their image's labels), and name it in your Report."
+    "A container the task asks you to leave running is a result, not a leftover: do not mark it or the image it runs from (containers inherit their image's labels), and name it in your final message."
   );
 }
 
 const PUSH_INSTRUCTION =
-  "Do not push on your own; the user ships the work from the card. But when the task or the user's feedback explicitly asks you to push to main (or the default branch) or to open a pull/merge request, do it directly without asking for confirmation: commit, push, and open the PR/MR (gh or glab), then add `Branch:` and `PR:` lines with the branch and the PR/MR URL to your Report.";
+  "Do not push on your own; the user ships the work from the card. But when the task or the user's feedback explicitly asks you to push to main (or the default branch) or to open a pull/merge request, do it directly without asking for confirmation: commit, push, and open the PR/MR (gh or glab), then add `Branch:` and `PR:` lines with the branch and the PR/MR URL to your final message.";
 
 const HEADLESS_INSTRUCTION =
-  "Nobody can answer questions during this run, so do not stop to ask. When you or one of your subagents are unsure which way to go (approach, library, design or behavior choice, unclear scope), call the ask_advisor tool and follow its decision. Leave a question for the user (at the end of your summary) only when it needs their own judgment: personal preference or taste, private information, business/legal/money decisions, or destructive actions the task does not ask for; meanwhile make the most reasonable, easily reversible assumption and mention it in your summary.";
-
-/**
- * Tells omp it may use parallel subagents when the task's Parallelize toggle is on. Deliberately
- * avoids the `orchestrate` keyword so it grants permission without forcing omp's orchestration mode.
- */
-export const PARALLEL_INSTRUCTION =
-  "You may split independent parts of this work across parallel subagents when that helps.";
-
-/**
- * Contains omp's `orchestrate` magic keyword (standalone, lowercase, in prose — not in backticks),
- * which makes omp attach its multi-agent orchestration contract to the message.
- */
-const ORCHESTRATE_INSTRUCTION =
-  "This task spans several pieces of work: orchestrate it by splitting it into parallel subagent tasks, then verify and integrate the results.";
+  "Nobody can answer questions during this run, so do not stop to ask. When you or one of your subagents are unsure which way to go (approach, library, design or behavior choice, unclear scope), call the ask_advisor tool and follow its decision. Leave a question for the user (at the end of your final message) only when it needs their own judgment: personal preference or taste, private information, business/legal/money decisions, or destructive actions the task does not ask for; meanwhile make the most reasonable, easily reversible assumption and mention it in your final message.";
 
 const SDLC_LABELS = SDLC_PHASES.map((id) => SDLC_PHASE_INFO[id].label);
 
@@ -90,14 +64,10 @@ const SDLC_INSTRUCTION = [
 
 /**
  * What a non-software task gets instead of the SDLC workflow: do the work directly, with no todo
- * phases named after SDLC phases and no quality/release gates, then finish with the summary.
+ * phases named after SDLC phases and no quality/release gates.
  */
 const DIRECT_INSTRUCTION =
-  "This is not a software-development task, so skip the software-development lifecycle (SDLC) and any complicated workflow: do not create todo phases named after SDLC phases or follow their quality gates, and instead do the task directly right away, then finish with the summary.";
-
-/** Who does the work in each SDLC phase of an orchestrated run. */
-const SDLC_STAFFING_INSTRUCTION =
-  "Staff each SDLC phase: Analyze → read-only scout subagents in parallel; Implement → parallel task subagents on disjoint files (sonic for mechanical edits); Testing → you run the targeted checks yourself (plus a security-reviewer subagent only when auth, input handling or secrets change).";
+  "This is not a software-development task, so skip the software-development lifecycle (SDLC) and any complicated workflow: do not create todo phases named after SDLC phases or follow their quality gates, and instead do the task directly right away.";
 
 /** Where a feedback round sits in the SDLC: a fresh round once every included phase is done, else the current phase. */
 function feedbackSdlcInstruction(task: Task): string {
@@ -138,6 +108,7 @@ const ORCHESTRATE_CUES = [
  * - First run: the full task plus any feedback already left on the card.
  * - Resume run (same omp session via `--resume`): the agent already has the task in context,
  *   so only the new feedback is sent (or a "continue" nudge when there is none).
+ * - System prompt off: only the task and the user's open feedback, with no instructions added.
  */
 export function buildPrompt(
   task: Task,
@@ -148,8 +119,7 @@ export function buildPrompt(
   useSystemPrompt = true,
 ): string {
   if (!useSystemPrompt) {
-    // The system prompt is off: forward the task to omp as written, with nothing added.
-    return taskSection(task);
+    return plainPrompt(task, openFeedback, isResume, context?.senders ?? {});
   }
   const senders = context?.senders ?? {};
   const feedback = openFeedback.filter((c) => c.author === "user" && !c.resolved);
@@ -160,12 +130,6 @@ export function buildPrompt(
   // Non-software tasks run straight: the SDLC phases, gates and staffing are software-work process.
   const software = isSoftwareTask(task);
   const workflow = software ? SDLC_INSTRUCTION : DIRECT_INSTRUCTION;
-  // Parallelize off (false) drops both the permission and the orchestration push; null counts as on.
-  const parallel = task.parallelize !== false;
-  const parallelLines = (orchestrate: boolean): string[] =>
-    parallel
-      ? [PARALLEL_INSTRUCTION, ...(orchestrate ? [ORCHESTRATE_INSTRUCTION, ...(software ? [SDLC_STAFFING_INSTRUCTION] : [])] : [])]
-      : [];
 
   if (isResume && feedback.length > 0) {
     return [
@@ -178,12 +142,9 @@ export function buildPrompt(
       `Address all of the feedback above in ${where}. Make the changes and verify them.`,
       workflow,
       ...(software ? [feedbackSdlcInstruction(task)] : []),
-      ...parallelLines(needsOrchestration(null, feedback)),
       HEADLESS_INSTRUCTION,
       cleanupInstruction(task),
       PUSH_INSTRUCTION,
-      SUMMARY_INSTRUCTION,
-      reportInstruction(task, context),
     ].join("\n");
   }
 
@@ -198,12 +159,9 @@ export function buildPrompt(
       `Check the current state of ${where}, finish any remaining work, and verify it.`,
       workflow,
       ...(software ? ["Continue from the SDLC phase your todo list shows."] : []),
-      ...parallelLines(needsOrchestration(task, [])),
       HEADLESS_INSTRUCTION,
       cleanupInstruction(task),
       PUSH_INSTRUCTION,
-      SUMMARY_INSTRUCTION,
-      reportInstruction(task, context),
     ].join("\n");
   }
 
@@ -228,15 +186,26 @@ export function buildPrompt(
     "",
     `- Work in ${where} and make the change described above${feedback.length > 0 ? ", taking all of the feedback into account" : ""}.`,
     `- ${workflow}`,
-    ...parallelLines(needsOrchestration(task, feedback)).map((line) => `- ${line}`),
     "- Verify it with the narrowest checks that cover the change.",
     `- ${HEADLESS_INSTRUCTION}`,
     `- ${cleanupInstruction(task)}`,
     `- ${PUSH_INSTRUCTION}`,
-    `- ${SUMMARY_INSTRUCTION}`,
-    `- ${reportInstruction(task, context)}`,
   );
   return lines.join("\n");
+}
+
+/**
+ * The prompt with AgentMan's system prompt off: what a person would type into omp. A first run gets
+ * the task and its open feedback; a resumed session already has the task, so it gets only the new
+ * feedback (one comment as typed), or the task again when there is none (it may have been edited).
+ */
+function plainPrompt(task: Task, openFeedback: Comment[], isResume: boolean, senders: Record<string, string>): string {
+  const feedback = openFeedback.filter((c) => c.author === "user" && !c.resolved);
+  if (feedback.length === 0) return taskSection(task);
+  const [only] = feedback;
+  const text = feedback.length === 1 && !only!.fromTaskId ? only!.body.trim() : numberedFeedback(feedback, senders);
+  if (isResume) return text;
+  return [taskSection(task), "", "## Feedback from the user", "", text].join("\n");
 }
 
 /**
@@ -294,26 +263,20 @@ function projectFolders(board: Board): string | null {
 /**
  * Message steered into a live session when the user (or another card's agent) comments while the
  * agent runs. omp handles it like chat input, so its magic keywords apply. User feedback goes in
- * word for word, like typing into omp mid-run, so the agent acts on it right away; with
- * Parallelize on it gets the parallel-subagent permission and large feedback asks for
- * orchestration, with it off nothing is added. Another agent's message is introduced with its
- * sender, and its keywords are defused so they can't switch modes on the receiving agent.
+ * word for word, like typing into omp mid-run, so the agent acts on it right away. Another agent's
+ * message is introduced with its sender, and its keywords are defused so they can't switch modes on
+ * the receiving agent.
  */
-export function buildSteerMessage(comment: Comment, senderTitle: string | null | undefined, parallelize: boolean): string {
+export function buildSteerMessage(comment: Comment, senderTitle: string | null | undefined): string {
   const body = comment.body.trim();
-  if (comment.fromTaskId) {
-    return [
-      `New message from the agent working on card "${senderTitle ?? comment.fromTaskId}" (${comment.fromTaskId}):`,
-      "",
-      defuseMagicKeywords(body),
-      "",
-      "Take it into account in your current work and mention briefly how you addressed it in your final summary.",
-    ].join("\n");
-  }
-  if (!parallelize) return body;
-  const lines = [body, "", PARALLEL_INSTRUCTION];
-  if (needsOrchestration(null, [comment])) lines.push(ORCHESTRATE_INSTRUCTION);
-  return lines.join("\n");
+  if (!comment.fromTaskId) return body;
+  return [
+    `New message from the agent working on card "${senderTitle ?? comment.fromTaskId}" (${comment.fromTaskId}):`,
+    "",
+    defuseMagicKeywords(body),
+    "",
+    "Take it into account in your current work and mention briefly how you addressed it in your final message.",
+  ].join("\n");
 }
 
 /** omp's magic keywords, matched like omp does: standalone, lowercase, not part of a path, file name or call. */

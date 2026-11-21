@@ -177,17 +177,6 @@ export interface Task {
   openCommentCount: number;
   /** Scheduler whose run created this card; null when a person or an agent created it. */
   schedulerId: string | null;
-  /**
-   * Whether the card's runs may split the work across parallel subagents (the New task form's
-   * "Parallelize" toggle). null (cards created without a choice) counts as true.
-   */
-  parallelize: boolean | null;
-  /**
-   * Whether the card's agent runs without agentmemory (the "Ignore memory" toggle): no recall from past
-   * sessions, nothing from its runs saved to memory, no memory tools. Default false. Takes effect from the
-   * next run.
-   */
-  ignoreMemory: boolean;
   /** Owning user, inherited from the board (see Board.userId). */
   userId: string | null;
 }
@@ -524,17 +513,13 @@ export interface AppSettings {
    * Replaces `defaultModel` when set; a board's pinned model still wins. Empty = off.
    */
   providerPriority: ProviderPriorityEntry[];
-  /**
-   * Smart queue: when several cards of a project wait in the agent queue, a planner agent orders
-   * them (quick wins and urgent work first). Cards run independently: no card waits for another.
-   */
-  smartQueue: boolean;
   /** What a card's agent may do with a web browser (omp's `browser` tool). */
   browser: BrowserMode;
   /**
    * Prepend AgentMan's system prompt (SDLC workflow, quality gates, cleanup, summary and report
-   * instructions) to every task sent to omp. Off: the task is forwarded to omp exactly as
-   * written, with nothing added.
+   * instructions) to every task sent to omp, and register the board and advisor tools (their
+   * schemas ride on every request). Off: the task is forwarded to omp exactly as written, with
+   * nothing added: no tools, no advisor review, no SDLC nudges, no parallel/orchestrate text.
    */
   useSystemPrompt: boolean;
   /**
@@ -861,7 +846,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   approvalMode: "yolo",
   defaultModel: "",
   providerPriority: [],
-  smartQueue: true,
   browser: "headless",
   useSystemPrompt: true,
   autoRetry: true,
@@ -1060,10 +1044,6 @@ export interface QueueEntry {
   boardName: string;
   title: string;
   state: "running" | "queued";
-  /** Held until the smart-queue planner has ordered its project's queued cards. */
-  planning: boolean;
-  /** Why the smart-queue planner put the card where it is (one line); null when not planned. */
-  planNote: string | null;
   /** Card whose agent created this card (Task.createdByTaskId); null when a person did. */
   createdByTaskId: string | null;
   /** SDLC progress derived from the card's todo list (lib/sdlc.ts); null until the agent keeps one. */
@@ -1119,8 +1099,6 @@ export interface QueueSnapshot {
   running: QueueEntry[];
   /** Start order. */
   queued: QueueEntry[];
-  /** Projects whose queued cards the smart-queue planner is ordering right now. */
-  planning: { boardId: string; boardName: string }[];
 }
 
 /** A machine resource the resource guard watches. */

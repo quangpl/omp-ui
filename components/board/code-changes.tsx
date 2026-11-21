@@ -192,6 +192,7 @@ export function useDiffSummary(taskId: string, diff: TaskDiff | null, enabled: b
 export function SummaryBar({ diff, summary, active }: { diff: TaskDiff; summary: DiffSummaryState; active: boolean }) {
   const current = summary.summary?.hash === diff.hash ? summary.summary : null;
   const pending = !active && !summary.error && (current?.pending ?? true);
+  const written = current?.source === "model";
   const text = !active && current ? current.text : fallbackSummary(diff);
   const note = active
     ? "A summary is written once the agent finishes."
@@ -228,10 +229,10 @@ export function SummaryBar({ diff, summary, active }: { diff: TaskDiff; summary:
             onClick={summary.regenerate}
           >
             <RefreshCw />
-            <span className="max-sm:sr-only">Regenerate</span>
+            <span className="max-sm:sr-only">{written ? "Regenerate" : "Summarize"}</span>
           </Button>
         </TooltipTrigger>
-        <TooltipContent>Write the summary again</TooltipContent>
+        <TooltipContent>{written ? "Write the summary again" : "Have an agent write a summary (uses tokens)"}</TooltipContent>
       </Tooltip>
     </div>
   );
