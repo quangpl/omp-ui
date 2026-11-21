@@ -423,6 +423,11 @@ export interface Scheduler {
   lastTaskId: string | null;
   /** Error of the last run when it failed. */
   lastError: string | null;
+  /**
+   * omp model selector ("provider/model-id", optionally ":thinking") every card this scheduler creates
+   * runs on, taking precedence over the project's model; null = the project's model or auto selection.
+   */
+  model: string | null;
   /** Owning user, inherited from the board (see Board.userId). */
   userId: string | null;
   createdAt: string;
@@ -476,6 +481,7 @@ export interface SchedulerDraft {
   timezone: string;
   enabled: boolean;
   maxRuns: number | null;
+  model: string | null;
 }
 
 /** One turn of the "Create with Agent" conversation (POST /api/v1/schedulers/chat). */

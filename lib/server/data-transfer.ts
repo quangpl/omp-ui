@@ -456,6 +456,7 @@ const PARSERS: { [T in DataTable]: (f: Fields) => DataRows[T] } = {
     lastStatus: f.oneOfOrNull("lastStatus", SCHEDULER_RUN_STATUSES),
     lastTaskId: f.strOrNull("lastTaskId"),
     lastError: f.strOrNull("lastError"),
+    model: f.strOrNull("model"),
     userId: f.strOrNull("userId"),
     createdAt: f.str("createdAt"),
     updatedAt: f.str("updatedAt"),

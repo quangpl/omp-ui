@@ -1325,6 +1325,26 @@ describe("AgentManager scheduling and project folders", () => {
     expect(flagValues(spawned?.argv, "--approval-mode")).toEqual(["write"]);
   });
 
+  it("runs a scheduler's cards on the scheduler's model, over the board's", async () => {
+    board = (await repo.updateBoard(board.id, { model: "fake/board" }))!;
+    const scheduler = await repo.createScheduler({
+      boardId: board.id,
+      name: "Nightly",
+      prompt: "Run it",
+      cron: "0 0 1 1 *",
+      timezone: "UTC",
+      model: "fake/scheduled",
+    });
+    const task = await repo.createTask({ boardId: board.id, title: "From scheduler", schedulerId: scheduler.id });
+    const manager = await getAgentManager();
+
+    await manager.start(task.id);
+    await waitDone(task.id);
+
+    const [spawned] = argvEntries();
+    expect(flagValues(spawned?.argv, "--model")).toEqual(["fake/scheduled"]);
+  });
+
   it("auto-selects the omp role that fits each card and logs why", async () => {
     board = (await repo.updateBoard(board.id, { model: null }))!;
     await updateAppSettings(repo, { defaultModel: "fake/default" });

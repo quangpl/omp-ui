@@ -155,6 +155,18 @@ describe("/schedulers CRUD", () => {
     await clearSchedulers();
   });
 
+  it("stores the model, lets PATCH change or clear it and rejects non-strings", async () => {
+    expect((await createScheduler({})).model).toBeNull();
+    const s = await createScheduler({ model: "anthropic/claude-sonnet-4-5" });
+    expect(s.model).toBe("anthropic/claude-sonnet-4-5");
+    expect((await getScheduler(s.id)).model).toBe("anthropic/claude-sonnet-4-5");
+    expect((await patchScheduler(s.id, { model: "openai/gpt-5" })).body.model).toBe("openai/gpt-5");
+    expect((await patchScheduler(s.id, { name: "Other" })).body.model).toBe("openai/gpt-5");
+    expect((await patchScheduler(s.id, { model: 5 })).status).toBe(400);
+    expect((await patchScheduler(s.id, { model: null })).body.model).toBeNull();
+    await clearSchedulers();
+  });
+
   it("evaluates the cron expression in the scheduler's time zone", async () => {
     const s = await createScheduler({ cron: "30 9 * * *", timezone: "Europe/Berlin" });
     const next = new Date(s.nextRunAt!);

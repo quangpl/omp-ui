@@ -190,6 +190,7 @@ CREATE TABLE IF NOT EXISTS schedulers (
   last_status TEXT CHECK (last_status IN ('created', 'failed')),
   last_task_id TEXT,
   last_error TEXT,
+  model TEXT,
   user_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -340,6 +341,7 @@ function toScheduler(r: Row): Scheduler {
     lastStatus: strOrNull(r.last_status) as SchedulerRunStatus | null,
     lastTaskId: strOrNull(r.last_task_id),
     lastError: strOrNull(r.last_error),
+    model: strOrNull(r.model),
     userId: strOrNull(r.user_id),
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
@@ -582,6 +584,7 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       "last_status",
       "last_task_id",
       "last_error",
+      "model",
       "user_id",
       "created_at",
       "updated_at",
@@ -602,6 +605,7 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       s.lastStatus,
       s.lastTaskId,
       s.lastError,
+      s.model,
       s.userId,
       s.createdAt,
       s.updatedAt,
@@ -685,7 +689,10 @@ export class SqliteRepository implements Repository {
       ["node_id", "TEXT"],
       ["node_name", "TEXT"],
     ]);
-    this.addMissingColumns("schedulers", [["user_id", "TEXT"]]);
+    this.addMissingColumns("schedulers", [
+      ["user_id", "TEXT"],
+      ["model", "TEXT"],
+    ]);
     // After the migrations: older databases only now have these columns.
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_tasks_scheduler ON tasks (scheduler_id);
@@ -1284,13 +1291,14 @@ export class SqliteRepository implements Repository {
       lastStatus: null,
       lastTaskId: null,
       lastError: null,
+      model: input.model ?? null,
       userId: this.ownerOf("boards", input.boardId),
       createdAt: now,
       updatedAt: now,
     };
     this.stmt(
-      `INSERT INTO schedulers (id, board_id, name, prompt, cron, timezone, enabled, max_runs, run_count, last_run_at, next_run_at, last_status, last_task_id, last_error, user_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, NULL, NULL, ?, ?, ?)`,
+      `INSERT INTO schedulers (id, board_id, name, prompt, cron, timezone, enabled, max_runs, run_count, last_run_at, next_run_at, last_status, last_task_id, last_error, model, user_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, NULL, NULL, ?, ?, ?, ?)`,
     ).run(
       scheduler.id,
       scheduler.boardId,
@@ -1301,6 +1309,7 @@ export class SqliteRepository implements Repository {
       scheduler.enabled ? 1 : 0,
       scheduler.maxRuns,
       scheduler.nextRunAt,
+      scheduler.model,
       scheduler.userId,
       scheduler.createdAt,
       scheduler.updatedAt,
@@ -1325,6 +1334,7 @@ export class SqliteRepository implements Repository {
       ["last_status", patch.lastStatus],
       ["last_task_id", patch.lastTaskId],
       ["last_error", patch.lastError],
+      ["model", patch.model],
       ["updated_at", nowIso()],
     ]);
     const res = this.db.prepare(`UPDATE schedulers SET ${sql} WHERE id = ?`).run(...params, id);
