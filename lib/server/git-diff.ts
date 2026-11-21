@@ -1,8 +1,7 @@
-// A card's code changes for the Review tab: per folder the card works in (its worktree, else the
-// project folder), the uncommitted changes (staged, unstaged and untracked) plus the commits on
-// HEAD that are not on the base branch. Every git command runs via spawn with an argument array
+// A card's code changes for the Review tab: per project folder, the uncommitted changes (staged,
+// unstaged and untracked) plus the commits on HEAD that are not on the base branch. Every git command runs via spawn with an argument array
 // (never a shell), reads at most a capped amount of output, and is scoped to the folder
-// (`--relative`), so nothing outside the board's folders or the card's worktrees is touched.
+// (`--relative`), so nothing outside the board's folders is touched.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
@@ -10,7 +9,7 @@ import path from "node:path";
 import { childEnv } from "@/lib/child-env";
 import type { DiffFile, DiffFileStatus, RepoDiff, TaskDiff } from "@/lib/diff-types";
 import type { Board, Task } from "@/lib/types";
-import { getWorkspace } from "@/lib/workspaces";
+import { boardFolders } from "@/lib/board-folders";
 
 const GIT_TIMEOUT_MS = 20_000;
 /** Patch text sent to the browser, across every repo of the card. */
@@ -122,24 +121,16 @@ interface Base {
 }
 
 /**
- * The commit the card's changes started from. A worktree branched off its source folder's branch;
- * a shared project folder is compared with its upstream (unpushed commits) or the default branch.
- * No base branch → HEAD; no commit at all → the empty tree.
+ * The commit the folder's changes are compared with: its upstream (unpushed commits) or the
+ * default branch. No base branch → HEAD; no commit at all → the empty tree.
  */
-async function resolveBase(folder: string, branch: string | null, source: string | null): Promise<Base> {
+async function resolveBase(folder: string, branch: string | null): Promise<Base> {
   const candidates: { ref: string; label: string }[] = [];
   const main = await defaultBranch(folder);
-  if (source) {
-    const sourceBranch = await gitText(source, ["symbolic-ref", "--short", "-q", "HEAD"]);
-    if (sourceBranch && sourceBranch !== branch) candidates.push({ ref: `refs/heads/${sourceBranch}`, label: sourceBranch });
-    if (main && main !== branch) candidates.push({ ref: `refs/heads/${main}`, label: main });
-    if (main) candidates.push({ ref: `refs/remotes/origin/${main}`, label: `origin/${main}` });
-  } else {
-    const upstream = await gitText(folder, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
-    if (upstream) candidates.push({ ref: "@{upstream}", label: upstream });
-    if (main) candidates.push({ ref: `refs/remotes/origin/${main}`, label: `origin/${main}` });
-    if (main && main !== branch) candidates.push({ ref: `refs/heads/${main}`, label: main });
-  }
+  const upstream = await gitText(folder, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
+  if (upstream) candidates.push({ ref: "@{upstream}", label: upstream });
+  if (main) candidates.push({ ref: `refs/remotes/origin/${main}`, label: `origin/${main}` });
+  if (main && main !== branch) candidates.push({ ref: `refs/heads/${main}`, label: main });
   const head = await gitText(folder, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
   if (!head) {
     const empty = await gitText(folder, ["hash-object", "-t", "tree", "--stdin"]);
@@ -319,15 +310,15 @@ function emptyRepo(folder: string, isRepo: boolean, error: string | null): RepoD
   };
 }
 
-/** The changes in one folder. `source` is the project folder a worktree was made from (null when shared). */
-async function repoDiff(folder: string, source: string | null, budget: Budget): Promise<RepoDiff> {
+/** The changes in one project folder. */
+async function repoDiff(folder: string, budget: Budget): Promise<RepoDiff> {
   const isFolder = await fs.stat(folder).then((info) => info.isDirectory(), () => false);
   if (!isFolder) return emptyRepo(folder, false, "This folder no longer exists.");
   const inside = await gitText(folder, ["rev-parse", "--is-inside-work-tree"]);
   if (inside !== "true") return emptyRepo(folder, false, null);
 
   const branch = await gitText(folder, ["symbolic-ref", "--short", "-q", "HEAD"]);
-  const base = await resolveBase(folder, branch, source);
+  const base = await resolveBase(folder, branch);
   const range = ["--find-renames", "--relative", base.sha, "--"];
   const [names, numstat, patch, others, ahead] = await Promise.all([
     gitRead(folder, ["diff", "--name-status", "-z", ...range]),
@@ -392,27 +383,17 @@ async function repoDiff(folder: string, source: string | null, budget: Budget): 
   return { ...repo, files, truncated };
 }
 
-/** Folders the card's changes live in: its existing worktrees, else the board's folders (deduped). */
-async function diffFolders(board: Board, task: Pick<Task, "id" | "title">): Promise<{ folder: string; source: string | null }[]> {
-  const workspace = await getWorkspace(board, task);
-  const seen = new Set<string>();
-  const folders: { folder: string; source: string | null }[] = [];
-  for (const f of workspace.folders) {
-    const isolated = f.isolated && f.exists;
-    const folder = path.resolve(isolated ? f.path : f.source);
-    if (seen.has(folder)) continue;
-    seen.add(folder);
-    folders.push({ folder, source: isolated ? path.resolve(f.source) : null });
-  }
-  return folders;
+/** The board's folders (deduped, resolved). */
+function diffFolders(board: Board): string[] {
+  return [...new Set(boardFolders(board).map((f) => path.resolve(f)))];
 }
 
 async function computeTaskDiff(board: Board, task: Pick<Task, "id" | "title">): Promise<TaskDiff> {
   const budget: Budget = { remaining: MAX_TOTAL_PATCH_BYTES };
   const repos: RepoDiff[] = [];
   // One repo at a time: the patch budget goes to the first folders first.
-  for (const { folder, source } of await diffFolders(board, task)) {
-    repos.push(await repoDiff(folder, source, budget));
+  for (const folder of diffFolders(board)) {
+    repos.push(await repoDiff(folder, budget));
   }
   const stats = { files: 0, additions: 0, deletions: 0 };
   for (const repo of repos) {

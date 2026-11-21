@@ -1,6 +1,6 @@
 // Where the Files editor reads and saves: a project (board: workdir plus extra folders, the card
 // panel's Review tab and the Files page) or one folder on the server (Files page; the Review tab for
-// a card's worktree). File ids are `ProjectFileHit.insert` values: relative to the project workdir /
+// a changed folder outside the project). File ids are `ProjectFileHit.insert` values: relative to the project workdir /
 // the folder, or absolute inside a project's extra folder.
 import { api } from "@/lib/api-client";
 import type { FileOp, FileOpResult, ProjectFileContent, ProjectFileHit } from "@/lib/types";

@@ -2,16 +2,16 @@ import type { AgentManager } from "@/lib/agent/types";
 import type { Repository } from "@/lib/db/types";
 import { queueTaskDockerCleanup } from "@/lib/docker";
 import { publish } from "@/lib/events";
+import { boardFolders } from "@/lib/board-folders";
 import { removeFilesFolder } from "@/lib/files";
+import { removeRunSnapshots } from "@/lib/server/task-changes";
 import type { Board } from "@/lib/types";
-import { removeWorkspace } from "@/lib/workspaces";
 
 /**
  * Stops every agent on the board, then deletes it (cascading tasks, comments, runs) with its
- * shared files and every card's files and dedicated workspace; the Docker resources each card's
- * agent marked as temporary are removed in the background (lib/task-docker.ts). Workspaces go one
- * card at a time: concurrent `git worktree remove` / `branch -D` on the same repository race for
- * its lock files.
+ * shared files and every card's files and git change snapshots; the Docker resources each card's
+ * agent marked as temporary are removed in the background (lib/task-docker.ts). Snapshots go one
+ * card at a time: concurrent ref updates in the same repository can race for its lock files.
  */
 export async function deleteBoardWithData(repo: Repository, manager: AgentManager, board: Board): Promise<void> {
   const tasks = await repo.listTasks(board.id);
@@ -21,6 +21,6 @@ export async function deleteBoardWithData(repo: Repository, manager: AgentManage
   await removeFilesFolder("boards", board.id);
   for (const task of tasks) {
     queueTaskDockerCleanup(task.id);
-    await Promise.all([removeFilesFolder("tasks", task.id), removeWorkspace(board, task)]);
+    await Promise.all([removeFilesFolder("tasks", task.id), removeRunSnapshots(boardFolders(board), task.id)]);
   }
 }

@@ -263,7 +263,6 @@ export function runRepositoryContract(
           extraFolders: [],
           model: null,
           autoRun: true,
-          worktrees: false,
           pushBranch: "main",
           lastAccessedAt: null,
         });
@@ -274,7 +273,7 @@ export function runRepositoryContract(
         expect(await repo.getBoard(board.id)).toEqual(board);
       });
 
-      it("round-trips explicit fields including extraFolders, worktrees, pushBranch and defaultBranches", async () => {
+      it("round-trips explicit fields including extraFolders, pushBranch and defaultBranches", async () => {
         const branches = { "/work/front": "develop", "/work/back": "release/2.x" };
         const board = await repo.createBoard({
           name: "Full",
@@ -282,7 +281,6 @@ export function runRepositoryContract(
           extraFolders: ["/work/back", "/work/shared lib"],
           model: "sonnet",
           autoRun: false,
-          worktrees: true,
           pushBranch: "release/1.x",
           defaultBranches: branches,
         });
@@ -291,16 +289,14 @@ export function runRepositoryContract(
           extraFolders: ["/work/back", "/work/shared lib"],
           model: "sonnet",
           autoRun: false,
-          worktrees: true,
           pushBranch: "release/1.x",
           defaultBranches: branches,
         });
         expect(await repo.getBoard(board.id)).toEqual(board);
 
-        const off = await repo.updateBoard(board.id, { worktrees: false });
+        const off = await repo.updateBoard(board.id, { autoRun: true });
         expect(off).toMatchObject({
-          worktrees: false,
-          autoRun: false,
+          autoRun: true,
           pushBranch: "release/1.x",
           defaultBranches: branches,
         });
@@ -311,8 +307,7 @@ export function runRepositoryContract(
           pushBranch: "develop",
           extraFolders: ["/work/back", "/work/shared lib"],
           model: "sonnet",
-          autoRun: false,
-          worktrees: false,
+          autoRun: true,
           defaultBranches: branches,
         });
         expect(await repo.getBoard(board.id)).toEqual(develop);
@@ -1781,7 +1776,7 @@ export function runRepositoryContract(
         const owner = await newUser("owner", { email: "owner@example.com" });
         await repo.setSetting("app_settings", '{"maxAgents":3}');
         const board = await repo.createBoard({ name: "Exported", workdir: "/work/exported", userId: owner.id });
-        await repo.updateBoard(board.id, { extraFolders: ["/work/api"], pinned: true, worktrees: true });
+        await repo.updateBoard(board.id, { extraFolders: ["/work/api"], pinned: true });
         const parent = await repo.createTask({ boardId: board.id, title: "parent" });
         const task = await repo.createTask({
           boardId: board.id,

@@ -54,7 +54,7 @@ address, and a node left as primary by a failover steps down (its database is ba
 | AI provider keys and MCP secrets | passed with every run (Settings → AI Providers on the primary) |
 | git identity and HTTPS credentials, GitHub/GitLab/npm tokens, `.npmrc` | the primary's auth pack (below) |
 | omp-ui sign-ins | replicated users and session secret: the primary's accounts work on the node |
-| Project files, card files, worktrees, omp sessions | synced before the run, changes streamed back while it runs |
+| Project files, card files, omp sessions | synced before the run, changes streamed back while it runs |
 
 **Auth pack.** The primary bundles what agents need to authenticate and ships it over the encrypted
 channel into the node's `DATA_DIR/cluster/auth` (mode 700, files 600; the node's own home directory
@@ -113,7 +113,7 @@ omp's RPC stream is relayed over the cluster channel; files are synced in both d
   finishes and before every board tool call, so the primary sees the same files as after a local run.
 
 Cards that run on the same node at once share that node's copy of a folder they both use (the
-project folder of a board without dedicated workspaces, the git repository behind worktrees), just
+project folder), just
 like two local runs share a folder: a second card never resets files the first one is changing.
 
 The relay is light: on a loopback measurement an omp message takes about 0.1 ms longer per round trip

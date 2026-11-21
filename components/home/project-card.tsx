@@ -318,12 +318,6 @@ export function ProjectCard({
                   Auto-run
                 </span>
               )}
-              {board.worktrees && (
-                <span className={TAG_CLASS} title="Each card works in its own git worktree">
-                  <GitBranchIcon className="size-3 shrink-0" aria-hidden="true" />
-                  <span className="truncate">Worktrees</span>
-                </span>
-              )}
               {board.model && (
                 <span className={cn(TAG_CLASS, "max-w-32")} title={`Model: ${board.model}`}>
                   <SparklesIcon className="size-3 shrink-0" aria-hidden="true" />

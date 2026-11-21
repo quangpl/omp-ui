@@ -372,7 +372,6 @@ const PARSERS: { [T in DataTable]: (f: Fields) => DataRows[T] } = {
     extraFolders: parseFolderList(f.raw("extraFolders")),
     model: f.strOrNull("model"),
     autoRun: f.bool("autoRun"),
-    worktrees: f.bool("worktrees"),
     pushBranch: f.str("pushBranch"),
     defaultBranches: parseBranchMap(f.raw("defaultBranches")),
     pinned: f.bool("pinned"),

@@ -3,14 +3,12 @@ import { isSoftwareTask } from "@/lib/task-kind";
 import type { Board, BrowserMode, Comment, Task } from "@/lib/types";
 import { TASK_DOCKER_LABEL, taskComposeProject } from "@/lib/task-docker";
 
-/** Per-run facts beyond the card: shared folders, workspace, browser, message senders. */
+/** Per-run facts beyond the card: shared folders, browser, message senders. */
 export interface RunContext {
   /** The card's shared files folder. */
   taskFiles: string;
   /** The board's shared files folder (all cards). */
   boardFiles: string;
-  /** Branch of the card's dedicated worktree(s); null when it works in the project folders. */
-  workspaceBranch: string | null;
   browser: BrowserMode;
   /** Titles of the cards whose agents sent feedback, by card id. */
   senders: Record<string, string>;
@@ -350,11 +348,7 @@ function previousFailureNote(context: RunContext | undefined): string | null {
 
 function collaborationLines(task: Task, context: RunContext): string[] {
   const lines = [
-    ...(context.workspaceBranch
-      ? [
-          `- You work in a dedicated git worktree on branch \`${context.workspaceBranch}\`, separate from other cards' agents. Stay on this branch; the user ships it from the card (see the push rule in the instructions).`,
-        ]
-      : []),
+    "- You work directly in the project folders, on the git branch that is checked out there, next to other cards' agents and the user. Stay on that branch: don't switch or create branches unless the task asks for it. The user ships only the changes you make from the card (see the push rule in the instructions).",
     `- Files: ${context.taskFiles} holds files shared on this card; read the ones relevant to the task, and save deliverables meant for the user there (reports, exports, screenshots). Feedback starting with \`> re: <path>\` is about that file in this folder (e.g. a screenshot). ${context.boardFiles} is shared by every card of this board; use it to hand files to other cards' agents.`,
     `- Other agents may be working on other cards of this board at the same time. Your card id is ${task.id}. Board tools: board_list_cards and board_read_card show the cards; board_create_card delegates a clearly separable piece of work to a new card with its own agent (give it a complete brief; prefer doing small work yourself); board_message_card sends a message to another card's agent; board_wait_for_cards waits until cards finish and returns their summaries.`,
   ];

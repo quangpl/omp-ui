@@ -12,12 +12,10 @@ export const dynamic = "force-dynamic";
  */
 export const POST = withApi<{ id: string }>(async ({ repo, params }) => {
   const board = await requireBoard(repo, params.id);
-  // Without dedicated workspaces agents edit these folders; discarding mid-run would destroy live work.
-  if (!board.worktrees) {
-    const tasks = await repo.listTasks(board.id);
-    if (tasks.some((t) => t.agentState === "queued" || t.agentState === "running")) {
-      throw new HttpError(409, "Wait for the agent to finish first.");
-    }
+  // Agents edit these folders; discarding mid-run would destroy live work.
+  const tasks = await repo.listTasks(board.id);
+  if (tasks.some((t) => t.agentState === "queued" || t.agentState === "running")) {
+    throw new HttpError(409, "Wait for the agent to finish first.");
   }
 
   const results = await discardChangesIn([board.workdir, ...board.extraFolders]);

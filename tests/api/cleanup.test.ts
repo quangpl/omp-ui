@@ -97,7 +97,6 @@ describe("/settings/cleanup", () => {
       nextRunAt: null,
       running: false,
     });
-    expect(s.targets).not.toContain("shipped-workspaces");
     expect(s.available.map((t) => t.id)).toEqual([...SCHEDULED_CLEANUP_IDS]);
     expect(s.available.find((t) => t.id === "orphan-card-files")).toMatchObject({
       label: "Files of deleted cards",

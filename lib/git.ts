@@ -6,6 +6,7 @@ import path from "node:path";
 import { childEnv } from "@/lib/child-env";
 import { DEFAULT_BRANCH } from "@/lib/default-branch";
 import { HttpError } from "@/lib/server/http";
+import { NoTrackedChangesError, taskChangesTree } from "@/lib/server/task-changes";
 import { isValidBranchName } from "@/lib/push-branch";
 import type { GitBranches, GitProvider, GitRepoActionResult, GitStatus, GitSwitchResult } from "@/lib/types";
 import { getWorkspaceRoot } from "@/lib/workspace";
@@ -254,26 +255,6 @@ async function resolveDefaultBranch(folder: string, current: string | null): Pro
     }
   }
   return current ?? DEFAULT_BRANCH;
-}
-
-/**
- * The repo's own default branch: origin/HEAD, then a local/remote main or master, then the
- * checked-out branch, then "main".
- */
-export async function repoDefaultBranch(folder: string): Promise<string> {
-  const head = await git(folder, ["symbolic-ref", "--short", "-q", "HEAD"]);
-  return resolveDefaultBranch(folder, (head.ok && head.stdout.trim()) || null);
-}
-
-/**
- * The ref a worktree of `folder` should be created from: `branch` as a local branch, else as
- * `origin/<branch>`, else HEAD (a repo without that branch keeps today's behavior).
- */
-export async function defaultBranchRef(folder: string, branch: string): Promise<string> {
-  for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {
-    if ((await git(folder, ["rev-parse", "--verify", "--quiet", ref])).ok) return ref;
-  }
-  return "HEAD";
 }
 
 // ---------------------------------------------------------------------------
@@ -673,14 +654,38 @@ function findUrl(output: string): string | null {
   return urls.find((u) => /\/pull\/\d+|merge_requests\/\d+/.test(u)) ?? urls.at(-1) ?? null;
 }
 
+/** The commit `base` resolves to on this repo, refreshed from origin when it can be reached. */
+async function baseCommitFor(folder: string, base: string, step: Step): Promise<{ commit: string; label: string }> {
+  const fetched = await step(
+    "git",
+    ["fetch", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`],
+    NETWORK_TIMEOUT_MS,
+    true,
+  );
+  const refs = [`refs/remotes/origin/${base}`, `refs/heads/${base}`];
+  for (const ref of refs) {
+    const found = await git(folder, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+    if (found.ok && found.stdout.trim()) {
+      return { commit: found.stdout.trim(), label: ref.replace(/^refs\/(remotes|heads)\//, "") };
+    }
+  }
+  throw new CommandError(
+    fetched.ok
+      ? `The default branch “${base}” was not found. Pick the right one under Project settings → Default branches.`
+      : `The default branch “${base}” could not be fetched from origin: ${explain("git", fetched)}`,
+  );
+}
+
 /**
- * Commit to a new branch `branchName` from the current HEAD, push it, and open a PR (gh) / MR
- * (glab) against `baseBranch` (the project's default branch for that repo, else the repo's own).
- * Without the CLI, the branch is still pushed and the provider's "new PR" link returned.
+ * Open a PR (gh) / MR (glab) against `baseBranch` (the project's default branch for that repo, else
+ * the repo's own) with only the changes the card made: they are replayed on top of the default
+ * branch as one commit on `branchName`, which is pushed straight from the object database. The
+ * folder's checked-out branch, index and working tree are never touched. Without the CLI, the
+ * branch is still pushed and the provider's "new PR" link returned.
  */
 export function createPullRequest(
   folder: string,
-  input: { title: string; body: string; branchName: string; baseBranch?: string | null },
+  input: { taskId: string; title: string; body: string; branchName: string; baseBranch?: string | null },
 ): Promise<GitFolderOutcome> {
   return withFolderLock(folder, async () => {
     const result = baseResult(folder);
@@ -696,18 +701,40 @@ export function createPullRequest(
     const base = status.defaultBranch ?? DEFAULT_BRANCH;
     const { log, step } = makeRunner(folder);
     try {
-      await step("git", ["fetch", "origin", base], NETWORK_TIMEOUT_MS, true);
-      if (!status.dirty && (await unpushedCount(folder, base)) === 0) {
+      const baseRef = await baseCommitFor(folder, base, step);
+      let changes: { tree: string; baseTree: string };
+      try {
+        changes = await taskChangesTree(folder, input.taskId, baseRef);
+      } catch (err) {
+        if (err instanceof NoTrackedChangesError) {
+          return {
+            result: { ...result, output: log.join("\n"), error: err.message },
+            summary: `Couldn't open a PR for ${name}: ${err.message} Use “Push to current branch” instead.`,
+          };
+        }
+        throw err;
+      }
+      if (changes.tree === changes.baseTree) {
         return {
           result: { ...result, skipped: true, output: log.join("\n") },
           summary: `Nothing to put in a pull request for ${name}`,
         };
       }
       const branch = input.branchName;
-      await step("git", ["switch", "-c", branch]);
       result.branch = branch;
-      result.commit = await commitAll(folder, step, input.title);
-      await step("git", ["push", "-u", "origin", branch], NETWORK_TIMEOUT_MS);
+      const commit = await step("git", [
+        ...(await identityArgs(folder)),
+        "-c",
+        "commit.gpgsign=false",
+        "commit-tree",
+        changes.tree,
+        "-p",
+        baseRef.commit,
+        "-m",
+        input.title,
+      ]);
+      result.commit = commit.stdout.trim();
+      await step("git", ["push", "origin", `${result.commit}:refs/heads/${branch}`], NETWORK_TIMEOUT_MS);
 
       const fallback = compareUrl(status, base, branch);
       const cli = prCliFor(status.provider);

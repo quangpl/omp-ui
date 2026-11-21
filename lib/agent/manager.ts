@@ -103,6 +103,7 @@ import {
 } from "@/lib/server/agentmemory";
 import { loadAiProviderEnv } from "@/lib/server/ai-providers";
 import { createCheckpoints } from "@/lib/server/checkpoints";
+import { newRunKey, recordRunSnapshot } from "@/lib/server/task-changes";
 import { startChatIntegrations } from "@/lib/server/chat/service";
 import { startCredentialHealthChecks } from "@/lib/server/credentials";
 import { HttpError } from "@/lib/server/http";
@@ -112,7 +113,6 @@ import { agentDir } from "@/lib/server/omp-config";
 import { startTelemetryExporter } from "@/lib/server/telemetry";
 import { getAppSettings } from "@/lib/settings";
 import { parseTodoPhases, stampTodos } from "@/lib/todos";
-import { ensureWorkspace } from "@/lib/workspaces";
 import type {
   AgentResources,
   AppSettings,
@@ -245,6 +245,8 @@ interface ActiveRun {
   advisor: Omit<AdvisorScope, "signal" | "onActivity"> | null;
   /** This run addresses advisor feedback: its own questions go to the user, not back to the agent. */
   advisorFollowUp: boolean;
+  /** Git folders whose start/end snapshots track what this run changes (lib/server/task-changes.ts); set once recorded. */
+  changes: { key: string; folders: string[] } | null;
   /** This run addresses a release-gate comment (QUALITY_GATE_PREFIX): missing the gate again ships the card anyway. */
   qualityGateFollowUp: boolean;
   /** JSON of the omp todo list this run last stored on the card; repeated `todo` views write nothing. */
@@ -1152,6 +1154,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       hostCalls: new Map(),
       advisor: null,
       advisorFollowUp: false,
+      changes: null,
       qualityGateFollowUp: false,
       todos: null,
       launchedAt: new Date(now).toISOString(),
@@ -1215,6 +1218,13 @@ class OmpAgentManager implements AgentManager, RunControl {
     this.stopSupervisorIfIdle();
     this.stopResourceSamplerIfIdle();
     void this.persistResources(run);
+    if (run.changes) {
+      const { key, folders } = run.changes;
+      run.changes = null;
+      void recordRunSnapshot(folders, { taskId: run.taskId, runKey: key, phase: "end" }).then(({ errors }) => {
+        for (const message of errors) console.error(`[agent] change tracking failed for task ${run.taskId}: ${message}`);
+      });
+    }
     this.refreshUsage(run, true);
     // The agent may have written files or screenshots into the card's folder.
     if (run.boardId) publish({ type: "files.updated", boardId: run.boardId, taskId: run.taskId });
@@ -1516,13 +1526,11 @@ class OmpAgentManager implements AgentManager, RunControl {
     run.boardId = task.boardId;
     if (run.finished) return;
 
-    // Independent startup reads and folder setup run in parallel. Dedicated workspace: the
-    // card's own worktrees stand in for the project folders.
+    // Independent startup reads and folder setup run in parallel.
     const sessionFile = task.sessionFile;
     // An automatic retry after a failed run: the prompt tells the agent what went wrong.
     const retriedRunId = task.autoRetries > 0 ? task.lastRunId : null;
-    const [workspace, taskFiles, boardFiles, comments, foundSession, retriedRun] = await Promise.all([
-      board.worktrees ? ensureWorkspace(board, task) : null,
+    const [taskFiles, boardFiles, comments, foundSession, retriedRun] = await Promise.all([
       ensureFilesFolder("tasks", task.id),
       ensureFilesFolder("boards", board.id),
       repo.listComments(task.id),
@@ -1538,15 +1546,9 @@ class OmpAgentManager implements AgentManager, RunControl {
       !retriedRun.error.endsWith(RESCHEDULED_SUFFIX)
         ? { message: retriedRun.error, attempt: task.autoRetries }
         : undefined;
-    let workdir = board.workdir;
-    let projectExtras = board.extraFolders ?? [];
-    let workspaceBranch: string | null = null;
-    let workspaceNotes: string[] = [];
-    if (workspace) {
-      [workdir, ...projectExtras] = workspace.workspace.folders.map((f) => f.path);
-      workspaceBranch = workspace.workspace.folders.find((f) => f.isolated)?.branch ?? null;
-      workspaceNotes = workspace.notes;
-    }
+    const workdir = board.workdir;
+    const projectExtras = board.extraFolders ?? [];
+    let startNotes: string[] = [];
     if (run.finished) return;
     // Cluster mode: every run keeps its omp session in the card's session dir, which travels to
     // the node running it and is replicated to the others. Only a session file of omp's own
@@ -1559,7 +1561,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       if (foundSession) {
         resumeFile = await resumeInSessionDir(foundSession, sessionDir, settings.ompPath);
         if (!resumeFile) {
-          workspaceNotes = [...workspaceNotes, `Not resuming ${foundSession}: it is not an omp session file`];
+          startNotes = [...startNotes, `Not resuming ${foundSession}: it is not an omp session file`];
         }
       }
       if (run.finished) return;
@@ -1578,7 +1580,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     const prompt = buildPrompt(task, { ...board, workdir, extraFolders }, feedback, resumeFile !== null, {
       taskFiles,
       boardFiles,
-      workspaceBranch,
       browser: settings.browser,
       senders,
       previousFailure,
@@ -1632,7 +1633,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       memoryOff
         ? memoryOff.then((off) => writeRunConfig(task.id, { ...overlay, ...off }))
         : writeRunConfig(task.id, overlay),
-      // Cards in worktrees remember under the board's project, like omp sessions in its folder.
+      // Cards remember under the board's project, like omp sessions in its folder.
       memoryOff ? "" : memoryProjectName(board.workdir),
       memoryOff,
     ]);
@@ -1701,7 +1702,7 @@ class OmpAgentManager implements AgentManager, RunControl {
         .join(" "),
     );
     if (run.finished) return;
-    for (const note of [...runConfigNotes(settings, subagents), ...workspaceNotes]) {
+    for (const note of [...runConfigNotes(settings, subagents), ...startNotes]) {
       await this.event(run, "status", note);
     }
     for (const folder of missingFolders) {
@@ -1719,6 +1720,15 @@ class OmpAgentManager implements AgentManager, RunControl {
         await this.event(run, "status", `Checkpoint saved (${saved.length} folder${saved.length === 1 ? "" : "s"})`);
       }
       for (const message of errors) await this.event(run, "error", `Checkpoint failed: ${message}`);
+      if (run.finished) return;
+    }
+    {
+      // Mark where this run starts: "Create PR" ships only what the cards changed since then.
+      const folders = [workdir, ...extraFolders];
+      const key = newRunKey(created.id);
+      const { errors } = await recordRunSnapshot(folders, { taskId: task.id, runKey: key, phase: "start" });
+      run.changes = { key, folders };
+      for (const message of errors) await this.event(run, "error", `Change tracking failed: ${message}`);
       if (run.finished) return;
     }
 

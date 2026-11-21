@@ -25,7 +25,7 @@ Anything created specifically to execute the task:
 | Scratch files | Notes, plans, debug logs, dumps, downloads, copies/exports of data, temp configs, `*.bak`, patches | Delete the `mktemp -d` folder and any in-repo temp files |
 | Background processes | Dev servers, watchers, browsers, tunnels, background jobs the agent started | Stop them |
 | Card files folder | Work-in-progress files the agent saved there that the final Report does not link | Delete them |
-| Git leftovers | Temporary branches, stashes and extra worktrees the agent made | Delete them; never the card's dedicated workspace (branch `omp/<card>`, managed by AgentMan) |
+| Git leftovers | Temporary branches, stashes and extra worktrees the agent made | Delete them; never the project's own branches, or the refs under `refs/agentman/` that AgentMan manages |
 
 ## Docker containers
 
@@ -65,7 +65,7 @@ with it.
   `docker compose up` in the user's checkout reuses the user's own compose project and volumes).
 - Permanent project infrastructure: `tests/`, `e2e/`, `Dockerfile`, `docker-compose.yml`, `.env*`, AgentMan's data
   folder (`DATA_DIR`, default `data/`), except unlinked work-in-progress files you saved in your own card folder.
-- The card's dedicated workspace (branch `omp/<card>`).
+- AgentMan's git refs (`refs/agentman/…`: checkpoints and run snapshots).
 
 ## When
 
@@ -88,7 +88,7 @@ with it.
      `docker ps -a --filter label=com.docker.compose.project=task-<card id>` list nothing.
    - Delete the scratch folder and in-repo temp files.
    - Check `git status --short` shows none of your own leftovers, and `git status --short --ignored` shows no new
-     ignored output you created. Without a dedicated workspace, other cards' agents share this working tree: leave
+     ignored output you created. Other cards' agents share this working tree: leave
      changes you did not make.
    - Delete unlinked work-in-progress files you saved in the card folder.
 3. **Report.** Commit/push if the task asks, then write the summary and `## Report`, linking the kept deliverables.
@@ -115,6 +115,6 @@ with it.
   and nothing else (`removeTaskDockerResources` in [`lib/docker.ts`](../lib/docker.ts); names in
   [`lib/task-docker.ts`](../lib/task-docker.ts)). When the card or its project is deleted, `queueTaskDockerCleanup`
   does the same in the background, one card at a time, so the delete does not wait for Docker.
-- **AgentMan's own data is separate.** Settings → Data cleanup and Stats → Optimize remove files and worktrees of
-  deleted cards; that is AgentMan housekeeping, separate from task cleanup.
+- **AgentMan's own data is separate.** Settings → Data cleanup and Stats → Optimize remove files (and leftover worktrees)
+  of deleted cards; that is AgentMan housekeeping, separate from task cleanup.
 - **Review.** Reviewers spot leftovers in the card's Review tab and use **Request changes**.
