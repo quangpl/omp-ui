@@ -6,7 +6,6 @@ import {
   Bot,
   CircleHelp,
   Clock,
-  Hourglass,
   ListChecks,
   LoaderCircle,
   MessageSquare,
@@ -17,8 +16,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useBoardTasks, useQueueNode, useQueuePosition } from "@/hooks/use-board";
+import { useQueueNode, useQueuePosition } from "@/hooks/use-board";
 import { isQuotaError } from "@/lib/quota";
 import { questionPreview } from "@/lib/question";
 import { formatDateTime } from "@/components/board/format";
@@ -303,13 +301,6 @@ export const TaskCard = memo(function TaskCard({
   // Cluster mode: the machine the card's agent runs on.
   const liveNode = useQueueNode(task.id);
   const node = task.agentState === "running" ? liveNode : null;
-  // Only cards with dependencies re-render when other cards change.
-  const boardTasks = useBoardTasks(task.blockedBy.length > 0 && !done);
-  const waitingFor = done
-    ? []
-    : task.blockedBy
-        .map((id) => boardTasks.get(id))
-        .filter((blocker): blocker is Task => blocker !== undefined && blocker.status !== "done");
   const progress = todoProgress(task.todos, task.openCommentCount);
   const showQuickActions = Boolean(quickActions) && !overlay && !placeholder;
   const pinnedSlots = showQuickActions ? pinnedQuickActions : 0;
@@ -392,28 +383,6 @@ export const TaskCard = memo(function TaskCard({
               </span>
             )}
             <SdlcTrack task={task} />
-            {waitingFor.length > 0 && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="inline-flex h-5 items-center gap-1 rounded-full bg-secondary px-1.5 text-[11px] font-medium text-secondary-foreground">
-                    <Hourglass className="size-3" aria-hidden />
-                    Waiting for {waitingFor.length}
-                    <span className="sr-only">
-                      {waitingFor.length === 1 ? " card: " : " cards: "}
-                      {waitingFor.map((blocker) => blocker.title).join(", ")}
-                    </span>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent className="flex-col items-start gap-0.5">
-                  <span className="font-medium">Starts after:</span>
-                  {waitingFor.map((blocker) => (
-                    <span key={blocker.id} className="max-w-60 truncate">
-                      {blocker.title}
-                    </span>
-                  ))}
-                </TooltipContent>
-              </Tooltip>
-            )}
             {Boolean(task.createdByTaskId) && (
               <span
                 className="inline-flex size-5 items-center justify-center rounded-full bg-muted text-muted-foreground"

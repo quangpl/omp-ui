@@ -83,7 +83,7 @@ import { CodeReview } from "@/components/board/code-review";
 import { quickActionForKey, quickActionsFor, type QuickActionId } from "@/components/board/quick-actions";
 import { ShipActions, canShip, shipLabels, shipTask, useTaskGitStatus } from "@/components/board/ship-actions";
 import { AgentStateBadge } from "@/components/board/task-card";
-import { CreatedByNote, DelegatedCards, DependenciesSection } from "@/components/board/task-relations";
+import { CreatedByNote, DelegatedCards } from "@/components/board/task-relations";
 import { WorkspaceSection } from "@/components/board/task-workspace";
 import { CheckpointsPanel } from "@/components/board/checkpoints-panel";
 import { isQuotaError } from "@/lib/quota";
@@ -99,7 +99,7 @@ export interface TaskDetailProps {
   boardTask: Task | undefined;
   /** The card's board (dedicated workspaces on/off). */
   board: Board;
-  /** Every card of the board, for dependencies, delegation and agent-to-agent messages. */
+  /** Every card of the board, for delegation and agent-to-agent messages. */
   tasks: Task[];
   /** Show another card of the board in this panel. */
   onOpenTask: (taskId: string) => void;
@@ -607,7 +607,6 @@ function TaskDetailBody({
   const save = async (patch: {
     title?: string;
     description?: string;
-    blockedBy?: string[];
   }) => {
     try {
       const updated = await api.tasks.update(task.id, patch);
@@ -970,12 +969,6 @@ function TaskDetailBody({
 
           <DescriptionEditor task={task} onSave={(description) => save({ description })} />
 
-          <DependenciesSection
-            task={task}
-            cards={tasks}
-            onOpenCard={onOpenTask}
-            onChange={(blockedBy) => save({ blockedBy })}
-          />
           <DelegatedCards task={task} cards={tasks} onOpenCard={onOpenTask} />
           {board.worktrees && <WorkspaceSection task={task} onRemoved={workspaceGit.refresh} />}
           <CheckpointsPanel task={task} onRestored={workspaceGit.refresh} />

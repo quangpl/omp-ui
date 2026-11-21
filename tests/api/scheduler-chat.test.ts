@@ -109,6 +109,7 @@ describe("POST /schedulers/chat", () => {
       timezone: "Europe/Berlin",
       enabled: true,
       maxRuns: 3,
+      model: null,
     });
     expect((await api<Scheduler[]>(schedulersRoute, "GET", "/schedulers")).body).toEqual([]);
   });
@@ -142,6 +143,7 @@ describe("POST /schedulers/chat", () => {
       timezone: "Asia/Tokyo",
       enabled: true,
       maxRuns: null,
+      model: null,
     };
     const { draft } = doneOf(
       await chatTurn({

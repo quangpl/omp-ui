@@ -124,7 +124,7 @@ const boardTasksStore = createStore<ReadonlyMap<string, Task>>(EMPTY_TASKS);
 
 /**
  * Cards of the open board by id (empty when no board page is mounted). Pass `enabled: false`
- * to opt out of re-renders (e.g. a card with no dependencies).
+ * to opt out of re-renders (e.g. when the caller needs no card lookup).
  */
 export function useBoardTasks(enabled = true): ReadonlyMap<string, Task> {
   return useSyncExternalStore(
@@ -234,8 +234,6 @@ export interface NewCardInput {
    * new cards on auto-run boards skip To do and start right away.
    */
   start?: boolean;
-  /** Cards this one waits for ("Run after"). */
-  blockedBy?: string[];
 }
 
 /**
@@ -254,7 +252,6 @@ export async function createCard(
     task = await api.tasks.create(board.id, {
       title: input.title,
       description: input.description || undefined,
-      blockedBy: input.blockedBy?.length ? input.blockedBy : undefined,
       status: start ? "in_progress" : "todo",
       position: options.position,
     });
