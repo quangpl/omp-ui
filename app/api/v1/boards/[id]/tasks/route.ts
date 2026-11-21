@@ -26,22 +26,17 @@ export const GET = withApi<Params>(async ({ repo, params }) => {
 
 /**
  * Create a card.
- * - `{ text, position?, parallelize? }`: a card from free text, created in "In progress" with its
+ * - `{ text, position? }`: a card from free text, created in "In progress" with its
  *   agent started right away (whatever the board's autoRun), titled from the text as typed (see
  *   lib/agent/compose.ts).
  * - `{ title, … }`: the card as given. Created directly in "In progress" on an autoRun board → the
  *   agent starts.
- * Either may carry `parallelize` (boolean): whether the agent may split the work across parallel
- * subagents. Omitted → on. And `ignoreMemory` (boolean): whether the card's runs start omp without
+ * Either may carry `ignoreMemory` (boolean): whether the card's runs start omp without
  * agentmemory (no recall, no capture, no memory tools). Omitted → false.
  */
 export const POST = withApi<Params>(async ({ req, repo, manager, params }) => {
   const board = await requireBoard(repo, params.id);
   const body = await readJson(req);
-  const parallelize =
-    body.parallelize === undefined || body.parallelize === null
-      ? undefined
-      : parseBoolean(body.parallelize, "parallelize");
   const ignoreMemory =
     body.ignoreMemory === undefined || body.ignoreMemory === null
       ? false
@@ -49,15 +44,13 @@ export const POST = withApi<Params>(async ({ req, repo, manager, params }) => {
   if (body.text !== undefined) {
     const text = parseBrief(body.text);
     const position = body.position === undefined ? undefined : parsePosition(body.position);
-    return json(await createCardFromText({ repo, manager, board, text, position, parallelize, ignoreMemory }), {
+    return json(await createCardFromText({ repo, manager, board, text, position, ignoreMemory }), {
       status: 201,
     });
   }
-  // Duplicates copy the source card's value, which may be null (= on).
   const input: CreateTaskInput = {
     boardId: board.id,
     title: parseTitle(body.title),
-    parallelize: body.parallelize === null ? null : parallelize,
     ignoreMemory,
   };
   if (body.description !== undefined) input.description = parseDescription(body.description);

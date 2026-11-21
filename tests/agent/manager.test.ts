@@ -303,7 +303,7 @@ describe("AgentManager run lifecycle", () => {
     expect(run).toMatchObject({ status: "succeeded", summary: SUCCESS_SUMMARY, error: null });
     expect(run.endedAt).not.toBeNull();
     expect(run.prompt).toContain("# Task: Add a login page");
-    expect(run.prompt).toContain("1. Please add tests");
+    expect(run.prompt).toContain("Please add tests");
 
     expect(done.lastRunId).toBe(run.id);
     expect(done.agentError).toBeNull();
@@ -792,8 +792,7 @@ describe("AgentManager feedback", () => {
     expect(secondDone.lastRunId).toBe(secondRun.id);
     expect(secondDone.sessionFile).toBe(sessionFile);
     expect(secondRun.status).toBe("succeeded");
-    expect(secondRun.prompt.startsWith("New feedback on this task:")).toBe(true);
-    expect(secondRun.prompt).toContain("1. Please rename the button");
+    expect(secondRun.prompt).toBe("Please rename the button");
     expect(secondRun.prompt).not.toContain("# Task:");
 
     const spawned = argvEntries();
@@ -893,7 +892,7 @@ describe("AgentManager feedback", () => {
     await waitIdleManager(manager);
     const secondRun = await latestRun(task.id);
     expect(secondRun.id).not.toBe(firstRun.id);
-    expect(secondRun.prompt.startsWith("New feedback on this task:")).toBe(true);
+    expect(secondRun.prompt.startsWith("Please rename the button")).toBe(true);
 
     expect(publishedAgentStates(task.id)).toEqual(["queued", "running", "idle", "queued", "running", "idle"]);
     const updates = taskUpdates(task.id, from);
@@ -1093,8 +1092,8 @@ describe("AgentManager omp session events", () => {
 
     const steer = commands("prompt", pid).find((e) => e.command?.message?.startsWith("Also update the README"))?.command;
     const message = steer?.message ?? "";
-    // Sent word for word, like typing into omp mid-run (plus the Parallelize permission).
-    expect(message.split("\n\n")[0]).toBe("Also update the README");
+    // Sent word for word, like typing into omp mid-run.
+    expect(message).toBe("Also update the README");
     const update = (steering: string[]) => ({ type: "queue_update", steering, followUp: [], liveSteered: 0 });
     await sendFrames(pid, runId, update([message]), update([]));
     expect(steerStates()).toEqual(["sent", "delivered"]);
@@ -1306,7 +1305,6 @@ describe("AgentManager scheduling and project folders", () => {
     ]);
     expect(spawned?.argv).not.toContain(missing);
     const run = await latestRun(task.id);
-    expect(run.prompt).toContain(`Project folders: primary ${workdir}, plus ${extra}.`);
     expect(run.prompt).not.toContain(missing);
     expect((await runEvents(run.id)).map((e) => e.text)).toContain(`Skipped missing folder ${missing}`);
   });
@@ -1453,7 +1451,6 @@ describe("AgentManager collaboration, dependencies and workspaces", () => {
     expect(flagValues(spawned?.argv, "--cwd")).toEqual([target]);
     const branch = execFileSync("git", ["branch", "--show-current"], { cwd: target }).toString().trim();
     expect(branch).toMatch(/^omp\/isolated-change-/);
-    expect((await latestRun(task.id)).prompt).toContain(`dedicated git worktree on branch \`${branch}\``);
   });
 });
 

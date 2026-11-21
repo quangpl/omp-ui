@@ -3,7 +3,7 @@
 // reasoning `slow` role for hard problems, `designer` for UI work). A model pinned on the board
 // always wins; anything else falls back to the default model.
 import { execFile } from "node:child_process";
-import { needsOrchestration } from "@/lib/agent/prompt";
+import { isLargeTask } from "@/lib/agent/task-size";
 import { selectorProvider, type ProviderPick } from "@/lib/provider-priority";
 import type { AppSettings, Board, Comment, Task } from "@/lib/types";
 
@@ -116,7 +116,7 @@ export function classifyTask(task: Task, feedback: Comment[]): { profile: TaskPr
   texts.push(task.title, task.description);
   const text = texts.join("\n");
   const words = text.split(/\s+/).filter(Boolean).length;
-  const large = needsOrchestration(task, feedback);
+  const large = isLargeTask(task, feedback);
 
   const matches = (cues: Cue[]) => cues.filter((c) => c.pattern.test(text)).map((c) => c.label);
   const strong = matches(DEEP_STRONG);

@@ -136,8 +136,6 @@ interface TaskDoc {
   usage?: TaskUsage | null;
   /** Missing on documents created before schedulers. */
   schedulerId?: string | null;
-  /** Missing on documents created before the parallelize toggle. */
-  parallelize?: boolean | null;
   /** Missing on documents created before the ignore-memory toggle (counts as false). */
   ignoreMemory?: boolean;
   /** Copied from the board on create. Missing on documents created before multi-user support. */
@@ -293,7 +291,6 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     resources: parseAgentResources(d.resources),
     usage: parseTaskUsage(d.usage),
     schedulerId: d.schedulerId ?? null,
-    parallelize: d.parallelize ?? null,
     ignoreMemory: d.ignoreMemory === true,
     userId: d.userId ?? null,
     createdAt: d.createdAt,
@@ -860,7 +857,6 @@ export class MongoRepository implements Repository {
       resources: null,
       usage: null,
       schedulerId: input.schedulerId ?? null,
-      parallelize: input.parallelize ?? null,
       ignoreMemory: input.ignoreMemory ?? false,
       userId: board.userId ?? null,
       createdAt: now,

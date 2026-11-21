@@ -1519,7 +1519,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     // Independent startup reads and folder setup run in parallel. Dedicated workspace: the
     // card's own worktrees stand in for the project folders.
     const sessionFile = task.sessionFile;
-    // An automatic retry after a failed run: the prompt tells the agent what went wrong.
+    // An automatic retry after a quota failure waits for the quota instead of the normal backoff.
     const retriedRunId = task.autoRetries > 0 ? task.lastRunId : null;
     const [workspace, taskFiles, boardFiles, comments, foundSession, retriedRun] = await Promise.all([
       board.worktrees ? ensureWorkspace(board, task) : null,
@@ -1530,21 +1530,11 @@ class OmpAgentManager implements AgentManager, RunControl {
       retriedRunId ? repo.getRun(retriedRunId) : null,
     ]);
     const quotaRetry = retriedRun?.status === "failed" && isQuotaError(retriedRun.error);
-    // Only the agent's own failures: a quota error or a lost node is not something it can fix.
-    const previousFailure =
-      retriedRun?.status === "failed" &&
-      retriedRun.error &&
-      !isQuotaError(retriedRun.error) &&
-      !retriedRun.error.endsWith(RESCHEDULED_SUFFIX)
-        ? { message: retriedRun.error, attempt: task.autoRetries }
-        : undefined;
     let workdir = board.workdir;
     let projectExtras = board.extraFolders ?? [];
-    let workspaceBranch: string | null = null;
     let workspaceNotes: string[] = [];
     if (workspace) {
       [workdir, ...projectExtras] = workspace.workspace.folders.map((f) => f.path);
-      workspaceBranch = workspace.workspace.folders.find((f) => f.isolated)?.branch ?? null;
       workspaceNotes = workspace.notes;
     }
     if (run.finished) return;
@@ -1574,15 +1564,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     const senders: Record<string, string> = Object.fromEntries(senderIds.map((id, index) => [id, senderTitles[index]!]));
     const extraFolders = folders.filter((f) => f.ok).map((f) => f.folder);
     const missingFolders = folders.filter((f) => !f.ok).map((f) => f.folder);
-    // The prompt lists only folders the agent can actually reach.
-    const prompt = buildPrompt(task, { ...board, workdir, extraFolders }, feedback, resumeFile !== null, {
-      taskFiles,
-      boardFiles,
-      workspaceBranch,
-      browser: settings.browser,
-      senders,
-      previousFailure,
-    }, settings.useSystemPrompt);
+    const prompt = buildPrompt(task, feedback, resumeFile !== null, senders);
     const created = await repo.createRun({
       taskId: task.id,
       prompt,
@@ -2279,11 +2261,8 @@ class OmpAgentManager implements AgentManager, RunControl {
       // Already part of this run's prompt.
       if (run.feedbackIds.has(comment.id)) return;
       try {
-        const [task, sender] = await Promise.all([
-          this.repo.getTask(run.taskId),
-          comment.fromTaskId ? this.repo.getTask(comment.fromTaskId) : null,
-        ]);
-        const message = buildSteerMessage(comment, sender?.title, task?.parallelize !== false);
+        const sender = comment.fromTaskId ? await this.repo.getTask(comment.fromTaskId) : null;
+        const message = buildSteerMessage(comment, sender?.title);
         // Its own id keeps it apart from run.promptId, so its response cannot complete or fail the run.
         const taken = await this.sendSteer(run, `${STEER_ID_PREFIX}${comment.id}`, message);
         if (!taken) {

@@ -671,20 +671,17 @@ export const api = {
         status?: TaskStatus;
         position?: number;
         blockedBy?: string[];
-        /** Whether the run prompt invites parallel subagents; null/omitted = on. */
-        parallelize?: boolean | null;
         /** Whether the card's runs start omp without agentmemory (no recall, capture or memory tools); omitted = false. */
         ignoreMemory?: boolean;
       },
     ) => request<Task>(`/boards/${boardId}/tasks`, { method: "POST", json: input }),
     /**
      * A card from free text, created in In progress with the text as typed and its agent started.
-     * `parallelize` false: the run prompt doesn't tell the agent it may split the work across parallel subagents (omitted = on).
      * `ignoreMemory` true: the card's runs start omp without agentmemory (omitted = false).
      */
     createFromText: (
       boardId: string,
-      input: { text: string; position?: number; parallelize?: boolean; ignoreMemory?: boolean },
+      input: { text: string; position?: number; ignoreMemory?: boolean },
     ) => request<Task>(`/boards/${boardId}/tasks`, { method: "POST", json: input }),
     get: (id: string) => request<TaskDetail>(`/tasks/${id}`),
     update: (

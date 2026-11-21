@@ -273,7 +273,6 @@ function NewSchedulerForm({
       busyLabel="Creating…"
       canSubmit={!scheduleError(schedule) && !!boardId}
       resetOnSubmit={false}
-      parallelizeToggle={false}
       memoryToggle={false}
       onTextChange={(text) => setFirstLine(text.trim().split("\n", 1)[0]?.trim().slice(0, 200) ?? "")}
       onSubmit={create}

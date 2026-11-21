@@ -272,8 +272,7 @@ function AgentSettingsSection() {
       saved.autoRetry !== draft.autoRetry ||
       saved.persistentRetry !== draft.persistentRetry ||
       saved.maxAutoRetries !== draft.maxAutoRetries ||
-      saved.browser !== draft.browser ||
-      saved.useSystemPrompt !== draft.useSystemPrompt);
+      saved.browser !== draft.browser);
 
   function onLimitModeChange(mode: LimitMode) {
     setLimitMode(mode);
@@ -299,7 +298,6 @@ function AgentSettingsSection() {
         persistentRetry: draft.persistentRetry,
         maxAutoRetries: draft.maxAutoRetries,
         browser: draft.browser,
-        useSystemPrompt: draft.useSystemPrompt,
       });
       applySettings(next);
       refreshConcurrency();
@@ -426,21 +424,6 @@ function AgentSettingsSection() {
                   </Select>
                 </SettingsField>
               </div>
-            </SettingsGroup>
-
-            <SettingsGroup title="System prompt">
-              <SettingsToggle
-                htmlFor="use-system-prompt"
-                title="Use AgentMan's system prompt"
-                description="Prepend the workflow, quality gates, cleanup, summary and report instructions to every task sent to omp. When off, the task is forwarded to omp exactly as written, with nothing added."
-              >
-                <Switch
-                  id="use-system-prompt"
-                  checked={draft.useSystemPrompt}
-                  onCheckedChange={(checked) => setDraft({ ...draft, useSystemPrompt: checked })}
-                  disabled={saving}
-                />
-              </SettingsToggle>
             </SettingsGroup>
 
             <SettingsGroup title="Models">

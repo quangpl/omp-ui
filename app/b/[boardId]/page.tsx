@@ -158,7 +158,7 @@ function BoardScreen() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selectedTaskId, columns, switchTask]);
 
-  const create = async (text: string, options?: { parallelize: boolean; ignoreMemory: boolean }) =>
+  const create = async (text: string, options?: { ignoreMemory: boolean }) =>
     (await controller.createFromText(text, options)) !== null;
 
   // Phones get the full "New task" page (the board stays right behind it in history); desktop
@@ -195,7 +195,6 @@ function BoardScreen() {
           title: `${task.title} (copy)`,
           description: task.description,
           start: false,
-          parallelize: task.parallelize,
           ignoreMemory: task.ignoreMemory,
         });
       },
