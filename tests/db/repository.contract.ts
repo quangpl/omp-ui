@@ -467,8 +467,6 @@ export function runRepositoryContract(
           blockedBy: [],
           createdByTaskId: null,
           schedulerId: null,
-          parallelize: null,
-          ignoreMemory: false,
           todos: [],
           review: null,
           resources: null,
@@ -1329,36 +1327,6 @@ export function runRepositoryContract(
         expect((await repo.updateTask(scheduled.id, { title: "renamed" }))!.schedulerId).toBe(scheduler.id);
       });
 
-      it("round-trips Task.parallelize (true, false, or null when omitted)", async () => {
-        const board = await newBoard();
-        const on = await repo.createTask({ boardId: board.id, title: "on", parallelize: true });
-        const off = await repo.createTask({ boardId: board.id, title: "off", parallelize: false });
-        const unset = await repo.createTask({ boardId: board.id, title: "unset" });
-
-        expect([on.parallelize, off.parallelize, unset.parallelize]).toEqual([true, false, null]);
-        expect(await repo.getTask(on.id)).toEqual(on);
-        expect(await repo.getTask(off.id)).toEqual(off);
-        expect(await repo.getTask(unset.id)).toEqual(unset);
-        expect(await repo.listTasks(board.id)).toEqual([on, off, unset]);
-      });
-
-      it("round-trips Task.ignoreMemory (true, false, or false when omitted) and patches it", async () => {
-        const board = await newBoard();
-        const on = await repo.createTask({ boardId: board.id, title: "on", ignoreMemory: true });
-        const off = await repo.createTask({ boardId: board.id, title: "off", ignoreMemory: false });
-        const unset = await repo.createTask({ boardId: board.id, title: "unset" });
-
-        expect([on.ignoreMemory, off.ignoreMemory, unset.ignoreMemory]).toEqual([true, false, false]);
-        expect(await repo.getTask(on.id)).toEqual(on);
-        expect(await repo.getTask(off.id)).toEqual(off);
-        expect(await repo.getTask(unset.id)).toEqual(unset);
-
-        expect((await repo.updateTask(unset.id, { ignoreMemory: true }))!.ignoreMemory).toBe(true);
-        expect((await repo.getTask(unset.id))!.ignoreMemory).toBe(true);
-        expect((await repo.updateTask(unset.id, { ignoreMemory: false }))!.ignoreMemory).toBe(false);
-        expect((await repo.getTask(unset.id))!.ignoreMemory).toBe(false);
-      });
-
       it("creates scheduler runs and lists them newest first, scoped and limited", async () => {
         const board = await newBoard();
         const scheduler = await newScheduler(board.id, "a");
@@ -1789,8 +1757,6 @@ export function runRepositoryContract(
           status: "in_progress",
           blockedBy: [parent.id],
           createdByTaskId: parent.id,
-          parallelize: false,
-          ignoreMemory: true,
         });
         await repo.updateTask(task.id, {
           todos: [{ name: "Testing", tasks: [{ content: "Run tests", status: "completed" }] }],

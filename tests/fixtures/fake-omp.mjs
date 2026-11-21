@@ -32,9 +32,6 @@
 //                         "loop" repeats the same `read` call (same args, same result) every ~30 ms,
 //                         40 times, then succeeds; it stops early if the run is aborted meanwhile.
 //                         "question" succeeds with a summary that ends in a question for the user.
-//                         "parallel" succeeds with "Fake summary: parallel subagents allowed." when the
-//                         prompt carries the parallel-subagent permission (PARALLEL_PERMISSION), else
-//                         "Fake summary: parallel subagents not allowed." (the Parallelize toggle).
 //                         "stream" emits 2 thinking_delta + 15 text_delta frames ~80ms apart, then succeeds.
 //                         "orchestrate" runs a `task` call with two subagents (Scout succeeds, Builder
 //                         fails), reporting progress via task tool updates and, when subscribed via
@@ -106,12 +103,6 @@ function flag(name) {
 
 if (argv[0] === "config") {
   log("config", { argv, cwd: process.cwd() });
-  const arrays = { extensions: "FAKE_OMP_EXTENSIONS", disabledExtensions: "FAKE_OMP_DISABLED_EXTENSIONS" };
-  if (argv[2] in arrays) {
-    const value = JSON.parse(process.env[arrays[argv[2]]] || "[]");
-    process.stdout.write(`${JSON.stringify({ key: argv[2], value }, null, 2)}\n`);
-    process.exit(0);
-  }
   const roles = process.env.FAKE_OMP_MODEL_ROLES || "{}";
   if (roles === "fail") process.exit(1);
   process.stdout.write(`${JSON.stringify({ key: argv[2], value: JSON.parse(roles) }, null, 2)}\n`);
@@ -497,9 +488,6 @@ async function orchestrate(current) {
   completeSuccessfully("Fake summary: orchestrated the work across two subagents.");
 }
 
-/** The parallel-subagent permission AgentMan adds to a run's prompt while Parallelize is on. */
-const PARALLEL_PERMISSION = "You may split independent parts of this work across parallel subagents when that helps.";
-
 function scenarioOf(message) {
   const match = /\[fake:([a-z_]+)\]/.exec(String(message ?? ""));
   return match ? match[1] : defaultScenario;
@@ -755,11 +743,6 @@ async function startPrompt(command) {
     case "question":
       completeSuccessfully(
         "Fake summary: added the endpoint.\n\nShould pagination default to 20 or 50 items per page?",
-      );
-      break;
-    case "parallel":
-      completeSuccessfully(
-        `Fake summary: parallel subagents ${String(command.message ?? "").includes(PARALLEL_PERMISSION) ? "allowed" : "not allowed"}.`,
       );
       break;
     case "error":
