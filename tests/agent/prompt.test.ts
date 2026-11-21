@@ -127,8 +127,24 @@ describe("buildPrompt (first run)", () => {
 
 describe("buildPrompt system prompt off", () => {
   it("forwards only the task text, with nothing added", () => {
-    const prompt = buildPrompt(task, board, [comment("Use the brand colors")], true, undefined, false);
+    const prompt = buildPrompt(task, board, [], false, undefined, false);
     expect(prompt).toBe("# Task: Add a cart page\n\nShow the items in the cart.\nAllow removing items.");
+  });
+
+  it("adds the open feedback to a first run's task, without instructions", () => {
+    const prompt = buildPrompt(task, board, [comment("Use the brand colors"), comment("old", { resolved: true })], false, undefined, false);
+    expect(prompt).toBe(
+      "# Task: Add a cart page\n\nShow the items in the cart.\nAllow removing items.\n\n## Feedback from the user\n\nUse the brand colors",
+    );
+  });
+
+  it("sends a resumed session only the new feedback, as typed", () => {
+    expect(buildPrompt(task, board, [comment("  Use the brand colors\nand the logo ")], true, undefined, false)).toBe(
+      "Use the brand colors\nand the logo",
+    );
+    expect(buildPrompt(task, board, [comment("Rename the button"), comment("Fix the typo")], true, undefined, false)).toBe(
+      "1. Rename the button\n2. Fix the typo",
+    );
   });
 });
 

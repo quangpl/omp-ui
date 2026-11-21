@@ -422,7 +422,7 @@ function viewOf(
       return {
         href: cardHref({ boardId: entry.boardId, id: entry.taskId }),
         name,
-        caption: entry.planning ? `#${position} planning` : `#${position} in line`,
+        caption: `#${position} in line`,
         mood: "waiting",
         role: "lead",
         roleLabel: LEAD,
@@ -433,8 +433,6 @@ function viewOf(
             title={entry.title}
             lines={[
               `${name} · ${LEAD} · ${entry.boardName} · #${position} in line`,
-              entry.planning && "Being planned",
-              entry.planNote,
               ...(links.get(entry.taskId) ?? []).map((link) => linkSentence(link, titleOf)),
             ]}
           />

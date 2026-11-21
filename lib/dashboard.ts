@@ -103,7 +103,6 @@ export function visibleQueue(queue: QueueSnapshot, boardIds: ReadonlySet<string>
     ...queue,
     running: queue.running.filter((entry) => boardIds.has(entry.boardId)),
     queued: queue.queued.filter((entry) => boardIds.has(entry.boardId)),
-    planning: queue.planning.filter((plan) => boardIds.has(plan.boardId)),
   };
 }
 

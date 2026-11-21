@@ -147,10 +147,6 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
     if (!parsed.ok) throw new HttpError(400, parsed.error);
     patch.providerPriority = parsed.entries;
   }
-  if (body.smartQueue !== undefined) {
-    if (typeof body.smartQueue !== "boolean") throw new HttpError(400, "smartQueue must be a boolean");
-    patch.smartQueue = body.smartQueue;
-  }
   if (body.autoRetry !== undefined) {
     if (typeof body.autoRetry !== "boolean") throw new HttpError(400, "autoRetry must be a boolean");
     patch.autoRetry = body.autoRetry;

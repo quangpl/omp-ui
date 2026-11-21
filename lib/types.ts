@@ -519,17 +519,13 @@ export interface AppSettings {
    * Replaces `defaultModel` when set; a board's pinned model still wins. Empty = off.
    */
   providerPriority: ProviderPriorityEntry[];
-  /**
-   * Smart queue: when several cards of a project wait in the agent queue, a planner agent orders
-   * them (quick wins and urgent work first). Cards run independently: no card waits for another.
-   */
-  smartQueue: boolean;
   /** What a card's agent may do with a web browser (omp's `browser` tool). */
   browser: BrowserMode;
   /**
    * Prepend AgentMan's system prompt (SDLC workflow, quality gates, cleanup, summary and report
-   * instructions) to every task sent to omp. Off: the task is forwarded to omp exactly as
-   * written, with nothing added.
+   * instructions) to every task sent to omp, and register the board and advisor tools (their
+   * schemas ride on every request). Off: the task is forwarded to omp exactly as written, with
+   * nothing added: no tools, no advisor review, no SDLC nudges, no parallel/orchestrate text.
    */
   useSystemPrompt: boolean;
   /**
@@ -857,7 +853,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   approvalMode: "yolo",
   defaultModel: "",
   providerPriority: [],
-  smartQueue: true,
   browser: "headless",
   useSystemPrompt: true,
   autoRetry: true,
@@ -1077,10 +1072,6 @@ export interface QueueEntry {
   boardName: string;
   title: string;
   state: "running" | "queued";
-  /** Held until the smart-queue planner has ordered its project's queued cards. */
-  planning: boolean;
-  /** Why the smart-queue planner put the card where it is (one line); null when not planned. */
-  planNote: string | null;
   /** Card whose agent created this card (Task.createdByTaskId); null when a person did. */
   createdByTaskId: string | null;
   /** SDLC progress derived from the card's todo list (lib/sdlc.ts); null until the agent keeps one. */
@@ -1136,8 +1127,6 @@ export interface QueueSnapshot {
   running: QueueEntry[];
   /** Start order. */
   queued: QueueEntry[];
-  /** Projects whose queued cards the smart-queue planner is ordering right now. */
-  planning: { boardId: string; boardName: string }[];
 }
 
 /** A machine resource the resource guard watches. */
