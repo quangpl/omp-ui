@@ -12,9 +12,9 @@ export const GET = withApi(async ({ req, repo }) => {
 });
 
 /**
- * Create a scheduler: `{ boardId, prompt, cron, timezone?, name?, enabled?, maxRuns? }`. `name`
- * defaults to the prompt's first line, `timezone` to UTC, `enabled` to true and `maxRuns` to null
- * (forever). Its next fire time is computed right away.
+ * Create a scheduler: `{ boardId, prompt, cron, timezone?, name?, enabled?, maxRuns?, model? }`. `name`
+ * defaults to the prompt's first line, `timezone` to UTC, `enabled` to true, `maxRuns` to null
+ * (forever) and `model` (an omp selector) to null: the project's model. Its next fire time is computed right away.
  */
 export const POST = withApi(async ({ req, repo }) =>
   json(await createScheduler(repo, await readJson(req)), { status: 201 }),

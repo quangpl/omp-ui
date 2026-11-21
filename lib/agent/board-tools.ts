@@ -6,7 +6,6 @@ import type { Repository } from "@/lib/db/types";
 import { publish, subscribe } from "@/lib/events";
 import { listFiles } from "@/lib/files";
 import { HttpError } from "@/lib/server/http";
-import { parseBlockedBy } from "@/lib/server/validate";
 import { getWorkspace } from "@/lib/workspaces";
 import { TASK_STATUSES, type Comment, type Task, type TaskStatus } from "@/lib/types";
 
@@ -44,7 +43,7 @@ export const BOARD_TOOLS = [
     name: "board_list_cards",
     label: "Board cards",
     description:
-      "List the cards on this project's board (yours included): id, title, column, agent state, and the cards each one waits for. Other agents may be working on other cards right now.",
+      "List the cards on this project's board (yours included): id, title, column and agent state. Other agents may be working on other cards right now.",
     parameters: {
       type: "object",
       properties: {
@@ -69,18 +68,13 @@ export const BOARD_TOOLS = [
     name: "board_create_card",
     label: "Delegate to a new card",
     description:
-      "Create a card on this board for a self-contained piece of work. With start=true (default) its own agent starts working on it in parallel (it waits in the agent queue when all slots are busy, and until every card in blockedBy is Done). Write a complete brief: the new agent does not see your conversation. Use board_wait_for_cards to collect the result.",
+      "Create a card on this board for a self-contained piece of work. With start=true (default) its own agent starts working on it in parallel (it waits in the agent queue while all slots are busy). Write a complete brief: the new agent does not see your conversation. Use board_wait_for_cards to collect the result.",
     parameters: {
       type: "object",
       properties: {
         title: { type: "string", description: "Short card title." },
         description: { type: "string", description: "Full, self-contained brief (markdown)." },
         start: { type: "boolean", description: "Start its agent now (default true). False parks it in To do." },
-        blockedBy: {
-          type: "array",
-          items: { type: "string" },
-          description: "Card ids that must be Done before this card's agent starts.",
-        },
       },
       required: ["title", "description"],
       additionalProperties: false,
@@ -216,14 +210,11 @@ async function createCard(host: BoardToolHost, caller: BoardToolCaller, args: Re
       throw new Error("Delegation is nested too deeply here; do this work yourself.");
     }
   }
-  const blockedBy = args.blockedBy === undefined ? [] : await hostValidate(() => parseBlockedBy(repo, args.blockedBy, caller.boardId, null));
-
   const task = await repo.createTask({
     boardId: caller.boardId,
     title,
     description,
     status: start ? "in_progress" : "todo",
-    blockedBy,
     createdByTaskId: caller.taskId,
     ignoreMemory: byId.get(caller.taskId)?.ignoreMemory ?? false,
   });
@@ -346,7 +337,6 @@ function cardHeader(t: Task): {
   status: TaskStatus;
   agentState: Task["agentState"];
   agentError?: string;
-  blockedBy?: string[];
   createdByCard?: string;
 } {
   return {
@@ -355,7 +345,6 @@ function cardHeader(t: Task): {
     status: t.status,
     agentState: t.agentState,
     ...(t.agentError ? { agentError: t.agentError } : {}),
-    ...(t.blockedBy.length > 0 ? { blockedBy: t.blockedBy } : {}),
     ...(t.createdByTaskId ? { createdByCard: t.createdByTaskId } : {}),
   };
 }

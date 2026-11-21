@@ -493,7 +493,7 @@ function AgentSettingsSection() {
                 <SettingsToggle
                   htmlFor="smart-queue"
                   title="Smart queue"
-                  description="When you add several cards, an agent orders them and links dependencies. Independent cards run in parallel; the rest wait on what they depend on."
+                  description="When you add several cards, an agent orders them (urgent work and quick wins first). Every card then runs independently, as many in parallel as the agent limit allows."
                 >
                   <Switch
                     id="smart-queue"
