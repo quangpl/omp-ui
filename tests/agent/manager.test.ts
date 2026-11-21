@@ -1325,62 +1325,15 @@ describe("AgentManager scheduling and project folders", () => {
     expect(flagValues(spawned?.argv, "--approval-mode")).toEqual(["write"]);
   });
 
-  it("auto-selects the omp role that fits each card and logs why", async () => {
-    board = (await repo.updateBoard(board.id, { model: null }))!;
-    await updateAppSettings(repo, { defaultModel: "fake/default" });
+  it("leaves the model to omp when the board and settings set none, and never reads the roles", async () => {
     process.env.FAKE_OMP_MODEL_ROLES = JSON.stringify({ smol: "fake/fast:low", slow: "fake/deep:xhigh" });
-    const manager = await getAgentManager();
-    const cards = [
-      ["Fix the race condition in the job queue", "Workers deadlock under load."],
-      ["Fix typo in README", ""],
-      ["Add a CSV export button", "Export the visible rows."],
-    ] as const;
-    const taskIds: string[] = [];
-    for (const [title, description] of cards) {
-      const task = await createTask(title, description);
-      taskIds.push(task.id);
-      await manager.start(task.id);
-      await waitDone(task.id);
-    }
-
-    const spawned = argvEntries();
-    expect(spawned.map((e) => flagValues(e.argv, "--model"))).toEqual([["@slow"], ["@smol"], ["fake/default"]]);
-    expect(spawned.map((e) => flagValues(e.argv, "--thinking"))).toEqual([[], [], []]);
-    const configCalls = readLog().filter((e) => e.kind === "config");
-    expect(configCalls.map((e) => [e.argv, e.cwd])).toEqual(
-      cards.map(() => [["config", "get", "modelRoles", "--json"], workdir]),
-    );
-    const texts = (await runEvents((await latestRun(taskIds[0]!)).id)).map((e) => e.text);
-    expect(texts).toContain("Model auto-selected: @slow (needs deep reasoning: concurrency → slow role (fake/deep:xhigh))");
-    expect(texts).toContain(`Starting agent in ${workdir} (model @slow)`);
-  });
-
-  it("falls back to the default model with a fitting thinking level when omp has no matching role", async () => {
-    board = (await repo.updateBoard(board.id, { model: null }))!;
-    await updateAppSettings(repo, { defaultModel: "fake/default" });
-    process.env.FAKE_OMP_MODEL_ROLES = "fail";
-    const task = await createTask("Investigate the memory leak in the SSE stream");
-    const manager = await getAgentManager();
-
-    await manager.start(task.id);
-    await waitDone(task.id);
-
-    const [spawned] = argvEntries();
-    expect(flagValues(spawned?.argv, "--model")).toEqual(["fake/default"]);
-    expect(flagValues(spawned?.argv, "--thinking")).toEqual(["high"]);
-    const texts = (await runEvents((await latestRun(task.id)).id)).map((e) => e.text);
-    expect(texts).toContain(`Starting agent in ${workdir} (model fake/default, thinking high)`);
-  });
-
-  it("skips auto selection for a board with a pinned model or when it is turned off", async () => {
-    process.env.FAKE_OMP_MODEL_ROLES = JSON.stringify({ slow: "fake/deep" });
     const manager = await getAgentManager();
     const pinned = await createTask("Debug the deadlock");
     await manager.start(pinned.id);
     await waitDone(pinned.id);
 
     board = (await repo.updateBoard(board.id, { model: null }))!;
-    await updateAppSettings(repo, { defaultModel: "", autoModel: false });
+    await updateAppSettings(repo, { defaultModel: "" });
     const unpinned = await createTask("Debug the deadlock again");
     await manager.start(unpinned.id);
     await waitDone(unpinned.id);
@@ -1389,6 +1342,8 @@ describe("AgentManager scheduling and project folders", () => {
     expect(spawned.map((e) => flagValues(e.argv, "--model"))).toEqual([["fake/model-1"], []]);
     expect(spawned.flatMap((e) => flagValues(e.argv, "--thinking"))).toEqual([]);
     expect(readLog().filter((e) => e.kind === "config")).toEqual([]);
+    const texts = (await runEvents((await latestRun(unpinned.id)).id)).map((e) => e.text);
+    expect(texts).toContain(`Starting agent in ${workdir}`);
   });
 });
 
