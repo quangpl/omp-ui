@@ -26,10 +26,10 @@ export const ERROR_THRESHOLD = 3;
 export const ALTERNATE_THRESHOLD = 6;
 
 /**
- * Tools whose repetition is how they work, not a loop: todo list updates, subagent delegation,
- * waiting on other cards, and questions to the advisor or the user.
+ * Tools whose repetition is how they work, not a loop: todo list updates, subagent delegation
+ * and questions to the user.
  */
-const IGNORED_TOOLS: Record<string, true> = { todo: true, task: true, board_wait_for_cards: true, ask_advisor: true, ask: true };
+const IGNORED_TOOLS: Record<string, true> = { todo: true, task: true, ask: true };
 /** Arg fields that describe the call rather than change it (omp's intent narration). */
 const VOLATILE_ARGS: Record<string, true> = { intent: true, i: true };
 /** Outcomes compare this much of the result text (plus its length): enough to tell results apart. */

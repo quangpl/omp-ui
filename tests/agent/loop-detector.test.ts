@@ -119,10 +119,8 @@ describe("LoopDetector", () => {
     for (let n = 0; n < 6; n++) {
       calls.push(["todo", { op: "view" }]);
       calls.push(["task", { tasks: [] }]);
-      calls.push(["board_wait_for_cards", { cardIds: ["x"] }]);
-      calls.push(["ask_advisor", { question: "Which?" }]);
       calls.push(["ask", { question: "Which?" }]);
-      calls.push(["write", { path: "xd://board_wait_for_cards", content: JSON.stringify({ cardIds: ["x"] }) }]);
+      calls.push(["write", { path: "xd://ask", content: JSON.stringify({ question: "Which?" }) }]);
     }
     expect(feed(detector, calls)).toEqual([]);
   });

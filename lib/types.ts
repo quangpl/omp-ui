@@ -516,13 +516,6 @@ export interface AppSettings {
   /** What a card's agent may do with a web browser (omp's `browser` tool). */
   browser: BrowserMode;
   /**
-   * Prepend AgentMan's system prompt (SDLC workflow, quality gates, cleanup, summary and report
-   * instructions) to every task sent to omp, and register the board and advisor tools (their
-   * schemas ride on every request). Off: the task is forwarded to omp exactly as written, with
-   * nothing added: no tools, no advisor review, no SDLC nudges, no parallel/orchestrate text.
-   */
-  useSystemPrompt: boolean;
-  /**
    * Retry failed runs automatically (resuming the omp session) with exponential backoff, and
    * resume interrupted and failed In progress cards when the server restarts.
    */
@@ -847,7 +840,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultModel: "",
   providerPriority: [],
   browser: "headless",
-  useSystemPrompt: true,
   autoRetry: true,
   maxAutoRetries: 5,
   persistentRetry: true,
