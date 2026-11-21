@@ -282,18 +282,6 @@ export async function agentDir(ompPath: string): Promise<string> {
   return dir;
 }
 
-/** One effective setting (`omp config get <key> --json`) as omp resolves it in `cwd` (project over user). */
-export async function getOmpSetting(ompPath: string, key: string, cwd: string): Promise<unknown> {
-  const result = await runOmp(ompPath, ["config", "get", key, "--json"], { cwd });
-  if (result.code !== 0) throw new HttpError(400, cliError(result));
-  const start = result.stdout.indexOf("{");
-  try {
-    const data: unknown = JSON.parse(result.stdout.slice(start === -1 ? 0 : start));
-    if (data && typeof data === "object" && "value" in data) return data.value;
-  } catch {}
-  throw new HttpError(502, `omp config get ${key} returned unexpected output; is omp up to date?`);
-}
-
 // ─── file access ─────────────────────────────────────────────────────────────
 
 function hash(raw: string): string {

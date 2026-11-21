@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildPrompt, buildSteerMessage, FAILURE_STREAK_NUDGE } from "@/lib/agent/prompt";
+import { buildPrompt, buildSteerMessage, FAILURE_STREAK_NUDGE, needsOrchestration } from "@/lib/agent/prompt";
 import { SDLC_PHASE_INFO } from "@/lib/sdlc";
 import type { Board, Comment, Task, TodoPhase } from "@/lib/types";
 
@@ -37,8 +37,6 @@ const task: Task = {
   lastRunId: null,
   createdByTaskId: null,
   schedulerId: null,
-  parallelize: null,
-  ignoreMemory: false,
   userId: null,
   pushedAt: null,
   autoRetries: 0,
@@ -78,9 +76,8 @@ describe("buildPrompt (first run)", () => {
     expect(prompt).toContain("# Task: Add a cart page\n\nShow the items in the cart.\nAllow removing items.");
     expect(prompt).toContain("## Instructions");
     expect(prompt).toContain("- Work in this repository (/work/shop) and make the change described above.");
-    expect(prompt).toMatch(/short, scannable summary/);
-    expect(prompt).toMatch(/at most 5 bullets/);
-    expect(prompt).toContain("holding only these lines");
+    expect(prompt).not.toMatch(/scannable summary/);
+    expect(prompt).not.toContain("## Report");
     expect(prompt).toMatch(/do not stop to ask/);
     expect(prompt).not.toContain("## Feedback from the user");
     expect(prompt).not.toContain("Project folders");
@@ -159,7 +156,7 @@ describe("buildPrompt (resumed session)", () => {
     expect(prompt).toContain("Address all of the feedback above in this repository (/work/shop).");
     expect(prompt).not.toContain("# Task:");
     expect(prompt).not.toContain("Shop\" board");
-    expect(prompt).toMatch(/short, scannable summary/);
+    expect(prompt).not.toMatch(/scannable summary/);
   });
 
   it("includes extra folders when resuming with feedback", () => {
@@ -184,129 +181,89 @@ describe("buildPrompt (resumed session)", () => {
 // omp's magic-keyword match: a standalone, lowercase "orchestrate".
 const KEYWORD = /(?<![\p{L}\p{N}_./\\-])orchestrate(?![\p{L}\p{N}_/\\-])(?!\.[\p{L}\p{N}_-])(?!\()/u;
 
-describe("buildPrompt orchestration keyword", () => {
-  it("leaves small tasks to a single agent", () => {
-    expect(buildPrompt(task, board, [], false)).not.toMatch(KEYWORD);
-    expect(buildPrompt(task, board, [comment("Use the brand colors")], true)).not.toMatch(KEYWORD);
-    const routine = { ...task, description: "Fix the typo and make sure all tests pass." };
-    expect(buildPrompt(routine, board, [], false)).not.toMatch(KEYWORD);
+describe("buildPrompt leaves parallelism and the final report to omp", () => {
+  const big = {
+    ...task,
+    description: "Shop revamp:\n- Cart page\n- [ ] Checkout flow\n1. Order history\n2) Admin dashboard",
+  };
+  const feedback = [comment("Also:\n- Wishlist\n- Reviews\n- Search\n- Filters")];
+
+  it("adds no parallel-subagent or orchestration text, however large the task", () => {
+    for (const prompt of [
+      buildPrompt(big, board, [], false),
+      buildPrompt(big, board, [], true),
+      buildPrompt(task, board, feedback, true),
+    ]) {
+      expect(prompt).not.toMatch(KEYWORD);
+      expect(prompt).not.toContain("parallel subagent");
+    }
   });
 
-  it("orchestrates a task listing several work items", () => {
-    const big = {
-      ...task,
-      description: "Shop revamp:\n- Cart page\n- [ ] Checkout flow\n1. Order history\n2) Admin dashboard",
-    };
-    const prompt = buildPrompt(big, board, [], false);
-    expect(prompt).toMatch(KEYWORD);
-    expect(prompt).toContain("- This task spans several pieces of work: orchestrate it");
+  it("asks for no summary or Report format", () => {
+    for (const prompt of [
+      buildPrompt(task, board, [], false),
+      buildPrompt(task, board, feedback, true),
+      buildPrompt(task, board, [], true),
+    ]) {
+      expect(prompt).not.toMatch(/scannable summary/);
+      expect(prompt).not.toContain("## Report");
+    }
+  });
+});
+
+describe("needsOrchestration", () => {
+  it("leaves small tasks to a single agent", () => {
+    expect(needsOrchestration(task, [])).toBe(false);
+    expect(needsOrchestration(task, [comment("Use the brand colors")])).toBe(false);
+    expect(needsOrchestration({ ...task, description: "Fix the typo and make sure all tests pass." }, [])).toBe(false);
+  });
+
+  it("flags a task listing several work items", () => {
+    const big = { ...task, description: "Shop revamp:\n- Cart page\n- [ ] Checkout flow\n1. Order history\n2) Admin dashboard" };
+    expect(needsOrchestration(big, [])).toBe(true);
   });
 
   it("counts feedback comments as work items", () => {
     const three = [comment("Rename the button"), comment("Fix the typo"), comment("Add a footer")];
-    expect(buildPrompt(task, board, three, false)).not.toMatch(KEYWORD);
-    expect(buildPrompt(task, board, [...three, comment("Dark mode")], false)).toMatch(KEYWORD);
-    expect(buildPrompt(task, board, [...three, comment("Dark mode")], true)).toMatch(KEYWORD);
+    expect(needsOrchestration(task, three)).toBe(false);
+    expect(needsOrchestration(task, [...three, comment("Dark mode")])).toBe(true);
   });
 
-  it("orchestrates explicit broad or parallel asks and long briefs", () => {
+  it("flags explicit broad or parallel asks and long briefs", () => {
     for (const description of [
       "Replace moment with date-fns across the codebase.",
       "Add a loading skeleton to every page.",
       "Run these in parallel if you can.",
       "word ".repeat(300),
     ]) {
-      expect(buildPrompt({ ...task, description }, board, [], false)).toMatch(KEYWORD);
+      expect(needsOrchestration({ ...task, description }, [])).toBe(true);
     }
   });
-
-  it("keeps orchestrating a large task when resuming without feedback", () => {
-    const big = { ...task, description: "Update all components to the new design system." };
-    const prompt = buildPrompt(big, board, [], true);
-    expect(prompt.startsWith("Continue working on this task")).toBe(true);
-    expect(prompt).toMatch(KEYWORD);
-  });
 });
-
-const PARALLEL = "You may split independent parts of this work across parallel subagents when that helps.";
 
 describe("buildSteerMessage", () => {
   it("sends user feedback word for word, like typing into omp mid-run", () => {
     const body = "  Please also handle errors\nfrom the API  ";
-    expect(buildSteerMessage(comment(body), null, false)).toBe("Please also handle errors\nfrom the API");
-    expect(buildSteerMessage(comment(body), null, true)).toBe(`Please also handle errors\nfrom the API\n\n${PARALLEL}`);
+    expect(buildSteerMessage(comment(body), null)).toBe("Please also handle errors\nfrom the API");
+    const large = "Also:\n- Cart page\n- Checkout flow\n- Order history\n- Admin dashboard";
+    expect(buildSteerMessage(comment(large), null)).toBe(large);
   });
 
   it("names the sending card for a message from another card's agent", () => {
-    const message = buildSteerMessage(comment("API is ready", { fromTaskId: "t9" }), "Build the API", true);
+    const message = buildSteerMessage(comment("API is ready", { fromTaskId: "t9" }), "Build the API");
 
     expect(message).toContain('New message from the agent working on card "Build the API" (t9):');
     expect(message).toContain("\n\nAPI is ready\n\n");
-    expect(message).toMatch(/mention briefly how you addressed it in your final summary/);
-  });
-
-  it("asks for orchestration on large user feedback only", () => {
-    const list = buildSteerMessage(
-      comment("Also:\n- Cart page\n- Checkout flow\n- Order history\n- Admin dashboard"),
-      null,
-      true,
-    );
-    expect(list).toMatch(KEYWORD);
-    expect(list).toContain("\nThis task spans several pieces of work: orchestrate it");
-    expect(buildSteerMessage(comment("Do the remaining fixes in parallel."), null, true)).toMatch(KEYWORD);
-    expect(buildSteerMessage(comment("Use the brand colors"), null, true)).not.toMatch(KEYWORD);
+    expect(message).toMatch(/mention briefly how you addressed it in your final message/);
   });
 
   it("defuses magic keywords in another card's agent message", () => {
     const body = "Please orchestrate the API work and ultrathink about edge cases.\n- a\n- b\n- c\n- d";
-    const message = buildSteerMessage(comment(body, { fromTaskId: "t9" }), "Build the API", true);
+    const message = buildSteerMessage(comment(body, { fromTaskId: "t9" }), "Build the API");
 
     expect(message).not.toMatch(KEYWORD);
     expect(message).not.toMatch(/(?<![\p{L}\p{N}_./\\-])ultrathink(?![\p{L}\p{N}_/\\-])/u);
-    expect(message).not.toContain("This task spans several pieces of work");
     expect(message.replaceAll("\u200b", "")).toContain(body);
-    expect(message).not.toContain(PARALLEL);
-  });
-
-  it("adds the parallel permission to user feedback only when Parallelize is on", () => {
-    const body = "Also:\n- Cart page\n- Checkout flow\n- Order history\n- Admin dashboard";
-    const on = buildSteerMessage(comment(body), null, true);
-    expect(on).toContain(PARALLEL);
-    expect(on).toMatch(KEYWORD);
-
-    const off = buildSteerMessage(comment(body), null, false);
-    expect(off).not.toContain(PARALLEL);
-    expect(off).not.toMatch(/orchestrate/);
-  });
-});
-
-describe("Parallelize toggle", () => {
-  const large = { ...task, description: "Build:\n- Cart page\n- Checkout flow\n- Order history\n- Admin dashboard" };
-  const feedback = [comment("Also:\n- Wishlist\n- Reviews\n- Search\n- Filters")];
-
-  it("gates the first-run instructions", () => {
-    expect(buildPrompt({ ...task, parallelize: true }, board, [], false)).toContain(`- ${PARALLEL}`);
-    expect(buildPrompt({ ...task, parallelize: null }, board, [], false)).toContain(`- ${PARALLEL}`);
-    expect(buildPrompt(large, board, [], false)).toMatch(KEYWORD);
-    const off = buildPrompt({ ...large, parallelize: false }, board, [], false);
-    expect(off).not.toContain(PARALLEL);
-    expect(off).not.toMatch(/orchestrate/);
-  });
-
-  it("gates resume with feedback", () => {
-    expect(buildPrompt({ ...task, parallelize: true }, board, feedback, true)).toContain(PARALLEL);
-    expect(buildPrompt(task, board, feedback, true)).toContain(PARALLEL);
-    const off = buildPrompt({ ...task, parallelize: false }, board, feedback, true);
-    expect(off).not.toContain(PARALLEL);
-    expect(off).not.toMatch(/orchestrate/);
-  });
-
-  it("gates resume without feedback", () => {
-    expect(buildPrompt({ ...large, parallelize: true }, board, [], true)).toContain(PARALLEL);
-    expect(buildPrompt(large, board, [], true)).toContain(PARALLEL);
-    const off = buildPrompt({ ...large, parallelize: false }, board, [], true);
-    expect(off).not.toContain(PARALLEL);
-    expect(off).not.toMatch(/orchestrate/);
   });
 });
 
@@ -335,7 +292,6 @@ describe("buildPrompt run context", () => {
 
 describe("buildPrompt SDLC workflow", () => {
   const LABELS = ["Analyze", "Implement", "Testing"];
-  const STAFFING = "Staff each SDLC phase";
   const FRESH_ROUND = "run a fresh Analyze → Implement → Testing round";
 
   function phase(name: string, status: "pending" | "in_progress" | "completed"): TodoPhase {
@@ -349,14 +305,6 @@ describe("buildPrompt SDLC workflow", () => {
     expect(prompt).toContain("Testing must pass before the work ships.");
     expect(buildPrompt(task, board, [], true)).toContain(LABELS.join(", "));
     expect(buildPrompt(task, board, [comment("Fix it")], true)).toContain(LABELS.join(", "));
-  });
-
-  it("adds role staffing only to orchestrated runs", () => {
-    const big = { ...task, description: "Update all components to the new design system." };
-    expect(buildPrompt(big, board, [], false)).toContain(STAFFING);
-    expect(buildPrompt(big, board, [], true)).toContain(STAFFING);
-    expect(buildPrompt(task, board, [], false)).not.toContain(STAFFING);
-    expect(buildPrompt(task, board, [comment("Fix it")], true)).not.toContain(STAFFING);
   });
 
   it("treats feedback on delivered work as a fresh round and otherwise continues the current phase", () => {
@@ -388,7 +336,6 @@ describe("buildPrompt non-software tasks", () => {
   const poem = { ...task, title: "Write a poem about the ocean", description: "Four stanzas, free verse." };
   const PHASES = "Analyze, Implement, Testing";
   const DIRECT = "This is not a software-development task";
-  const STAFFING = "Staff each SDLC phase";
 
   it("runs straight instead of applying the SDLC workflow", () => {
     const prompt = buildPrompt(poem, board, [], false);
@@ -396,7 +343,6 @@ describe("buildPrompt non-software tasks", () => {
     expect(prompt).toContain("do the task directly right away");
     expect(prompt).not.toContain(PHASES);
     expect(prompt).not.toContain("Testing must pass before the work ships.");
-    expect(prompt).not.toContain(STAFFING);
     // A software task still gets the lifecycle.
     expect(buildPrompt(task, board, [], false)).toContain(PHASES);
   });
@@ -413,20 +359,10 @@ describe("buildPrompt non-software tasks", () => {
     expect(resume).not.toContain(PHASES);
     expect(resume).not.toContain("Continue from the SDLC phase your todo list shows.");
   });
-
-  it("omits SDLC role staffing even for an orchestrated non-software task", () => {
-    const large = {
-      ...poem,
-      description: "Write:\n- Poem about the ocean\n- Poem about the mountains\n- Poem about the forest\n- Poem about the desert",
-    };
-    const prompt = buildPrompt(large, board, [], false);
-    expect(prompt).toMatch(KEYWORD);
-    expect(prompt).not.toContain(STAFFING);
-  });
 });
 
 describe("buildPrompt cleanup policy", () => {
-  it("asks every run to clean up its temporary artifacts before pushing and before the summary", () => {
+  it("asks every run to clean up its temporary artifacts before pushing and before the final message", () => {
     const CLEANUP = "clean up everything you created only to do this task";
     for (const prompt of [
       buildPrompt(task, board, [], false),
@@ -437,7 +373,6 @@ describe("buildPrompt cleanup policy", () => {
       expect(prompt).toContain("Never delete or remove anything you did not create");
       expect(prompt).toContain("before you commit or push anything");
       expect(prompt.indexOf(CLEANUP)).toBeLessThan(prompt.indexOf("Do not push on your own"));
-      expect(prompt.indexOf(CLEANUP)).toBeLessThan(prompt.indexOf("short, scannable summary"));
       expect(prompt).toContain("--label agentman.task=t1");
       expect(prompt).toContain("docker compose -p task-t1");
       expect(prompt).toContain("AgentMan also removes marked leftovers when a run moves the card to Done or the card is deleted");

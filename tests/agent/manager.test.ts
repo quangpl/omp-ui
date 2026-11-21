@@ -39,8 +39,7 @@ const ENV_KEYS = [
   "FAKE_OMP_SCENARIO",
   "FAKE_OMP_SESSION_DIR",
   "FAKE_OMP_MODEL_ROLES",
-  "FAKE_OMP_EXTENSIONS",
-  "FAKE_OMP_DISABLED_EXTENSIONS",
+
   "OMP_UI_RETRY_BASE_MS",
   "OMP_UI_QUOTA_RETRY_BASE_MS",
 ] as const;
@@ -460,33 +459,6 @@ describe("AgentManager run lifecycle", () => {
     await waitDone(task.id);
 
     await waitFor(() => readLog().some((e) => e.kind === "stdin_closed"), "omp stdin to be closed");
-  });
-
-  it("writes the memory-off overlay into the run config only for cards that ignore memory", async () => {
-    process.env.FAKE_OMP_EXTENSIONS = JSON.stringify(["/x/agent/agentmemory", "/x/other"]);
-    process.env.FAKE_OMP_DISABLED_EXTENSIONS = JSON.stringify(["skill:foo"]);
-    try {
-      const manager = await getAgentManager();
-      const readConfig = (taskId: string) =>
-        JSON.parse(readFileSync(path.join(root, "runtime", `omp-config-${taskId}.yml`), "utf8")) as Record<string, unknown>;
-
-      const off = await repo.createTask({ boardId: board.id, title: "No memory", description: "", status: "todo", ignoreMemory: true });
-      await manager.start(off.id);
-      await waitDone(off.id);
-      const offConfig = readConfig(off.id);
-      expect(offConfig.extensions).toEqual(["/x/other"]);
-      expect(offConfig.disabledExtensions).toEqual(["skill:foo", "mcp:agentmemory"]);
-
-      const on = await createTask("With memory");
-      await manager.start(on.id);
-      await waitDone(on.id);
-      const onConfig = readConfig(on.id);
-      expect(onConfig).not.toHaveProperty("extensions");
-      expect(onConfig).not.toHaveProperty("disabledExtensions");
-    } finally {
-      delete process.env.FAKE_OMP_EXTENSIONS;
-      delete process.env.FAKE_OMP_DISABLED_EXTENSIONS;
-    }
   });
 
   it("treats start() on an active task as a no-op and rejects unknown tasks", async () => {
@@ -1080,7 +1052,7 @@ describe("AgentManager omp session events", () => {
 
     const steer = commands("prompt", pid).find((e) => e.command?.message?.startsWith("Also update the README"))?.command;
     const message = steer?.message ?? "";
-    // Sent word for word, like typing into omp mid-run (plus the Parallelize permission).
+    // Sent word for word, like typing into omp mid-run.
     expect(message.split("\n\n")[0]).toBe("Also update the README");
     const update = (steering: string[]) => ({ type: "queue_update", steering, followUp: [], liveSteered: 0 });
     await sendFrames(pid, runId, update([message]), update([]));
