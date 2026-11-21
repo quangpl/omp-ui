@@ -98,7 +98,7 @@ with it.
 - Needed by the result (a requested change, or linked by the Report)? Keep.
 - Existed before the task's first run, or made by someone else? Keep.
 - Otherwise, if you created it, delete it.
-- Still unsure whether something is meant to stay? Call `ask_advisor`.
+- Still unsure whether something is meant to stay? Keep it.
 
 ## How it is enforced
 

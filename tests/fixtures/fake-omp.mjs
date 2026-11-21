@@ -10,7 +10,7 @@
 //                         via: "prompt" and the streamingBehavior; like omp, an idle `prompt` with
 //                         streamingBehavior starts a prompt).
 //   FAKE_OMP_SCENARIO     Default prompt behaviour: success | question | error | quota | crash | slow |
-//                         confirm | stream | orchestrate | board_tools | todos | todos_done | todos_steer |
+//                         confirm | stream | orchestrate | todos | todos_done | todos_steer |
 //                         todos_feedback | loop | spend | sdlc_flow | sdlc_gate | sdlc_skip | sdlc_hold.
 //                         "error" ends the run with an assistant error (a plain model failure); "quota"
 //                         ends it with a quota / usage-limit error (429), as a provider out of quota does.
@@ -42,17 +42,11 @@
 //   FAKE_OMP_COST_PER_MESSAGE  USD each assistant message adds to `get_session_stats` (default 0);
 //                         `tokens.total` grows by 1000 per assistant message, `contextUsage.tokens` too.
 //   FAKE_OMP_STEP_MS      Delay between orchestrate and sdlc_flow steps (default 80).
-//                         "board_tools" calls the host tools listed in the prompt as
-//                         `<calls>[{"toolName", "arguments"}]</calls>` one after another (`"$created"`
-//                         in arguments becomes the id of the card the last board_create_card made),
-//                         then succeeds with `Tool results: <JSON list of {toolName, isError, text}>`.
 //                         A prompt containing "[fake:<scenario>]" overrides it for that prompt.
 //   FAKE_OMP_SESSION_DIR  Parent dir for the per-process session temp dir (default: os tmpdir).
 //   FAKE_OMP_PROTOCOLS    Comma-separated supportedProtocolVersions advertised in ready (default "1,2").
 //   FAKE_OMP_MODEL_ROLES  JSON object `omp config get modelRoles --json` reports (default {});
 //                         "fail" makes that command exit 1. Logged as a "config" entry, not "argv".
-//   FAKE_OMP_PLAN         Reply text of the queue planner (a helper prompt starting with "You are the
-//                         queue planner"); default {"order":[],"cards":[]}; "fail" exits 1 without an answer.
 //   FAKE_OMP_SKILLS       JSON array of {name, description} that `omp skill list --json` reports as
 //                         {"skills": [...]} (default []). Logged as a "skill" entry, not "argv".
 //   `omp models --json`   Prints {"models": [...]}: each provider's chat models only when its key is
@@ -72,7 +66,7 @@
 //                         prints a device URL and "Enter code: FAKE-1234" and logs in after
 //                         FAKE_OMP_LOGIN_DEVICE_MS (default 300).
 //
-// Helper workers (started with --no-session: advisor, queue planner, chat assistant) are
+// Helper workers (started with --no-session: advisor, summary agent, chat assistant) are
 // pooled and reused across prompts via new_session. They log "helper_argv" at startup instead of
 // "argv", every prompt as a "helper" entry {argv, cwd, prompt}, and other commands as
 // "helper_command" instead of "command", so card-run assertions only see card runs. A helper prompt
@@ -103,12 +97,6 @@ function flag(name) {
 
 if (argv[0] === "config") {
   log("config", { argv, cwd: process.cwd() });
-  const arrays = { extensions: "FAKE_OMP_EXTENSIONS", disabledExtensions: "FAKE_OMP_DISABLED_EXTENSIONS" };
-  if (argv[2] in arrays) {
-    const value = JSON.parse(process.env[arrays[argv[2]]] || "[]");
-    process.stdout.write(`${JSON.stringify({ key: argv[2], value }, null, 2)}\n`);
-    process.exit(0);
-  }
   const roles = process.env.FAKE_OMP_MODEL_ROLES || "{}";
   if (roles === "fail") process.exit(1);
   process.stdout.write(`${JSON.stringify({ key: argv[2], value: JSON.parse(roles) }, null, 2)}\n`);
@@ -191,46 +179,7 @@ if (argv[0] === "login") {
   await new Promise(() => undefined);
 }
 
-// Helper replies (advisor and queue planner prompts on a helper worker): one assistant message
-// chosen by a `[fake-advisor:<mode>]` marker in the prompt (the card's text is part of it):
-//   (none)       consult: a decision; triage: every question left for the user, unchanged.
-//   user         consult: marked for the user.
-//   answer       triage: answers the question and sends the agent back to work (followUp); the
-//                followUp carries "[fake:question] [fake-advisor:answer]", so the next run asks again.
-//   fail         exits 1 without an answer.
-// A queue planner prompt ("You are the queue planner…") is answered with FAKE_OMP_PLAN instead, a
-// code-changes summary prompt ("You summarise code changes…") with a fixed one-line summary.
-// Returns the reply text, or { fail: stderr line }.
-function helperReply(prompt) {
-  if (prompt.startsWith("You are the queue planner")) {
-    const plan = process.env.FAKE_OMP_PLAN || '{"order":[],"cards":[]}';
-    return plan === "fail" ? { fail: "fake omp: planner exploded" } : plan;
-  }
-  if (prompt.startsWith("You summarise code changes for a reviewer.")) {
-    return "Adds a Changes tab that shows the card's diff with a short summary.";
-  }
-  const mode = /\[fake-advisor:([a-z_]+)\]/.exec(prompt)?.[1] ?? "";
-  if (mode === "fail") return { fail: "fake omp: advisor exploded" };
-  const questions = /<questions>\n([\s\S]*?)\n<\/questions>/.exec(prompt)?.[1];
-  let reply;
-  if (questions === undefined) {
-    reply =
-      mode === "user"
-        ? { needsUser: true, decision: "Use the existing blue", reason: "Brand colors are the user's call." }
-        : { needsUser: false, decision: "Use offset pagination with 20 items per page", reason: "Matches the other list endpoints." };
-  } else if (mode === "answer") {
-    reply = {
-      answers: [{ question: questions, answer: "20 items, like the other endpoints." }],
-      userQuestion: null,
-      followUp: "Set the default page size to 20 and add a test for it. [fake:question] [fake-advisor:answer]",
-    };
-  } else {
-    reply = { answers: [], userQuestion: questions, followUp: null };
-  }
-  return JSON.stringify(reply);
-}
-
-/** A pooled helper worker (advisor, queue planner, chat assistant) rather than a card run. */
+/** A pooled helper worker (summary agent, chat assistant) rather than a card run. */
 const helper = argv.includes("--no-session");
 
 /** Environment variables whose values the "argv" entry records (credentials in, AgentMan secrets out). */
@@ -520,23 +469,6 @@ function waitForHostResult(id) {
   return promise;
 }
 
-async function boardTools(message) {
-  const match = /<calls>([\s\S]*?)<\/calls>/.exec(String(message));
-  const calls = match ? JSON.parse(match[1]) : [];
-  const results = [];
-  let created = null;
-  for (const call of calls) {
-    const args = JSON.parse(JSON.stringify(call.arguments ?? {}).replaceAll('"$created"', JSON.stringify(created)));
-    const id = `host_${++hostCallSeq}`;
-    emit({ type: "host_tool_call", id, toolCallId: `toolu_${id}`, toolName: call.toolName, arguments: args });
-    const reply = await waitForHostResult(id);
-    const text = reply.result?.content?.map((c) => c.text).join("") ?? "";
-    if (call.toolName === "board_create_card" && !reply.isError) created = JSON.parse(text).created.id;
-    results.push({ toolName: call.toolName, isError: reply.isError === true, text });
-  }
-  completeSuccessfully(`Tool results: ${JSON.stringify(results)}`);
-}
-
 /**
  * The chat assistant (a helper prompt starting with "You are AgentMan's chat assistant"): takes the
  * message between the <new-message> and </new-message> lines. When it holds
@@ -736,9 +668,8 @@ async function startPrompt(command) {
     return;
   }
   if (helper) {
-    const reply = helperReply(String(command.message ?? ""));
-    if (typeof reply === "object") process.stderr.write(`${reply.fail}\n`, () => process.exit(1));
-    else finishRun(assistant(reply, "stop"));
+    // Only the code-changes summary helper runs outside the chat assistants.
+    finishRun(assistant("Adds a Changes tab that shows the card's diff with a short summary.", "stop"));
     return;
   }
 
@@ -802,9 +733,6 @@ async function startPrompt(command) {
       break;
     case "loop":
       await loopCalls(run);
-      break;
-    case "board_tools":
-      await boardTools(command.message);
       break;
     case "confirm": {
       emit({ type: "extension_ui_request", id: "ui-notify-1", method: "notify", message: "heads up" });

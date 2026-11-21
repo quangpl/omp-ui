@@ -12,7 +12,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { childEnv } from "@/lib/child-env";
 import { HttpError } from "@/lib/server/http";
-import { agentDir as ompAgentDir, getOmpSetting } from "@/lib/server/omp-config";
+import { agentDir as ompAgentDir } from "@/lib/server/omp-config";
 import type { MemoryEnabledMode, MemoryStats, MemoryStatus } from "@/lib/types";
 
 const DEFAULT_URL = "http://127.0.0.1:3111";
@@ -589,7 +589,7 @@ export async function memoryProjectName(boardWorkdir: string): Promise<string> {
 }
 
 /**
- * Env for pooled helper workers (advisor, planner): no memory capture or recall. The
+ * Env for pooled helper workers (advisor, summaries, assistants): no memory capture or recall. The
  * OMP extension has no off switch, so the helpers get no credentials: `AGENTMEMORY_CREDENTIAL_MODE=
  * explicit` without `AGENTMEMORY_SECRET` makes the authenticated server reject their health check
  * (no recall, no session) and every capture (401: dropped, not retried), and with
@@ -599,65 +599,6 @@ export function helperMemoryEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env, AGENTMEMORY_CREDENTIAL_MODE: "explicit", AGENTMEMORY_CAPTURE_SPOOL: "false" };
   delete out.AGENTMEMORY_SECRET;
   return out;
-}
-
-/**
- * Env for a card run with memory off (`ignoreMemory`): same lockout as helperMemoryEnv, as
- * defense in depth should the extension still load. Spread over the run env (no project name).
- */
-export const MEMORY_OFF_ENV = {
-  AGENTMEMORY_CREDENTIAL_MODE: "explicit",
-  AGENTMEMORY_SECRET: "",
-  AGENTMEMORY_CAPTURE_SPOOL: "false",
-} as const;
-
-/** The MCP server key agentmemory's connector and bundled `.mcp.json` register. */
-const MEMORY_MCP_ENTRY = "mcp:agentmemory";
-
-function isMemoryExtension(entry: string): boolean {
-  if (entry.includes("@agentmemory/")) return true;
-  return path.basename(entry.replace(/[\\/]+$/, "")) === "agentmemory";
-}
-
-/**
- * `--config` overlay additions that turn agentmemory off for one run. omp's overlay arrays REPLACE
- * the effective (project-or-user) lists, so both are copied: `extensions` without agentmemory's dir
- * (dropping it drops its hooks — recall/capture —, `memory_*` tools, skills and bundled `.mcp.json`
- * server; omitted when nothing matched), and `disabledExtensions` plus `mcp:agentmemory`, which
- * hides an `agentmemory` server the user defined in mcp.json.
- */
-export function memoryOffSettings(
-  extensions: readonly string[],
-  disabledExtensions: readonly string[],
-): { extensions?: string[]; disabledExtensions: string[] } {
-  const kept = extensions.filter((entry) => !isMemoryExtension(entry));
-  const disabled = [...new Set([...disabledExtensions, MEMORY_MCP_ENTRY])];
-  return kept.length === extensions.length ? { disabledExtensions: disabled } : { extensions: kept, disabledExtensions: disabled };
-}
-
-function stringList(value: unknown): string[] {
-  if (value == null) return [];
-  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) throw new Error("not a string list");
-  return value;
-}
-
-/**
- * memoryOffSettings for omp's effective `extensions`/`disabledExtensions` in `cwd` (the run's
- * workdir, so project `.omp` settings apply). Null when omp can't report them.
- */
-export async function memoryOffOverlay(
-  ompPath: string,
-  cwd: string,
-): Promise<{ extensions?: string[]; disabledExtensions: string[] } | null> {
-  try {
-    const [extensions, disabled] = await Promise.all([
-      getOmpSetting(ompPath, "extensions", cwd),
-      getOmpSetting(ompPath, "disabledExtensions", cwd),
-    ]);
-    return memoryOffSettings(stringList(extensions), stringList(disabled));
-  } catch {
-    return null;
-  }
 }
 
 /**

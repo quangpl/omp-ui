@@ -672,19 +672,11 @@ export const api = {
         description?: string;
         status?: TaskStatus;
         position?: number;
-
-        /** Whether the card's runs start omp without agentmemory (no recall, capture or memory tools); omitted = false. */
-        ignoreMemory?: boolean;
       },
     ) => request<Task>(`/boards/${boardId}/tasks`, { method: "POST", json: input }),
-    /**
-     * A card from free text, created in In progress with the text as typed and its agent started.
-     * `ignoreMemory` true: the card's runs start omp without agentmemory (omitted = false).
-     */
-    createFromText: (
-      boardId: string,
-      input: { text: string; position?: number; ignoreMemory?: boolean },
-    ) => request<Task>(`/boards/${boardId}/tasks`, { method: "POST", json: input }),
+    /** A card from free text, created in In progress with the text as typed and its agent started. */
+    createFromText: (boardId: string, input: { text: string; position?: number }) =>
+      request<Task>(`/boards/${boardId}/tasks`, { method: "POST", json: input }),
     get: (id: string) => request<TaskDetail>(`/tasks/${id}`),
     update: (
       id: string,
@@ -693,8 +685,6 @@ export const api = {
         description: string;
         status: TaskStatus;
         position: number;
-        /** Run omp without agentmemory from the card's next run. */
-        ignoreMemory: boolean;
         /** Only null is accepted: dismisses the agent's question. */
         question: null;
       }>,
