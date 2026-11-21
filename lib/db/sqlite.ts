@@ -116,7 +116,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   question TEXT,
   session_file TEXT,
   last_run_id TEXT,
-  blocked_by TEXT NOT NULL DEFAULT '[]',
   created_by_task_id TEXT,
   pushed_at TEXT,
   auto_retries INTEGER NOT NULL DEFAULT 0,
@@ -191,6 +190,7 @@ CREATE TABLE IF NOT EXISTS schedulers (
   last_status TEXT CHECK (last_status IN ('created', 'failed')),
   last_task_id TEXT,
   last_error TEXT,
+  model TEXT,
   user_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -264,7 +264,6 @@ function toTask(r: Row): Task {
     question: strOrNull(r.question),
     sessionFile: strOrNull(r.session_file),
     lastRunId: strOrNull(r.last_run_id),
-    blockedBy: parseFolderList(r.blocked_by),
     createdByTaskId: strOrNull(r.created_by_task_id),
     pushedAt: strOrNull(r.pushed_at),
     autoRetries: num(r.auto_retries),
@@ -341,6 +340,7 @@ function toScheduler(r: Row): Scheduler {
     lastStatus: strOrNull(r.last_status) as SchedulerRunStatus | null,
     lastTaskId: strOrNull(r.last_task_id),
     lastError: strOrNull(r.last_error),
+    model: strOrNull(r.model),
     userId: strOrNull(r.user_id),
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
@@ -479,7 +479,6 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       "question",
       "session_file",
       "last_run_id",
-      "blocked_by",
       "created_by_task_id",
       "pushed_at",
       "auto_retries",
@@ -510,7 +509,6 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       t.question,
       t.sessionFile,
       t.lastRunId,
-      JSON.stringify(t.blockedBy),
       t.createdByTaskId,
       t.pushedAt,
       t.autoRetries,
@@ -583,6 +581,7 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       "last_status",
       "last_task_id",
       "last_error",
+      "model",
       "user_id",
       "created_at",
       "updated_at",
@@ -603,6 +602,7 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       s.lastStatus,
       s.lastTaskId,
       s.lastError,
+      s.model,
       s.userId,
       s.createdAt,
       s.updatedAt,
@@ -664,7 +664,6 @@ export class SqliteRepository implements Repository {
       ["user_id", "TEXT"],
     ]);
     this.addMissingColumns("tasks", [
-      ["blocked_by", "TEXT NOT NULL DEFAULT '[]'"],
       ["created_by_task_id", "TEXT"],
       ["question", "TEXT"],
       ["pushed_at", "TEXT"],
@@ -687,7 +686,10 @@ export class SqliteRepository implements Repository {
       ["node_id", "TEXT"],
       ["node_name", "TEXT"],
     ]);
-    this.addMissingColumns("schedulers", [["user_id", "TEXT"]]);
+    this.addMissingColumns("schedulers", [
+      ["user_id", "TEXT"],
+      ["model", "TEXT"],
+    ]);
     // After the migrations: older databases only now have these columns.
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_tasks_scheduler ON tasks (scheduler_id);
@@ -1010,8 +1012,8 @@ export class SqliteRepository implements Repository {
       }
       // The card inherits its board's owner.
       this.stmt(
-        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, blocked_by, created_by_task_id, scheduler_id, ignore_memory, user_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, created_by_task_id, scheduler_id, ignore_memory, user_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?)`,
       ).run(
         id,
         input.boardId,
@@ -1019,7 +1021,6 @@ export class SqliteRepository implements Repository {
         input.description ?? "",
         status,
         position,
-        JSON.stringify(input.blockedBy ?? []),
         input.createdByTaskId ?? null,
         input.schedulerId ?? null,
         input.ignoreMemory ? 1 : 0,
@@ -1044,7 +1045,6 @@ export class SqliteRepository implements Repository {
       ["question", patch.question],
       ["session_file", patch.sessionFile],
       ["last_run_id", patch.lastRunId],
-      ["blocked_by", patch.blockedBy === undefined ? undefined : JSON.stringify(patch.blockedBy)],
       ["pushed_at", patch.pushedAt],
       ["auto_retries", patch.autoRetries],
       ["retry_at", patch.retryAt],
@@ -1287,13 +1287,14 @@ export class SqliteRepository implements Repository {
       lastStatus: null,
       lastTaskId: null,
       lastError: null,
+      model: input.model ?? null,
       userId: this.ownerOf("boards", input.boardId),
       createdAt: now,
       updatedAt: now,
     };
     this.stmt(
-      `INSERT INTO schedulers (id, board_id, name, prompt, cron, timezone, enabled, max_runs, run_count, last_run_at, next_run_at, last_status, last_task_id, last_error, user_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, NULL, NULL, ?, ?, ?)`,
+      `INSERT INTO schedulers (id, board_id, name, prompt, cron, timezone, enabled, max_runs, run_count, last_run_at, next_run_at, last_status, last_task_id, last_error, model, user_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, NULL, NULL, ?, ?, ?, ?)`,
     ).run(
       scheduler.id,
       scheduler.boardId,
@@ -1304,6 +1305,7 @@ export class SqliteRepository implements Repository {
       scheduler.enabled ? 1 : 0,
       scheduler.maxRuns,
       scheduler.nextRunAt,
+      scheduler.model,
       scheduler.userId,
       scheduler.createdAt,
       scheduler.updatedAt,
@@ -1328,6 +1330,7 @@ export class SqliteRepository implements Repository {
       ["last_status", patch.lastStatus],
       ["last_task_id", patch.lastTaskId],
       ["last_error", patch.lastError],
+      ["model", patch.model],
       ["updated_at", nowIso()],
     ]);
     const res = this.db.prepare(`UPDATE schedulers SET ${sql} WHERE id = ?`).run(...params, id);

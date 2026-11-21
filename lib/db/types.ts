@@ -73,8 +73,6 @@ export interface CreateTaskInput {
   status?: TaskStatus;
   /** Omitted: appended to the end of the column (max position + 1024). */
   position?: number;
-  /** Default []. */
-  blockedBy?: string[];
   /** Default null. */
   createdByTaskId?: string | null;
   /** Default null. Scheduler whose run creates this card. */
@@ -95,7 +93,6 @@ export type UpdateTaskInput = Partial<
     | "question"
     | "sessionFile"
     | "lastRunId"
-    | "blockedBy"
     | "pushedAt"
     | "autoRetries"
     | "retryAt"
@@ -117,6 +114,8 @@ export interface CreateSchedulerInput {
   enabled?: boolean;
   /** Default null (forever). */
   maxRuns?: number | null;
+  /** Default null: cards use the project's model. */
+  model?: string | null;
   /** Default null. Computed by the caller (lib/scheduler.ts), never by the driver. */
   nextRunAt?: string | null;
 }
@@ -136,6 +135,7 @@ export type UpdateSchedulerInput = Partial<
     | "lastStatus"
     | "lastTaskId"
     | "lastError"
+    | "model"
   >
 >;
 

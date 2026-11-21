@@ -17,6 +17,7 @@ import {
   type ScheduleValue,
 } from "@/components/schedulers/schedule-fields";
 import { SchedulerChat } from "@/components/schedulers/scheduler-chat";
+import { SchedulerModelField } from "@/components/schedulers/scheduler-model-field";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
@@ -213,6 +214,7 @@ function NewSchedulerForm({
   const id = useId();
   const [name, setName] = useState(initial?.name ?? "");
   const [firstLine, setFirstLine] = useState("");
+  const [model, setModel] = useState<string | null>(initial?.model ?? null);
   const [schedule, setSchedule] = useState<ScheduleValue>(() =>
     initial
       ? { cron: initial.cron, timezone: initial.timezone, enabled: initial.enabled, maxRuns: initial.maxRuns }
@@ -224,6 +226,7 @@ function NewSchedulerForm({
         boardId,
         prompt: text,
         name: name.trim() || undefined,
+        model,
         ...schedule,
         cron: schedule.cron.trim(),
         timezone: schedule.timezone.trim(),
@@ -260,6 +263,7 @@ function NewSchedulerForm({
               onChange={(event) => setName(event.target.value)}
             />
           </div>
+          <SchedulerModelField value={model} onChange={setModel} />
         </div>
       }
       label="What should the agent do each time?"
