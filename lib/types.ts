@@ -87,12 +87,6 @@ export interface Board {
   /** When true, moving a card into "In progress" starts the agent automatically. */
   autoRun: boolean;
   /**
-   * Dedicated workspaces: each card's agent works in its own git worktree of every project
-   * folder that is a git repository (branch `omp/<card>`), so parallel cards never share a
-   * working tree. Non-git folders stay shared. Default false.
-   */
-  worktrees: boolean;
-  /**
    * Branch "Push to main" lands on in every project repo (`git push origin HEAD:<pushBranch>`),
    * created on the remote when missing. Create PR still targets each repo's own default branch.
    * A valid git branch name (`isValidBranchName` in lib/push-branch.ts). Default "main".
@@ -100,7 +94,7 @@ export interface Board {
   pushBranch: string;
   /**
    * Default branch per project repo, keyed by folder (`workdir` + `extraFolders`, absolute). It is
-   * the branch a card's worktree is created from and the base "Create PR" targets. A repo with no
+   * the base "Create PR" targets. A repo with no
    * entry uses its own origin/HEAD, then a local/remote `main`/`master`, then "main" (see
    * `lib/default-branch.ts`). Keys are always a subset of the project's folders. Default {}.
    */
@@ -858,7 +852,6 @@ export const SCHEDULED_CLEANUP_IDS = [
   "orphan-card-files",
   "orphan-board-files",
   "orphan-workspaces",
-  "shipped-workspaces",
   "run-configs",
   "drafts",
   "diff-cache",
@@ -881,8 +874,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxAutoRetries: 5,
   persistentRetry: true,
   cleanupSchedule: "off",
-  // Worktrees of shipped cards may still be wanted; they are opt-in.
-  cleanupTargets: SCHEDULED_CLEANUP_IDS.filter((id) => id !== "shipped-workspaces"),
+  cleanupTargets: [...SCHEDULED_CLEANUP_IDS],
   taskCompletionNotifications: false,
   visibleDashboardMenus: [...DASHBOARD_MENU_IDS],
   primaryColor: DEFAULT_PRIMARY_COLOR,
@@ -1065,26 +1057,6 @@ export interface SharedFiles {
   /** Absolute folder holding these files; agents get it as an extra workspace directory. */
   folder: string;
   files: SharedFile[];
-}
-
-/** One project folder of a card's dedicated workspace (GET /tasks/:id/workspace). */
-export interface WorkspaceFolder {
-  /** Project folder on the board. */
-  source: string;
-  /** Where the agent works: the worktree, or `source` for a non-git (shared) folder. */
-  path: string;
-  /** Worktree branch; null for a shared folder. */
-  branch: string | null;
-  /** True when `path` is a dedicated git worktree. */
-  isolated: boolean;
-  /** False until the card's first run creates the worktree. */
-  exists: boolean;
-}
-
-export interface TaskWorkspace {
-  /** Board has dedicated workspaces on (Board.worktrees). */
-  enabled: boolean;
-  folders: WorkspaceFolder[];
 }
 
 /** One entry of the agent queue (GET /queue). */
@@ -1731,7 +1703,6 @@ export const CLEANUP_IDS = [
   "orphan-card-files",
   "orphan-board-files",
   "orphan-workspaces",
-  "shipped-workspaces",
   "run-configs",
   "drafts",
   "diff-cache",
@@ -2123,7 +2094,7 @@ export interface MemoryStats {
 export interface TaskCheckpoint {
   /** Ref name tail; unique per task and repository. */
   id: string;
-  /** Project folder (or the card's worktree of it) the snapshot was taken in. */
+  /** Project folder the snapshot was taken in. */
   folder: string;
   /** Commit sha of the snapshot. */
   sha: string;

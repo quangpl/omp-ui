@@ -13,7 +13,6 @@ const board: Board = {
   extraFolders: [],
   model: null,
   autoRun: true,
-  worktrees: false,
   pushBranch: "main",
   defaultBranches: {},
   pinned: false,
@@ -299,7 +298,6 @@ describe("buildPrompt run context", () => {
   const context = {
     taskFiles: "/data/files/tasks/t1",
     boardFiles: "/data/files/boards/b1",
-    workspaceBranch: null,
     browser: "off" as const,
     senders: { t9: "Build the API" },
   };
@@ -441,7 +439,6 @@ describe("buildPrompt after a failed run", () => {
   const context = {
     taskFiles: "/data/files/tasks/t1",
     boardFiles: "/data/files/boards/b1",
-    workspaceBranch: null,
     browser: "off" as const,
     senders: {},
   };

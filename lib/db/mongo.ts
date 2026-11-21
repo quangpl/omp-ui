@@ -89,8 +89,6 @@ interface BoardDoc {
   extraFolders?: string[];
   model: string | null;
   autoRun: boolean;
-  /** Missing on documents created before dedicated workspaces. */
-  worktrees?: boolean;
   /** Missing on documents created before configurable push branches. */
   pushBranch?: string | null;
   /** Per-repo default branch, folder → branch. Missing on documents created before it existed. */
@@ -259,7 +257,6 @@ function toBoard(d: BoardDoc): Board {
     extraFolders: parseFolderList(d.extraFolders),
     model: d.model ?? null,
     autoRun: d.autoRun,
-    worktrees: d.worktrees ?? false,
     pushBranch: d.pushBranch ?? DEFAULT_PUSH_BRANCH,
     defaultBranches: parseBranchMap(d.defaultBranches),
     pinned: d.pinned ?? false,
@@ -395,7 +392,6 @@ const BOARD_PATCH_KEYS = [
   "extraFolders",
   "model",
   "autoRun",
-  "worktrees",
   "pushBranch",
   "defaultBranches",
   "pinned",
@@ -752,7 +748,6 @@ export class MongoRepository implements Repository {
       extraFolders: input.extraFolders ?? [],
       model: input.model ?? null,
       autoRun: input.autoRun ?? true,
-      worktrees: input.worktrees ?? false,
       pushBranch: input.pushBranch ?? DEFAULT_PUSH_BRANCH,
       defaultBranches: input.defaultBranches ?? {},
       pinned: false,

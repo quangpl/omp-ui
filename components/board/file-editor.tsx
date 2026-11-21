@@ -26,7 +26,7 @@ import { modKeyLabel } from "@/lib/hotkeys";
 import type { FileOp, FileOpResult } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-/** A file to edit: a path id inside a file source (the editor's default source or another, e.g. a card worktree). */
+/** A file to edit: a path id inside a file source (the editor's default source or another, e.g. a folder outside the project). */
 export interface EditorTarget {
   source: FileSource;
   path: string;

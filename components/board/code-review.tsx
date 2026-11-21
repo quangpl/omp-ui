@@ -61,7 +61,7 @@ const EMPTY_EDITOR_HINT = "Pick a file from the tree, search with Open file…, 
 
 /**
  * Where a changed file is edited: workdir files by their relative path and extra-folder files by
- * their absolute path in the board's project files; files of a dedicated worktree in that folder.
+ * their absolute path in the board's project files; any other folder is edited in place.
  */
 function editorTargetOf(entry: DiffEntry, board: Board, source: FileSource): EditorTarget {
   const { repo, file } = entry;

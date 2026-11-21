@@ -90,7 +90,6 @@ CREATE TABLE IF NOT EXISTS boards (
   extra_folders TEXT NOT NULL DEFAULT '[]',
   model TEXT,
   auto_run BOOLEAN NOT NULL DEFAULT TRUE,
-  worktrees BOOLEAN NOT NULL DEFAULT FALSE,
   push_branch TEXT NOT NULL DEFAULT 'main',
   default_branches TEXT NOT NULL DEFAULT '{}',
   pinned BOOLEAN NOT NULL DEFAULT FALSE,
@@ -101,7 +100,6 @@ CREATE TABLE IF NOT EXISTS boards (
 );
 -- Migrations for databases created before these columns existed.
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS extra_folders TEXT NOT NULL DEFAULT '[]';
-ALTER TABLE boards ADD COLUMN IF NOT EXISTS worktrees BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS push_branch TEXT NOT NULL DEFAULT 'main';
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS default_branches TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE boards ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;
@@ -257,7 +255,6 @@ interface BoardRow {
   extra_folders: string;
   model: string | null;
   auto_run: boolean;
-  worktrees: boolean;
   push_branch: string | null;
   default_branches: string | null;
   pinned: boolean;
@@ -386,7 +383,6 @@ function toBoard(r: BoardRow): Board {
     extraFolders: parseFolderList(r.extra_folders),
     model: r.model,
     autoRun: r.auto_run,
-    worktrees: r.worktrees,
     pushBranch: r.push_branch ?? DEFAULT_PUSH_BRANCH,
     defaultBranches: parseBranchMap(r.default_branches),
     pinned: r.pinned,
@@ -572,11 +568,11 @@ const TABLE_SPECS: { [T in DataTable]: TableSpec<T> } = {
     key: "id",
     toRow: toBoard,
     columns: [
-      "id", "name", "workdir", "extra_folders", "model", "auto_run", "worktrees", "push_branch",
+      "id", "name", "workdir", "extra_folders", "model", "auto_run", "push_branch",
       "default_branches", "pinned", "last_accessed_at", "created_at", "updated_at", "user_id",
     ],
     values: (b) => [
-      b.id, b.name, b.workdir, JSON.stringify(b.extraFolders), b.model, b.autoRun, b.worktrees, b.pushBranch,
+      b.id, b.name, b.workdir, JSON.stringify(b.extraFolders), b.model, b.autoRun, b.pushBranch,
       JSON.stringify(b.defaultBranches), b.pinned, b.lastAccessedAt, b.createdAt, b.updatedAt, b.userId,
     ],
   },
@@ -892,8 +888,8 @@ export class PostgresRepository implements Repository {
   async createBoard(input: CreateBoardInput): Promise<Board> {
     const now = nowIso();
     const res = await this.query<BoardRow>(
-      `INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, push_branch, default_branches, created_at, updated_at, user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $11) RETURNING *`,
+      `INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, push_branch, default_branches, created_at, updated_at, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10) RETURNING *`,
       [
         newId(),
         input.name,
@@ -901,7 +897,6 @@ export class PostgresRepository implements Repository {
         JSON.stringify(input.extraFolders ?? []),
         input.model ?? null,
         input.autoRun ?? true,
-        input.worktrees ?? false,
         input.pushBranch ?? DEFAULT_PUSH_BRANCH,
         JSON.stringify(input.defaultBranches ?? {}),
         now,
@@ -918,7 +913,6 @@ export class PostgresRepository implements Repository {
       ["extra_folders", patch.extraFolders === undefined ? undefined : JSON.stringify(patch.extraFolders)],
       ["model", patch.model],
       ["auto_run", patch.autoRun],
-      ["worktrees", patch.worktrees],
       ["push_branch", patch.pushBranch],
       [
         "default_branches",

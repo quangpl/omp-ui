@@ -7,7 +7,6 @@ import { publish, subscribe } from "@/lib/events";
 import { listFiles } from "@/lib/files";
 import { HttpError } from "@/lib/server/http";
 import { parseBlockedBy } from "@/lib/server/validate";
-import { getWorkspace } from "@/lib/workspaces";
 import { TASK_STATUSES, type Comment, type Task, type TaskStatus } from "@/lib/types";
 
 /** Cards one card's agent may create (runaway delegation guard). */
@@ -57,7 +56,7 @@ export const BOARD_TOOLS = [
     name: "board_read_card",
     label: "Read card",
     description:
-      "Read one card of this board: description, recent comments, its agent's latest summary or error, its shared files (absolute paths you can read) and its workspace folders.",
+      "Read one card of this board: description, recent comments, its agent's latest summary or error, its shared files (absolute paths you can read).",
     parameters: {
       type: "object",
       properties: { cardId: { type: "string" } },
@@ -166,12 +165,10 @@ async function listCards(host: BoardToolHost, caller: BoardToolCaller, args: Rec
 
 async function readCard(host: BoardToolHost, caller: BoardToolCaller, args: Record<string, unknown>): Promise<string> {
   const task = await boardCard(host, caller, args.cardId);
-  const board = await host.repo.getBoard(task.boardId);
-  const [comments, runs, files, workspace] = await Promise.all([
+  const [comments, runs, files] = await Promise.all([
     host.repo.listComments(task.id),
     host.repo.listRuns(task.id),
     listFiles("tasks", task.id),
-    board ? getWorkspace(board, task) : null,
   ]);
   const latest = runs[0];
   return JSON.stringify(
@@ -192,7 +189,6 @@ async function readCard(host: BoardToolHost, caller: BoardToolCaller, args: Reco
         at: c.createdAt,
       })),
       files: { folder: files.folder, files: files.files.map((f) => ({ path: f.path, size: f.size })) },
-      workspace: workspace?.folders.map((f) => ({ path: f.path, branch: f.branch, exists: f.exists })) ?? [],
     },
     null,
     2,
