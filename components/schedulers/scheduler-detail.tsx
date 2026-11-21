@@ -619,7 +619,6 @@ function SchedulerConfig({
         boardId={draft.boardId}
         label="What should the agent do each time?"
         hint="Each run creates a card from this text in the project, like the New task form: it goes to In progress and its agent starts with the text as its brief."
-        memoryToggle={false}
         submitLabel="Save changes"
         busyLabel="Saving…"
         resetOnSubmit={false}

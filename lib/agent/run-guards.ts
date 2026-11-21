@@ -30,8 +30,6 @@ export interface RunGuardState extends RunUsage {
   launchedAt: number;
   /** When the run's omp process last sent a frame (ms epoch). */
   lastActivityAt: number;
-  /** A board tool call is in flight (board_wait_for_cards may legitimately wait long). */
-  waitingOnHost: boolean;
 }
 
 export interface RunGuardHit {
@@ -86,7 +84,7 @@ export function evaluateRunGuards(state: RunGuardState, settings: GuardSettings,
   }
   const budget = evaluateBudget(state, settings);
   if (budget) return budget;
-  if (settings.stallWatchdog && !state.waitingOnHost && now - state.lastActivityAt > settings.stallTimeoutMinutes * minute) {
+  if (settings.stallWatchdog && now - state.lastActivityAt > settings.stallTimeoutMinutes * minute) {
     return {
       kind: "stall",
       message: `No activity from the agent for ${settings.stallTimeoutMinutes} min (stall watchdog)`,
@@ -165,7 +163,7 @@ export function wrapUpSteerMessage(hit: WrapUpHit): string {
   return [
     `You have used ${hit.percent}% of your ${limit} (${hit.detail}). The run will be stopped when it reaches the limit.`,
     "Wrap up now: do not start new work, finish or safely pause the current step, and verify what is done.",
-    "Then write your final summary with its Report, listing what is left to do.",
+    "Then write your final message, listing what is left to do.",
   ].join(" ");
 }
 

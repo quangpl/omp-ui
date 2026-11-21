@@ -39,9 +39,7 @@ const ENV_KEYS = [
   "FAKE_OMP_SCENARIO",
   "FAKE_OMP_SESSION_DIR",
   "FAKE_OMP_MODEL_ROLES",
-  "FAKE_OMP_PLAN",
-  "FAKE_OMP_EXTENSIONS",
-  "FAKE_OMP_DISABLED_EXTENSIONS",
+
   "OMP_UI_RETRY_BASE_MS",
   "OMP_UI_QUOTA_RETRY_BASE_MS",
 ] as const;
@@ -57,7 +55,7 @@ interface LogEntry {
   /** "steer" entries: set when the message came as a `prompt` with streamingBehavior. */
   via?: string;
   streamingBehavior?: string;
-  /** "helper" entries (advisor, queue planner): the prompt a helper worker got. */
+  /** "helper" entries (advisor, summary agent): the prompt a helper worker got. */
   prompt?: string;
 }
 
@@ -183,17 +181,6 @@ function todoLines(todos: Task["todos"]): string[] {
   return todos.flatMap((phase) => phase.tasks.map((item) => `${item.content}: ${item.status}`));
 }
 
-/** "helper" entries of the smart-queue planner. */
-function plannerEntries(): LogEntry[] {
-  return readLog().filter((e) => e.kind === "helper" && e.prompt?.startsWith("You are the queue planner"));
-}
-
-/** Task ids ordered by when their (latest) run started. */
-async function runStartOrder(ids: string[]): Promise<string[]> {
-  const starts = await Promise.all(ids.map(async (id) => [id, (await latestRun(id)).startedAt] as const));
-  return starts.sort((x, y) => x[1].localeCompare(y[1])).map(([id]) => id);
-}
-
 /** An assistant message as omp reports it in message_end / agent_end. */
 function assistantMessage(text: string): Record<string, unknown> {
   return { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" };
@@ -241,7 +228,6 @@ beforeEach(async () => {
   delete process.env.MAX_AGENTS;
   delete process.env.OMP_EXTRA_ARGS;
   delete process.env.FAKE_OMP_MODEL_ROLES;
-  delete process.env.FAKE_OMP_PLAN;
   process.env.OMP_UI_RETRY_BASE_MS = "50";
   delete process.env.OMP_UI_QUOTA_RETRY_BASE_MS;
   globals.__ompUiRepo = undefined;
@@ -406,66 +392,6 @@ describe("AgentManager run lifecycle", () => {
     expect(testing!.startedAt).toBe(written!.completedAt);
   });
 
-  it("answers the agent's ask_advisor call with the advisor's decision", async () => {
-    const calls = [
-      { toolName: "ask_advisor", arguments: { question: "Offset or cursor pagination?", options: ["offset", "cursor"] } },
-    ];
-    const task = await createTask("Add paging", `[fake:board_tools] <calls>${JSON.stringify(calls)}</calls>`);
-    const manager = await getAgentManager();
-    await manager.start(task.id);
-    await waitDone(task.id);
-
-    const run = await latestRun(task.id);
-    const [result] = JSON.parse((run.summary ?? "").replace(/^Tool results: /, "")) as { isError: boolean; text: string }[];
-    expect(result).toMatchObject({ isError: false });
-    expect(result!.text).toContain("Advisor's decision: Use offset pagination with 20 items per page");
-    const [advisor] = readLog().filter((e) => e.kind === "helper");
-    expect(flagValues(advisor?.argv, "--tools")).toEqual(["read,grep,glob"]);
-    expect(advisor?.cwd).toBe(workdir);
-    expect(advisor?.prompt).toContain("Offset or cursor pagination?");
-    expect(advisor?.prompt).toContain("Title: Add paging");
-    const texts = (await runEvents(run.id)).map((e) => e.text);
-    expect(texts).toContain("Agent asked the advisor: Offset or cursor pagination?");
-    expect(texts).toContain("Advisor: Use offset pagination with 20 items per page");
-  });
-
-  it("lets the advisor answer the run's question and send the agent back to work once", async () => {
-    const task = await createTask("Decide paging", "[fake:question] [fake-advisor:answer]");
-    const manager = await getAgentManager();
-    await manager.start(task.id);
-    // Run 1 asks, the advisor answers with a follow-up; run 2 asks again and the guard stops the loop.
-    const done = await waitTask(
-      task.id,
-      (t) => t.status === "done" && t.agentState === "idle" && t.question !== null,
-      "the second run to finish",
-    );
-    await waitIdleManager(manager);
-
-    expect(done.question).toBe("Should pagination default to 20 or 50 items per page?");
-    expect(await repo.listRuns(task.id)).toHaveLength(2);
-    expect(readLog().filter((e) => e.kind === "helper")).toHaveLength(2);
-    const comments = await repo.listComments(task.id);
-    const followUp = comments.find((c) => c.author === "user");
-    expect(followUp).toMatchObject({ resolved: true });
-    expect(followUp?.body).toMatch(/^\*\*Advisor:\*\* Set the default page size to 20/);
-    expect(comments.filter((c) => c.body.startsWith("**Advisor** answered"))).toHaveLength(2);
-    // The follow-up went to the resumed session as feedback.
-    expect(commands("prompt")[1]?.command?.message).toContain("Set the default page size to 20");
-  });
-
-  it("leaves the question to the user when the advisor fails", async () => {
-    const task = await createTask("Decide paging", "[fake:question] [fake-advisor:fail]");
-    const manager = await getAgentManager();
-    await manager.start(task.id);
-    const done = await waitDone(task.id);
-    await waitIdleManager(manager);
-
-    expect(done.question).toBe("Should pagination default to 20 or 50 items per page?");
-    expect(await repo.listRuns(task.id)).toHaveLength(1);
-    const texts = (await runEvents((await latestRun(task.id)).id)).map((e) => e.text);
-    expect(texts.some((t) => t.startsWith("Advisor could not review the questions"))).toBe(true);
-  });
-
   it("closes the omp process after a successful run", async () => {
     const task = await createTask("Close me");
     const manager = await getAgentManager();
@@ -473,33 +399,6 @@ describe("AgentManager run lifecycle", () => {
     await waitDone(task.id);
 
     await waitFor(() => readLog().some((e) => e.kind === "stdin_closed"), "omp stdin to be closed");
-  });
-
-  it("writes the memory-off overlay into the run config only for cards that ignore memory", async () => {
-    process.env.FAKE_OMP_EXTENSIONS = JSON.stringify(["/x/agent/agentmemory", "/x/other"]);
-    process.env.FAKE_OMP_DISABLED_EXTENSIONS = JSON.stringify(["skill:foo"]);
-    try {
-      const manager = await getAgentManager();
-      const readConfig = (taskId: string) =>
-        JSON.parse(readFileSync(path.join(root, "runtime", `omp-config-${taskId}.yml`), "utf8")) as Record<string, unknown>;
-
-      const off = await repo.createTask({ boardId: board.id, title: "No memory", description: "", status: "todo", ignoreMemory: true });
-      await manager.start(off.id);
-      await waitDone(off.id);
-      const offConfig = readConfig(off.id);
-      expect(offConfig.extensions).toEqual(["/x/other"]);
-      expect(offConfig.disabledExtensions).toEqual(["skill:foo", "mcp:agentmemory"]);
-
-      const on = await createTask("With memory");
-      await manager.start(on.id);
-      await waitDone(on.id);
-      const onConfig = readConfig(on.id);
-      expect(onConfig).not.toHaveProperty("extensions");
-      expect(onConfig).not.toHaveProperty("disabledExtensions");
-    } finally {
-      delete process.env.FAKE_OMP_EXTENSIONS;
-      delete process.env.FAKE_OMP_DISABLED_EXTENSIONS;
-    }
   });
 
   it("treats start() on an active task as a no-op and rejects unknown tasks", async () => {
@@ -1189,7 +1088,7 @@ describe("AgentManager SDLC quality gates", () => {
     expect((await repo.listComments(task.id)).filter((c) => c.author === "user")).toEqual([]);
   });
 
-  it("sends a card whose Testing phase is not complete back once, then ships it with a warning", async () => {
+  it("ships a card whose Testing phase is not complete at once, with no gate feedback or resend", async () => {
     const task = await createTask("Ship untested", "[fake:sdlc_gate]");
     const manager = await getAgentManager();
     await manager.start(task.id);
@@ -1197,44 +1096,22 @@ describe("AgentManager SDLC quality gates", () => {
     await waitIdleManager(manager);
 
     expect(done.status).toBe("done");
-    const runs = await repo.listRuns(task.id);
-    expect(runs).toHaveLength(2);
-    const gate = (await repo.listComments(task.id)).filter((c) => c.author === "user");
-    expect(gate).toHaveLength(1);
-    expect(gate[0]!.body.startsWith("**Quality gate:** Testing is not complete")).toBe(true);
-    // The second run addressed it as feedback.
-    expect(gate[0]).toMatchObject({ resolved: true, resolvedByRunId: runs[0]!.id });
-    expect(commands("prompt")[1]?.command?.message).toContain("Testing is not complete");
-
-    // listRuns is newest first: the first run sent the card back, the second shipped it.
-    const shippedPrefix = "⚠ Shipped without passing the release gate: Testing is not complete";
-    const [second, first] = await Promise.all(runs.map(async (r) => (await runEvents(r.id)).map((e) => e.text)));
-    expect(first!.some((t) => t.startsWith(shippedPrefix))).toBe(false);
-    expect(second!.filter((t) => t.startsWith(shippedPrefix))).toHaveLength(1);
+    expect(await repo.listRuns(task.id)).toHaveLength(1);
+    expect((await repo.listComments(task.id)).filter((c) => c.author === "user")).toEqual([]);
   });
 
-  it("steers an agent that starts Testing before Implement is complete back into the process", async () => {
+  it("logs, but never steers, an agent that starts Testing before Implement is complete", async () => {
     const task = await createTask("Skip the tests", "[fake:sdlc_skip]");
     const manager = await getAgentManager();
     await manager.start(task.id);
-    const pid = await waitPromptReceived();
-    const steer = await waitFor(
-      () => readLog().find((e) => e.kind === "steer" && e.pid === pid),
-      "the quality-gate steer",
-    );
-    expect(steer.message).toContain("Quality gate (SDLC): Testing started before Implement was complete");
-    expect(steer).toMatchObject({ via: "prompt", streamingBehavior: "steer" });
-
-    // Testing is still incomplete when it succeeds: the release gate sends it back once before it ships.
     await waitDone(task.id);
     await waitIdleManager(manager);
     const runs = await repo.listRuns(task.id);
-    const first = runs.at(-1)!;
-    expect((await runEvents(first.id)).map((e) => e.text)).toContain(
+    expect(runs).toHaveLength(1);
+    expect((await runEvents(runs[0]!.id)).map((e) => e.text)).toContain(
       "⚠ Quality gate: Testing started before Implement was complete",
     );
-    // Each violation is steered once.
-    expect(readLog().filter((e) => e.kind === "steer" && e.message?.startsWith("Quality gate (SDLC)"))).toHaveLength(1);
+    expect(readLog().filter((e) => e.kind === "steer")).toEqual([]);
   });
 
   it("reports a running card's SDLC progress in the queue snapshot", async () => {
@@ -1366,32 +1243,6 @@ describe("AgentManager scheduling and project folders", () => {
 });
 
 describe("AgentManager collaboration and workspaces", () => {
-  it("lets an agent delegate a card and wait for it, lending its slot while it waits", async () => {
-    await updateAppSettings(repo, { maxConcurrentAgents: 1 });
-    const calls = [
-      { toolName: "board_create_card", arguments: { title: "Child", description: "[fake:success] do the part" } },
-      { toolName: "board_wait_for_cards", arguments: { cardIds: ["$created"], timeoutSeconds: 20 } },
-    ];
-    const parent = await createTask("Parent", `[fake:board_tools] <calls>${JSON.stringify(calls)}</calls>`);
-    const manager = await getAgentManager();
-
-    await manager.start(parent.id);
-    await waitDone(parent.id);
-
-    const child = (await repo.listTasks(board.id)).find((t) => t.title === "Child");
-    expect(child).toMatchObject({ status: "done", agentState: "idle", createdByTaskId: parent.id });
-    const summary = (await latestRun(parent.id)).summary ?? "";
-    const results = JSON.parse(summary.replace(/^Tool results: /, "")) as { toolName: string; isError: boolean; text: string }[];
-    expect(results.map((r) => [r.toolName, r.isError])).toEqual([
-      ["board_create_card", false],
-      ["board_wait_for_cards", false],
-    ]);
-    const waited = JSON.parse(results[1]!.text) as { cards: { id: string; status: string; summary: string }[] };
-    expect(waited.cards).toEqual([expect.objectContaining({ id: child!.id, status: "done", summary: SUCCESS_SUMMARY })]);
-    const [spawned] = argvEntries();
-    expect(commands("set_host_tools", spawned?.pid).length).toBe(1);
-  });
-
   it("runs queued cards side by side: no card waits for another", async () => {
     await updateAppSettings(repo, { maxConcurrentAgents: 2 });
     const first = await createTask("First");
@@ -1427,76 +1278,41 @@ describe("AgentManager collaboration and workspaces", () => {
   });
 });
 
-describe("AgentManager smart queue", () => {
-  it("plans a burst of queued cards once: highest priority first, no card held back", async () => {
+describe("AgentManager token cost", () => {
+  it("starts no helper agent for cards waiting in the queue", async () => {
     await updateAppSettings(repo, { maxConcurrentAgents: 1 });
-    const a = await createTask("Build the settings page", "Uses the settings API.");
-    const b = await createTask("Fix the footer typo");
-    const c = await createTask("Add the settings API", "[fake:slow]");
-    process.env.FAKE_OMP_PLAN = JSON.stringify({
-      order: [c.id, a.id, b.id],
-      cards: [
-        { id: c.id, reason: "Lands before the page that uses it." },
-        { id: a.id, reason: "Waits on the settings API." },
-      ],
-    });
-    const manager = await getAgentManager();
-    for (const task of [a, b, c]) await manager.start(task.id);
-
-    // Held while the plan is pending: nothing launches before the planner answered.
-    const pending = await manager.queueSnapshot();
-    expect(pending.planning).toEqual([{ boardId: board.id, boardName: board.name }]);
-    expect(pending.queued.map((e) => [e.taskId, e.planning])).toEqual([
-      [a.id, true],
-      [b.id, true],
-      [c.id, true],
-    ]);
-    expect(argvEntries()).toHaveLength(0);
-
-    await waitPromptReceived();
-    expect(await repo.listRuns(c.id)).toHaveLength(1);
-    const planned = await manager.queueSnapshot();
-    expect(planned.planning).toEqual([]);
-    expect(planned.queued).toEqual([
-      expect.objectContaining({ taskId: a.id, planning: false, planNote: "Waits on the settings API." }),
-      expect.objectContaining({ taskId: b.id, planning: false, planNote: null }),
-    ]);
-
-    // Finish C (the slow scenario completes after a steer); A and B follow in plan order.
-    const comment = await repo.addComment({ taskId: c.id, author: "user", body: "wrap up" });
-    await manager.onComment(await getTask(c.id), comment);
-    await waitDone(c.id);
-    await waitDone(a.id);
-    await waitDone(b.id);
-    expect(await runStartOrder([a.id, b.id, c.id])).toEqual([c.id, a.id, b.id]);
-    const [planner] = plannerEntries();
-    expect(plannerEntries()).toHaveLength(1);
-    for (const task of [a, b, c]) expect(planner?.prompt).toContain(task.id);
-  });
-
-  it("runs the cards in queue order when the planner fails", async () => {
-    await updateAppSettings(repo, { maxConcurrentAgents: 1 });
-    process.env.FAKE_OMP_PLAN = "fail";
     const tasks = [await createTask("First"), await createTask("Second"), await createTask("Third")];
     const manager = await getAgentManager();
     for (const task of tasks) await manager.start(task.id);
 
     for (const task of tasks) await waitDone(task.id);
-    const ids = tasks.map((t) => t.id);
-    expect(await runStartOrder(ids)).toEqual(ids);
-    expect(plannerEntries()).toHaveLength(1);
-    expect((await manager.queueSnapshot()).planning).toEqual([]);
+    expect(readLog().filter((e) => e.kind === "helper")).toEqual([]);
   });
 
-  it("never holds or plans cards when the smart queue is off", async () => {
-    await updateAppSettings(repo, { smartQueue: false });
-    const tasks = [await createTask("First"), await createTask("Second")];
+  it("sends no board or advisor tools and starts no advisor review", async () => {
+    const asking = await createTask("Decide paging", "[fake:question]");
     const manager = await getAgentManager();
-    for (const task of tasks) await manager.start(task.id);
+    await manager.start(asking.id);
+    const done = await waitDone(asking.id);
+    await waitIdleManager(manager);
 
-    expect((await manager.queueSnapshot()).planning).toEqual([]);
-    for (const task of tasks) await waitDone(task.id);
+    // The question goes to the user as asked, and no advisor agent reviewed it.
+    expect(done.question).toBe("Should pagination default to 20 or 50 items per page?");
     expect(readLog().filter((e) => e.kind === "helper")).toEqual([]);
+    expect(commands("set_host_tools")).toEqual([]);
+    expect(commands("prompt")[0]?.command?.message).toBe("# Task: Decide paging\n\n[fake:question]");
+  });
+
+  it("steers feedback into the live session as typed", async () => {
+    const slow = await createTask("Steer me", "[fake:slow]");
+    const manager = await getAgentManager();
+    await manager.start(slow.id);
+    const pid = await waitPromptReceived();
+    const comment = await repo.addComment({ taskId: slow.id, author: "user", body: "Also update the README" });
+    await manager.onComment(await getTask(slow.id), comment);
+    await waitDone(slow.id);
+    const steers = readLog().filter((e) => e.kind === "steer" && e.pid === pid);
+    expect(steers.map((e) => e.message)).toEqual(["Also update the README"]);
   });
 });
 

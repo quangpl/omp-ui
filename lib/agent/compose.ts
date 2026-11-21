@@ -20,8 +20,6 @@ export async function createCardFromText(input: {
   position?: number;
   /** Scheduler whose run creates this card (lib/scheduler.ts); default null. */
   schedulerId?: string | null;
-  /** Whether the card's runs start omp without agentmemory; default false. */
-  ignoreMemory?: boolean;
 }): Promise<Task> {
   const { repo, manager, board, position } = input;
   const text = input.text.trim();
@@ -33,7 +31,6 @@ export async function createCardFromText(input: {
     status: "in_progress",
     position,
     schedulerId: input.schedulerId ?? null,
-    ignoreMemory: input.ignoreMemory ?? false,
   });
   if (card.attached) {
     try {

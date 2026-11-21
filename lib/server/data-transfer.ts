@@ -402,7 +402,6 @@ const PARSERS: { [T in DataTable]: (f: Fields) => DataRows[T] } = {
     resources: parseAgentResources(f.raw("resources")),
     usage: parseTaskUsage(f.raw("usage")),
     schedulerId: f.strOrNull("schedulerId"),
-    ignoreMemory: f.bool("ignoreMemory"),
     userId: f.strOrNull("userId"),
     createdAt: f.str("createdAt"),
     updatedAt: f.str("updatedAt"),

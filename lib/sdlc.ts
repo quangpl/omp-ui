@@ -95,9 +95,6 @@ export interface SdlcProgress {
   violations: SdlcViolation[];
 }
 
-/** Text prefix of the feedback comment the manager adds when the release gate sends a card back. */
-export const QUALITY_GATE_PREFIX = "**Quality gate:** ";
-
 const PHASE_COUNT = SDLC_PHASES.length;
 const IMPLEMENT = SDLC_PHASES.indexOf("implement");
 const TESTING = SDLC_PHASES.indexOf("testing");

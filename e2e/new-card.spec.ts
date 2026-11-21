@@ -25,14 +25,14 @@ test.beforeEach(async ({ page }) => {
   await login(page);
 });
 
-test("Create task starts the card as typed", async ({ page, request }) => {
-  const board = await createProjectViaApi(request, uniqueName("new-card"));
+test("Create task starts the card as typed, with no per-task agent settings", async ({ page, request }) => {
+  const board = await createProjectViaApi(request, uniqueName("create"));
   const title = uniqueName("Cache the avatar thumbnails");
   const text = `${title}\nThey are fetched again on every page view.\n- keep the old sizes`;
 
   await page.goto(`/b/${board.id}`);
   const newCard = await openNewCard(page);
-  await expect(newCard.getByRole("switch", { name: "Ignore memory" })).not.toBeChecked();
+  await expect(newCard.getByRole("switch")).toHaveCount(0);
   await newCard.getByLabel("What should the agent do?", { exact: true }).fill(text);
   await newCard.getByRole("button", { name: "Create task" }).click();
   await expect(newCard).toBeHidden();

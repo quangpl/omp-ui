@@ -4,7 +4,6 @@ import { publish } from "@/lib/events";
 import { deleteCard } from "@/lib/server/delete-card";
 import { json, readJson, withApi } from "@/lib/server/http";
 import {
-  parseBoolean,
   parseBrief,
   parseDescription,
   parsePosition,
@@ -25,32 +24,22 @@ export const GET = withApi<Params>(async ({ repo, params }) => {
 
 /**
  * Create a card.
- * - `{ text, position? }`: a card from free text, created in "In progress" with its
- *   agent started right away (whatever the board's autoRun), titled from the text as typed (see
- *   lib/agent/compose.ts).
+ * - `{ text, position? }`: a card from free text, created in "In progress" with its agent started
+ *   right away (whatever the board's autoRun), titled from the text as typed (see lib/agent/compose.ts).
  * - `{ title, … }`: the card as given. Created directly in "In progress" on an autoRun board → the
  *   agent starts.
- * Either may carry `ignoreMemory` (boolean): whether the card's runs start omp without
- * agentmemory (no recall, no capture, no memory tools). Omitted → false.
  */
 export const POST = withApi<Params>(async ({ req, repo, manager, params }) => {
   const board = await requireBoard(repo, params.id);
   const body = await readJson(req);
-  const ignoreMemory =
-    body.ignoreMemory === undefined || body.ignoreMemory === null
-      ? false
-      : parseBoolean(body.ignoreMemory, "ignoreMemory");
   if (body.text !== undefined) {
     const text = parseBrief(body.text);
     const position = body.position === undefined ? undefined : parsePosition(body.position);
-    return json(await createCardFromText({ repo, manager, board, text, position, ignoreMemory }), {
-      status: 201,
-    });
+    return json(await createCardFromText({ repo, manager, board, text, position }), { status: 201 });
   }
   const input: CreateTaskInput = {
     boardId: board.id,
     title: parseTitle(body.title),
-    ignoreMemory,
   };
   if (body.description !== undefined) input.description = parseDescription(body.description);
   if (body.status !== undefined) input.status = parseStatus(body.status);

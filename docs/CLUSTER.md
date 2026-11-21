@@ -99,18 +99,16 @@ A node gets no new cards (its running cards keep running) while:
   primary applies its own memory hold % to the memory use the node reports.
 
 When neither a node nor the primary (held by its own guard, or **Run cards on this machine too** off)
-can take a card, it stays queued and starts as soon as a slot frees or a node is available again. Only
-a slot lent by an agent waiting in `board_wait_for_cards` may go past a machine's limit: the primary
-takes that card first, else the least busy available node.
+can take a card, it stays queued and starts as soon as a slot frees or a node is available again.
 
 A remote run is executed exactly like a local one: the primary keeps the whole run logic (prompt,
-board tools, advisor, run guards, comments, database) and only the `omp` process runs on the node.
+run guards, comments, database) and only the `omp` process runs on the node.
 omp's RPC stream is relayed over the cluster channel; files are synced in both directions:
 
 - before omp starts, the node's copy of the run's folders (project folders, card and board files,
   session dir) is brought up to date — only changed files are sent;
 - while the agent works, changed files are pushed back every few seconds, and always before the agent
-  finishes and before every board tool call, so the primary sees the same files as after a local run.
+  finishes, so the primary sees the same files as after a local run.
 
 Cards that run on the same node at once share that node's copy of a folder they both use (the
 project folder of a board without dedicated workspaces, the git repository behind worktrees), just

@@ -19,7 +19,6 @@ const task: Task = {
   lastRunId: null,
   createdByTaskId: null,
   schedulerId: null,
-  ignoreMemory: false,
   userId: null,
   pushedAt: null,
   autoRetries: 0,

@@ -85,7 +85,7 @@ describe("/settings visibleDashboardMenus", () => {
 
   it("saving another setting keeps a hidden menu hidden", async () => {
     await patchSettings({ visibleDashboardMenus: ["memory"] });
-    await patchSettings({ smartQueue: false });
+    await patchSettings({ autoRetry: false });
     expect((await getSettings()).visibleDashboardMenus).toEqual(["memory"]);
   });
 
