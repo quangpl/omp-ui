@@ -107,7 +107,7 @@ export interface Board {
   defaultBranches: Record<string, string>;
   /** Pinned projects lead the home dashboard; the rest follow under "Other projects". Default false. */
   pinned: boolean;
-  /** When the project's board was last opened (ISO); null until first opened. Orders the sidebar's "Your projects". */
+  /** When the project's board was last opened (ISO); null until first opened. Picks the sidebar's "Your projects". */
   lastAccessedAt: string | null;
   /**
    * Owning user (users.id). Null only for rows created before users existed, until boot assigns
