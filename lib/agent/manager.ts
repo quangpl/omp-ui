@@ -1521,14 +1521,18 @@ class OmpAgentManager implements AgentManager, RunControl {
     const sessionFile = task.sessionFile;
     // An automatic retry after a failed run: the prompt tells the agent what went wrong.
     const retriedRunId = task.autoRetries > 0 ? task.lastRunId : null;
-    const [workspace, taskFiles, boardFiles, comments, foundSession, retriedRun] = await Promise.all([
+    const [workspace, taskFiles, boardFiles, comments, foundSession, retriedRun, scheduler] = await Promise.all([
       board.worktrees ? ensureWorkspace(board, task) : null,
       ensureFilesFolder("tasks", task.id),
       ensureFilesFolder("boards", board.id),
       repo.listComments(task.id),
       sessionFile ? stat(sessionFile).then(() => sessionFile, () => null) : null,
       retriedRunId ? repo.getRun(retriedRunId) : null,
+      task.schedulerId ? repo.getScheduler(task.schedulerId) : null,
     ]);
+    // A scheduler's model is pinned like the project's and wins over it, for the cards it created.
+    const pinnedModel = scheduler?.model?.trim() || board.model?.trim() || null;
+    const modelBoard = { model: pinnedModel };
     const quotaRetry = retriedRun?.status === "failed" && isQuotaError(retriedRun.error);
     // Only the agent's own failures: a quota error or a lost node is not something it can fix.
     const previousFailure =
@@ -1607,7 +1611,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     if (run.finished) return;
 
     // Roles are read per run: the user may reconfigure omp, and project `.omp` configs differ.
-    const autoSelect = !board.model?.trim() && settings.autoModel;
+    const autoSelect = !pinnedModel && settings.autoModel;
     const remote = placement && !placement.local ? placement : null;
     // A local run's subagents share this machine: their cap is the run's fair share of it, as of
     // now. A remote node's machine is not sampled here, so its runs get the ceiling.
@@ -1622,9 +1626,9 @@ class OmpAgentManager implements AgentManager, RunControl {
     // Memory off for this card: the run config drops agentmemory's extension and MCP server.
     const memoryOff = task.ignoreMemory ? memoryOffOverlay(settings.ompPath, workdir) : null;
     // The provider priority runs the model of an omp role on its provider, so it needs the roles too.
-    const needRoles = (autoSelect && resumeFile === null) || (settings.providerPriority.length > 0 && !board.model?.trim());
+    const needRoles = (autoSelect && resumeFile === null) || (settings.providerPriority.length > 0 && !pinnedModel);
     const roles = needRoles ? await readModelRoles(settings.ompPath, workdir, childEnv()) : null;
-    const providerPick = await chooseProvider(settings, board.model, roles);
+    const providerPick = await chooseProvider(settings, pinnedModel, roles);
     if (run.finished) return;
     const overlay = runConfigOverlay(settings, taskFiles, subagents, providerPick);
     const [workdirFound, configFile, memoryProject, memoryOffSettings] = await Promise.all([
@@ -1640,7 +1644,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       throw new Error(`Board directory not found: ${workdir}`);
     }
     const choice = chooseModel({
-      board,
+      board: modelBoard,
       settings,
       task,
       feedback,

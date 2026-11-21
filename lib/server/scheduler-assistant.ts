@@ -21,7 +21,7 @@ import {
   scheduleSummary,
   schedulerForAgent,
 } from "@/lib/server/scheduler-ops";
-import { parseMaxRuns, parseTimeZone } from "@/lib/server/validate";
+import { parseMaxRuns, parseModel, parseTimeZone } from "@/lib/server/validate";
 import { getAppSettings } from "@/lib/settings";
 import type { BoardWithCounts, SchedulerChatMessage, SchedulerChatRequest, SchedulerDraft } from "@/lib/types";
 
@@ -106,6 +106,7 @@ function parseDraft(value: unknown): SchedulerDraft | null {
     timezone: d.timezone as string,
     enabled: d.enabled,
     maxRuns: d.maxRuns === undefined ? null : parseMaxRuns(d.maxRuns),
+    model: d.model === undefined ? null : parseModel(d.model),
   };
 }
 
