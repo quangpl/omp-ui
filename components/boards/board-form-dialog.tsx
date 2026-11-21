@@ -543,7 +543,7 @@ export function BoardFormDialog({
                 id={`${formId}-model`}
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                placeholder="Auto"
+                placeholder="omp default"
                 autoComplete="off"
                 autoCapitalize="off"
                 autoCorrect="off"
@@ -552,8 +552,7 @@ export function BoardFormDialog({
                 className="h-11 md:h-9"
               />
               <p className="text-xs text-muted-foreground">
-                Leave empty to auto-select per card (Settings → Auto-select model) or use the Settings
-                default.
+                Leave empty to use the Settings default model, or omp&apos;s own choice when that is empty.
               </p>
             </div>
             <div className="flex flex-col gap-2">
