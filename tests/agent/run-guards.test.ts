@@ -329,13 +329,6 @@ describe("run guards through the agent manager", () => {
     return logEntries().filter((e) => e.kind === "command" && e.command?.type === "prompt").length;
   }
 
-  /** The prompts that started card runs (steers excluded), in order. */
-  function runPrompts(): string[] {
-    return logEntries()
-      .filter((e) => e.kind === "command" && e.command?.type === "prompt" && !e.command.streamingBehavior)
-      .map((e) => e.command?.message ?? "");
-  }
-
   /** The `--config` overlay each card run was started with, in spawn order. */
   function runConfigs(): Record<string, unknown>[] {
     return logEntries()
@@ -531,19 +524,6 @@ describe("run guards through the agent manager", () => {
     expect(steers[0]!.message).toContain("Wrap up now");
     // The run's prompt plus the one nudge.
     expect(promptsReceived()).toBe(2);
-  });
-
-  it("tells an automatic retry why the previous run failed", async () => {
-    await updateAppSettings(repo, { stallWatchdog: true, stallTimeoutMinutes: 2, maxAutoRetries: 1 });
-    const { task } = await startCard("Hangs once", "slow");
-
-    const [first, retry] = await waitFor(() => {
-      const prompts = runPrompts();
-      return prompts.length === 2 ? prompts : null;
-    }, "the automatic retry to get its prompt");
-    expect((await getTask(task.id)).autoRetries).toBe(1);
-    expect(first).not.toContain("The previous run failed");
-    expect(retry).toContain("The previous run failed: No activity from the agent for 2 min (stall watchdog).");
   });
 
   it("passes the orchestration limits to omp in the run's config overlay", async () => {

@@ -3,15 +3,13 @@ import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { api, env, freshEnv, readOmpLog, setupAdmin, teardown, tempDir, waitFor } from "./helpers";
+import { api, env, freshEnv, setupAdmin, teardown, tempDir, waitFor } from "./helpers";
 
 import * as boardTasksRoute from "@/app/api/v1/boards/[id]/tasks/route";
 import * as boardsRoute from "@/app/api/v1/boards/route";
 import * as taskRoute from "@/app/api/v1/tasks/[id]/route";
-import * as taskCommentsRoute from "@/app/api/v1/tasks/[id]/comments/route";
 import * as taskStopRoute from "@/app/api/v1/tasks/[id]/stop/route";
 import { BRIEF_FILE, BRIEF_NOTE, DESCRIPTION_MAX } from "@/lib/card-draft";
-import { PARALLEL_INSTRUCTION } from "@/lib/agent/prompt";
 import type { Board, Comment, Task } from "@/lib/types";
 
 let board: Board;
@@ -38,23 +36,6 @@ async function getCard(id: string): Promise<{ task: Task; comments: Comment[] }>
   return (await api<{ task: Task; comments: Comment[] }>(taskRoute, "GET", `/tasks/${id}`, { params: { id } })).body;
 }
 
-/** The first card run prompt (not a helper prompt) that contains `needle`. */
-function runPrompt(needle: string): string | undefined {
-  for (const e of readOmpLog()) {
-    const message = e.kind === "command" && e.command?.type === "prompt" ? String(e.command.message ?? "") : "";
-    if (message.includes(needle)) return message;
-  }
-  return undefined;
-}
-
-/** The agent's final summary on the card once its run finished. */
-async function summaryOf(id: string): Promise<string> {
-  return waitFor(async () => {
-    const { task, comments } = await getCard(id);
-    return task.status === "done" ? comments.find((c) => c.author === "agent")?.body : null;
-  });
-}
-
 describe("POST /boards/:id/tasks with text", () => {
   it("creates a single line as typed in In progress and starts its run at once", async () => {
     const res = await createFromText({ text: "  Rename the save button  " });
@@ -63,7 +44,6 @@ describe("POST /boards/:id/tasks with text", () => {
       title: "Rename the save button",
       description: "",
       status: "in_progress",
-      parallelize: null,
       ignoreMemory: false,
     });
     expect(["queued", "running"]).toContain(res.body.agentState);
@@ -79,55 +59,8 @@ describe("POST /boards/:id/tasks with text", () => {
     await waitFor(async () => (await getCard(res.body.id)).task.status === "done");
   });
 
-  it("stores parallelize and gates the run's parallel-subagent permission on it", async () => {
-    const off = await createFromText({ text: "[fake:parallel] tidy the footer links", parallelize: false });
-    expect(off.status).toBe(201);
-    expect(off.body.parallelize).toBe(false);
-    expect((await getCard(off.body.id)).task.parallelize).toBe(false);
-    expect(await summaryOf(off.body.id)).toBe("Fake summary: parallel subagents not allowed.");
-    expect(runPrompt("tidy the footer links")).not.toContain(PARALLEL_INSTRUCTION);
-
-    const on = await createFromText({ text: "[fake:parallel] tidy the header links", parallelize: true });
-    expect(on.body.parallelize).toBe(true);
-    expect(await summaryOf(on.body.id)).toBe("Fake summary: parallel subagents allowed.");
-    expect(runPrompt("tidy the header links")).toContain(PARALLEL_INSTRUCTION);
-
-    // No choice made (null) counts as on.
-    const unset = await createFromText({ text: "[fake:parallel] tidy the sidebar links" });
-    expect(unset.body.parallelize).toBeNull();
-    expect(await summaryOf(unset.body.id)).toBe("Fake summary: parallel subagents allowed.");
-  });
-
-  it("gates the parallel-subagent permission in steered user comments on parallelize", async () => {
-    async function steerOf(text: string, extra: Record<string, unknown>, note: string): Promise<string> {
-      const res = await createFromText({ text, ...extra });
-      expect(res.status).toBe(201);
-      await waitFor(async () => (await getCard(res.body.id)).task.agentState === "running");
-      const posted = await api<Comment>(taskCommentsRoute, "POST", `/tasks/${res.body.id}/comments`, {
-        body: { body: note },
-        params: { id: res.body.id },
-      });
-      expect(posted.status).toBe(201);
-      await waitFor(async () => (await getCard(res.body.id)).task.status === "done");
-      const steer = readOmpLog().find((e) => e.kind === "steer" && String(e.message ?? "").includes(note));
-      expect(steer).toBeDefined();
-      return String(steer?.message);
-    }
-    expect(await steerOf("[fake:slow] steer off", { parallelize: false }, "Also check the off footer")).not.toContain(
-      PARALLEL_INSTRUCTION,
-    );
-    expect(await steerOf("[fake:slow] steer unset", {}, "Also check the unset footer")).toContain(PARALLEL_INSTRUCTION);
-  }, 60_000);
-
-  it("stores parallelize from a { title } create", async () => {
-    const res = await createFromText({ title: "Titled card", parallelize: false });
-    expect(res.status).toBe(201);
-    expect(res.body.parallelize).toBe(false);
-    expect((await getCard(res.body.id)).task.parallelize).toBe(false);
-  });
-
   it("stores ignoreMemory on create (both forms) and toggles it with PATCH", async () => {
-    const on = await createFromText({ text: "[fake:parallel] tidy the sidebar links", ignoreMemory: true });
+    const on = await createFromText({ text: "tidy the sidebar links", ignoreMemory: true });
     expect(on.status).toBe(201);
     expect(on.body.ignoreMemory).toBe(true);
     expect((await getCard(on.body.id)).task.ignoreMemory).toBe(true);
@@ -164,10 +97,9 @@ describe("POST /boards/:id/tasks with text", () => {
     await api(taskStopRoute, "POST", `/tasks/${res.body.id}/stop`, { params: { id: res.body.id } });
   });
 
-  it("validates the text, parallelize and the project", async () => {
+  it("validates the text and the project", async () => {
     expect((await createFromText({ text: "  " })).status).toBe(400);
     expect((await createFromText({})).status).toBe(400);
-    expect((await createFromText({ text: "x", parallelize: "yes" })).status).toBe(400);
     expect(
       (await api(boardTasksRoute, "POST", "/boards/nope/tasks", { body: { text: "x" }, params: { id: "nope" } })).status,
     ).toBe(404);

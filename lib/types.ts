@@ -189,11 +189,6 @@ export interface Task {
   /** Scheduler whose run created this card; null when a person or an agent created it. */
   schedulerId: string | null;
   /**
-   * Whether the card's runs may split the work across parallel subagents (the New task form's
-   * "Parallelize" toggle). null (cards created without a choice) counts as true.
-   */
-  parallelize: boolean | null;
-  /**
    * Whether the card's agent runs without agentmemory (the "Ignore memory" toggle): no recall from past
    * sessions, nothing from its runs saved to memory, no memory tools. Default false. Takes effect from the
    * next run.
@@ -543,12 +538,6 @@ export interface AppSettings {
   /** What a card's agent may do with a web browser (omp's `browser` tool). */
   browser: BrowserMode;
   /**
-   * Prepend AgentMan's system prompt (SDLC workflow, quality gates, cleanup, summary and report
-   * instructions) to every task sent to omp. Off: the task is forwarded to omp exactly as
-   * written, with nothing added.
-   */
-  useSystemPrompt: boolean;
-  /**
    * Retry failed runs automatically (resuming the omp session) with exponential backoff, and
    * resume interrupted and failed In progress cards when the server restarts.
    */
@@ -876,7 +865,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   providerPriority: [],
   smartQueue: true,
   browser: "headless",
-  useSystemPrompt: true,
   autoRetry: true,
   maxAutoRetries: 5,
   persistentRetry: true,

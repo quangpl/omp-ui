@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
 /** Resolves true when the card was created (the form then resets). */
 export type CreateFromText = (
   text: string,
-  options: { parallelize: boolean; ignoreMemory: boolean },
+  options: { ignoreMemory: boolean },
 ) => Promise<boolean>;
 
 /** Default footer hint: what happens on create, then the composer keys. */
@@ -35,8 +35,7 @@ const DEFAULT_HINT = (
 
 /**
  * New task from free text: the user writes as much as they like and creates it right away. The
- * card lands in In progress with the text as typed and its agent starts at once. The "Parallelize"
- * switch lets the user keep the agent from splitting the work across subagents; "Ignore memory"
+ * card lands in In progress with the text as typed and its agent starts at once. "Ignore memory"
  * runs the card without recalling or saving agent memory.
  *
  * `layout="page"` fills its flex-column parent (the phone "New task" page): the textarea takes
@@ -63,7 +62,6 @@ export function NewTaskForm({
   canSubmit = true,
   resetOnSubmit = true,
   autoFocus = true,
-  parallelizeToggle = true,
   memoryToggle = true,
 }: {
   onSubmit: CreateFromText;
@@ -93,8 +91,6 @@ export function NewTaskForm({
   /** Clear the text after a successful submit. */
   resetOnSubmit?: boolean;
   autoFocus?: boolean;
-  /** Show the "Parallelize" switch (on by default); hidden, submits always parallelize. */
-  parallelizeToggle?: boolean;
   /** Show the "Ignore memory" switch (off by default); hidden, submits always with memory on. */
   memoryToggle?: boolean;
 }) {
@@ -104,7 +100,6 @@ export function NewTaskForm({
   /** The last submit failed (the caller toasted why); cleared as soon as the text changes. */
   const [failed, setFailed] = useState(false);
   /** Kept across submits so a run of tasks shares the choice. */
-  const [parallelize, setParallelize] = useState(true);
   const [ignoreMemory, setIgnoreMemory] = useState(false);
   const composeRef = useRef<HTMLTextAreaElement>(null);
   const setText = (next: string) => {
@@ -120,11 +115,7 @@ export function NewTaskForm({
     if (!value || busy || !canSubmit) return;
     setBusy(true);
     setFailed(false);
-    // Without the toggle the choice is not the user's to make: parallel stays on.
-    const ok = await onSubmit(value, {
-      parallelize: parallelizeToggle ? parallelize : true,
-      ignoreMemory: memoryToggle ? ignoreMemory : false,
-    });
+    const ok = await onSubmit(value, { ignoreMemory: memoryToggle ? ignoreMemory : false });
     setBusy(false);
     if (!ok) setFailed(true);
     else if (resetOnSubmit) setText("");
@@ -192,24 +183,6 @@ export function NewTaskForm({
     </>
   );
   const disabled = !text.trim() || busy || !canSubmit;
-  const parallelizeNode = parallelizeToggle && (
-    <div className="flex items-start gap-3">
-      <Switch
-        id={`${id}-parallelize`}
-        className="mt-0.5"
-        checked={parallelize}
-        onCheckedChange={setParallelize}
-        disabled={busy}
-        aria-describedby={`${id}-parallelize-hint`}
-      />
-      <div className="flex flex-col gap-0.5">
-        <Label htmlFor={`${id}-parallelize`}>Parallelize</Label>
-        <p id={`${id}-parallelize-hint`} className="text-xs text-muted-foreground">
-          Let the agent split the work across parallel subagents.
-        </p>
-      </div>
-    </div>
-  );
   const memoryNode = memoryToggle && (
     <div className="flex items-start gap-3">
       <Switch
@@ -228,12 +201,7 @@ export function NewTaskForm({
       </div>
     </div>
   );
-  const togglesNode = (parallelizeNode || memoryNode) && (
-    <div className="flex flex-col gap-3">
-      {parallelizeNode}
-      {memoryNode}
-    </div>
-  );
+  const togglesNode = memoryNode && <div className="flex flex-col gap-3">{memoryNode}</div>;
 
   if (page) {
     return (

@@ -79,8 +79,6 @@ export interface CreateTaskInput {
   createdByTaskId?: string | null;
   /** Default null. Scheduler whose run creates this card. */
   schedulerId?: string | null;
-  /** Default null (counts as on). Whether the agent may split the work across parallel subagents. */
-  parallelize?: boolean | null;
   /** Default false. Whether the agent runs without agentmemory (see Task.ignoreMemory). */
   ignoreMemory?: boolean;
 }

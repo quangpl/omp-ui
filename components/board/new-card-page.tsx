@@ -102,8 +102,8 @@ export function NewCardScreen({ boardId }: { boardId: string }) {
     router.replace(newCardHref(id));
   };
 
-  const create: CreateFromText = async (text, { parallelize, ignoreMemory }) => {
-    const task = await createCardFromText(boardId, text, { parallelize, ignoreMemory });
+  const create: CreateFromText = async (text, { ignoreMemory }) => {
+    const task = await createCardFromText(boardId, text, { ignoreMemory });
     if (!task) return false;
     localStorage.setItem(LAST_BOARD_KEY, boardId);
     setMobileColumnHint(boardId, task.status);
