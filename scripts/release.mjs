@@ -17,7 +17,8 @@ const changelog = readFileSync("CHANGELOG.md", "utf8");
 const date = new Date().toISOString().slice(0, 10);
 writeFileSync("CHANGELOG.md", changelog.replace("## [Unreleased]", `## [Unreleased]\n\n## [${version}] - ${date}`));
 
-sh("git", "add", "package.json", "CHANGELOG.md");
+// `npm version` also bumps package-lock.json when the repo tracks one.
+sh("git", "add", "package.json", "CHANGELOG.md", ...(sh("git", "ls-files", "package-lock.json") ? ["package-lock.json"] : []));
 sh("git", "commit", "-m", `Release ${version}`);
 sh("git", "push", "origin", "main");
 console.log(`Pushed ${version}. Follow the release: gh run watch --repo quangpl/omp-ui`);
