@@ -123,7 +123,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: omp_ui
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-omp_ui}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: omp_ui
     volumes:
       - pg-data:/var/lib/postgresql/data

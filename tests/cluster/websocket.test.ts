@@ -122,7 +122,7 @@ async function closedPort(): Promise<number> {
 
 describe("clusterWsUrl", () => {
   it("maps http(s) to ws(s) and keeps a base path", () => {
-    expect(clusterWsUrl("https://a.quang.asia")).toBe(`wss://a.quang.asia${CLUSTER_WS_PATH}`);
+    expect(clusterWsUrl("https://a.example.com")).toBe(`wss://a.example.com${CLUSTER_WS_PATH}`);
     expect(clusterWsUrl("http://10.0.0.2:3000/")).toBe(`ws://10.0.0.2:3000${CLUSTER_WS_PATH}`);
     expect(clusterWsUrl("https://example.com/omp/?x=1")).toBe(`wss://example.com/omp${CLUSTER_WS_PATH}`);
   });

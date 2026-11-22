@@ -475,6 +475,7 @@ To see it, look for `[supervisor …] health check failed (n/3)` and `server is 
 ## Security
 
 - **Set strong passwords before you make AgentMan public**, for the `admin` account and every other one. They are the only thing protecting a tool that runs commands on your machine.
+- A fresh install lets the first visitor create the admin account, and the server listens on `0.0.0.0` by default. Set `ADMIN_PASSWORD` (the CLI generates one) or `HOST=127.0.0.1` before the first start on a reachable machine.
 - Agents run commands on the host as the server user for every account, not only for admins. Only give accounts to people you trust with that machine.
 - Agents run in **`yolo`** approval mode by default: they run commands and edit files without asking. Only point projects at folders you are happy for an agent to change. Use Docker if you want isolation. You can change the mode in **Settings**.
 - Changing a password signs out that account's sessions. Keep `.env` private.

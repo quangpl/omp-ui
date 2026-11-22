@@ -12,3 +12,7 @@ tsconfig.tsbuildinfo
 /.e2e-data/
 /test-results/
 /playwright-report/
+*.db
+*.db-wal
+*.db-shm
+credentials.key
