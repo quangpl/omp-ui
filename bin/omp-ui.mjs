@@ -1350,6 +1350,7 @@ function printUrls(cfg, { tunnelUrl } = {}) {
   console.log(`  ${c.green("➜")} ${label("Local")}${c.cyan(c.bold(localUrl(cfg)))}`);
   for (const url of lanUrls(cfg)) console.log(`  ${c.green("➜")} ${label("Network")}${c.cyan(url)}`);
   if (tunnelUrl) console.log(`  ${c.green("➜")} ${label("Public")}${c.magenta(c.bold(tunnelUrl))}`);
+  console.log(`  ${c.green("➜")} ${label("User")}${c.bold("admin")} ${c.dim("(password: ADMIN_PASSWORD in .env, change it with omp-ui passwd)")}`);
   console.log("");
 }
 
