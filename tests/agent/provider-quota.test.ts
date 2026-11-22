@@ -46,7 +46,7 @@ function usage(...exhausted: string[]): AiStats {
         ],
       })),
     },
-    usage: { available: false, error: null, totals: null, byModel: [], byAgent: [], series: [] },
+    usage: { available: false, error: null, totals: null, byModel: [], byAgent: [], byFolder: [], series: [] },
   };
 }
 

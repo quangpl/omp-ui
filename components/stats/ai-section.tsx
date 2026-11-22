@@ -25,7 +25,7 @@ import { useNow, type AiState } from "@/components/stats/use-stats";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { AiModelUsage, AiProviderBalance, AiProviderQuota, AiQuotaLimit, AiStats } from "@/lib/types";
+import type { AiFolderUsage, AiModelUsage, AiProviderBalance, AiProviderQuota, AiQuotaLimit, AiStats } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const GAUGE_SIZE = 52;
@@ -349,6 +349,11 @@ function rankModels(models: AiModelUsage[]) {
   return { ranked, shares, total, max, byCost, totalCost };
 }
 
+function formatTtft(ms: number | null): string {
+  if (ms === null) return "—";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+}
+
 /** Thin bar: a model's share relative to the largest one. */
 function ShareBar({ value, max, colorClass, className }: { value: number; max: number; colorClass: string; className?: string }) {
   return (
@@ -450,6 +455,12 @@ function UsageByModel({ usage }: { usage: AiStats["usage"] }) {
                 <p className="flex flex-wrap gap-x-3 font-mono text-xs text-muted-foreground tabular-nums">
                   {!soleProvider && <span className="font-sans">{providerName(m.provider)}</span>}
                   <span>{wholeNumber.format(m.requests)} req</span>
+                  {m.failedRequests > 0 && (
+                    <span className="text-destructive">{wholeNumber.format(m.failedRequests)} failed</span>
+                  )}
+                  <span>TTFT {formatTtft(m.avgTtftMs)}</span>
+                  <span>{m.avgTokensPerSecond !== null ? Math.round(m.avgTokensPerSecond) : "—"} tok/s</span>
+                  <span>cache {m.cacheRate !== null ? formatPercent(m.cacheRate) : "—"}</span>
                   <span>{compactNumber.format(m.inputTokens)} in</span>
                   <span>{compactNumber.format(m.outputTokens)} out</span>
                 </p>
@@ -469,6 +480,15 @@ function UsageByModel({ usage }: { usage: AiStats["usage"] }) {
                 )}
                 <th scope="col" className="w-24 text-right">
                   Requests
+                </th>
+                <th scope="col" className="hidden w-20 text-right @3xl:table-cell">
+                  TTFT
+                </th>
+                <th scope="col" className="hidden w-20 text-right @3xl:table-cell">
+                  Tok/s
+                </th>
+                <th scope="col" className="hidden w-20 text-right @4xl:table-cell">
+                  Cache
                 </th>
                 <th scope="col" className="w-20 text-right">
                   In
@@ -498,7 +518,15 @@ function UsageByModel({ usage }: { usage: AiStats["usage"] }) {
                       {providerName(m.provider)}
                     </td>
                   )}
-                  <td className="text-right font-mono text-[0.8125rem]">{wholeNumber.format(m.requests)}</td>
+                  <td className="text-right font-mono text-[0.8125rem]">
+                    {wholeNumber.format(m.requests)}
+                    {m.failedRequests > 0 && (
+                      <span className="block text-xs text-destructive">{wholeNumber.format(m.failedRequests)} failed</span>
+                    )}
+                  </td>
+                  <td className="hidden text-right font-mono text-[0.8125rem] text-muted-foreground @3xl:table-cell">{formatTtft(m.avgTtftMs)}</td>
+                  <td className="hidden text-right font-mono text-[0.8125rem] text-muted-foreground @3xl:table-cell">{m.avgTokensPerSecond !== null ? Math.round(m.avgTokensPerSecond) : "—"}</td>
+                  <td className="hidden text-right font-mono text-[0.8125rem] text-muted-foreground @4xl:table-cell">{m.cacheRate !== null ? formatPercent(m.cacheRate) : "—"}</td>
                   <td className="text-right font-mono text-[0.8125rem] text-muted-foreground">{compactNumber.format(m.inputTokens)}</td>
                   <td className="text-right font-mono text-[0.8125rem] text-muted-foreground">{compactNumber.format(m.outputTokens)}</td>
                   <td className="text-right font-mono text-[0.8125rem] font-semibold">{usd.format(m.costUsd)}</td>
@@ -508,6 +536,46 @@ function UsageByModel({ usage }: { usage: AiStats["usage"] }) {
           </table>
         </>
       )}
+    </div>
+  );
+}
+
+const FOLDER_LIMIT = 10;
+
+/** Per-project spend: the folder omp ran in, ranked by cost (or requests when nothing is priced). */
+function UsageByFolder({ usage }: { usage: AiStats["usage"] }) {
+  if (!usage.available || usage.byFolder.length === 0) return null;
+  const folders = usage.byFolder.slice(0, FOLDER_LIMIT);
+  const hidden = usage.byFolder.length - folders.length;
+  const byCost = usage.byFolder.some((f) => f.costUsd > 0);
+  const metric = (f: AiFolderUsage) => (byCost ? f.costUsd : f.requests);
+  const max = Math.max(...folders.map(metric));
+
+  return (
+    <div className={cn(PANEL, "@container animate-card-in")} style={stagger(7)}>
+      <PanelHeader title="Usage by project" note={byCost ? "Ranked by cost" : "Ranked by requests"} />
+      <ol className="divide-y">
+        {folders.map((f) => (
+          <li key={f.folder} className="space-y-1.5 px-4 py-3 content-auto [contain-intrinsic-size:auto_4.5rem] sm:px-5">
+            <div className="flex items-baseline gap-3">
+              <span className="min-w-0 flex-1 truncate font-mono text-xs" title={f.folder}>
+                {f.folder.replace(/^-/, "")}
+              </span>
+              <span className="shrink-0 font-mono text-sm font-semibold tabular-nums">{usd.format(f.costUsd)}</span>
+            </div>
+            <ShareBar value={metric(f)} max={max} colorClass={SERIES[0]} />
+            <p className="flex flex-wrap gap-x-3 font-mono text-xs text-muted-foreground tabular-nums">
+              <span>{wholeNumber.format(f.requests)} req</span>
+              {f.failedRequests > 0 && (
+                <span className="text-destructive">{wholeNumber.format(f.failedRequests)} failed</span>
+              )}
+              <span>{compactNumber.format(f.inputTokens)} in</span>
+              <span>{compactNumber.format(f.outputTokens)} out</span>
+            </p>
+          </li>
+        ))}
+      </ol>
+      {hidden > 0 && <p className="border-t px-4 py-2.5 text-xs text-muted-foreground sm:px-5">+{hidden} more</p>}
     </div>
   );
 }
@@ -730,6 +798,7 @@ export function AiSection({ ai }: { ai: AiState }) {
               (usage ? (
                 <div className="min-w-0 space-y-4">
                   <UsageOverview usage={usage} />
+                  <UsageByFolder usage={usage} />
                   <UsageByModel usage={usage} />
                 </div>
               ) : (

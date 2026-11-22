@@ -11,6 +11,7 @@ import type { Repository } from "@/lib/db/types";
 import {
   TASK_STATUSES,
   type AiAgentUsage,
+  type AiFolderUsage,
   type AiModelUsage,
   type AiProviderQuota,
   type AiQuotaLimit,
@@ -259,6 +260,10 @@ function mapUsage(data: unknown): AiStats["usage"] {
       outputTokens: num(m.totalOutputTokens) ?? 0,
       cacheReadTokens: num(m.totalCacheReadTokens) ?? 0,
       costUsd: num(m.totalCost) ?? 0,
+      failedRequests: num(m.failedRequests) ?? 0,
+      cacheRate: num(m.cacheRate),
+      avgTtftMs: num(m.avgTtft),
+      avgTokensPerSecond: num(m.avgTokensPerSecond),
     };
   });
   byModel.sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
@@ -274,6 +279,20 @@ function mapUsage(data: unknown): AiStats["usage"] {
     };
   });
   byAgent.sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
+  const byFolder: AiFolderUsage[] = arr(root.byFolder).map((raw) => {
+    const f = obj(raw);
+    return {
+      folder: str(f.folder) ?? "unknown",
+      requests: num(f.totalRequests) ?? 0,
+      failedRequests: num(f.failedRequests) ?? 0,
+      inputTokens: num(f.totalInputTokens) ?? 0,
+      outputTokens: num(f.totalOutputTokens) ?? 0,
+      cacheReadTokens: num(f.totalCacheReadTokens) ?? 0,
+      costUsd: num(f.totalCost) ?? 0,
+      lastAt: iso(f.lastTimestamp),
+    };
+  });
+  byFolder.sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
   const series: AiUsagePoint[] = arr(root.timeSeries).flatMap((raw) => {
     const p = obj(raw);
     const at = iso(p.timestamp);
@@ -299,7 +318,7 @@ function mapUsage(data: unknown): AiStats["usage"] {
         lastAt: iso(overall.lastTimestamp),
       }
     : null;
-  return { available: true, error: null, totals, byModel, byAgent, series };
+  return { available: true, error: null, totals, byModel, byAgent, byFolder, series };
 }
 
 async function loadQuota(ompPath: string): Promise<AiStats["quota"]> {
@@ -313,7 +332,7 @@ async function loadUsage(ompPath: string): Promise<AiStats["usage"]> {
   const stats = await runOmpJson(ompPath, ["stats", "--json"]);
   return stats.ok
     ? mapUsage(stats.data)
-    : { available: false, error: stats.error, totals: null, byModel: [], byAgent: [], series: [] };
+    : { available: false, error: stats.error, totals: null, byModel: [], byAgent: [], byFolder: [], series: [] };
 }
 
 type Section = "quota" | "balances" | "usage";

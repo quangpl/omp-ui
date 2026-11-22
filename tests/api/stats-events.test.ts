@@ -177,6 +177,7 @@ describe("GET /stats/ai", () => {
       totals: null,
       byModel: [],
       byAgent: [],
+      byFolder: [],
       series: [],
     });
   });
@@ -229,6 +230,10 @@ describe("GET /stats/ai", () => {
         byModel: [
           { provider: "anthropic", model: "cheap", totalRequests: 10, totalInputTokens: 800, totalOutputTokens: 400, totalCacheReadTokens: 200, totalCost: 0.5 },
           { provider: "openai", model: "pricey", totalRequests: 2, totalInputTokens: 200, totalOutputTokens: 100, totalCacheReadTokens: 0, totalCost: 1.0 },
+        ],
+        byFolder: [
+          { folder: "-work-a", totalRequests: 1, totalInputTokens: 1, totalOutputTokens: 2, totalCacheReadTokens: 3, totalCost: 0.1 },
+          { folder: "-work-b", totalRequests: 2, failedRequests: 1, totalInputTokens: 5, totalOutputTokens: 6, totalCacheReadTokens: 7, totalCost: 0.9, lastTimestamp: "2026-11-12T10:00:00Z" },
         ],
       };
       const stub = writeScript(
@@ -296,7 +301,15 @@ describe("GET /stats/ai", () => {
         outputTokens: 400,
         cacheReadTokens: 200,
         costUsd: 0.5,
+        failedRequests: 0,
+        cacheRate: null,
+        avgTtftMs: null,
+        avgTokensPerSecond: null,
       });
+      expect(first.usage.byFolder).toEqual([
+        { folder: "-work-b", requests: 2, failedRequests: 1, inputTokens: 5, outputTokens: 6, cacheReadTokens: 7, costUsd: 0.9, lastAt: "2026-11-12T10:00:00.000Z" },
+        { folder: "-work-a", requests: 1, failedRequests: 0, inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, costUsd: 0.1, lastAt: null },
+      ]);
 
       const cached = await aiStats();
       expect(cached).toEqual(first);
@@ -328,6 +341,7 @@ describe("GET /stats/ai", () => {
         totals: null,
         byModel: [],
         byAgent: [],
+        byFolder: [],
         series: [],
       });
     });

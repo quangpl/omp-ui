@@ -1867,6 +1867,23 @@ export interface AiModelUsage {
   outputTokens: number;
   cacheReadTokens: number;
   costUsd: number;
+  failedRequests: number;
+  /** Cache-read share of input, 0–1. */
+  cacheRate: number | null;
+  avgTtftMs: number | null;
+  avgTokensPerSecond: number | null;
+}
+
+/** Usage for one project folder, as omp names it (path with "/" replaced by "-"). */
+export interface AiFolderUsage {
+  folder: string;
+  requests: number;
+  failedRequests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+  lastAt: string | null;
 }
 
 /** A provider balance the server reads directly, because `omp usage` cannot read it (e.g. DeepSeek). */
@@ -1931,6 +1948,7 @@ export interface AiStats {
     } | null;
     byModel: AiModelUsage[];
     byAgent: AiAgentUsage[];
+    byFolder: AiFolderUsage[];
     /** Hourly, oldest first. */
     series: AiUsagePoint[];
   };

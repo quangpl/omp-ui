@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Stats page: per-model TTFT, tokens/s, cache rate and failures, and a "Usage by project" panel, from `omp stats`.
+- Stats icon in the desktop header.
+
 ## [0.1.5] - 2026-11-22
 
 ## [0.1.4] - 2026-11-22
