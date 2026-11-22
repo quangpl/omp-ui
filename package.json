@@ -98,6 +98,7 @@
     "pm2:stop": "node bin/omp-ui.mjs pm2 stop",
     "pm2:logs": "node bin/omp-ui.mjs pm2 logs",
     "test": "vitest run",
+    "test:unit": "vitest run --exclude 'tests/cli/**'",
     "test:watch": "vitest",
     "test:e2e": "pnpm build && playwright test",
     "prepack": "vite build"
