@@ -2,7 +2,6 @@
 # AgentMan — kanban control panel for omp coding agents, with omp baked in.
 #   docker compose up -d          (recommended; see docker-compose.yml)
 #   docker build -t omp-ui .      (optional: --build-arg OMP_VERSION=v18.19.0 to pin omp)
-#   docker build --build-arg AGENTMEMORY_VERSION=latest -t omp-ui .   (opt-in persistent agent memory)
 
 ARG NODE_IMAGE=node:24-bookworm-slim
 
@@ -41,10 +40,6 @@ RUN set -eu; \
 FROM ${NODE_IMAGE} AS runtime
 ARG OMP_VERSION=""
 ARG GLAB_VERSION=""
-# Opt-in: install agentmemory (npm @agentmemory/agentmemory; "latest" or a version) so card runs
-# get persistent memory. Empty = not installed. bin/supervisor.mjs starts its server, the
-# entrypoint connects omp to it; state lives in /home/omp/.agentmemory (a volume in compose).
-ARG AGENTMEMORY_VERSION=""
 
 # Tools the omp agent and the git integration rely on (git, ssh, ripgrep) + tini as PID 1.
 RUN apt-get update \
@@ -86,20 +81,11 @@ RUN set -eu; \
     omp --version; \
     rm -rf /root/.omp
 
-# agentmemory (opt-in, see AGENTMEMORY_VERSION). Its pinned iii engine is downloaded into
-# ~/.agentmemory/bin on first start (needs curl, sh, tar) and kept in the volume.
-RUN set -eu; \
-    if [ -n "$AGENTMEMORY_VERSION" ]; then \
-      npm install -g --no-audit --no-fund --loglevel=error "@agentmemory/agentmemory@${AGENTMEMORY_VERSION}"; \
-      agentmemory --version; \
-      npm cache clean --force; \
-    fi
-
 # Unprivileged user `omp` (uid 1000; the entrypoint adapts it to the mounted volumes).
 # ~/.ssh is mounted read-only, so new host keys go to a writable known_hosts file.
 RUN usermod -l omp -d /home/omp -m node \
  && groupmod -n omp node \
- && mkdir -p /data /workspace /home/omp/.omp /home/omp/.agentmemory /home/omp/.config/gh /home/omp/.cache/ssh \
+ && mkdir -p /data /workspace /home/omp/.omp /home/omp/.config/gh /home/omp/.cache/ssh \
  && chown -R omp:omp /data /workspace /home/omp \
  && git config --system --add safe.directory '*' \
  && git config --system user.name "AgentMan agent" \
@@ -120,8 +106,7 @@ ENV NODE_ENV=production \
     DATABASE_URL=sqlite:/data/omp-ui.db \
     WORKSPACE_DIR=/workspace \
     OMP_PATH=omp \
-    HOME=/home/omp \
-    AGENTMEMORY_DATA_DIR=/home/omp/.agentmemory/data
+    HOME=/home/omp
 
 VOLUME ["/data"]
 EXPOSE 3000

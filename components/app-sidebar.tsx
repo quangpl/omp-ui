@@ -8,6 +8,7 @@ import {
   ArrowRightIcon,
   ChartColumnIcon,
   ChevronRightIcon,
+  SlidersHorizontalIcon,
   ChevronsUpDownIcon,
   KeyboardIcon,
   LogOutIcon,
@@ -412,6 +413,10 @@ export function AppSidebar() {
   const openNewCard = useNewCard();
   const visibleMenus = useVisibleDashboardMenus();
   const navTabs = TOP_TABS.filter((tab) => isMenuHrefVisible(tab.href, visibleMenus));
+  const mainTabs = navTabs.filter((tab) => !tab.advanced);
+  const advancedTabs = navTabs.filter((tab) => tab.advanced);
+  // Starts open when the current page lives inside the group, so the active entry is visible.
+  const [advancedOpen, setAdvancedOpen] = useState(() => advancedTabs.some((tab) => isActivePath(pathname, tab.href)));
   // Restarting the server is an admin-only API.
   const { isAdmin } = useCurrentUser();
 
@@ -422,6 +427,37 @@ export function AppSidebar() {
   const closeMobile = useCallback(() => {
     if (isMobile) setOpenMobile(false);
   }, [isMobile, setOpenMobile]);
+
+  const renderTab = ({ href, label, icon: Icon }: (typeof TOP_TABS)[number]) => {
+    const active = isActivePath(pathname, href);
+    // Second key of the `G` sequence (the first listed alias wins).
+    const key = GO_SHORTCUTS.find((shortcut) => shortcut.href === href)?.key.toUpperCase();
+    const containers = href === "/containers";
+    return (
+      <SidebarMenuItem key={href}>
+        <SidebarMenuButton
+          asChild
+          isActive={active}
+          tooltip={{ children: <TooltipLabel label={label} keys={key ? ["G", key] : undefined} /> }}
+          className={cn(ROW, ACTIVE_ROW, "data-active:[&>svg:first-child]:text-primary", containers && "pr-9 max-md:pr-12")}
+        >
+          <Link href={href} aria-current={pathname === href ? "page" : undefined} onClick={closeMobile}>
+            <Icon />
+            <span className="min-w-0 flex-1 truncate">{label}</span>
+            {containers && <RunningCountBadge className="shrink-0 group-data-[collapsible=icon]:hidden" />}
+            {key && <GoHint k={key} />}
+          </Link>
+        </SidebarMenuButton>
+        {containers && (
+          <RunningContainersButton
+            side={isMobile ? "bottom" : "right"}
+            align="start"
+            className="absolute top-1/2 right-1 size-11 min-w-0 -translate-y-1/2 rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent group-data-[collapsible=icon]:hidden md:size-6"
+          />
+        )}
+      </SidebarMenuItem>
+    );
+  };
 
   return (
     <Sidebar collapsible="icon">
@@ -515,42 +551,33 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <nav aria-label="Main">
               <SidebarMenu className="gap-0.5">
-                {navTabs.map(({ href, label, icon: Icon }) => {
-                  const active = isActivePath(pathname, href);
-                  // Second key of the `G` sequence (the first listed alias wins).
-                  const key = GO_SHORTCUTS.find((shortcut) => shortcut.href === href)?.key.toUpperCase();
-                  const containers = href === "/containers";
-                  return (
-                    <SidebarMenuItem key={href}>
-                      <SidebarMenuButton
-                        asChild
-                        isActive={active}
-                        tooltip={{ children: <TooltipLabel label={label} keys={key ? ["G", key] : undefined} /> }}
-                        className={cn(
-                          ROW,
-                          ACTIVE_ROW,
-                          "data-active:[&>svg:first-child]:text-primary",
-                          containers && "pr-9 max-md:pr-12",
-                        )}
-                      >
-                        <Link href={href} aria-current={pathname === href ? "page" : undefined} onClick={closeMobile}>
-                          <Icon />
-                          <span className="min-w-0 flex-1 truncate">{label}</span>
-                          {containers && <RunningCountBadge className="shrink-0 group-data-[collapsible=icon]:hidden" />}
-                          {key && <GoHint k={key} />}
-                        </Link>
-                      </SidebarMenuButton>
-                      {containers && (
-                        <RunningContainersButton
-                          side={isMobile ? "bottom" : "right"}
-                          align="start"
-                          className="absolute top-1/2 right-1 size-11 min-w-0 -translate-y-1/2 rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent group-data-[collapsible=icon]:hidden md:size-6"
-                        />
-                      )}
-                    </SidebarMenuItem>
-                  );
-                })}
+                {mainTabs.map(renderTab)}
               </SidebarMenu>
+              {advancedTabs.length > 0 && (
+                <Collapsible.Root
+                  open={advancedOpen}
+                  onOpenChange={setAdvancedOpen}
+                  className="group/advanced mt-0.5 group-data-[collapsible=icon]:hidden"
+                >
+                  <Collapsible.Trigger className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm font-medium text-sidebar-foreground/80 outline-hidden ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 max-md:h-11 max-md:px-3">
+                    <SlidersHorizontalIcon className="size-4 shrink-0" aria-hidden />
+                    <span className="flex-1 text-left">Advanced</span>
+                    <ChevronRightIcon
+                      className="size-4 transition-transform duration-200 group-data-[state=open]/advanced:rotate-90 motion-reduce:transition-none"
+                      aria-hidden
+                    />
+                  </Collapsible.Trigger>
+                  <Collapsible.Content>
+                    <SidebarMenu className="gap-0.5 pt-0.5">{advancedTabs.map(renderTab)}</SidebarMenu>
+                  </Collapsible.Content>
+                </Collapsible.Root>
+              )}
+              {/* The rail has no room for a group header: advanced entries list flat there. */}
+              {advancedTabs.length > 0 && (
+                <SidebarMenu className="hidden gap-0.5 pt-0.5 group-data-[collapsible=icon]:flex">
+                  {advancedTabs.map(renderTab)}
+                </SidebarMenu>
+              )}
             </nav>
           </SidebarGroupContent>
         </SidebarGroup>

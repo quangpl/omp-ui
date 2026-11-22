@@ -1,11 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import {
   ArchiveRestoreIcon,
   BellIcon,
   BrainCircuitIcon,
-  BrainIcon,
   BrushCleaningIcon,
   CheckIcon,
   CopyIcon,
@@ -35,7 +35,6 @@ import { ChatSettingsSection } from "@/components/settings/chat-settings";
 import { CleanupSettingsSection } from "@/components/settings/cleanup-settings";
 import { DataTransferSettingsSection } from "@/components/settings/data-transfer-settings";
 import { ClusterSettingsSection } from "@/components/settings/cluster-settings";
-import { MemorySettingsSection } from "@/components/settings/memory-settings";
 import { MenuSettingsSection } from "@/components/settings/menu-settings";
 import { NotificationSettingsSection } from "@/components/settings/notification-settings";
 import { OmpSettingsSection } from "@/components/settings/omp-settings";
@@ -113,7 +112,6 @@ const SECTIONS: SettingsNavItem[] = [
   { id: "orchestration", label: "Orchestration", icon: <ShieldCheckIcon /> },
   { id: "omp", label: "OMP", icon: <SquareTerminalIcon /> },
   { id: "ai-providers", label: "AI Providers", icon: <BrainCircuitIcon /> },
-  { id: "memory", label: "Memory", icon: <BrainIcon /> },
   { id: "cleanup", label: "Data cleanup", icon: <BrushCleaningIcon /> },
   { id: "data", label: "Data transfer", icon: <ArchiveRestoreIcon /> },
   { id: "notifications", label: "Notifications", icon: <BellIcon /> },
@@ -850,7 +848,17 @@ export default function SettingsPage() {
   const readOnly = !isAdmin;
   return (
     <div className="flex min-h-dvh flex-col">
-      <AppHeader title="Settings" backHref="/" />
+      <AppHeader
+        title="Settings"
+        backHref="/"
+        actions={
+          isAdmin && (
+            <Button asChild variant="ghost" size="sm">
+              <Link href="/onboarding">Run setup wizard</Link>
+            </Button>
+          )
+        }
+      />
       <main className="px-safe pb-safe flex-1">
         <div className="mx-auto grid w-full max-w-[1400px] grid-cols-1 gap-6 px-4 py-6 sm:px-6 md:py-8 lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-10 lg:px-8 xl:grid-cols-[14rem_minmax(0,1fr)] xl:gap-14">
           {loading ? (
@@ -882,7 +890,6 @@ export default function SettingsPage() {
                 <SettingsReadOnly value={readOnly}>
                   <OmpSettingsSection />
                   <AiProvidersSettingsSection />
-                  <MemorySettingsSection />
                 </SettingsReadOnly>
                 {isAdmin && <CleanupSettingsSection />}
                 {isAdmin && <DataTransferSettingsSection />}

@@ -1,7 +1,7 @@
 "use client";
 
 import { ChartColumnIcon, GaugeIcon, Loader2Icon, RefreshCwIcon, SparklesIcon } from "lucide-react";
-import { RadialGauge, SegmentBar } from "@/components/stats/charts";
+import { RadialGauge, SegmentBar, Sparkline } from "@/components/stats/charts";
 import {
   EmptyState,
   Notice,
@@ -513,7 +513,107 @@ function UsageByModel({ usage }: { usage: AiStats["usage"] }) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Skeleton + section
+// Usage overview
+
+function StatTile({ label, value, note }: { label: string; value: React.ReactNode; note?: React.ReactNode }) {
+  return (
+    <div className="min-w-0 space-y-1 px-4 py-3 sm:px-5">
+      <p className={LABEL}>{label}</p>
+      <p className="truncate font-mono text-lg font-semibold tracking-tight tabular-nums">{value}</p>
+      {note && <p className="truncate font-mono text-xs text-muted-foreground tabular-nums">{note}</p>}
+    </div>
+  );
+}
+
+/** omp's headline numbers (spend, requests, tokens, cache, speed), spend per hour and the split by agent kind. */
+function UsageOverview({ usage }: { usage: AiStats["usage"] }) {
+  const totals = usage.totals;
+  if (!usage.available || !totals || totals.requests === 0) return null;
+
+  const agents = usage.byAgent;
+  const agentCost = agents.reduce((sum, a) => sum + a.costUsd, 0);
+  const byCost = agentCost > 0;
+  const agentTotal = byCost ? agentCost : agents.reduce((sum, a) => sum + a.requests, 0);
+  const spend = usage.series.map((p) => p.costUsd);
+  const peak = usage.series.reduce((best, p) => (p.costUsd > best.costUsd ? p : best), usage.series[0]);
+  const rangeNote = `${usage.series.length} active hours`;
+
+  return (
+    <div className={cn(PANEL, "@container animate-card-in")} style={stagger(5)}>
+      <PanelHeader title="Usage overview" note="Totals across all recorded omp sessions" />
+      <div className="grid grid-cols-2 @xl:grid-cols-3">
+        <StatTile label="Spend" value={usd.format(totals.costUsd)} note={`${wholeNumber.format(totals.requests)} requests`} />
+        <StatTile
+          label="Failed"
+          value={wholeNumber.format(totals.failedRequests)}
+          note={formatPercent(totals.failedRequests / totals.requests)}
+        />
+        <StatTile
+          label="Tokens in / out"
+          value={`${compactNumber.format(totals.inputTokens)} / ${compactNumber.format(totals.outputTokens)}`}
+        />
+        <StatTile
+          label="Cache read / write"
+          value={`${compactNumber.format(totals.cacheReadTokens)} / ${compactNumber.format(totals.cacheWriteTokens)}`}
+          note={
+            totals.cacheRate !== null
+              ? `${formatPercent(totals.cacheRate)} hit${totals.cacheSavings !== null ? ` · saved ${formatPercent(totals.cacheSavings)}` : ""}`
+              : undefined
+          }
+        />
+        <StatTile
+          label="Speed"
+          value={totals.avgTokensPerSecond !== null ? `${Math.round(totals.avgTokensPerSecond)} tok/s` : "–"}
+        />
+        <StatTile
+          label="First token"
+          value={totals.avgTtftMs !== null ? `${wholeNumber.format(Math.round(totals.avgTtftMs))} ms` : "–"}
+        />
+      </div>
+      {spend.length > 1 && (
+        <div className="space-y-2 border-t px-4 py-4 sm:px-5">
+          <div className="flex items-baseline justify-between gap-3">
+            <p className={LABEL}>Spend per hour</p>
+            <p className="truncate font-mono text-xs text-muted-foreground tabular-nums">
+              {rangeNote} · peak {usd.format(peak.costUsd)}
+            </p>
+          </div>
+          <div className="h-16">
+            <Sparkline values={spend} label="Spend per hour" />
+          </div>
+        </div>
+      )}
+      {agents.length > 0 && (
+        <div className="space-y-3 border-t px-4 py-4 sm:px-5">
+          <p className={LABEL}>{byCost ? "Cost by agent" : "Requests by agent"}</p>
+          <SegmentBar
+            segments={agents.map((a, i) => ({
+              key: a.agent,
+              label: a.agent,
+              value: byCost ? a.costUsd : a.requests,
+              className: SERIES[i] ?? OTHER_SERIES,
+            }))}
+          />
+          <ul className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs">
+            {agents.map((a, i) => (
+              <li key={a.agent} className="flex min-w-0 items-center gap-1.5">
+                <span className={cn("size-2 shrink-0 rounded-full", SERIES[i] ?? OTHER_SERIES)} aria-hidden="true" />
+                <span className="truncate font-mono">{a.agent}</span>
+                <span className="shrink-0 font-mono text-muted-foreground tabular-nums">
+                  {byCost ? usd.format(a.costUsd) : wholeNumber.format(a.requests)}
+                  {agentTotal > 0 && ` · ${formatPercent((byCost ? a.costUsd : a.requests) / agentTotal)}`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Skeletons + section
 
 /**
  * Wide containers put quota and usage side by side; usage gets the larger share because its table
@@ -522,60 +622,65 @@ function UsageByModel({ usage }: { usage: AiStats["usage"] }) {
  */
 const SPLIT = "grid gap-4 @5xl:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] @5xl:items-start";
 
-function AiSkeleton() {
+function QuotaSkeleton() {
   return (
     <div className="@container" aria-busy="true">
-      <div className={SPLIT}>
-        <div className="@container">
-          <div className="grid gap-4 @2xl:grid-cols-2 @2xl:items-start">
-            {[0, 1].map((panel) => (
-              <div key={panel} className={PANEL}>
-                <div className="border-b px-4 py-3 sm:px-5">
-                  <Skeleton className="h-4 w-28" />
-                </div>
-                <div className="divide-y">
-                  {[0, 1].map((row) => (
-                    <div key={row} className="flex items-center gap-3.5 px-4 py-3.5 sm:px-5">
-                      <Skeleton className="shrink-0 rounded-full" style={{ width: GAUGE_SIZE, height: GAUGE_SIZE }} />
-                      <div className="min-w-0 flex-1 space-y-2">
-                        <Skeleton className="h-4 w-32 max-w-full" />
-                        <Skeleton className="h-3 w-44 max-w-full" />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className={PANEL}>
-          <div className="border-b px-4 py-3 sm:px-5">
-            <Skeleton className="h-4 w-32" />
-          </div>
-          <div className="space-y-3 border-b px-4 py-4 sm:px-5">
-            <div className="flex items-center justify-between gap-3">
-              <Skeleton className="h-3 w-20" />
-              <Skeleton className="h-4 w-16" />
+      <div className="grid gap-4 @2xl:grid-cols-2 @2xl:items-start">
+        {[0, 1].map((panel) => (
+          <div key={panel} className={PANEL}>
+            <div className="border-b px-4 py-3 sm:px-5">
+              <Skeleton className="h-4 w-28" />
             </div>
-            <Skeleton className="h-2 w-full rounded-full" />
-            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-              {[0, 1, 2].map((i) => (
-                <Skeleton key={i} className="h-3 w-24" />
+            <div className="divide-y">
+              {[0, 1].map((row) => (
+                <div key={row} className="flex items-center gap-3.5 px-4 py-3.5 sm:px-5">
+                  <Skeleton className="shrink-0 rounded-full" style={{ width: GAUGE_SIZE, height: GAUGE_SIZE }} />
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <Skeleton className="h-4 w-32 max-w-full" />
+                    <Skeleton className="h-3 w-44 max-w-full" />
+                  </div>
+                </div>
               ))}
             </div>
           </div>
-          <div className="divide-y">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="space-y-2 px-4 py-3 sm:px-5">
-                <div className="flex items-center justify-between gap-4">
-                  <Skeleton className="h-4 w-2/5" />
-                  <Skeleton className="h-4 w-16" />
-                </div>
-                <Skeleton className="h-1 w-full rounded-full" />
-              </div>
-            ))}
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UsageSkeleton() {
+  return (
+    <div className={PANEL} aria-busy="true">
+      <div className="border-b px-4 py-3 sm:px-5">
+        <Skeleton className="h-4 w-32" />
+      </div>
+      <div className="grid grid-cols-2 gap-4 border-b px-4 py-4 sm:px-5 @xl:grid-cols-3">
+        {[0, 1, 2, 3, 4, 5].map((i) => (
+          <div key={i} className="space-y-2">
+            <Skeleton className="h-3 w-16" />
+            <Skeleton className="h-5 w-24" />
           </div>
+        ))}
+      </div>
+      <div className="space-y-3 border-b px-4 py-4 sm:px-5">
+        <Skeleton className="h-2 w-full rounded-full" />
+        <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-3 w-24" />
+          ))}
         </div>
+      </div>
+      <div className="divide-y">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="space-y-2 px-4 py-3 sm:px-5">
+            <div className="flex items-center justify-between gap-4">
+              <Skeleton className="h-4 w-2/5" />
+              <Skeleton className="h-4 w-16" />
+            </div>
+            <Skeleton className="h-1 w-full rounded-full" />
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -584,6 +689,8 @@ function AiSkeleton() {
 export function AiSection({ ai }: { ai: AiState }) {
   const { stats, error, refreshing, reload } = ai;
   const now = useNow(30_000);
+  const quota = stats?.quota ?? null;
+  const usage = stats?.usage ?? null;
 
   return (
     <section aria-labelledby="ai-quota" className="min-w-0 scroll-mt-20 space-y-4">
@@ -610,20 +717,24 @@ export function AiSection({ ai }: { ai: AiState }) {
         }
       />
 
-      {!stats ? (
-        error ? (
-          <Notice tone="error" title="Could not load AI stats">
-            {error}
-          </Notice>
-        ) : (
-          <AiSkeleton />
-        )
+      {!stats && error ? (
+        <Notice tone="error" title="Could not load AI stats">
+          {error}
+        </Notice>
       ) : (
         <div className="@container">
           {/* Without omp there is no usage either; one notice is enough, and it gets the full width. */}
-          <div className={stats.quota.error === OMP_MISSING ? undefined : SPLIT}>
-            <QuotaList quota={stats.quota} balances={stats.balances} now={now} />
-            {stats.quota.error !== OMP_MISSING && <UsageByModel usage={stats.usage} />}
+          <div className={quota?.error === OMP_MISSING ? undefined : SPLIT}>
+            {quota ? <QuotaList quota={quota} balances={stats?.balances ?? []} now={now} /> : <QuotaSkeleton />}
+            {quota?.error !== OMP_MISSING &&
+              (usage ? (
+                <div className="min-w-0 space-y-4">
+                  <UsageOverview usage={usage} />
+                  <UsageByModel usage={usage} />
+                </div>
+              ) : (
+                <UsageSkeleton />
+              ))}
           </div>
         </div>
       )}

@@ -97,37 +97,15 @@ export async function taskChangesTree(
   base: { commit: string; label: string },
 ): Promise<{ tree: string; baseTree: string }> {
   const dir = path.resolve(folder);
-  const intervals = SAFE_SEGMENT.test(taskId) ? await readIntervals(dir, taskId) : [];
-  if (intervals.length === 0) {
-    throw new NoTrackedChangesError(
-      "AgentMan has no record of what this card changed here (it ran before changes were tracked, or in another checkout).",
-    );
-  }
+  const patches = await taskChangePatches(dir, taskId);
   const top = (await mustGit(dir, ["rev-parse", "--show-toplevel"])).trim();
   const baseTree = (await mustGit(dir, ["rev-parse", `${base.commit}^{tree}`])).trim();
-  // Only a card whose last run has no recorded end needs the folder as it is now.
-  const last = intervals[intervals.length - 1]!;
-  const now = last.end === null ? (await snapshotTree(dir))?.tree ?? null : null;
 
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "agentman-task-changes-"));
   try {
     const env = { GIT_INDEX_FILE: path.join(tmp, "index") };
     await mustGit(dir, ["read-tree", baseTree], env);
-    for (const [i, interval] of intervals.entries()) {
-      const end = interval.end ?? intervals[i + 1]?.start ?? now;
-      if (!end) continue;
-      const patch = await mustGit(dir, [
-        "diff",
-        "--binary",
-        "--full-index",
-        "--no-renames",
-        "--no-ext-diff",
-        interval.start,
-        end,
-        "--",
-        ".",
-      ]);
-      if (!patch.trim()) continue;
+    for (const [i, patch] of patches.entries()) {
       const patchFile = path.join(tmp, `run-${i}.patch`);
       await fs.writeFile(patchFile, patch);
       const applied = await git(top, ["apply", "--cached", "--3way", "--whitespace=nowarn", patchFile], env);
@@ -149,4 +127,40 @@ export async function taskChangesTree(
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
+}
+
+/**
+ * One non-empty patch per run of the card (start→end, limited to `folder`), in run order. A run
+ * without a recorded end lasts until the next run starts, or until now for the last one. Patches
+ * apply relative to the repo top level. Throws NoTrackedChangesError when the card has no run here.
+ */
+export async function taskChangePatches(folder: string, taskId: string): Promise<string[]> {
+  const dir = path.resolve(folder);
+  const intervals = SAFE_SEGMENT.test(taskId) ? await readIntervals(dir, taskId) : [];
+  if (intervals.length === 0) {
+    throw new NoTrackedChangesError(
+      "AgentMan has no record of what this card changed here (it ran before changes were tracked, or in another checkout).",
+    );
+  }
+  // Only a card whose last run has no recorded end needs the folder as it is now.
+  const last = intervals[intervals.length - 1]!;
+  const now = last.end === null ? (await snapshotTree(dir))?.tree ?? null : null;
+  const patches: string[] = [];
+  for (const [i, interval] of intervals.entries()) {
+    const end = interval.end ?? intervals[i + 1]?.start ?? now;
+    if (!end) continue;
+    const patch = await mustGit(dir, [
+      "diff",
+      "--binary",
+      "--full-index",
+      "--no-renames",
+      "--no-ext-diff",
+      interval.start,
+      end,
+      "--",
+      ".",
+    ]);
+    if (patch.trim()) patches.push(patch);
+  }
+  return patches;
 }

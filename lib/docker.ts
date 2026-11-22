@@ -30,7 +30,7 @@ import type {
   RunningSummary,
 } from "@/lib/docker-types";
 import { dataDir } from "@/lib/files";
-import { HttpError } from "@/lib/server/http";
+import { HttpError, ndjsonResponse } from "@/lib/server/http";
 import { TASK_DOCKER_LABEL, type TaskDockerCleanup, taskComposeProject } from "@/lib/task-docker";
 
 const QUICK_TIMEOUT_MS = 20_000;
@@ -374,43 +374,11 @@ export function runDockerJob(
 export function jobResponse(
   start: (send: (event: DockerJobEvent) => void) => Promise<void>,
 ): Response {
-  const encoder = new TextEncoder();
-  let open = true;
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const send = (event: DockerJobEvent) => {
-        if (!open) return;
-        try {
-          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
-        } catch {
-          open = false;
-        }
-      };
-      start(send)
-        .catch((err: unknown) =>
-          send({ type: "done", ok: false, message: err instanceof Error ? err.message : String(err) }),
-        )
-        .finally(() => {
-          if (!open) return;
-          open = false;
-          try {
-            controller.close();
-          } catch {
-            // Client went away.
-          }
-        });
-    },
-    cancel() {
-      open = false;
-    },
-  });
-  return new Response(stream, {
-    headers: {
-      "content-type": "application/x-ndjson; charset=utf-8",
-      "cache-control": "no-store, no-transform",
-      "x-accel-buffering": "no",
-    },
-  });
+  return ndjsonResponse<DockerJobEvent>(start, (err) => ({
+    type: "done",
+    ok: false,
+    message: err instanceof Error ? err.message : String(err),
+  }));
 }
 
 // ---------------------------------------------------------------------------------------------

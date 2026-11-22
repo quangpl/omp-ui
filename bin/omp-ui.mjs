@@ -10,14 +10,18 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { agentmemoryMode, ensureAgentmemory } from "./agentmemory.mjs";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const ENV_FILE = path.join(ROOT, ".env");
+/** Installed from npm (…/node_modules/omp-ui): config and data live in ~/.omp-ui (or $OMP_UI_HOME), not in the package. */
+const INSTALLED = ROOT.split(path.sep).includes("node_modules");
+const HOME_DIR = path.resolve(process.env.OMP_UI_HOME || path.join(os.homedir(), ".omp-ui"));
+const DEFAULT_DATA_DIR = INSTALLED ? path.join(HOME_DIR, "data") : "./data";
+const ENV_FILE = INSTALLED ? path.join(HOME_DIR, ".env") : path.join(ROOT, ".env");
 const STANDALONE_SERVER = path.join(ROOT, "dist", "standalone", "server.js");
 /** Restarts the server when it crashes or stops answering /api/v1/health (see the file). */
 const SUPERVISOR = path.join(ROOT, "bin", "supervisor.mjs");
@@ -232,6 +236,7 @@ function readEnvFile() {
 }
 
 function writeSecretFile(file, content) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content, { mode: 0o600 });
   try {
     fs.chmodSync(file, 0o600);
@@ -286,7 +291,7 @@ function loadConfig(overrides = {}) {
   for (const [k, v] of Object.entries(overrides)) if (v != null) env[k] = String(v);
   env.PORT ||= "3000";
   env.HOST ||= "0.0.0.0";
-  env.DATA_DIR ||= "./data";
+  env.DATA_DIR ||= DEFAULT_DATA_DIR;
   const port = parsePort(env.PORT, "PORT");
   const host = env.HOST;
   const dataDir = path.resolve(ROOT, env.DATA_DIR);
@@ -709,6 +714,7 @@ function warnIfOmpMissing(ompPath) {
 }
 
 function depsInstalled() {
+  if (INSTALLED) return true; // npm installed the dependencies and ships the build
   return fs.existsSync(VITE_BIN) && fs.existsSync(path.join(ROOT, "node_modules", "vinext"));
 }
 
@@ -736,6 +742,7 @@ function buildState() {
   } catch {
     return "missing";
   }
+  if (INSTALLED) return "fresh";
   return BUILD_INPUTS.some((p) => newestMtime(path.join(ROOT, p)) > built) ? "stale" : "fresh";
 }
 
@@ -780,7 +787,7 @@ async function initProject(values, { fromUp = false } = {}) {
   const kind = DB_ALIASES[db.trim().toLowerCase()];
   if (!kind) throw new CliError(`Unknown database "${db}" (use sqlite, mongodb or postgres).`);
 
-  const existingDataDir = existing.DATA_DIR || "./data";
+  const existingDataDir = existing.DATA_DIR || DEFAULT_DATA_DIR;
   let dataDir = values["data-dir"] ?? (wizard ? await ask("Data directory", existingDataDir) : existingDataDir);
   dataDir = dataDir.replace(/[\\/]+$/, "") || ".";
 
@@ -871,8 +878,8 @@ async function initProject(values, { fromUp = false } = {}) {
   }
 }
 
-async function ensureDeps({ quiet = false } = {}) {
-  if (depsInstalled()) return false;
+async function ensureDeps({ quiet = false, force = false } = {}) {
+  if (!force && depsInstalled()) return false;
   log.step("Installing dependencies");
   // Without NODE_ENV=production, so the build tools (devDependencies) get installed too.
   const env = { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" };
@@ -887,6 +894,17 @@ async function ensureDeps({ quiet = false } = {}) {
   if (!depsInstalled()) throw new CliError("Dependencies were installed but vite/vinext are still missing.");
   if (!quiet) log.ok("Dependencies installed");
   return true;
+}
+
+/** Source checkout: `git pull --ff-only`, then reinstall dependencies when the lockfile changed. */
+async function pullSources() {
+  if (!fs.existsSync(path.join(ROOT, ".git"))) throw new CliError("This is not a git checkout — nothing to pull.");
+  const lock = () => readText(path.join(ROOT, "pnpm-lock.yaml"));
+  const before = lock();
+  log.step("Pulling the latest sources");
+  const code = await run("git", ["pull", "--ff-only"]);
+  if (code !== 0) throw new CliError(`git pull failed (exit ${code}) — the running server is untouched.`);
+  if (lock() !== before) await ensureDeps({ force: true });
 }
 
 async function buildApp() {
@@ -1070,31 +1088,6 @@ async function startServer(cfg, { foreground = false } = {}) {
   return { pid: child.pid, health };
 }
 
-/** Start the agentmemory server before AgentMan (AGENTMEMORY_ENABLED, see bin/agentmemory.mjs); never fatal. */
-async function ensureMemory(cfg) {
-  const result = await ensureAgentmemory({ env: cfg.env, waitMs: 60_000 });
-  const url = c.dim(`(${result.url})`);
-  switch (result.state) {
-    case "running":
-      return log.info(`Memory server is running ${url}`);
-    case "started":
-      return log.ok(`Started the memory server ${url}`);
-    case "starting":
-      return log.info(`Memory server is still starting ${url} — the supervisor keeps checking`);
-    case "remote-down":
-      return log.warn(`Memory server at ${result.url} is not answering (AGENTMEMORY_URL)`);
-    case "failed":
-      return log.warn(`Could not start the memory server${result.detail ? `: ${result.detail}` : ""}`);
-    case "missing":
-      if (agentmemoryMode(cfg.env) === "true") {
-        log.warn("AGENTMEMORY_ENABLED=true but agentmemory is not installed — run: npx -y @agentmemory/agentmemory@latest");
-      }
-      return;
-    default:
-      return;
-  }
-}
-
 /** `allowManaged`: under pm2/systemd, stop a server owned by that same manager (a leftover of our previous run). */
 async function stopServer(cfg, { allowManaged = false } = {}) {
   if (!(allowManaged && serverOwner(cfg) === serviceManager())) assertNotManaged(cfg, "stop");
@@ -1117,11 +1110,16 @@ async function stopServer(cfg, { allowManaged = false } = {}) {
 const PM2_APP = "omp-ui";
 const ECOSYSTEM_FILE = path.join(ROOT, "ecosystem.config.cjs");
 /** Must match out_file in ecosystem.config.cjs. */
-const PM2_OUT_LOG = path.join(ROOT, "data", "pm2-out.log");
+const PM2_OUT_LOG = path.join(path.resolve(ROOT, DEFAULT_DATA_DIR), "pm2-out.log");
 
-/** Global pm2 if installed, else `npx -y pm2`. */
+/** Global pm2 if installed, else the bundled dependency, else `npx -y pm2`. */
 function pm2Command() {
   if (which("pm2")) return ["pm2", []];
+  try {
+    return [process.execPath, [path.join(path.dirname(createRequire(import.meta.url).resolve("pm2/package.json")), "bin", "pm2")]];
+  } catch {
+    // not bundled (git checkout without pm2 installed)
+  }
   if (which("npx")) return ["npx", ["-y", "pm2"]];
   throw new CliError("pm2 is not installed.", { hint: "Install it: npm i -g pm2" });
 }
@@ -1683,6 +1681,7 @@ const COMMANDS = {
     ],
     async run(values) {
       requireNode();
+      if (INSTALLED && !values.systemd && !values.foreground) values.pm2 = true;
       const managers = [values.pm2 && "--pm2", values.systemd && "--systemd", values.foreground && "--foreground"].filter(Boolean);
       if (managers.length > 1) throw new CliError(`Choose only one of ${managers.join(", ")}.`);
       if (values.public && managers.length) {
@@ -1740,7 +1739,6 @@ const COMMANDS = {
         await systemdInstall();
         return;
       }
-      await ensureMemory(cfg);
       if (values.foreground) {
         await startServer(cfg, { foreground: true });
         return;
@@ -1789,6 +1787,7 @@ const COMMANDS = {
     },
     async run(values) {
       applyPortFlag(values);
+      if (INSTALLED && !values.foreground) return pm2Start();
       const cfg = loadConfig({ PORT: values.port });
       const result = await startServer(cfg, { foreground: values.foreground });
       if (!result.foreground) printUrls(cfg, { tunnelUrl: tunnelInfo(cfg)?.url });
@@ -1800,6 +1799,7 @@ const COMMANDS = {
     usage: "omp-ui stop",
     options: {},
     async run() {
+      if (INSTALLED) return COMMANDS.pm2.run({}, ["stop"]);
       const cfg = loadConfig();
       assertNotManaged(cfg, "stop");
       await tunnelStop(cfg, { quiet: true });
@@ -1815,6 +1815,7 @@ const COMMANDS = {
       rebuild: { type: "boolean", desc: "Force a fresh production build" },
     },
     async run(values) {
+      if (INSTALLED) return COMMANDS.pm2.run({}, ["restart"]);
       const before = loadConfig();
       assertNotManaged(before, "restart");
       applyPortFlag(values);
@@ -1909,10 +1910,11 @@ const COMMANDS = {
       lines: { type: "string", short: "n", arg: "<lines>", desc: "Number of lines to show (default 100)" },
     },
     async run(values) {
-      const cfg = loadConfig();
-      const file = statePaths(cfg).log;
       const n = Number(values.lines ?? 100);
       if (!Number.isInteger(n) || n < 0) throw new CliError(`Invalid line count "${values.lines}".`);
+      if (INSTALLED) return pm2(["logs", PM2_APP, "--lines", String(n), ...(values.follow ? [] : ["--nostream"])]);
+      const cfg = loadConfig();
+      const file = statePaths(cfg).log;
       if (!fs.existsSync(file)) {
         throw new CliError(`No log file yet (${rel(file)}).`, { hint: "Start the server: omp-ui up" });
       }
@@ -2081,7 +2083,7 @@ const COMMANDS = {
         case "start":
           return pm2Start();
         case "restart":
-          if (values.rebuild) {
+          if (values.rebuild && !INSTALLED) {
             // Stop first: building over dist/ breaks the running server's lazily loaded chunks.
             await pm2(["stop", PM2_APP]);
             await buildOrKeepPrevious();
@@ -2436,6 +2438,68 @@ const COMMANDS = {
     },
   },
 
+  config: {
+    summary: "Show or change the port, data directory and database URL",
+    usage: "omp-ui config [set <port|data-dir|db-url> <value>]",
+    positionals: true,
+    options: {},
+    examples: ["omp-ui config", "omp-ui config set port 8080", "omp-ui config set data-dir ~/omp-data", "omp-ui config set db-url postgres://user:pass@localhost:5432/omp_ui"],
+    async run(_values, [action = "show", key, value]) {
+      if (action === "show") {
+        const cfg = loadConfig();
+        const mask = (u) => u.replace(/(:\/\/[^:/@]+:)[^@]+@/, "$1***@");
+        console.log(`\n${c.bold("AgentMan config")} ${c.dim(cfg.hasEnvFile ? ENV_FILE : `${ENV_FILE} (not created yet)`)}\n`);
+        console.log(`  ${c.dim("port".padEnd(10))}${cfg.port}\n  ${c.dim("data-dir".padEnd(10))}${cfg.dataDir}\n  ${c.dim("db-url".padEnd(10))}${mask(cfg.env.DATABASE_URL || DATABASES.sqlite.url(cfg.dataDir))}\n`);
+        return;
+      }
+      const keys = { port: "PORT", "data-dir": "DATA_DIR", "db-url": "DATABASE_URL" };
+      if (action !== "set" || !keys[key] || value === undefined) {
+        throw new CliError("Usage: omp-ui config [set <port|data-dir|db-url> <value>]");
+      }
+      if (key === "port") parsePort(value, "port");
+      if (key === "db-url" && !Object.values(DATABASES).some((d) => d.valid.test(value))) {
+        throw new CliError(`Invalid database URL "${value}".`, { hint: "Use sqlite:<path>, mongodb://… or postgres://…" });
+      }
+      if (fs.existsSync(ENV_FILE)) updateEnvFile({ [keys[key]]: value });
+      else await initProject({ yes: true, [key]: value }, { fromUp: true });
+      log.ok(`Saved ${keys[key]} — apply it with: omp-ui restart`);
+    },
+  },
+
+  update: {
+    summary: "Install the latest omp-ui (npm, or git pull in a checkout) and restart",
+    usage: "omp-ui update [--no-restart]",
+    options: { "no-restart": { type: "boolean", desc: "Only fetch the new version; the restart is up to you (used by the Restart server button)" } },
+    async run(values) {
+      // Nothing is stopped before this succeeds, so a failure leaves the running server untouched.
+      if (INSTALLED) {
+        if (ROOT.includes(`${path.sep}_npx${path.sep}`)) {
+          throw new CliError("This copy runs from the npx cache.", { hint: "Run: npx omp-ui@latest   (or install it: npm i -g omp-ui)" });
+        }
+        const code = await run("npm", ["i", "-g", "omp-ui@latest"]);
+        if (code !== 0) throw new CliError(`npm install failed (exit ${code}) — the running server is untouched.`);
+      } else {
+        await pullSources();
+      }
+      if (values["no-restart"]) return;
+      if (!INSTALLED) return COMMANDS.restart.run({ rebuild: true });
+      if (pm2AppStatus() === null) return log.ok("Updated. Start it with: omp-ui");
+      await pm2(["restart", PM2_APP]);
+      await pm2WaitAndReport();
+    },
+  },
+
+  uninstall: {
+    summary: "Remove the pm2 process (data and settings are kept)",
+    usage: "omp-ui uninstall",
+    options: {},
+    async run() {
+      await pm2(["delete", PM2_APP], { allowFail: true });
+      log.ok("Removed the pm2 process");
+      log.hint(`Settings and data stay in ${INSTALLED ? HOME_DIR : ROOT}.${INSTALLED ? " Remove the package: npm rm -g omp-ui" : ""}`);
+    },
+  },
+
   version: {
     summary: "Print the version",
     usage: "omp-ui version",
@@ -2451,7 +2515,7 @@ const COMMANDS = {
 function printMainHelp() {
   const groups = [
     ["Start", ["up", "init", "start", "stop", "restart", "status", "logs", "open"]],
-    ["Configure", ["passwd", "public", "doctor"]],
+    ["Configure", ["config", "passwd", "public", "doctor", "update", "uninstall"]],
     ["Deploy", ["pm2", "systemd", "docker", "deploy"]],
     ["Develop", ["dev", "build", "version"]],
   ];
@@ -2489,12 +2553,14 @@ function printCommandHelp(name) {
 
 async function main(argv) {
   let [name, ...rest] = argv;
+  if (!name && INSTALLED) name = "up"; // `npx omp-ui`: set up and start
   if (name === "-v" || name === "--version") name = "version";
   if (!name || name === "-h" || name === "--help" || name === "help") {
     if (rest[0] && COMMANDS[rest[0]]) printCommandHelp(rest[0]);
     else printMainHelp();
     return;
   }
+  if (name === "delete") name = "uninstall";
   const cmd = COMMANDS[name];
   if (!cmd) throw new CliError(`Unknown command "${name}".`, { hint: "See: omp-ui --help" });
 

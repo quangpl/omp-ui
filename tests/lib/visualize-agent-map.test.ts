@@ -1,19 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   CONTACT_TTL_MS,
-  ROLE_PHASE,
   activitySystem,
   boardContact,
   buildLinks,
   floorPlan,
-  type SdlcPipeline,
-  sdlcPipeline,
-  sdlcStation,
   toolSystem,
 } from "@/components/visualize/agent-map";
-import type { AgentRole } from "@/components/visualize/roles";
 import { EMPTY_STATS, type LiveAgent } from "@/components/visualize/use-live-agents";
-import { SDLC_PHASES, type SdlcPhaseId, type SdlcPhaseStatus, type SdlcProgress, type SdlcViolation } from "@/lib/sdlc";
 import type { Dashboard, QueueEntry, QueueSnapshot, SubagentSnapshot } from "@/lib/types";
 
 const A = "11111111-1111-4111-8111-111111111111";
@@ -28,7 +22,6 @@ function entry(taskId: string, state: QueueEntry["state"], extra: Partial<QueueE
     title: `Card ${taskId}`,
     state,
     createdByTaskId: null,
-    sdlc: null,
     node: null,
     ...extra,
   };
@@ -46,26 +39,6 @@ function helper(id: string, status: SubagentSnapshot["status"], currentTool?: st
   return { id, agent, status, currentTool };
 }
 
-/** SDLC progress: listed phases get their status, the rest are skipped. */
-function progress(
-  statuses: Partial<Record<SdlcPhaseId, SdlcPhaseStatus>>,
-  current: SdlcPhaseId | null,
-  violations: SdlcViolation[] = [],
-): SdlcProgress {
-  const phases = SDLC_PHASES.map((id) => {
-    const status = statuses[id] ?? "skipped";
-    return { id, status, done: status === "done" ? 2 : 0, total: status === "skipped" ? 0 : 2, current: null, startedAt: null, completedAt: null };
-  });
-  return {
-    phases,
-    current,
-    completed: phases.filter((p) => p.status === "done").length,
-    included: phases.filter((p) => p.status !== "skipped").length,
-    canonical: true,
-    violations,
-  };
-}
-
 describe("toolSystem", () => {
   it("maps tools to the system they touch", () => {
     expect(toolSystem("bash")).toBe("shell");
@@ -75,7 +48,6 @@ describe("toolSystem", () => {
     expect(toolSystem("web_search")).toBe("web");
     expect(toolSystem("browser")).toBe("web");
     expect(toolSystem("memory_search")).toBe("memory");
-    expect(toolSystem("mcp__agentmemory_memory_recall")).toBe("memory");
     expect(toolSystem("board_create_card")).toBe("board");
     expect(toolSystem("ask_advisor")).toBe("advisor");
     expect(toolSystem("task")).toBe("helpers");
@@ -225,96 +197,5 @@ describe("floorPlan", () => {
     expect(ids(rooms.intake)).toEqual([`card:${B}`, `card:${C}`]);
     expect(ids(rooms.rework)).toEqual([`card:${D}`]);
     expect(ids(rooms.shipping)).toEqual([]);
-  });
-});
-
-describe("ROLE_PHASE", () => {
-  it("staffs each SDLC phase with the roles that work in it", () => {
-    const byPhase = (phase: SdlcPhaseId | null) =>
-      (Object.keys(ROLE_PHASE) as AgentRole[]).filter((role) => ROLE_PHASE[role] === phase).sort();
-    expect(byPhase("analyze")).toEqual(["designer", "oracle", "planner", "scout"]);
-    expect(byPhase("implement")).toEqual(["sprinter", "worker"]);
-    expect(byPhase("testing")).toEqual(["guard", "reviewer"]);
-    expect(byPhase(null)).toEqual(["helper", "lead"]);
-  });
-});
-
-describe("sdlcPipeline", () => {
-  const ids = (pipeline: SdlcPipeline, phase: SdlcPhaseId) =>
-    pipeline.stations[phase].workers.map((worker) => worker.id);
-
-  it("puts a running card at its current phase, at Analyze without a plan, at its last included phase when all are done", () => {
-    const D = "44444444-4444-4444-8444-444444444444";
-    const q = queue(
-      [
-        entry(A, "running", { sdlc: progress({ analyze: "done", implement: "active", testing: "pending" }, "implement") }),
-        entry(B, "running"),
-        entry(C, "running", { sdlc: progress({ analyze: "done", implement: "done", testing: "done" }, null) }),
-      ],
-      [entry(D, "queued")],
-    );
-    const pipeline = sdlcPipeline(q, {});
-    expect(ids(pipeline, "implement")).toEqual([`card:${A}`]);
-    expect(ids(pipeline, "analyze")).toEqual([`card:${B}`]);
-    expect(ids(pipeline, "testing")).toEqual([`card:${C}`]);
-    expect(pipeline.backlog).toBe(1);
-  });
-
-  it("puts busy subagents at their role's phase, helpers at their lead's phase, after the leads", () => {
-    const q = queue([
-      entry(A, "running", { sdlc: progress({ analyze: "done", implement: "active" }, "implement") }),
-      entry(B, "running", { sdlc: progress({ analyze: "active" }, "analyze") }),
-    ]);
-    const live = {
-      [A]: liveAgent({
-        helpers: {
-          s: helper("s", "running", undefined, "scout"),
-          w: helper("w", "pending", undefined, "task"),
-          r: helper("r", "running", undefined, "reviewer"),
-          h: helper("h", "running", undefined, "my-custom-agent"),
-          done: helper("done", "completed", undefined, "task"),
-        },
-      }),
-    };
-    const pipeline = sdlcPipeline(q, live);
-    expect(ids(pipeline, "analyze")).toEqual([`card:${B}`, `sub:${A}:s`]);
-    expect(ids(pipeline, "implement")).toEqual([`card:${A}`, `sub:${A}:w`, `sub:${A}:h`]);
-    expect(ids(pipeline, "testing")).toEqual([`sub:${A}:r`]);
-  });
-
-  it("counts early starts per phase and breaches per quality gate crossed", () => {
-    const early: SdlcViolation = { phase: "testing", requires: "implement", message: "Testing started before Implement was complete" };
-    const skipped: SdlcViolation = { phase: "implement", requires: "analyze", message: "Implement started before Analyze was complete" };
-    const q = queue([
-      entry(A, "running", { sdlc: progress({ analyze: "done", implement: "active", testing: "active" }, "testing", [early]) }),
-      entry(B, "running", { sdlc: progress({ analyze: "active", implement: "active" }, "analyze", [skipped]) }),
-      entry(C, "running", { sdlc: progress({ analyze: "done", implement: "active" }, "implement") }),
-    ]);
-    const { stations } = sdlcPipeline(q, {});
-    expect(stations.testing.alerts).toBe(1);
-    expect(stations.implement.alerts).toBe(1);
-    expect(stations.analyze.alerts).toBe(0);
-    // A crossed the Implement → Testing gate early; B crossed the Analyze → Implement gate early.
-    expect(stations.implement.breaches.map((breach) => breach.entry.taskId)).toEqual([A]);
-    expect(stations.analyze.breaches.map((breach) => breach.entry.taskId)).toEqual([B]);
-    expect(stations.testing.breaches).toEqual([]);
-  });
-
-  it("always draws all three phases, since every phase is required", () => {
-    expect(sdlcPipeline(queue([]), {}).visible).toEqual(["analyze", "implement", "testing"]);
-    const withCards = queue([
-      entry(A, "running", { sdlc: progress({ analyze: "done", implement: "active", testing: "pending" }, "implement") }),
-      entry(B, "running"),
-    ]);
-    expect(sdlcPipeline(withCards, {}).visible).toEqual(["analyze", "implement", "testing"]);
-    const live = { [A]: liveAgent({ helpers: { d: helper("d", "running", undefined, "designer") } }) };
-    expect(sdlcPipeline(queue([entry(A, "running")]), live).visible).toEqual(["analyze", "implement", "testing"]);
-  });
-});
-
-describe("sdlcStation", () => {
-  it("falls back to Analyze when nothing is included", () => {
-    expect(sdlcStation(progress({}, null))).toBe("analyze");
-    expect(sdlcStation(null)).toBe("analyze");
   });
 });

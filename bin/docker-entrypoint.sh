@@ -26,23 +26,6 @@ if [ -n "${SSH_AUTH_SOCK:-}" ] && [ ! -S "$SSH_AUTH_SOCK" ]; then
   unset SSH_AUTH_SOCK
 fi
 
-# agentmemory (image built with --build-arg AGENTMEMORY_VERSION=…): wire omp to it once with
-# `agentmemory connect omp --with-mcp` (bin/supervisor.mjs starts the server). The omp config is
-# usually the host's ~/.omp, so this also lists the container's extension path there; set
-# AGENTMEMORY_CONNECT_OMP=false to leave it alone. Never fatal. Usage: connect_agentmemory [runner…]
-connect_agentmemory() {
-  command -v agentmemory >/dev/null 2>&1 || return 0
-  case "${AGENTMEMORY_ENABLED:-auto}" in false | 0 | off) return 0 ;; esac
-  [ "${AGENTMEMORY_CONNECT_OMP:-true}" = "false" ] && return 0
-  agent_dir=$home/.omp/agent
-  if [ -f "$agent_dir/agentmemory/.agentmemory-install.json" ] \
-    && grep -qs "$agent_dir/agentmemory" "$agent_dir/config.yml" "$agent_dir/config.yaml"; then
-    return 0
-  fi
-  "$@" sh -c 'mkdir -p "$1" && CI=1 agentmemory connect omp --with-mcp' sh "$agent_dir" >/dev/null 2>&1 \
-    || echo "omp-ui: agentmemory connect omp failed; connect it from Settings → Memory" >&2
-}
-
 if [ "$(id -u)" = "0" ]; then
   data_dir=${DATA_DIR:-/data}
   omp_home=$home/.omp
@@ -69,12 +52,6 @@ if [ "$(id -u)" = "0" ]; then
   # The image's own home folders (not the mounts inside them) follow the remapped user.
   chown omp:omp "$home" "$home/.config"
   chown -R omp:omp "$home/.cache"
-  # agentmemory's state volume belongs to the container alone: follow the remapped user.
-  memory_home=$home/.agentmemory
-  if [ -d "$memory_home" ] && [ "$(stat -c %u "$memory_home")" != "$(id -u omp)" ]; then
-    chown -R omp:omp "$memory_home"
-  fi
-
   # Writable mounts Docker created as root-owned placeholders for missing host paths
   # (read-only mounts such as ~/.ssh are left alone).
   for dir in "$data_dir" /workspace "$omp_home" "$home/.claude" "$home/.config/gh" "$home/.config/glab-cli"; do
@@ -92,9 +69,7 @@ if [ "$(id -u)" = "0" ]; then
     echo "omp-ui: $claude_json is a directory (missing on the host when the container was created); create it with: echo '{}' > ~/.claude.json" >&2
   fi
 
-  connect_agentmemory setpriv --reuid=omp --regid=omp --init-groups
   exec setpriv --reuid=omp --regid=omp --init-groups "$@"
 fi
 
-connect_agentmemory
 exec "$@"

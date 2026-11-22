@@ -87,7 +87,6 @@ import { CreatedByNote, DelegatedCards } from "@/components/board/task-relations
 import { CheckpointsPanel } from "@/components/board/checkpoints-panel";
 import { isQuotaError } from "@/lib/quota";
 import { todoProgress } from "@/lib/todos";
-import { SDLC_PHASE_INFO, sdlcProgress } from "@/lib/sdlc";
 import { FilesPanel } from "@/components/files-panel";
 import type { FileSource } from "@/lib/file-source";
 
@@ -727,7 +726,6 @@ function TaskDetailBody({
       ? (liveNode?.name ?? (latestRun?.status === "running" ? latestRun.nodeName : null))
       : null;
   const todos = todoProgress(task.todos, task.openCommentCount);
-  const sdlcPhase = task.status === "done" ? null : (sdlcProgress(task.todos)?.current ?? null);
 
   const moreMenu = (
     <DropdownMenu>
@@ -781,12 +779,6 @@ function TaskDetailBody({
                   title={todos.feedback > 0 ? `Includes ${todos.feedback} open feedback` : undefined}
                 >
                   · {todos.done}/{todos.total}
-                </span>
-              )}
-              {sdlcPhase && (
-                <span className="font-normal text-muted-foreground" title="Current SDLC phase">
-                  · {SDLC_PHASE_INFO[sdlcPhase].label}
-                  <span className="sr-only"> phase</span>
                 </span>
               )}
             </span>

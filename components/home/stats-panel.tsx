@@ -110,8 +110,9 @@ function OmpUsage() {
   useEffect(() => {
     let cancelled = false;
     api.stats
-      .ai()
-      .then((stats) => !cancelled && setUsage(stats.usage))
+      .ai(false, (event) => {
+        if (!cancelled && event.type === "usage") setUsage(event.usage);
+      })
       .catch(() => !cancelled && setUsage(null));
     return () => {
       cancelled = true;

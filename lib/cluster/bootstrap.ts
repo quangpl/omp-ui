@@ -18,8 +18,8 @@ const MAX_URL_LENGTH = 2048;
 const MAX_TOKEN_LENGTH = 200;
 /** Host header values that are safe to bake into a shell script (host name / IPv4 / [IPv6], optional port). */
 const SAFE_HOST = /^[A-Za-z0-9.-]+(:\d{1,5})?$|^\[[0-9A-Fa-f:.]+\](:\d{1,5})?$/;
-/** Scripts next to server.js the node starts with (bin/supervisor.mjs imports bin/agentmemory.mjs). */
-const BIN_SCRIPTS = ["supervisor.mjs", "agentmemory.mjs"];
+/** Scripts next to server.js the node starts with. */
+const BIN_SCRIPTS = ["supervisor.mjs"];
 
 /**
  * Base URL this request reached the server at (reverse proxies: x-forwarded-proto/host), without a
@@ -88,14 +88,14 @@ function binParent(app: string): string | null {
 
 /**
  * GET /cluster/bundle: gzip tar of the app dir (never `.env*`, `data` or whatever holds DATA_DIR)
- * plus bin/supervisor.mjs and bin/agentmemory.mjs, streamed from `tar` (length unknown). 404 when
+ * plus bin/supervisor.mjs, streamed from `tar` (length unknown). 404 when
  * this server has no build.
  */
 export async function bundleResponse(): Promise<Response> {
   const app = appDir();
   if (!app) throw new HttpError(404, "This server has no app build (dist/standalone/server.js) to share");
   const bin = binParent(app);
-  if (!bin) throw new HttpError(404, "bin/supervisor.mjs and bin/agentmemory.mjs were not found next to the app");
+  if (!bin) throw new HttpError(404, "bin/supervisor.mjs was not found next to the app");
   const data = path.resolve(dataDir());
   // Entries named explicitly ("./" so none reads as an option) instead of --exclude patterns, whose
   // matching differs between GNU tar and bsdtar.

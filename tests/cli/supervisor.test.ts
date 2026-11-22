@@ -98,7 +98,6 @@ async function startSupervisor(mode: FakeMode, env: Record<string, string> = {})
     OMP_UI_HEALTH_FAILURES: "2",
     OMP_UI_HEALTH_GRACE_MS: "1000",
     OMP_UI_STOP_TIMEOUT_MS: String(STOP_TIMEOUT_MS),
-    AGENTMEMORY_ENABLED: "false",
     FAKE_DIR: dir,
     FAKE_MODE: mode,
     ...env,

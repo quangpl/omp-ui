@@ -72,9 +72,9 @@ import { extractQuestion } from "@/lib/question";
 import { fallbackRetryConfig, selectorProvider, type ProviderPick } from "@/lib/provider-priority";
 import { isQuotaError, QUOTA_RETRY_STEPS_MS } from "@/lib/quota";
 import { startSchedulerService } from "@/lib/scheduler";
-import { SDLC_PHASE_INFO, SDLC_PHASES, sdlcChange, sdlcProgress } from "@/lib/sdlc";
-import { agentmemoryEnabled, memoryProjectName, tagMemorySession } from "@/lib/server/agentmemory";
+
 import { loadAiProviderEnv } from "@/lib/server/ai-providers";
+import { loadEnvVars } from "@/lib/server/env-vars";
 import { createCheckpoints } from "@/lib/server/checkpoints";
 import { newRunKey, recordRunSnapshot } from "@/lib/server/task-changes";
 import { startChatIntegrations } from "@/lib/server/chat/service";
@@ -361,7 +361,6 @@ class OmpAgentManager implements AgentManager, RunControl {
         title: task.title,
         state,
         createdByTaskId: task.createdByTaskId ?? null,
-        sdlc: sdlcProgress(task.todos),
         node: state === "running" ? this.nodeOf(taskId) : null,
       };
     };
@@ -1323,6 +1322,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     run.runId = created.id;
     run.promptId = `prompt-${created.id}`;
     for (const c of feedback) run.feedbackIds.add(c.id);
+
     publish({ type: "run.updated", run: created, boardId: run.boardId });
     if (run.finished) return;
 
@@ -1353,12 +1353,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     const providerPick = await chooseProvider(settings, pinnedModel, roles);
     if (run.finished) return;
     const overlay = runConfigOverlay(settings, taskFiles, subagents, providerPick);
-    const [workdirFound, configFile, memoryProject] = await Promise.all([
-      isDirectory(workdir),
-      writeRunConfig(task.id, overlay),
-      // Cards remember under the board's project, like omp sessions in its folder.
-      memoryProjectName(board.workdir),
-    ]);
+    const [workdirFound, configFile] = await Promise.all([isDirectory(workdir), writeRunConfig(task.id, overlay)]);
     if (!workdirFound) {
       throw new Error(`Board directory not found: ${workdir}`);
     }
@@ -1438,10 +1433,7 @@ class OmpAgentManager implements AgentManager, RunControl {
     }
 
     const runConfig = remote ? await readFile(configFile, "utf8") : "";
-    const agentEnv = {
-      ...(await mcpAgentEnv()),
-      AGENTMEMORY_PROJECT_NAME: memoryProject,
-    };
+    const agentEnv = await mcpAgentEnv();
     if (run.finished) return;
     // Remote placement: omp runs on the node, over the cluster channel. Git checkpoints, model
     // roles and the run config above stay on this primary.
@@ -1488,7 +1480,6 @@ class OmpAgentManager implements AgentManager, RunControl {
     try {
       const state = await proc.send({ type: "get_state" });
       const sessionFile = isObject(state.data) ? asString(state.data.sessionFile) : undefined;
-      const sessionId = isObject(state.data) ? asString(state.data.sessionId) : undefined;
       const stateModel = isObject(state.data) && isObject(state.data.model) ? state.data.model : null;
       run.provider = (stateModel && asString(stateModel.provider)) ?? null;
       if (choice.source === "session" && isObject(state.data) && stateModel) {
@@ -1516,10 +1507,7 @@ class OmpAgentManager implements AgentManager, RunControl {
       } else if (sessionFile) {
         run.usageFile = sessionFile;
       }
-      // Name the card's agentmemory session after the card (best effort, not awaited).
-      if (sessionId && agentmemoryEnabled()) {
-        void tagMemorySession({ sessionId, project: memoryProject, cwd: workdir, title: `${task.title} (card ${task.id})` });
-      }
+
     } catch (err) {
       if (run.finished) return;
       await this.event(run, "error", `Could not read the omp session state: ${errorMessage(err, run.ompPath)}`);
@@ -2118,6 +2106,7 @@ class OmpAgentManager implements AgentManager, RunControl {
         for (const c of resolved) publish({ type: "comment.updated", comment: c, boardId: run.boardId });
       }
 
+
       const task = await repo.updateTask(run.taskId, {
         status: "done",
         position: await topPosition(repo, run.boardId, "done", run.taskId),
@@ -2232,38 +2221,13 @@ class OmpAgentManager implements AgentManager, RunControl {
       run.stampedTodos = { list: todos, at: now };
       const task = await this.repo.updateTask(run.taskId, { todos });
       if (task) publish({ type: "task.updated", task });
-      await this.trackSdlc(run, previous, todos);
     } catch (err) {
       console.error(`[agent] failed to store the todo list of task ${run.taskId}:`, err);
     }
   }
 
   /**
-   * Logs the SDLC progress of a stored todo update (phase entered, quality gates passed, phase-order
-   * violations) for display only. Never throws: the todo list is already stored.
-   */
-  private async trackSdlc(run: ActiveRun, previous: readonly TodoPhase[], todos: readonly TodoPhase[]): Promise<void> {
-    try {
-      const after = sdlcProgress(todos);
-      const change = sdlcChange(sdlcProgress(previous), after);
-      for (const id of change.completed) {
-        await this.event(run, "status", `✓ Quality gate passed: ${SDLC_PHASE_INFO[id].label} complete`);
-      }
-      if (change.entered) {
-        const info = SDLC_PHASE_INFO[change.entered];
-        await this.event(run, "status", `▸ SDLC phase ${info.step}/${SDLC_PHASES.length}: ${info.label}`);
-      }
-      // Free-form (legacy) lists are only classified for display, never enforced.
-      if (!after?.canonical) return;
-      for (const violation of change.violations) {
-        await this.event(run, "status", `⚠ Quality gate: ${violation.message}`);
-      }
-    } catch (err) {
-      console.error(`[agent] failed to track the SDLC progress of task ${run.taskId}:`, err);
-    }
-  }
 
-  /**
    * Ask omp how full the run's context window is and publish a live `run.context` when it or the
    * session's spend changed; the same stats carry the session's spend for the budget guard and the
    * event's `usage`. Fire-and-forget: frames are handled serially, so the frame queue never waits
@@ -2822,6 +2786,7 @@ async function createAgentManager(): Promise<AgentManager> {
   startTelemetryExporter(() => getAppSettings(repo));
   // Before recovery too: queued runs it starts spawn omp, which needs the saved provider keys.
   await loadAiProviderEnv(repo);
+  await loadEnvVars(repo);
   await manager.recover();
   startCleanupScheduler(repo, manager);
   startCredentialHealthChecks(repo);

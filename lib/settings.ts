@@ -28,8 +28,6 @@ const LEGACY_DASHBOARD_MENUS: readonly string[] = [
   "visualize",
   "containers",
   "terminal",
-  "memory",
-  "credentials",
   "stats",
   "settings",
 ];

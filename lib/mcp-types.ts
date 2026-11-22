@@ -97,7 +97,7 @@ export interface McpServerSummary {
   updatedAt: string;
 }
 
-/** An mcp.json entry AgentMan does not manage (added by hand, `/mcp add`, agentmemory, …). Read-only. */
+/** An mcp.json entry AgentMan does not manage (added by hand, `/mcp add`, …). Read-only. */
 export interface McpExternalServer {
   name: string;
   /** "stdio" | "http" | "sse", or "unknown". */

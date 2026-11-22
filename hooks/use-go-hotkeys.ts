@@ -26,8 +26,7 @@ export const GO_SHORTCUTS: readonly GoShortcut[] = [
   { key: "a", href: "/artifacts", label: "Artifacts" },
   { key: "t", href: "/stats", label: "Stats" },
   { key: "l", href: "/logs", label: "Logs" },
-  { key: "m", href: "/memory", label: "Memory" },
-  { key: "k", href: "/credentials", label: "Credentials" },
+  { key: "k", href: "/env", label: "Environment" },
   { key: "i", href: "/mcp", label: "MCP servers" },
   { key: "s", href: "/settings", label: "Settings" },
 ];

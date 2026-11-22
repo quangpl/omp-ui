@@ -119,7 +119,7 @@ than over a local pipe, and file transfers run at well over 100 MiB/s, so a node
 the protocol, sets the pace.
 
 The UI shows where each card runs: while a card runs, its board card, its details and every agent on
-the Visualize page (control room, SDLC pipeline, factory floor, worksites) name the machine; a card's
+the Visualize page (control room, factory floor, worksites) name the machine; a card's
 run report and details say which machine ran it.
 
 ## Failures and failover

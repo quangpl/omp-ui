@@ -1,10 +1,8 @@
 // Data model of the Visualize page: the shared systems agents use (one factory department each),
-// which system each tool call touches, who stands in which room of the floor, who stands at which
-// SDLC station, and the agent-to-agent links (delegation, dependencies, board contacts). Pure: no React.
-import { SDLC_PHASE_INFO, SDLC_PHASES, type SdlcPhaseId, type SdlcProgress, type SdlcViolation } from "@/lib/sdlc";
+// which system each tool call touches, who stands in which room of the floor, and the
+// agent-to-agent links (delegation, dependencies, board contacts). Pure: no React.
 import type { Dashboard, QueueEntry, QueueSnapshot, SubagentSnapshot } from "@/lib/types";
 import type { Activity } from "./activity";
-import { type AgentRole, roleOf } from "./roles";
 import type { LiveAgent } from "./use-live-agents";
 
 /** Shared systems agents use. Order = display order. */
@@ -54,7 +52,7 @@ const TOOL_SYSTEMS: Record<string, SystemId> = {
 /** Tool name → the system it touches; null when unknown/none. */
 export function toolSystem(toolName: string): SystemId | null {
   if (Object.hasOwn(TOOL_SYSTEMS, toolName)) return TOOL_SYSTEMS[toolName];
-  if (toolName.startsWith("memory_") || toolName.startsWith("mcp__agentmemory_")) return "memory";
+  if (toolName.startsWith("memory_")) return "memory";
   if (toolName.startsWith("board_")) return "board";
   return null;
 }
@@ -174,113 +172,6 @@ export function floorPlan(
     rooms.shipping.push({ id: `card:${card.id}`, kind: "shipped", card });
   }
   return { rooms, placed };
-}
-
-/**
- * SDLC phase a subagent role works in: explorers and planners analyze, builders implement,
- * reviewers and security test. null = no phase of its own: it works in its lead's phase.
- */
-export const ROLE_PHASE: Record<AgentRole, SdlcPhaseId | null> = {
-  scout: "analyze",
-  planner: "analyze",
-  oracle: "analyze",
-  designer: "analyze",
-  worker: "implement",
-  sprinter: "implement",
-  reviewer: "testing",
-  guard: "testing",
-  lead: null,
-  helper: null,
-};
-
-/**
- * SDLC station a card's agent stands at: its current phase; "analyze" while it has no plan
- * (`sdlc` null); the last included phase once every included phase is done (`current` null), or
- * "analyze" when nothing is included at all.
- */
-export function sdlcStation(sdlc: SdlcProgress | null): SdlcPhaseId {
-  if (!sdlc) return "analyze";
-  if (sdlc.current) return sdlc.current;
-  return sdlc.phases.findLast((phase) => phase.status !== "skipped")?.id ?? "analyze";
-}
-
-/** Someone standing at an SDLC station: a running card's agent or one of its busy subagents. */
-export type PipelineWorker =
-  | { id: string; kind: "running"; entry: QueueEntry }
-  | { id: string; kind: "subagent"; entry: QueueEntry; subagent: SubagentSnapshot };
-
-/** A running card that crossed a quality gate before the phase it requires was complete. */
-export interface GateBreach {
-  entry: QueueEntry;
-  violation: SdlcViolation;
-}
-
-export interface PipelineStation {
-  /** Running cards first (queue order), then busy subagents (lead order, then spawn order). */
-  workers: PipelineWorker[];
-  /** Running cards with a violation whose `phase` is this one: they started it too early. */
-  alerts: number;
-  /**
-   * The quality gate that leaves this phase: running cards with a violation crossing it
-   * (`requires` at/before this phase, `phase` after it), one breach per card (its first such
-   * violation). Always [] for the last phase, which has no gate after it.
-   */
-  breaches: GateBreach[];
-}
-
-export interface SdlcPipeline {
-  stations: Record<SdlcPhaseId, PipelineStation>;
-  /** Cards waiting in line, not started yet (before Analyze). */
-  backlog: number;
-  /** Phases the pipeline draws, in SDLC order: the required ones, plus when-needed phases that some running card includes (non-skipped) or that someone works in. */
-  visible: SdlcPhaseId[];
-}
-
-/**
- * Who stands at which SDLC station. A running card stands at `sdlcStation(entry.sdlc)`: its
- * current phase, Analyze while it has no plan, its last included phase once all are done. A busy
- * subagent (running/pending) stands at its role's phase (ROLE_PHASE: scouts analyze, builders
- * implement, reviewers test, …), or at its lead's station when the role has none (helpers).
- * Violations of running cards raise `alerts` on the phase that started too early and `breaches`
- * on every gate they crossed; `backlog` counts the queued cards; `visible` lists the phases to
- * draw: the required ones plus when-needed phases some running card includes or executes.
- */
-export function sdlcPipeline(queue: QueueSnapshot, live: Record<string, LiveAgent>): SdlcPipeline {
-  const stations = Object.fromEntries(
-    SDLC_PHASES.map((id) => [id, { workers: [], alerts: 0, breaches: [] }]),
-  ) as unknown as Record<SdlcPhaseId, PipelineStation>;
-  // Subagents go after every running card so each station lists its leads first.
-  const subagents: { station: SdlcPhaseId; worker: PipelineWorker }[] = [];
-
-  for (const entry of queue.running) {
-    const station = sdlcStation(entry.sdlc);
-    stations[station].workers.push({ id: `card:${entry.taskId}`, kind: "running", entry });
-    const helpers = Object.values(live[entry.taskId]?.helpers ?? {}).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-    for (const subagent of helpers) {
-      if (subagent.status !== "running" && subagent.status !== "pending") continue;
-      subagents.push({
-        station: ROLE_PHASE[roleOf(subagent.agent)] ?? station,
-        worker: { id: `sub:${entry.taskId}:${subagent.id}`, kind: "subagent", entry, subagent },
-      });
-    }
-
-    const violations = entry.sdlc?.violations ?? [];
-    for (const phase of new Set(violations.map((violation) => violation.phase))) stations[phase].alerts++;
-    SDLC_PHASES.forEach((gate, i) => {
-      const violation = violations.find(
-        (v) => SDLC_PHASES.indexOf(v.requires) <= i && SDLC_PHASES.indexOf(v.phase) > i,
-      );
-      if (violation) stations[gate].breaches.push({ entry, violation });
-    });
-  }
-  for (const { station, worker } of subagents) stations[station].workers.push(worker);
-  const visible = SDLC_PHASES.filter(
-    (id) =>
-      SDLC_PHASE_INFO[id].required ||
-      stations[id].workers.length > 0 ||
-      queue.running.some((entry) => entry.sdlc?.phases.some((phase) => phase.id === id && phase.status !== "skipped")),
-  );
-  return { stations, backlog: queue.queued.length, visible };
 }
 
 const CONTACT_TOOLS: Record<string, "message" | "wait" | "inspect"> = {

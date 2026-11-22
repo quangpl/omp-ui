@@ -24,10 +24,6 @@ export const CREDENTIALS_CHANGED_EVENT = "credentials:changed";
 
 const POLL_MS = 60_000;
 
-export function credentialFocusHref(credentialId: string): string {
-  return `/credentials?focus=${encodeURIComponent(credentialId)}`;
-}
-
 // One shared store so the sidebar and header bells poll once between them.
 let snapshot: CredentialNotificationsResponse | null = null;
 const listeners = new Set<() => void>();
@@ -68,7 +64,7 @@ function showBrowserNotification(notification: CredentialNotification) {
     shown.onclick = (event) => {
       event.preventDefault();
       window.focus();
-      const href = credentialFocusHref(notification.credentialId);
+      const href = "/mcp";
       if (navigate) navigate(href);
       else location.assign(href);
       shown.close();
@@ -260,8 +256,8 @@ export function CredentialNotificationsButton({
           <div className="flex flex-col items-center gap-1.5 px-3 py-6 text-center">
             <ShieldCheckIcon className="size-6 text-muted-foreground" aria-hidden />
             <p className="text-sm">All credentials are healthy</p>
-            <Link href="/credentials" onClick={followed} className="text-xs text-primary hover:underline">
-              Manage credentials
+            <Link href="/mcp" onClick={followed} className="text-xs text-primary hover:underline">
+              Open MCP
             </Link>
           </div>
         ) : (
@@ -270,7 +266,7 @@ export function CredentialNotificationsButton({
               {notifications.map((n) => (
                 <li key={n.id} className="relative">
                   <Link
-                    href={credentialFocusHref(n.credentialId)}
+                    href="/mcp"
                     onClick={() => {
                       if (!n.read) void markRead([n.id]);
                       followed();
@@ -302,8 +298,8 @@ export function CredentialNotificationsButton({
               ))}
             </ul>
             <div className="border-t px-3 py-2">
-              <Link href="/credentials" onClick={followed} className="text-xs font-medium text-primary hover:underline">
-                Open Credentials
+              <Link href="/mcp" onClick={followed} className="text-xs font-medium text-primary hover:underline">
+                Open MCP
               </Link>
             </div>
           </>

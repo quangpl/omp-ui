@@ -31,7 +31,7 @@ interface Shortcut {
   label: string;
   /** Alternative bindings; any of them works. */
   keys: Binding[];
-  /** Leads to an admin-only page (terminal, docker, logs, memory): listed for admins only. */
+  /** Leads to an admin-only page (terminal, docker, logs): listed for admins only. */
   adminOnly?: boolean;
 }
 
@@ -66,8 +66,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
       { label: "Artifacts", keys: ["G A"] },
       { label: "Stats", keys: ["G T"] },
       { label: "Logs", keys: ["G L"], adminOnly: true },
-      { label: "Memory", keys: ["G M"], adminOnly: true },
-      { label: "Credentials", keys: ["G K"] },
+      { label: "Environment Variables", keys: ["G K"] },
       { label: "MCP servers", keys: ["G I"] },
       { label: "Settings", keys: ["G S"] },
     ],
@@ -81,16 +80,6 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
       { label: "Run with defaults", keys: ["↵"] },
       { label: "Customize before running", keys: ["⇧+↵"] },
       { label: "Clear the launcher", keys: ["Esc"] },
-    ],
-  },
-  {
-    title: "Memory",
-    adminOnly: true,
-    shortcuts: [
-      { label: "Focus search", keys: ["F"] },
-      { label: "Previous / next memory", keys: ["K", "J"] },
-      { label: "Open the selected memory", keys: ["↵"] },
-      { label: "Close the detail", keys: ["Esc"] },
     ],
   },
   {

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import {
   CheckIcon,
   CopyIcon,
@@ -18,8 +17,7 @@ import {
 import { toast } from "sonner";
 import { formatDateTime, formatRelative, useNow } from "@/components/board/format";
 import { ConfirmDialog, type ConfirmRequest } from "@/components/containers/dialogs";
-import { credentialFocusHref } from "@/components/credentials/credential-notifications";
-import { errorText } from "@/components/credentials/credentials-view";
+import { errorText } from "@/components/credentials/utils";
 import { ProviderTile } from "@/components/credentials/provider-tile";
 import { McpStatusBadge } from "@/components/mcp/mcp-status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -277,14 +275,7 @@ function ServerRow({
                   <CopyIcon />
                   Copy config
                 </DropdownMenuItem>
-                {server.credential ? (
-                  <DropdownMenuItem asChild>
-                    <Link href={credentialFocusHref(server.credentialId)}>
-                      <KeyRoundIcon />
-                      Edit credential
-                    </Link>
-                  </DropdownMenuItem>
-                ) : (
+                {!server.credential && (
                   <DropdownMenuItem disabled>
                     <KeyRoundIcon />
                     Credential deleted

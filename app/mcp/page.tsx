@@ -7,7 +7,7 @@ import { ActivityIcon, ChevronRightIcon, Loader2Icon, RefreshCwIcon, TriangleAle
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
 import { CREDENTIALS_CHANGED_EVENT } from "@/components/credentials/credential-notifications";
-import { errorText, notifyCredentialsChanged } from "@/components/credentials/credentials-view";
+import { errorText, notifyCredentialsChanged } from "@/components/credentials/utils";
 import { McpCatalog } from "@/components/mcp/mcp-catalog";
 import { McpConnectDialog } from "@/components/mcp/mcp-connect-dialog";
 import { McpDirectory } from "@/components/mcp/mcp-directory";
@@ -356,7 +356,7 @@ export default function McpPage() {
                 Catalog
               </h2>
               <p className="text-sm text-pretty text-muted-foreground">
-                Popular MCP servers, set up with a token saved in Credentials.
+                Popular MCP servers, set up with a token saved with the server.
               </p>
             </div>
             <McpCatalog servers={servers} onConnect={setConnecting} />

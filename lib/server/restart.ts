@@ -1,4 +1,4 @@
-// "Restart server" button: stop this server, rebuild it from the current sources and start it
+// "Restart server" button: update (npm install or git pull), then stop this server, rebuild it and start it
 // again. The work is done by the omp-ui CLI in a detached process, so it outlives this server
 // (under systemd by the user manager, since anything we spawn dies with the service's cgroup).
 import { spawn } from "node:child_process";
@@ -93,8 +93,13 @@ export function startRestart(): RestartMode {
     mode === "systemd"
       ? ["systemctl", ["--user", "restart", "--no-block", "omp-ui.service"]]
       : [process.execPath, [cliPath(), ...(mode === "pm2" ? ["pm2", "restart", "--rebuild"] : ["restart", "--rebuild"])]];
-  try {
-    const child = spawn(cmd, args, {
+  const failed = (what: string, code: number | null) => {
+    // Still alive: it failed before stopping this server (see restart.log).
+    g.__ompUiRestarting = false;
+    console.error(`[restart] ${what} exited (code ${code}) without restarting this server`);
+  };
+  const spawnDetached = (c: string, a: string[], onExit: (code: number | null) => void) => {
+    const child = spawn(c, a, {
       cwd: process.cwd(),
       // Cast: the project types a required NODE_ENV, which the CLI must not inherit.
       env: env as NodeJS.ProcessEnv,
@@ -104,20 +109,38 @@ export function startRestart(): RestartMode {
     });
     child.once("error", (err) => {
       g.__ompUiRestarting = false;
-      console.error(`[restart] could not run ${cmd}:`, err);
+      console.error(`[restart] could not run ${c}:`, err);
     });
-    child.once("exit", (code) => {
-      // `--no-block` returns once the job is queued; the user manager then stops this server.
-      if (mode === "systemd" && code === 0) return;
-      // Still alive when the CLI exits: it failed before stopping this server (see restart.log).
-      g.__ompUiRestarting = false;
-      console.error(`[restart] ${mode === "systemd" ? "systemctl" : "the omp-ui CLI"} exited (code ${code}) without restarting this server`);
-    });
+    child.once("exit", onExit);
     child.unref();
-  } finally {
-    fs.closeSync(fd);
-  }
+  };
   g.__ompUiRestarting = true;
-  console.log(`[restart] stop → rebuild → start requested (${mode}); output: ${file}`);
+  try {
+    // Fetch the new version first (`omp-ui update --no-restart`: npm install, or git pull + deps).
+    // This server keeps running meanwhile, so a failed update just reports the error in restart.log.
+    spawnDetached(process.execPath, [cliPath(), "update", "--no-restart"], (updateCode) => {
+      if (updateCode !== 0) {
+        fs.closeSync(fd);
+        return failed("the update", updateCode);
+      }
+      try {
+        spawnDetached(cmd, args, (code) => {
+          fs.closeSync(fd);
+          // `--no-block` returns once the job is queued; the user manager then stops this server.
+          if (mode === "systemd" && code === 0) return;
+          failed(mode === "systemd" ? "systemctl" : "the omp-ui CLI", code);
+        });
+      } catch (err) {
+        fs.closeSync(fd);
+        g.__ompUiRestarting = false;
+        console.error("[restart] could not start the restart:", err);
+      }
+    });
+  } catch (err) {
+    fs.closeSync(fd);
+    g.__ompUiRestarting = false;
+    throw err;
+  }
+  console.log(`[restart] update → stop → rebuild → start requested (${mode}); output: ${file}`);
   return mode;
 }

@@ -33,7 +33,7 @@ for (const key of [
 
 export const FAKE_OMP = fileURLToPath(new URL("../fixtures/fake-omp.mjs", import.meta.url));
 
-export type Method = "GET" | "POST" | "PATCH" | "DELETE";
+export type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 // Route params differ per handler.
 type RouteHandler = (req: Request, context?: { params?: Promise<any> }) => Promise<Response>;
 export type RouteModule = Partial<Record<Method, RouteHandler>>;

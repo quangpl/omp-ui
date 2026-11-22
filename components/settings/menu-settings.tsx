@@ -26,8 +26,7 @@ const MENUS: Record<DashboardMenuId, { label: string; hint: string }> = {
   terminal: { label: "Terminal", hint: "A shell on the server in the browser." },
   files: { label: "Files", hint: "Browse and edit a project's files or any server folder." },
   artifacts: { label: "Artifacts", hint: "Final results and deliverables of finished cards, by project." },
-  memory: { label: "Memory", hint: "What agents remember across sessions." },
-  credentials: { label: "Credentials", hint: "Provider logins and API keys agents use." },
+  env: { label: "Environment", hint: "Environment variables every agent runs with." },
   mcp: { label: "MCP servers", hint: "Popular MCP servers connected to every agent." },
   stats: { label: "Stats", hint: "Usage, cost and throughput over time." },
   settings: {

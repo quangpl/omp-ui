@@ -1,12 +1,13 @@
 // Git operations for project folders: clone, init, status, branches, push to the project's push branch, open PR/MR.
 // Every command runs via execFile with an argument array (never a shell) and never prompts.
 import { execFile } from "node:child_process";
+import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { childEnv } from "@/lib/child-env";
 import { DEFAULT_BRANCH } from "@/lib/default-branch";
 import { HttpError } from "@/lib/server/http";
-import { NoTrackedChangesError, taskChangesTree } from "@/lib/server/task-changes";
+import { NoTrackedChangesError, taskChangePatches, taskChangesTree } from "@/lib/server/task-changes";
 import { isValidBranchName } from "@/lib/push-branch";
 import type { GitBranches, GitProvider, GitRepoActionResult, GitStatus, GitSwitchResult } from "@/lib/types";
 import { getWorkspaceRoot } from "@/lib/workspace";
@@ -560,32 +561,67 @@ function baseResult(folder: string): GitRepoActionResult {
   return { folder, branch: null, commit: null, url: null, output: "", error: null, skipped: false };
 }
 
+/** Resolves the conflicted `files` of an in-progress merge in `folder` by editing them in place. */
+export type ConflictResolver = (folder: string, files: string[]) => Promise<void>;
+
 /**
  * Merge the remote `target` branch (`origin/<target>`, fresh from the caller's fetch) into HEAD
  * before pushing, so a remote branch that moved on doesn't reject the push. A remote branch that
- * doesn't exist yet (first push) has nothing to pull; a conflicting merge is aborted, leaving the
- * branch exactly as it was, and reported.
+ * doesn't exist yet (first push) has nothing to pull. A conflicting merge goes to `resolve` when
+ * given; if there is none, or it leaves conflicts behind, the merge is aborted, leaving the branch
+ * exactly as it was, and reported.
  */
-async function mergeRemoteBeforePush(folder: string, target: string, step: Step): Promise<void> {
+async function mergeRemoteBeforePush(
+  folder: string,
+  target: string,
+  step: Step,
+  log: string[],
+  resolve?: ConflictResolver,
+): Promise<void> {
   if (!(await git(folder, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${target}`])).ok) return;
   const merging = (await git(folder, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])).ok;
-  const merge = await step(
-    "git",
-    [...(await identityArgs(folder)), "merge", "--no-edit", `origin/${target}`],
-    NETWORK_TIMEOUT_MS,
-    true,
-  );
+  const identity = await identityArgs(folder);
+  const merge = await step("git", [...identity, "merge", "--no-edit", `origin/${target}`], NETWORK_TIMEOUT_MS, true);
   if (merge.ok) return;
+  const unmerged = async () => (await git(folder, ["diff", "--name-only", "--diff-filter=U"])).stdout.split("\n").filter(Boolean);
+  const files = await unmerged();
+  let failure = explain("git", merge);
+  if (resolve && !merging && files.length > 0) {
+    log.push(`Merging origin/${target} conflicts in ${files.join(", ")}; asking an agent to resolve them…`);
+    try {
+      await resolve(folder, files);
+      // `git grep` exits 0 on a match: a leftover conflict marker in any of the files.
+      const markers = (await git(folder, ["grep", "--no-index", "-qE", "^(<{7}|>{7})( |$)", "--", ...files])).ok;
+      if (!markers) {
+        // Staging is what clears the unmerged state of the resolved paths.
+        await step("git", ["add", "-A"]);
+        if ((await unmerged()).length === 0) {
+          await step("git", [...identity, "commit", "--no-edit"]);
+          log.push("Conflicts resolved and merged.");
+          return;
+        }
+      }
+      failure = `the agent left conflicts unresolved in ${files.join(", ")}`;
+    } catch (err) {
+      failure = `conflict resolution failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    log.push(`Couldn't resolve the conflicts: ${failure}`);
+  }
   // Never abort a merge that was already in progress before this call.
   if (!merging) await git(folder, ["merge", "--abort"]);
-  throw new CommandError(explain("git", merge));
+  throw new CommandError(failure);
 }
 
 /**
  * Commit uncommitted changes (if any), merge the remote target branch in, and push HEAD to
  * `target` on origin, creating it there if missing. Callers hold the folder lock.
  */
-async function pushHeadTo(folder: string, target: string, message: string): Promise<GitFolderOutcome> {
+async function pushHeadTo(
+  folder: string,
+  target: string,
+  message: string,
+  resolve?: ConflictResolver,
+): Promise<GitFolderOutcome> {
   const result = baseResult(folder);
   const name = label(folder);
   if (!isValidBranchName(target)) {
@@ -613,7 +649,7 @@ async function pushHeadTo(folder: string, target: string, message: string): Prom
         summary: `Nothing to push in ${name}`,
       };
     }
-    if (fetched.ok) await mergeRemoteBeforePush(folder, target, step);
+    if (fetched.ok) await mergeRemoteBeforePush(folder, target, step, log, resolve);
     await step("git", ["push", "origin", `HEAD:refs/heads/${target}`], NETWORK_TIMEOUT_MS);
     const sha = (await step("git", ["rev-parse", "HEAD"])).stdout.trim();
     if (status.webUrl && status.provider === "github") result.url = `${status.webUrl}/commit/${sha}`;
@@ -635,11 +671,16 @@ async function pushHeadTo(folder: string, target: string, message: string): Prom
 
 /**
  * Commit uncommitted changes (if any), merge `origin/<target>` into HEAD (so a remote branch that
- * moved on doesn't reject the push) and push HEAD to `target` on origin (the project's push
+ * moved on doesn't reject the push; conflicts go to `resolve`) and push HEAD to `target` on origin (the project's push
  * branch), creating it there if missing.
  */
-export function pushToBranch(folder: string, target: string, message: string): Promise<GitFolderOutcome> {
-  return withFolderLock(folder, () => pushHeadTo(folder, target, message));
+export function pushToBranch(
+  folder: string,
+  target: string,
+  message: string,
+  resolve?: ConflictResolver,
+): Promise<GitFolderOutcome> {
+  return withFolderLock(folder, () => pushHeadTo(folder, target, message, resolve));
 }
 
 /**
@@ -647,7 +688,7 @@ export function pushToBranch(folder: string, target: string, message: string): P
  * HEAD), then push HEAD to the branch the folder is already on, creating it on `origin` if
  * missing. A detached HEAD has no current branch, so it is reported as an error for that folder.
  */
-export function pushToCurrentBranch(folder: string, message: string): Promise<GitFolderOutcome> {
+export function pushToCurrentBranch(folder: string, message: string, resolve?: ConflictResolver): Promise<GitFolderOutcome> {
   return withFolderLock(folder, async () => {
     const name = label(folder);
     const status = await gitStatus(folder);
@@ -661,7 +702,7 @@ export function pushToCurrentBranch(folder: string, message: string): Promise<Gi
       const error = "This folder is on a detached HEAD, so it has no current branch to push.";
       return { result: { ...baseResult(folder), error }, summary: `Couldn't push ${name}: ${error}` };
     }
-    return pushHeadTo(folder, status.branch, message);
+    return pushHeadTo(folder, status.branch, message, resolve);
   });
 }
 
@@ -706,6 +747,69 @@ async function baseCommitFor(folder: string, base: string, step: Step): Promise<
 }
 
 /**
+ * Replay the card's changes onto `baseRef` in a throwaway worktree with a 3-way apply, hand any
+ * conflicts to `resolve` (cwd = that worktree), commit and push the result to `branch`. The
+ * folder's own checkout is never touched. Returns the pushed commit.
+ */
+async function pushResolvedChanges(
+  folder: string,
+  input: { taskId: string; title: string; branchName: string },
+  baseRef: { commit: string; label: string },
+  resolve: ConflictResolver,
+  log: string[],
+): Promise<string> {
+  const patches = await taskChangePatches(folder, input.taskId);
+  const top = (await git(folder, ["rev-parse", "--show-toplevel"])).stdout.trim();
+  const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "agentman-pr-"));
+  const wt = path.join(tmp, "wt");
+  const must = async (args: string[], timeout = QUICK_TIMEOUT_MS) => {
+    const res = await git(wt, args, timeout);
+    if (!res.ok) throw new CommandError(explain("git", res));
+    return res;
+  };
+  const unmerged = async () => (await git(wt, ["diff", "--name-only", "--diff-filter=U"])).stdout.split("\n").filter(Boolean);
+  try {
+    const added = await git(top, ["worktree", "add", "--detach", wt, baseRef.commit]);
+    if (!added.ok) throw new CommandError(explain("git", added));
+    for (const [i, patch] of patches.entries()) {
+      const patchFile = path.join(tmp, `run-${i}.patch`);
+      await fs.promises.writeFile(patchFile, patch);
+      const applied = await git(wt, ["apply", "--3way", "--whitespace=nowarn", patchFile]);
+      if (applied.ok) continue;
+      const files = await unmerged();
+      if (files.length === 0) {
+        throw new CommandError(`The card's changes don't apply on top of ${baseRef.label}: ${applied.output.split("\n").slice(-3).join(" ")}`);
+      }
+      log.push(`The card's changes conflict with ${baseRef.label} in ${files.join(", ")}; asking an agent to resolve them…`);
+      try {
+        await resolve(wt, files);
+      } catch (err) {
+        throw new CommandError(`conflict resolution failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // `git grep` exits 0 on a match: a leftover conflict marker in any of the files.
+      const markers = (await git(wt, ["grep", "--no-index", "-qE", "^(<{7}|>{7})( |$)", "--", ...files])).ok;
+      if (markers) throw new CommandError(`the agent left conflicts unresolved in ${files.join(", ")}`);
+      await must(["add", "-A"]);
+      const left = await unmerged();
+      if (left.length > 0) throw new CommandError(`the agent left conflicts unresolved in ${left.join(", ")}`);
+    }
+    await must(["add", "-A"]);
+    if ((await git(wt, ["diff", "--cached", "--quiet"])).ok) {
+      throw new CommandError(`Resolving the conflicts with ${baseRef.label} left no changes to put in a pull request.`);
+    }
+    await must([...(await identityArgs(folder)), "-c", "commit.gpgsign=false", "commit", "-m", input.title]);
+    const sha = (await must(["rev-parse", "HEAD"])).stdout.trim();
+    await must(["push", "origin", `HEAD:refs/heads/${input.branchName}`], NETWORK_TIMEOUT_MS);
+    log.push("Conflicts resolved.");
+    return sha;
+  } finally {
+    await git(top, ["worktree", "remove", "--force", wt]);
+    await fs.promises.rm(tmp, { recursive: true, force: true });
+    await git(top, ["worktree", "prune"]);
+  }
+}
+
+/**
  * Open a PR (gh) / MR (glab) against `baseBranch` (the project's default branch for that repo, else
  * the repo's own) with only the changes the card made: they are replayed on top of the default
  * branch as one commit on `branchName`, which is pushed straight from the object database. The
@@ -715,6 +819,7 @@ async function baseCommitFor(folder: string, base: string, step: Step): Promise<
 export function createPullRequest(
   folder: string,
   input: { taskId: string; title: string; body: string; branchName: string; baseBranch?: string | null },
+  resolve?: ConflictResolver,
 ): Promise<GitFolderOutcome> {
   return withFolderLock(folder, async () => {
     const result = baseResult(folder);
@@ -731,9 +836,29 @@ export function createPullRequest(
     const { log, step } = makeRunner(folder);
     try {
       const baseRef = await baseCommitFor(folder, base, step);
-      let changes: { tree: string; baseTree: string };
+      const branch = input.branchName;
       try {
-        changes = await taskChangesTree(folder, input.taskId, baseRef);
+        const changes = await taskChangesTree(folder, input.taskId, baseRef);
+        if (changes.tree === changes.baseTree) {
+          return {
+            result: { ...result, skipped: true, output: log.join("\n") },
+            summary: `Nothing to put in a pull request for ${name}`,
+          };
+        }
+        const commit = await step("git", [
+          ...(await identityArgs(folder)),
+          "-c",
+          "commit.gpgsign=false",
+          "commit-tree",
+          changes.tree,
+          "-p",
+          baseRef.commit,
+          "-m",
+          input.title,
+        ]);
+        result.branch = branch;
+        result.commit = commit.stdout.trim();
+        await step("git", ["push", "origin", `${result.commit}:refs/heads/${branch}`], NETWORK_TIMEOUT_MS);
       } catch (err) {
         if (err instanceof NoTrackedChangesError) {
           return {
@@ -741,29 +866,12 @@ export function createPullRequest(
             summary: `Couldn't open a PR for ${name}: ${err.message} Use “Push to current branch” instead.`,
           };
         }
-        throw err;
+        if (!resolve || err instanceof CommandError) throw err;
+        // The changes don't apply cleanly on the base: merge them in a temporary worktree instead.
+        log.push(`${err instanceof Error ? err.message : String(err)}`);
+        result.branch = branch;
+        result.commit = await pushResolvedChanges(folder, input, baseRef, resolve, log);
       }
-      if (changes.tree === changes.baseTree) {
-        return {
-          result: { ...result, skipped: true, output: log.join("\n") },
-          summary: `Nothing to put in a pull request for ${name}`,
-        };
-      }
-      const branch = input.branchName;
-      result.branch = branch;
-      const commit = await step("git", [
-        ...(await identityArgs(folder)),
-        "-c",
-        "commit.gpgsign=false",
-        "commit-tree",
-        changes.tree,
-        "-p",
-        baseRef.commit,
-        "-m",
-        input.title,
-      ]);
-      result.commit = commit.stdout.trim();
-      await step("git", ["push", "origin", `${result.commit}:refs/heads/${branch}`], NETWORK_TIMEOUT_MS);
 
       const fallback = compareUrl(status, base, branch);
       const cli = prCliFor(status.provider);

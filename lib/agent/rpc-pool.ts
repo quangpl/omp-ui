@@ -6,7 +6,6 @@
 import { createHash } from "node:crypto";
 import { availableParallelism } from "node:os";
 import { OmpRpcProcess } from "@/lib/agent/rpc";
-import { helperMemoryEnv } from "@/lib/server/agentmemory";
 
 /** An idle worker is closed after this long without a call. */
 const IDLE_TIMEOUT_MS = 5 * 60_000;
@@ -48,9 +47,7 @@ function idleWorkers(): IdleWorker[] {
 
 /** An idle worker started with the same arguments and environment, else a new one (not ready yet: `waitReady`). */
 export function acquireWorker(spec: WorkerSpec): WorkerLease {
-  // Helpers neither recall nor capture agentmemory: their prompts are AgentMan's own, not the user's work.
-  const workerEnv = helperMemoryEnv(spec.env);
-  const env = createHash("sha1").update(JSON.stringify(Object.entries(workerEnv))).digest("hex");
+  const env = createHash("sha1").update(JSON.stringify(Object.entries(spec.env))).digest("hex");
   const key = JSON.stringify([spec.command, spec.cwd, spec.args, env]);
   if (spec.reusable) {
     const idle = idleWorkers();
@@ -62,7 +59,7 @@ export function acquireWorker(spec: WorkerSpec): WorkerLease {
       if (!worker.proc.exited) return lease(worker.proc, key, true);
     }
   }
-  const proc = new OmpRpcProcess({ command: spec.command, args: spec.args, cwd: spec.cwd, env: workerEnv, autoConfirm: false });
+  const proc = new OmpRpcProcess({ command: spec.command, args: spec.args, cwd: spec.cwd, env: spec.env, autoConfirm: false });
   return lease(proc, key, spec.reusable);
 }
 

@@ -25,6 +25,7 @@ import { parseAgentResources, parseBranchMap, parseFolderList, parseTaskReview, 
 import { DATA_TABLES, type DataRows, type DataSnapshot, type DataTable, type DbDriver, type Repository } from "@/lib/db/types";
 import { dataDir } from "@/lib/files";
 import { loadAiProviderEnv } from "@/lib/server/ai-providers";
+import { loadEnvVars } from "@/lib/server/env-vars";
 import { restartChatIntegrations } from "@/lib/server/chat/service";
 import { replaceCredentialsKeyFile } from "@/lib/server/credentials";
 import { HttpError } from "@/lib/server/http";
@@ -693,6 +694,7 @@ export async function importArchive(
 async function reloadImportedState(repo: Repository, manager: AgentManager): Promise<void> {
   forgetAuthSecret();
   await loadAiProviderEnv(repo);
+  await loadEnvVars(repo);
   await syncMcpServers(repo).catch((err: unknown) => console.error("[data-transfer] MCP sync failed:", errorMessage(err)));
   await restartChatIntegrations(repo, manager).catch((err: unknown) =>
     console.error("[data-transfer] restarting chat bots failed:", errorMessage(err)),

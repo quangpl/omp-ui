@@ -18,13 +18,12 @@ import type {
   ClusterJoinInfo,
   ClusterStatus,
   ClusterTestResult,
-  AiStatsResponse,
+  AiStatsEvent,
   OmpSkill,
   OmpConfigSnapshot,
   OmpConfigUpdate,
   OmpModel,
   OmpSettingInfo,
-  MemoryStatus,
   Dashboard,
   FileOp,
   FileOpResult,
@@ -83,24 +82,11 @@ import type {
 } from "@/lib/docker-types";
 import type { DiffSummary, TaskDiff } from "@/lib/diff-types";
 import type {
-  MemoryDetail,
-  MemoryForgetResult,
-  MemoryLayer,
-  MemoryListResponse,
-  MemorySearchResponse,
-  MemorySessionDetail,
-  MemorySessionsResponse,
-  MemoryStoreStats,
-} from "@/lib/memory-types";
-import type {
-  CredentialInput,
   CredentialNotificationAction,
   CredentialNotificationsResponse,
   CredentialsResponse,
-  CredentialSummary,
-  CredentialTestResult,
-  CredentialUpdate,
 } from "@/lib/credential-types";
+import type { EnvVarsResponse } from "@/lib/env-vars";
 import type {
   AiOAuthSession,
   AiProvidersResponse,
@@ -255,15 +241,8 @@ async function dockerJob(
   }
 }
 
-/** Filters shared by the memory list and search. `range`: 24h | 7d | 30d | 90d | all. */
-export type MemoryFilters = {
-  project?: string | null;
-  type?: string | null;
-  range?: string | null;
-};
-
 /** `?a=1&b=2` from defined, non-empty values ("" when none). */
-function memoryQuery(params: Record<string, string | number | null | undefined>): string {
+function queryString(params: Record<string, string | number | null | undefined>): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== null && value !== undefined && value !== "") query.set(key, String(value));
@@ -274,7 +253,7 @@ function memoryQuery(params: Record<string, string | number | null | undefined>)
 
 /** Query string of `/logs/[source]` (and its export): levels become one comma list, "all" files are omitted. */
 function logQuery(query: LogQuery, extra: Record<string, string> = {}): string {
-  return memoryQuery({
+  return queryString({
     ...extra,
     limit: query.limit,
     offset: query.offset,
@@ -334,11 +313,11 @@ export const api = {
   /** Artifacts page: every project with its final results in the period (newest result first). */
   artifacts: {
     projects: (period: ArtifactPeriod = {}) =>
-      request<ArtifactProject[]>(`/artifacts${memoryQuery({ from: period.from, to: period.to })}`),
+      request<ArtifactProject[]>(`/artifacts${queryString({ from: period.from, to: period.to })}`),
     /** One project's cards with a final result in the period: summary and final attachments only. */
     results: (boardId: string, period: ArtifactPeriod = {}) =>
       request<ArtifactProjectResults>(
-        `/artifacts/${encodeURIComponent(boardId)}${memoryQuery({ from: period.from, to: period.to })}`,
+        `/artifacts/${encodeURIComponent(boardId)}${queryString({ from: period.from, to: period.to })}`,
       ),
   },
   settings: {
@@ -447,30 +426,16 @@ export const api = {
     oauthCancel: (id: string) =>
       request<AiOAuthSession>(`/settings/ai-providers/oauth/${encodeURIComponent(id)}`, { method: "DELETE" }),
   },
-  /** Credentials for MCP servers and connector services (the /credentials page). */
+  /** Custom environment variables every agent receives (admin only; the /env page). */
+  env: {
+    list: () => request<EnvVarsResponse>("/env"),
+    /** Add or overwrite variables; answers the whole list. */
+    set: (vars: Record<string, string>) => request<EnvVarsResponse>("/env", { method: "PUT", json: { vars } }),
+    remove: (key: string) => request<EnvVarsResponse>(`/env/${encodeURIComponent(key)}`, { method: "DELETE" }),
+  },
+  /** Saved credentials of connected MCP servers (read-only; managed through the /mcp page). */
   credentials: {
     list: () => request<CredentialsResponse>("/credentials"),
-    /** `test`: run the health check before answering, so the new credential starts healthy/failing. */
-    create: (input: CredentialInput, test = false) =>
-      request<CredentialSummary>("/credentials", { method: "POST", json: { ...input, test } }),
-    update: (id: string, update: CredentialUpdate, test = false) =>
-      request<CredentialSummary>(`/credentials/${encodeURIComponent(id)}`, {
-        method: "PATCH",
-        json: { ...update, test },
-      }),
-    remove: (id: string) =>
-      request<{ ok: true }>(`/credentials/${encodeURIComponent(id)}`, { method: "DELETE" }),
-    /** Health-check a saved credential now; its stored status updates. */
-    check: (id: string) =>
-      request<{ credential: CredentialSummary; result: CredentialTestResult }>(
-        `/credentials/${encodeURIComponent(id)}/test`,
-        { method: "POST" },
-      ),
-    /** Test unsaved form values; with `id`, omitted secret fields fall back to that credential's stored ones. */
-    test: (input: CredentialInput, id?: string) =>
-      request<CredentialTestResult>("/credentials/test", { method: "POST", json: { ...input, id } }),
-    /** Health-check every credential now. */
-    checkAll: () => request<CredentialsResponse>("/credentials/check-all", { method: "POST" }),
     notifications: () => request<CredentialNotificationsResponse>("/credentials/notifications"),
     /** `ids` for read/dismiss; ignored by read-all/dismiss-all. */
     updateNotifications: (action: CredentialNotificationAction, ids?: string[]) =>
@@ -508,34 +473,6 @@ export const api = {
       const search = params.toString();
       return request<McpDirectoryResponse>(`/mcp/directory${search ? `?${search}` : ""}`);
     },
-  },
-  /** The local agentmemory server (Settings → Memory). */
-  memory: {
-    /** `refresh` re-probes the agentmemory CLI instead of the server's 1 min cache. */
-    status: (refresh = false) => request<MemoryStatus>(`/memory${refresh ? "?refresh=1" : ""}`),
-    /** Start the server; answers within a minute with `starting: true` while it still boots. */
-    start: () => request<MemoryStatus>("/memory/start", { method: "POST" }),
-    /** `agentmemory connect omp --with-mcp`; restart omp sessions to load it. */
-    connectOmp: () => request<MemoryStatus>("/memory/connect-omp", { method: "POST" }),
-    // Browsing (the /memory page). A down server answers 503 `MemoryUnavailable`.
-    /** Long-term memories, newest first; `q` ranks by relevance. */
-    list: (filters: MemoryFilters & { q?: string; cursor?: string | null; limit?: number } = {}) =>
-      request<MemoryListResponse>(`/memory/memories${memoryQuery(filters)}`),
-    /** Hybrid search across memories and session observations. */
-    search: (q: string, filters: MemoryFilters & { layer?: "all" | "memory" | "observation"; limit?: number } = {}) =>
-      request<MemorySearchResponse>(`/memory/search${memoryQuery({ ...filters, q })}`),
-    get: (id: string, opts: { layer?: MemoryLayer; sessionId?: string | null } = {}) =>
-      request<MemoryDetail>(`/memory/memories/${encodeURIComponent(id)}${memoryQuery(opts)}`),
-    /** Permanently delete a memory, or an observation (`layer: "observation"` + its `sessionId`). */
-    forget: (id: string, opts: { layer?: MemoryLayer; sessionId?: string | null } = {}) =>
-      request<MemoryForgetResult>(`/memory/memories/${encodeURIComponent(id)}${memoryQuery(opts)}`, {
-        method: "DELETE",
-      }),
-    sessions: (filters: { project?: string | null; status?: string | null; q?: string; cursor?: string | null; limit?: number } = {}) =>
-      request<MemorySessionsResponse>(`/memory/sessions${memoryQuery(filters)}`),
-    session: (id: string, opts: { cursor?: string | null; limit?: number } = {}) =>
-      request<MemorySessionDetail>(`/memory/sessions/${encodeURIComponent(id)}${memoryQuery(opts)}`),
-    stats: () => request<MemoryStoreStats>("/memory/stats"),
   },
   boards: {
     list: () => request<BoardWithCounts[]>("/boards"),
@@ -754,8 +691,33 @@ export const api = {
   },
   stats: {
     system: () => request<SystemStats>("/stats/system"),
-    /** AI provider quota + usage via omp; `refresh` bypasses the 60s server cache. */
-    ai: (refresh = false) => request<AiStatsResponse>(`/stats/ai${refresh ? "?refresh=1" : ""}`),
+    /**
+     * AI provider quota, balances and usage via omp, streamed: `onEvent` gets each part as it arrives and the
+     * promise settles when all are in. `refresh` bypasses the 60s server cache.
+     */
+    ai: async (refresh: boolean, onEvent: (event: AiStatsEvent) => void): Promise<void> => {
+      const res = await send(`/stats/ai${refresh ? "?refresh=1" : ""}`);
+      if (!res.body) throw new ApiRequestError("The server sent no answer", 502);
+      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = "";
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          buffer += value ?? "";
+          const lines = buffer.split("\n");
+          buffer = done ? "" : (lines.pop() ?? "");
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const event = JSON.parse(line) as AiStatsEvent;
+            if (event.type === "error") throw new ApiRequestError(event.message, 502);
+            onEvent(event);
+          }
+          if (done) return;
+        }
+      } finally {
+        reader.cancel().catch(() => undefined);
+      }
+    },
     /** Analyze CPU, memory and storage (processes, cleanable data, recommendations). */
     analyze: () => request<MaintenanceReport>("/stats/maintenance"),
     /** Clean up storage, end processes, free server memory or stop a card. */

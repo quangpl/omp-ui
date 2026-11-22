@@ -8,7 +8,7 @@ import { useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { ChevronDownIcon, ExternalLinkIcon, Loader2Icon, ServerIcon } from "lucide-react";
 import { toast } from "sonner";
-import { errorText } from "@/components/credentials/credentials-view";
+import { errorText } from "@/components/credentials/utils";
 import { HealthBadge, healthTone } from "@/components/credentials/health-badge";
 import { ProviderTile } from "@/components/credentials/provider-tile";
 import { PasswordInput } from "@/components/password-input";

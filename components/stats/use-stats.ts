@@ -4,7 +4,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { errorMessage } from "@/components/stats/shared";
 import { api } from "@/lib/api-client";
-import type { AiStatsResponse, SystemStats } from "@/lib/types";
+import type { AiStats, AiStatsEvent, SystemStats } from "@/lib/types";
 
 export const SYSTEM_REFRESH_MS = 5000;
 /** Samples kept for live charts: 60 × 5 s = the last 5 minutes. */
@@ -34,8 +34,19 @@ export interface SystemState {
   lastUpdated: number | null;
 }
 
+/** The AI stats received so far: a part is null until its event arrives. */
+export interface AiParts {
+  /** When the oldest part was read. */
+  generatedAt: string;
+  /** Active provider ids in priority order; empty when no priority is configured. */
+  activeProviders: string[];
+  quota: AiStats["quota"] | null;
+  balances: AiStats["balances"];
+  usage: AiStats["usage"] | null;
+}
+
 export interface AiState {
-  stats: AiStatsResponse | null;
+  stats: AiParts | null;
   error: string | null;
   refreshing: boolean;
   reload: () => void;
@@ -113,9 +124,31 @@ function createPolledStore<T>(initial: T, poll: () => Promise<void>): PolledStor
 
 /** Requests that should spin the refresh indicator (manual reloads and the very first load). */
 let aiSpinning = 0;
-/** Sequence of the latest AI request issued / applied, so a slow older response never overwrites a newer one. */
+/** Sequence of the latest AI request issued / that has delivered an event, so a slow older stream never overwrites a newer one. */
 let aiIssued = 0;
 let aiApplied = 0;
+
+function applyAiEvent(prev: AiParts | null, event: AiStatsEvent): AiParts {
+  const base: AiParts = prev ?? {
+    generatedAt: new Date().toISOString(),
+    activeProviders: [],
+    quota: null,
+    balances: [],
+    usage: null,
+  };
+  switch (event.type) {
+    case "providers":
+      return { ...base, activeProviders: event.activeProviders };
+    case "quota":
+      return { ...base, quota: event.quota, generatedAt: event.at };
+    case "balances":
+      return { ...base, balances: event.balances };
+    case "usage":
+      return { ...base, usage: event.usage };
+    default:
+      return base;
+  }
+}
 
 async function loadAi(refresh: boolean): Promise<void> {
   const seq = ++aiIssued;
@@ -126,14 +159,14 @@ async function loadAi(refresh: boolean): Promise<void> {
     aiStore.update((s) => (s.refreshing ? s : { ...s, refreshing: true }));
   }
   try {
-    const stats = await api.stats.ai(refresh);
-    if (seq > aiApplied) {
+    await api.stats.ai(refresh, (event) => {
+      if (seq < aiApplied) return;
       aiApplied = seq;
-      aiStore.update((s) => ({ ...s, stats, error: null }));
-    }
+      aiStore.update((s) => ({ ...s, stats: applyAiEvent(s.stats, event), error: null }));
+    });
   } catch (err) {
     const message = errorMessage(err, "Could not load AI stats.");
-    if (seq > aiApplied) {
+    if (seq >= aiApplied) {
       aiApplied = seq;
       aiStore.update((s) => (s.error === message ? s : { ...s, error: message }));
     }

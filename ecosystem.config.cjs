@@ -7,9 +7,13 @@
 // dependencies, builds when sources changed, then runs the server attached so
 // pm2 supervises it. The server inherits the full environment; .env overrides it.
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
-const logDir = path.join(__dirname, "data");
+// Installed from npm: state lives in ~/.omp-ui/data (see DEFAULT_DATA_DIR in bin/omp-ui.mjs).
+const installed = __dirname.split(path.sep).includes("node_modules");
+const home = path.resolve(process.env.OMP_UI_HOME || path.join(os.homedir(), ".omp-ui"));
+const logDir = installed ? path.join(home, "data") : path.join(__dirname, "data");
 fs.mkdirSync(logDir, { recursive: true });
 
 module.exports = {

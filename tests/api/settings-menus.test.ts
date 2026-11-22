@@ -48,7 +48,7 @@ describe("/settings visibleDashboardMenus", () => {
   });
 
   it("rejects unknown ids and non-arrays without changing the settings", async () => {
-    const before = await patchSettings({ visibleDashboardMenus: ["memory"] });
+    const before = await patchSettings({ visibleDashboardMenus: ["terminal"] });
 
     for (const body of [{ visibleDashboardMenus: ["projects"] }, { visibleDashboardMenus: "stats" }]) {
       const res = await api(settingsRoute, "PATCH", "/settings", { body });
@@ -65,7 +65,7 @@ describe("/settings visibleDashboardMenus", () => {
   it("menus added since a legacy list was saved show by default", async () => {
     const legacy = ["visualize", "terminal", "settings"];
     await (await getRepo()).setSetting("app_settings", JSON.stringify({ ompPath: "omp", visibleDashboardMenus: legacy }));
-    expect((await getSettings()).visibleDashboardMenus).toEqual(["visualize", "terminal", "files", "artifacts", "mcp", "settings"]);
+    expect((await getSettings()).visibleDashboardMenus).toEqual(["visualize", "terminal", "files", "artifacts", "env", "mcp", "settings"]);
   });
 
   it("a menu hidden after it existed stays hidden", async () => {
@@ -73,7 +73,7 @@ describe("/settings visibleDashboardMenus", () => {
       "app_settings",
       JSON.stringify({ ompPath: "omp", visibleDashboardMenus: ["visualize", "stats"] }),
     );
-    expect((await getSettings()).visibleDashboardMenus).toEqual(["visualize", "files", "artifacts", "mcp", "stats"]);
+    expect((await getSettings()).visibleDashboardMenus).toEqual(["visualize", "files", "artifacts", "env", "mcp", "stats"]);
 
     const saved = await patchSettings({ visibleDashboardMenus: ["visualize", "stats"] });
     expect(saved.visibleDashboardMenus).toEqual(["visualize", "stats"]);
@@ -84,9 +84,9 @@ describe("/settings visibleDashboardMenus", () => {
   });
 
   it("saving another setting keeps a hidden menu hidden", async () => {
-    await patchSettings({ visibleDashboardMenus: ["memory"] });
+    await patchSettings({ visibleDashboardMenus: ["terminal"] });
     await patchSettings({ autoRetry: false });
-    expect((await getSettings()).visibleDashboardMenus).toEqual(["memory"]);
+    expect((await getSettings()).visibleDashboardMenus).toEqual(["terminal"]);
   });
 
   it("stored ids that are no longer menus are dropped", async () => {

@@ -10,10 +10,12 @@ import { childEnv } from "@/lib/child-env";
 import type { Repository } from "@/lib/db/types";
 import {
   TASK_STATUSES,
+  type AiAgentUsage,
   type AiModelUsage,
   type AiProviderQuota,
   type AiQuotaLimit,
   type AiStats,
+  type AiUsagePoint,
   type SystemStats,
   type TaskStatus,
 } from "@/lib/types";
@@ -244,7 +246,7 @@ function mapQuota(data: unknown): AiProviderQuota[] {
   });
 }
 
-function mapUsage(data: unknown): Pick<AiStats["usage"], "totals" | "byModel"> {
+function mapUsage(data: unknown): AiStats["usage"] {
   const root = obj(data);
   const overall = obj(root.overall);
   const byModel: AiModelUsage[] = arr(root.byModel).map((raw) => {
@@ -260,6 +262,26 @@ function mapUsage(data: unknown): Pick<AiStats["usage"], "totals" | "byModel"> {
     };
   });
   byModel.sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
+  const byAgent: AiAgentUsage[] = arr(root.byAgentType).map((raw) => {
+    const a = obj(raw);
+    return {
+      agent: str(a.agentType) ?? "unknown",
+      requests: num(a.totalRequests) ?? 0,
+      inputTokens: num(a.totalInputTokens) ?? 0,
+      outputTokens: num(a.totalOutputTokens) ?? 0,
+      cacheReadTokens: num(a.totalCacheReadTokens) ?? 0,
+      costUsd: num(a.totalCost) ?? 0,
+    };
+  });
+  byAgent.sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
+  const series: AiUsagePoint[] = arr(root.timeSeries).flatMap((raw) => {
+    const p = obj(raw);
+    const at = iso(p.timestamp);
+    return at
+      ? [{ at, requests: num(p.requests) ?? 0, tokens: num(p.tokens) ?? 0, costUsd: num(p.cost) ?? 0 }]
+      : [];
+  });
+  series.sort((a, b) => a.at.localeCompare(b.at));
   const totals = root.overall
     ? {
         requests: num(overall.totalRequests) ?? 0,
@@ -267,55 +289,85 @@ function mapUsage(data: unknown): Pick<AiStats["usage"], "totals" | "byModel"> {
         inputTokens: num(overall.totalInputTokens) ?? 0,
         outputTokens: num(overall.totalOutputTokens) ?? 0,
         cacheReadTokens: num(overall.totalCacheReadTokens) ?? 0,
+        cacheWriteTokens: num(overall.totalCacheWriteTokens) ?? 0,
         costUsd: num(overall.totalCost) ?? 0,
+        cacheRate: num(overall.cacheRate),
+        cacheSavings: num(overall.cacheSavings),
+        avgTokensPerSecond: num(overall.avgTokensPerSecond),
+        avgTtftMs: num(overall.avgTtft),
         firstAt: iso(overall.firstTimestamp),
         lastAt: iso(overall.lastTimestamp),
       }
     : null;
-  return { totals, byModel };
+  return { available: true, error: null, totals, byModel, byAgent, series };
 }
 
-async function loadAiStats(ompPath: string): Promise<AiStats> {
-  const env = childEnv();
-  const [usage, stats, deepseek] = await Promise.all([
-    runOmpJson(ompPath, ["usage", "--json"]),
-    runOmpJson(ompPath, ["stats", "--json"]),
-    fetchDeepSeekBalance(env),
-  ]);
-  return {
-    generatedAt: new Date().toISOString(),
-    quota: usage.ok
-      ? { available: true, error: null, providers: mapQuota(usage.data) }
-      : { available: false, error: usage.error, providers: [] },
-    balances: deepseek ? [deepseek] : [],
-    usage: stats.ok
-      ? { available: true, error: null, ...mapUsage(stats.data) }
-      : { available: false, error: stats.error, totals: null, byModel: [] },
-  };
+async function loadQuota(ompPath: string): Promise<AiStats["quota"]> {
+  const usage = await runOmpJson(ompPath, ["usage", "--json"]);
+  return usage.ok
+    ? { available: true, error: null, providers: mapQuota(usage.data) }
+    : { available: false, error: usage.error, providers: [] };
+}
+
+async function loadUsage(ompPath: string): Promise<AiStats["usage"]> {
+  const stats = await runOmpJson(ompPath, ["stats", "--json"]);
+  return stats.ok
+    ? mapUsage(stats.data)
+    : { available: false, error: stats.error, totals: null, byModel: [], byAgent: [], series: [] };
+}
+
+type Section = "quota" | "balances" | "usage";
+/** A section's value and when it was read. */
+interface Read<T> {
+  at: string;
+  value: T;
 }
 
 const g = globalThis as unknown as {
-  __ompUiAiStats?: { path: string; at: number; value: AiStats };
-  __ompUiAiStatsInFlight?: { path: string; promise: Promise<AiStats> };
+  __ompUiAiStats?: Map<Section, { path: string; at: number; value: unknown }>;
+  __ompUiAiStatsInFlight?: Map<Section, { path: string; promise: Promise<unknown> }>;
 };
 
-/** Quota + usage from omp, cached for 60s (`refresh` bypasses). Concurrent calls share one run. */
-export async function getAiStats(ompPath: string, options: { refresh?: boolean } = {}): Promise<AiStats> {
-  const cached = g.__ompUiAiStats;
-  if (!options.refresh && cached && cached.path === ompPath && Date.now() - cached.at < AI_CACHE_TTL_MS) {
-    return cached.value;
+/** One section, cached for 60s (`refresh` bypasses). Concurrent calls share one load. */
+function cachedSection<T>(section: Section, ompPath: string, refresh: boolean, load: () => Promise<T>): Promise<Read<T>> {
+  const cache = (g.__ompUiAiStats ??= new Map());
+  const flights = (g.__ompUiAiStatsInFlight ??= new Map());
+  const hit = cache.get(section);
+  if (!refresh && hit && hit.path === ompPath && Date.now() - hit.at < AI_CACHE_TTL_MS) {
+    return Promise.resolve({ at: new Date(hit.at).toISOString(), value: hit.value as T });
   }
-  const inFlight = g.__ompUiAiStatsInFlight;
-  if (inFlight && inFlight.path === ompPath) return inFlight.promise;
+  const inFlight = flights.get(section);
+  if (inFlight && inFlight.path === ompPath) return inFlight.promise as Promise<Read<T>>;
 
-  const promise = loadAiStats(ompPath)
+  const promise = load()
     .then((value) => {
-      g.__ompUiAiStats = { path: ompPath, at: Date.now(), value };
-      return value;
+      const at = Date.now();
+      cache.set(section, { path: ompPath, at, value });
+      return { at: new Date(at).toISOString(), value };
     })
     .finally(() => {
-      if (g.__ompUiAiStatsInFlight?.promise === promise) g.__ompUiAiStatsInFlight = undefined;
+      if (flights.get(section)?.promise === promise) flights.delete(section);
     });
-  g.__ompUiAiStatsInFlight = { path: ompPath, promise };
+  flights.set(section, { path: ompPath, promise });
   return promise;
+}
+
+/** Quota, balances and usage as three independent promises, so a caller can use each as it settles. */
+export function readAiSections(ompPath: string, refresh = false) {
+  return {
+    quota: cachedSection("quota", ompPath, refresh, () => loadQuota(ompPath)),
+    balances: cachedSection("balances", ompPath, refresh, async () => {
+      const deepseek = await fetchDeepSeekBalance(childEnv());
+      return deepseek ? [deepseek] : [];
+    }),
+    usage: cachedSection("usage", ompPath, refresh, () => loadUsage(ompPath)),
+  };
+}
+
+/** All sections together (quota selection for runs, provider settings). */
+export async function getAiStats(ompPath: string, options: { refresh?: boolean } = {}): Promise<AiStats> {
+  const sections = readAiSections(ompPath, options.refresh);
+  const [quota, balances, usage] = await Promise.all([sections.quota, sections.balances, sections.usage]);
+  const oldest = [quota.at, balances.at, usage.at].sort()[0];
+  return { generatedAt: oldest, quota: quota.value, balances: balances.value, usage: usage.value };
 }

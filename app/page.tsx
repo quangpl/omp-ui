@@ -26,6 +26,7 @@ import { StatsPanel } from "@/components/home/stats-panel";
 import { Button } from "@/components/ui/button";
 import { api, subscribeEvents } from "@/lib/api-client";
 import { activityLine } from "@/lib/run-activity";
+import { useCurrentUser } from "@/hooks/use-current-user";
 import type { Board, BoardWithCounts, Dashboard } from "@/lib/types";
 
 type FormState = { open: boolean; board: Board | null };
@@ -39,6 +40,7 @@ export default function HomePage() {
   const [form, setForm] = useState<FormState>({ open: false, board: null });
   const [deleting, setDeleting] = useState<BoardWithCounts | null>(null);
   const setupPrefs = useSetupPrefs();
+  const { isAdmin } = useCurrentUser();
   // The entrance cascade plays once, when the dashboard first appears; later refreshes swap rows in place.
   const [entering, setEntering] = useState(true);
   const loaded = dashboard !== null;
@@ -96,6 +98,11 @@ export default function HomePage() {
       unsubscribe();
     };
   }, [load]);
+
+  // First run: nothing saved yet. Admins only, since only they can save the settings that end the wizard.
+  useEffect(() => {
+    if (isAdmin && dashboard && !dashboard.setup.settingsSaved) router.replace("/onboarding");
+  }, [isAdmin, dashboard, router]);
 
   const openCreate = () => setForm({ open: true, board: null });
   const togglePin = async (board: BoardWithCounts) => {

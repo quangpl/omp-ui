@@ -5,7 +5,6 @@ import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import {
-  Brain,
   CalendarClock,
   ChartColumn,
   Container,
@@ -528,7 +527,7 @@ export function CommandPalette() {
         icon: <ChartColumn className="size-4" />,
         run: go("/stats"),
       },
-      // Logs and agent memory (every user's agent runs) are admin-only APIs.
+      // Logs (every user's agent runs) is an admin-only API.
       ...(isAdmin
         ? [
             {
@@ -540,25 +539,16 @@ export function CommandPalette() {
               icon: <ScrollText className="size-4" />,
               run: go("/logs"),
             },
-            {
-              id: "go:memory",
-              group: "Go to",
-              label: "Memory",
-              hint: "agentmemory",
-              keys: ["G", "M"],
-              icon: <Brain className="size-4" />,
-              run: go("/memory"),
-            },
           ]
         : []),
       {
-        id: "go:credentials",
+        id: "go:env",
         group: "Go to",
-        label: "Credentials",
-        hint: "MCP & API keys",
+        label: "Environment Variables",
+        hint: "Variables for every agent",
         keys: ["G", "K"],
         icon: <KeyRound className="size-4" />,
-        run: go("/credentials"),
+        run: go("/env"),
       },
       {
         id: "go:mcp",

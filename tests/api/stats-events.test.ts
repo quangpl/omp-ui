@@ -18,7 +18,7 @@ import * as taskRoute from "@/app/api/v1/tasks/[id]/route";
 import * as taskRunRoute from "@/app/api/v1/tasks/[id]/run/route";
 import * as taskStopRoute from "@/app/api/v1/tasks/[id]/stop/route";
 import { publish } from "@/lib/events";
-import type { AiStats, Board, ServerEvent, SystemStats, Task } from "@/lib/types";
+import type { AiStats, AiStatsEvent, Board, ServerEvent, SystemStats, Task } from "@/lib/types";
 import { APP_VERSION } from "@/lib/version";
 
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
@@ -44,10 +44,29 @@ async function systemStats(): Promise<SystemStats> {
   return res.body;
 }
 
+/** GET /stats/ai: the NDJSON events in arrival order, and the parts merged into one AiStats. */
+async function aiEvents(query = ""): Promise<{ events: AiStatsEvent[]; stats: AiStats }> {
+  const res = await call(statsAiRoute, "GET", `/stats/ai${query}`);
+  expect(res.status).toBe(200);
+  expect(res.headers.get("content-type")).toContain("application/x-ndjson");
+  const events = (await res.text())
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as AiStatsEvent);
+  const stats: Partial<AiStats> = {};
+  const ats: string[] = [];
+  for (const event of events) {
+    if (event.type === "quota") stats.quota = event.quota;
+    if (event.type === "balances") stats.balances = event.balances;
+    if (event.type === "usage") stats.usage = event.usage;
+    if (event.type !== "providers" && event.type !== "error") ats.push(event.at);
+  }
+  stats.generatedAt = ats.sort()[0];
+  return { events, stats: stats as AiStats };
+}
+
 async function aiStats(query = ""): Promise<AiStats> {
-  const res = await api<AiStats>(statsAiRoute, "GET", `/stats/ai${query}`);
-  expect(res.status, JSON.stringify(res.body)).toBe(200);
-  return res.body;
+  return (await aiEvents(query)).stats;
 }
 
 async function setOmpPath(ompPath: string): Promise<void> {
@@ -152,7 +171,14 @@ describe("GET /stats/ai", () => {
     const stats = await aiStats();
     expect(stats.generatedAt).toMatch(ISO);
     expect(stats.quota).toEqual({ available: false, error: "omp is not installed", providers: [] });
-    expect(stats.usage).toEqual({ available: false, error: "omp is not installed", totals: null, byModel: [] });
+    expect(stats.usage).toEqual({
+      available: false,
+      error: "omp is not installed",
+      totals: null,
+      byModel: [],
+      byAgent: [],
+      series: [],
+    });
   });
 
   describe("with a stand-in omp CLI", () => {
@@ -252,7 +278,12 @@ describe("GET /stats/ai", () => {
         inputTokens: 1000,
         outputTokens: 500,
         cacheReadTokens: 200,
+        cacheWriteTokens: 0,
         costUsd: 1.5,
+        cacheRate: null,
+        cacheSavings: null,
+        avgTokensPerSecond: null,
+        avgTtftMs: null,
         firstAt: "2026-11-01T00:00:00.000Z",
         lastAt: "2026-11-12T10:00:00.000Z",
       });
@@ -296,7 +327,26 @@ describe("GET /stats/ai", () => {
         error: "omp stats returned output that could not be read",
         totals: null,
         byModel: [],
+        byAgent: [],
+        series: [],
       });
+    });
+
+    it("streams each part as it is read: a slow omp stats does not hold back the quota", async () => {
+      const stub = writeScript(
+        path.join(tempDir("bin"), "omp-slow-stats"),
+        [
+          'if (process.argv[2] === "usage") console.log(JSON.stringify({ reports: [] }));',
+          'else if (process.argv[2] === "stats") setTimeout(() => console.log(JSON.stringify({ byModel: [] })), 500);',
+          "else process.exit(2);",
+        ].join("\n"),
+      );
+      await setOmpPath(stub);
+      const { events } = await aiEvents("?refresh=1");
+      const types = events.map((e) => e.type);
+      expect(types[0]).toBe("providers");
+      expect(types.at(-1)).toBe("usage");
+      expect([...types].sort()).toEqual(["balances", "providers", "quota", "usage"]);
     });
 
     it("reads a DeepSeek balance from its API key into balances", async () => {

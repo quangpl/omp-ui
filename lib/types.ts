@@ -3,7 +3,6 @@
 
 import { DEFAULT_PRIMARY_COLOR, type PrimaryColorId } from "@/lib/primary-colors";
 import type { ProviderPriorityEntry } from "@/lib/provider-priority";
-import type { SdlcProgress } from "@/lib/sdlc";
 
 export const TASK_STATUSES = ["todo", "in_progress", "done"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
@@ -741,8 +740,7 @@ export const DASHBOARD_MENU_IDS = [
   "terminal",
   "files",
   "artifacts",
-  "memory",
-  "credentials",
+  "env",
   "mcp",
   "stats",
   "settings",
@@ -1038,8 +1036,6 @@ export interface QueueEntry {
   state: "running" | "queued";
   /** Card whose agent created this card (Task.createdByTaskId); null when a person did. */
   createdByTaskId: string | null;
-  /** SDLC progress derived from the card's todo list (lib/sdlc.ts); null until the agent keeps one. */
-  sdlc: SdlcProgress | null;
   /** Cluster node running the card (running entries in cluster mode); null otherwise. */
   node: { id: string; name: string } | null;
 }
@@ -1889,7 +1885,25 @@ export interface AiProviderBalance {
   available: boolean | null;
 }
 
-/** GET /stats/ai — from `omp usage --json` (quota) and `omp stats --json` (usage). Cached 60s. */
+/** One hour of omp usage (`omp stats --json` timeSeries). */
+export interface AiUsagePoint {
+  at: string;
+  requests: number;
+  tokens: number;
+  costUsd: number;
+}
+
+/** Usage of one kind of omp agent (main, subagent, ...). */
+export interface AiAgentUsage {
+  agent: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+}
+
+/** Quota (`omp usage --json`), prepaid balances and usage (`omp stats --json`), each cached 60 s. */
 export interface AiStats {
   generatedAt: string;
   quota: { available: boolean; error: string | null; providers: AiProviderQuota[] };
@@ -1904,19 +1918,34 @@ export interface AiStats {
       inputTokens: number;
       outputTokens: number;
       cacheReadTokens: number;
+      cacheWriteTokens: number;
       costUsd: number;
+      /** Share of input served from the prompt cache (0–1). */
+      cacheRate: number | null;
+      /** Share of the input cost the cache saved (0–1). */
+      cacheSavings: number | null;
+      avgTokensPerSecond: number | null;
+      avgTtftMs: number | null;
       firstAt: string | null;
       lastAt: string | null;
     } | null;
     byModel: AiModelUsage[];
+    byAgent: AiAgentUsage[];
+    /** Hourly, oldest first. */
+    series: AiUsagePoint[];
   };
 }
 
-/** GET /stats/ai: the omp numbers plus the providers agents run on (Settings → AI Providers → Provider priority). */
-export interface AiStatsResponse extends AiStats {
-  /** Active provider ids in priority order; empty when no priority is configured. */
-  activeProviders: string[];
-}
+/**
+ * NDJSON events of GET /stats/ai, sent as each source answers: `providers` at once, then `quota`,
+ * `balances` and `usage` in whatever order omp and the provider APIs finish; `at` is when that part was read.
+ */
+export type AiStatsEvent =
+  | { type: "providers"; activeProviders: string[] }
+  | { type: "quota"; at: string; quota: AiStats["quota"] }
+  | { type: "balances"; at: string; balances: AiStats["balances"] }
+  | { type: "usage"; at: string; usage: AiStats["usage"] }
+  | { type: "error"; message: string };
 
 /** A value omp's config.yml holds for one editable key; null = not set (omp's default applies). */
 export type OmpConfigValue = string | number | boolean | null;
@@ -1992,60 +2021,6 @@ export interface OmpModel {
   provider: string;
   /** Thinking levels the model supports; empty when it does not reason. */
   thinking: string[];
-}
-
-/** `AGENTMEMORY_ENABLED`: auto (default) starts the memory server when agentmemory is installed. */
-export type MemoryEnabledMode = "auto" | "true" | "false";
-
-/** GET /memory: the local agentmemory server (https://github.com/rohitg00/agentmemory) and its OMP hook-up. */
-export interface MemoryStatus {
-  enabled: MemoryEnabledMode;
-  /** The `agentmemory` CLI was found (global install on PATH, or the npx cache). */
-  installed: boolean;
-  /** How the CLI was found. */
-  installSource: "path" | "npx" | null;
-  /** Server version when it answers, else the CLI's. */
-  version: string | null;
-  /** REST API base (`AGENTMEMORY_URL`, default http://127.0.0.1:3111). */
-  url: string;
-  /** Live viewer; binds to loopback on the server host by default. */
-  viewerUrl: string;
-  /** The REST API answered at all (even with an error). */
-  reachable: boolean;
-  /** `/agentmemory/health` reports ok/healthy/degraded. */
-  healthy: boolean;
-  /** A start through AgentMan is still running. */
-  starting: boolean;
-  /** Why the server is not healthy (unreachable, unauthorized, …). */
-  error: string | null;
-  /** Overall status of `/agentmemory/status` (ok|info|warn|error) and its one-line headline. */
-  level: string | null;
-  headline: string | null;
-  /** Problems `/agentmemory/status` lists, each with its fix. */
-  problems: { level: string; message: string; fix?: string }[];
-  /** "bm25" (keyless) or the embedding provider ("local", "openai", …). */
-  embeddings: string;
-  /** Whether `embeddings` comes from the running server or from ~/.agentmemory/.env. */
-  embeddingsSource: "server" | "config";
-  /** LLM provider for summaries/consolidation ("noop" when keyless); null when the server is down. */
-  llm: string | null;
-  stats: MemoryStats | null;
-  omp: {
-    /** omp's agent dir (`omp config path`); null when omp is missing. */
-    agentDir: string | null;
-    /** `agentmemory connect omp` installed the extension and listed it in config.yml `extensions`. */
-    connected: boolean;
-    /** The connector also wired the MCP toolset (`--with-mcp`). */
-    mcp: boolean;
-    error: string | null;
-  };
-}
-
-export interface MemoryStats {
-  memories: number | null;
-  sessions: number | null;
-  observations: number | null;
-  lessons: number | null;
 }
 
 /**

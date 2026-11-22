@@ -9,7 +9,6 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ControlRoom } from "@/components/visualize/control-room";
 import { FactoryFloor, FLOOR_GRID } from "@/components/visualize/factory-floor";
-import { SdlcPipeline } from "@/components/visualize/sdlc-pipeline";
 import { useLiveAgents } from "@/components/visualize/use-live-agents";
 import { WorkerAvatar } from "@/components/visualize/worker-avatar";
 import { Worksites } from "@/components/visualize/worksites";
@@ -32,7 +31,7 @@ const CLOCK_TICK_MS = 30_000;
 
 const BLOCK = "rounded-[3px]";
 
-/** Placeholder shaped like the control room, the SDLC pipeline, the factory floor and the worksites. */
+/** Placeholder shaped like the control room, the factory floor and the worksites. */
 function LoadingSkeleton() {
   return (
     <div className="grid gap-10 md:gap-16" aria-busy="true" aria-label="Loading">
@@ -195,7 +194,6 @@ export default function VisualizePage() {
                 </p>
               )}
               <ControlRoom dashboard={dashboard} live={live} now={now} />
-              <SdlcPipeline dashboard={dashboard} live={live} now={now} />
               <FactoryFloor dashboard={dashboard} live={live} now={now} />
               <Worksites dashboard={dashboard} now={now} />
             </div>

@@ -2,7 +2,8 @@
 // Children inherit the host user's environment verbatim — HOME, SSH_AUTH_SOCK, GH_TOKEN, provider
 // API keys, proxies, … — so omp, git, gh and glab use whatever credentials the user already has.
 // AgentMan's own secrets are stripped: an agent can read its environment. Provider values saved
-// in Settings → AI Providers (lib/server/ai-providers.ts) override the inherited ones.
+// in Settings → AI Providers (lib/server/ai-providers.ts) override the inherited ones, and the
+// custom variables set on the Environment page (lib/server/env-vars.ts) override both.
 // Remote runs (cluster mode) get only the forwardable part (remoteChildEnv): the node supplies its
 // own PATH, HOME and the rest.
 import os from "node:os";
@@ -31,11 +32,19 @@ const NODE_LOCAL_KEYS = new Set(["PATH", "HOME"]);
 const SECRET_KEYS = new Set(SECRET_ENV_KEYS);
 
 // On globalThis so dev hot reloads share the overlay loaded at boot.
-const g = globalThis as unknown as { __ompUiProviderEnv?: Record<string, string> };
+const g = globalThis as unknown as {
+  __ompUiProviderEnv?: Record<string, string>;
+  __ompUiUserEnv?: Record<string, string>;
+};
 
 /** Replace the AI provider values (env var → value) applied over the inherited environment. */
 export function setProviderEnv(values: Record<string, string>): void {
   g.__ompUiProviderEnv = { ...values };
+}
+
+/** Replace the custom environment variables (Environment page) every child process receives. */
+export function setUserEnv(values: Record<string, string>): void {
+  g.__ompUiUserEnv = { ...values };
 }
 
 /** A copy of `process.env` without AgentMan's secrets, with saved provider values and `extra` applied on top. */
@@ -44,7 +53,7 @@ export function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv 
   for (const key of Object.keys(env)) {
     if (SECRET_KEYS.has(key) || key.startsWith(SECRET_ENV_PREFIX)) delete env[key];
   }
-  Object.assign(env, g.__ompUiProviderEnv);
+  Object.assign(env, g.__ompUiProviderEnv, g.__ompUiUserEnv);
   // omp and git locate ~/.omp, ~/.claude, ~/.gitconfig, ~/.ssh through HOME.
   if (!env.HOME) {
     const home = userHome();
@@ -54,7 +63,7 @@ export function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv 
 }
 
 /**
- * What a remote run (cluster mode) takes from this server: the saved provider values, every AI
+ * What a remote run (cluster mode) takes from this server: the saved provider values and custom variables, every AI
  * provider env var (Settings → AI Providers definitions) and MCP credential set in the server's
  * environment, then `extra`. The node layers it over its own childEnv(); AgentMan's secrets and
  * configuration, PATH and HOME are never forwarded.
@@ -70,7 +79,7 @@ export function remoteChildEnv(extra: Record<string, string> = {}): Record<strin
   for (const [key, value] of Object.entries(process.env)) {
     if (key.startsWith(MCP_ENV_PREFIX) && value) env[key] = value;
   }
-  Object.assign(env, g.__ompUiProviderEnv, extra);
+  Object.assign(env, g.__ompUiProviderEnv, g.__ompUiUserEnv, extra);
   for (const key of Object.keys(env)) {
     if (SECRET_KEYS.has(key) || key.startsWith(SECRET_ENV_PREFIX) || NODE_LOCAL_KEYS.has(key)) delete env[key];
   }

@@ -22,7 +22,7 @@ import { questionPreview } from "@/lib/question";
 import { formatDateTime } from "@/components/board/format";
 import { CardResources } from "@/components/board/agent-resources";
 import { CardUsage } from "@/components/board/agent-usage";
-import { SdlcTrack, TaskProgressIcon, TodoEta } from "@/components/board/task-progress";
+import { TaskProgressIcon, TodoEta } from "@/components/board/task-progress";
 import { todoProgress } from "@/lib/todos";
 import { cn } from "@/lib/utils";
 import type { AgentState, Task } from "@/lib/types";
@@ -382,7 +382,6 @@ export const TaskCard = memo(function TaskCard({
                 <span className="sr-only"> (machine running the agent)</span>
               </span>
             )}
-            <SdlcTrack task={task} />
             {Boolean(task.createdByTaskId) && (
               <span
                 className="inline-flex size-5 items-center justify-center rounded-full bg-muted text-muted-foreground"

@@ -32,6 +32,51 @@ export function error(status: number, message: string): Response {
   return json({ error: message }, { status });
 }
 
+/**
+ * Answer with an NDJSON stream: `start` calls `send` once per event, as each is ready. A rejection
+ * becomes one last `onError` event; the stream then closes. The work is not cancelled if the client leaves.
+ */
+export function ndjsonResponse<E>(
+  start: (send: (event: E) => void) => Promise<void>,
+  onError: (err: unknown) => E,
+): Response {
+  const encoder = new TextEncoder();
+  let open = true;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const send = (event: E) => {
+        if (!open) return;
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        } catch {
+          open = false;
+        }
+      };
+      start(send)
+        .catch((err: unknown) => send(onError(err)))
+        .finally(() => {
+          if (!open) return;
+          open = false;
+          try {
+            controller.close();
+          } catch {
+            // Client went away.
+          }
+        });
+    },
+    cancel() {
+      open = false;
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "cache-control": "no-store, no-transform",
+      "x-accel-buffering": "no",
+    },
+  });
+}
+
 /** Parse a JSON object body. Empty body → `{}`; malformed JSON or a non-object → 400. */
 export async function readJson<T = Record<string, unknown>>(req: Request): Promise<T> {
   const text = await req.text();

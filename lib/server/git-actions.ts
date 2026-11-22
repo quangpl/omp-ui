@@ -2,6 +2,10 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { boardFolders } from "@/lib/board-folders";
+import { readModelRoles } from "@/lib/agent/model-select";
+import { runOmpHelper } from "@/lib/agent/omp-helper";
+import { chooseHelperModel } from "@/lib/agent/provider-quota";
+import { childEnv } from "@/lib/child-env";
 import { boardDefaultBranch } from "@/lib/default-branch";
 import { publish } from "@/lib/events";
 import {
@@ -17,8 +21,11 @@ import { buildPrBody } from "@/lib/pr-body";
 import { HttpError, json, readJson, type ApiContext } from "@/lib/server/http";
 import { requireBoard, requireTask } from "@/lib/server/validate";
 import type { GitActionResult, GitDiscardFolderResult, Task } from "@/lib/types";
+import { getAppSettings } from "@/lib/settings";
 
 const MAX_PR_BODY = 60_000;
+/** Host-side hard cancel of the merge-conflict agent. */
+const RESOLVE_TIMEOUT_SECONDS = 600;
 
 function optionalText(value: unknown, field: string, max: number): string | null {
   if (value === undefined || value === null) return null;
@@ -86,25 +93,50 @@ export async function runTaskGitAction(
     );
   }
 
+  const settings = await getAppSettings(repo);
+  const resolve = async (folder: string, files: string[]) => {
+    const env = childEnv();
+    const roles = await readModelRoles(settings.ompPath, folder, env);
+    const { model, config } = await chooseHelperModel({ settings, pinned: board.model, roles: [], modelRoles: roles });
+    await runOmpHelper({
+      command: settings.ompPath,
+      cwd: folder,
+      addDirs: [],
+      model,
+      thinking: null,
+      config,
+      timeoutSeconds: RESOLVE_TIMEOUT_SECONDS,
+      env,
+      signal: new AbortController().signal,
+      label: "merge conflict agent",
+      reusable: false,
+      tools: "read,edit,grep,glob",
+      prompt: [
+        "A `git merge` in this repository stopped with conflicts. Resolve them by editing the files, keeping the intent of both sides.",
+        "Remove every conflict marker (<<<<<<<, =======, >>>>>>>). Do not run git commands, and do not change other files.",
+        `Conflicted files:\n${files.map((f) => `- ${f}`).join("\n")}`,
+        "Reply \"done\" when finished.",
+      ].join("\n\n"),
+    });
+  };
+
   let run: (folder: string) => Promise<GitFolderOutcome>;
   if (action === "push" || action === "push-current") {
     const message = optionalText(body.message, "message", 5000) ?? task.title;
     run =
       action === "push"
-        ? (folder) => pushToBranch(folder, board.pushBranch, message)
-        : (folder) => pushToCurrentBranch(folder, message);
+        ? (folder) => pushToBranch(folder, board.pushBranch, message, resolve)
+        : (folder) => pushToCurrentBranch(folder, message, resolve);
   } else {
     const title = optionalText(body.title, "title", 200) ?? task.title;
     const prBody = optionalText(body.body, "body", MAX_PR_BODY) ?? (await defaultPrBody(ctx, task));
     const branchName = branchNameFor(task);
     run = (folder) =>
-      createPullRequest(folder, {
-        taskId: task.id,
-        title,
-        body: prBody,
-        branchName,
-        baseBranch: boardDefaultBranch(board, folder),
-      });
+      createPullRequest(
+        folder,
+        { taskId: task.id, title, body: prBody, branchName, baseBranch: boardDefaultBranch(board, folder) },
+        resolve,
+      );
   }
 
   const outcomes: GitFolderOutcome[] = [];

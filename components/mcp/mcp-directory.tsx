@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ExternalLinkIcon, Loader2Icon, RefreshCwIcon, SearchIcon, SearchXIcon, StarIcon } from "lucide-react";
 import { formatDateTime, formatRelative, useNow } from "@/components/board/format";
-import { errorText } from "@/components/credentials/credentials-view";
+import { errorText } from "@/components/credentials/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";

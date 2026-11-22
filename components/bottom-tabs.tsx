@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  BrainIcon,
   CalendarClockIcon,
   ChartColumnIcon,
   ContainerIcon,
@@ -25,19 +24,18 @@ import { cn } from "@/lib/utils";
  * phones; the rest stay in the sidebar sheet (the bar keeps only the sections most used on a phone).
  */
 export const TOP_TABS = [
-  { href: "/", label: "Projects", icon: LayoutGridIcon, phoneTab: true },
-  { href: "/schedulers", label: "Schedulers", icon: CalendarClockIcon, phoneTab: true },
-  { href: "/visualize", label: "Visualize", icon: RadarIcon, phoneTab: false },
-  { href: "/containers", label: "Containers", icon: ContainerIcon, phoneTab: false },
-  { href: "/terminal", label: "Terminal", icon: SquareTerminalIcon, phoneTab: false },
-  { href: "/files", label: "Files", icon: FolderCodeIcon, phoneTab: false },
-  { href: "/artifacts", label: "Artifacts", icon: PackageCheckIcon, phoneTab: false },
-  { href: "/memory", label: "Memory", icon: BrainIcon, phoneTab: false },
-  { href: "/credentials", label: "Credentials", icon: KeyRoundIcon, phoneTab: false },
-  { href: "/mcp", label: "MCP", icon: PlugIcon, phoneTab: false },
-  { href: "/stats", label: "Stats", icon: ChartColumnIcon, phoneTab: true },
-  { href: "/logs", label: "Logs", icon: ScrollTextIcon, phoneTab: true },
-  { href: "/settings", label: "Settings", icon: SettingsIcon, phoneTab: true },
+  { href: "/", label: "Projects", icon: LayoutGridIcon, phoneTab: true, advanced: false },
+  { href: "/schedulers", label: "Schedulers", icon: CalendarClockIcon, phoneTab: true, advanced: false },
+  { href: "/visualize", label: "Visualize", icon: RadarIcon, phoneTab: false, advanced: false },
+  { href: "/stats", label: "Stats", icon: ChartColumnIcon, phoneTab: true, advanced: false },
+  { href: "/settings", label: "Settings", icon: SettingsIcon, phoneTab: true, advanced: false },
+  { href: "/containers", label: "Containers", icon: ContainerIcon, phoneTab: false, advanced: true },
+  { href: "/terminal", label: "Terminal", icon: SquareTerminalIcon, phoneTab: false, advanced: true },
+  { href: "/files", label: "Files", icon: FolderCodeIcon, phoneTab: false, advanced: true },
+  { href: "/artifacts", label: "Artifacts", icon: PackageCheckIcon, phoneTab: false, advanced: true },
+  { href: "/env", label: "Environment", icon: KeyRoundIcon, phoneTab: false, advanced: true },
+  { href: "/mcp", label: "MCP", icon: PlugIcon, phoneTab: false, advanced: true },
+  { href: "/logs", label: "Logs", icon: ScrollTextIcon, phoneTab: false, advanced: true },
 ] as const;
 
 export function isTopLevelPath(pathname: string | null): boolean {

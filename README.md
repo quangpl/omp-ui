@@ -2,6 +2,27 @@
 
 Self-hosted kanban board for [omp](https://omp.sh/docs) coding agents. Write a card; an agent does the work. Runs on your machine or server and works on your phone.
 
+## Install from npm
+
+```sh
+npx omp-ui                  # or: npm i -g omp-ui && omp-ui
+```
+
+With no arguments it creates `~/.omp-ui` (settings in `.env`, data in `~/.omp-ui/data`, SQLite by default; override the folder with `OMP_UI_HOME`), starts AgentMan under pm2 (bundled) and prints the URL. Other commands:
+
+| Command | What it does |
+| --- | --- |
+| `omp-ui start` / `stop` / `restart` / `status` | Manage the pm2 process |
+| `omp-ui logs [-f]` | Show or follow the log |
+| `omp-ui open` | Open it in your browser |
+| `omp-ui config` / `config set port 8080` / `config set data-dir <dir>` / `config set db-url <url>` | Show or change settings; apply with `restart` |
+| `omp-ui doctor` | Check node, omp, git, gh and pm2 |
+| `omp-ui update` | `npm i -g omp-ui@latest`, then restart |
+| `omp-ui uninstall` | Remove the pm2 process (settings and data stay) |
+| `omp-ui version` / `help` | Version and command list |
+
+The sections below describe running from a source checkout with `./omp-ui`.
+
 ## Start in one command
 
 ```sh
@@ -39,8 +60,6 @@ Ship the result with one tap: **Create PR/MR**, **Push to main** or **Push to cu
 
 **Task progress.** Every card shows a progress ring before its title, on the board and in the card's status pill. When the agent keeps a todo list (omp's `todo` tool), the ring fills with its completed items and the card shows the count (e.g. `2/5`); the open card lists the items by phase under **Progress**. While the list has nothing left, each open feedback comment counts as one more pending item (e.g. `3/4`, "1 open feedback"), so a resumed or steered card stops looking finished until the agent adds items for it or the feedback is resolved. Without a todo list the ring follows the column: dashed in To do, half in In progress, full with a check in Done. The list stays on the card after the run ends.
 
-**SDLC track.** AgentMan derives SDLC progress from the agent's todo list when its phases happen to be named after the lifecycle (Analyze, Implement, Testing); the agent is not told to. Analyze is understanding the task and the relevant code until the scope and approach are clear; Implement is writing the change; Testing verifies it fast — type checks, the tests covering the change and one check of the changed behavior. Cards show a phase stepper with the current phase; each phase's exit criteria are its quality gate, shown for display only: a phase started too early is flagged in the agent log, and nothing is sent back to the agent or held from shipping. Feedback on a Done card starts a fresh Analyze → Implement → Testing round. Details: [docs/API.md](docs/API.md#sdlc-phases-and-quality-gates).
-
 **Shortcuts and menus.** <kbd>N</kbd> on any page adds a card; it lands in In progress and its agent starts right away. Outside a board, the form asks for the project. <kbd>⌘K</kbd>/<kbd>Ctrl</kbd>+<kbd>K</kbd> (or <kbd>/</kbd>) opens the command palette: search cards, jump to a project or page, run an action. Right-click a card (or focus it and press <kbd>.</kbd>) to open it, run quick actions, duplicate it, copy its link, or delete it. Right-click the board background or a project on the Projects page to add a card there. All keys: [Keyboard shortcuts](#keyboard-shortcuts); <kbd>?</kbd> anywhere opens the cheat sheet.
 
 <details>
@@ -76,7 +95,7 @@ Ship the result with one tap: **Create PR/MR**, **Push to main** or **Push to cu
 - **Agent-to-agent.** Agents can list and read the project's cards, hand off separate work to a new card (which starts its own agent), message another card's agent, and wait for cards to finish. A waiting agent lends its slot to the queue. Agent-created cards show a bot icon and link back; messages from other agents are marked as such in the card's activity.
 - **Visualize.** The **Visualize** tab is a live factory floor for your agents. The control room up top shows stations in use (of the agent limit), cards in line, cards that need a hand and cards shipped, a ticker of what each worker is doing right now (with the subagents it has at work, each by name and role), and the crew plate: crew level and rank, XP (100 per shipped card), progress to the next level and every badge, earned or locked. The **Factory floor** has one room per department, and each card has its own robot worker (stable name and colour) that stands in the room of what its agent is doing right now: **Design office** (thinking, planning, writing), **Code shop** (reading and editing files), **Build & test** (commands and tests), **Research lab** (web), **Archive** (memory), **Dispatch** (board tools, talking to other cards), **Advisor's office** and **Team room** (subagents). When the activity changes the worker walks to the next room; busy subagents step out of their agent as smaller robots and walk to their own room. Every worker wears its name and a role tag: card agents are **Lead**; subagents go by the name their lead gave them (`AuthScout`) and their role from the agent type (**Builder**, **Scout**, **Reviewer**, **Security**, …). Queued cards wait in **Receiving** in start order (a lock means blocked on other cards), failed or stalled cards go to the **Rework bay** and finished ones to the **Shipping dock**. Hover a worker for its card, current activity, time on the run, subagents and links to other cards; click it to open the card. **Worksites** lists every project with its shipped share, a strip of its cards by column and the workers on site. Everything updates live.
   Workers show how they feel, worked out from their run: **working**, **energized** (fresh and productive), **thinking** and **deep in thought** (thinking on a productive run), **stuck** (the same tool failing again and again, or errors with no progress), **stressed**, **running hot** (failing calls piling up), **overloaded** (many busy subagents or a fast tool rate), **tired** (many tool calls, a long run, or low mana) and **needs help** (errors in a row, model retries, or no sign of life for minutes; marked with a "!" badge, and the control room counts them). Each robot's look shows its role: the card's **Lead** agent and subagents as **Builder**, **Scout**, **Reviewer**, **Security**, **Sprinter**, **Medium**, **Planner**, **Designer** or **Helper**. The bar under a working robot is its **mana**: how much of its context window is left. The ticker adds the feeling in words and Mana, Tired, Load and Heat meters, and **Who's who** under the floor explains every role and mood. Animations are off with reduced motion.
-  The **SDLC pipeline** shows which lifecycle phase each card is in, from Analyze to Testing. Every working agent names the model it runs on: the lead's model in the control room, the pipeline and on the factory floor, and a subagent's when omp reports it (avatar-only spots show it in the tooltip).
+  Every working agent names the model it runs on: the lead's model in the control room and on the factory floor, and a subagent's when omp reports it (avatar-only spots show it in the tooltip).
 
 ### Orchestration guardrails
 
@@ -99,7 +118,7 @@ Ship the result with one tap: **Create PR/MR**, **Push to main** or **Push to cu
 
 ### Around the app
 
-- **Navigation.** The left sidebar holds pages, projects, and utilities in its footer; collapse it to an icon rail with <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>B</kbd>. On phones, a menu button opens it as a sheet and tabs run along the bottom.
+- **Navigation.** The left sidebar holds pages, projects, and utilities in its footer. Projects, Schedulers, Visualize, Stats and Settings are listed directly; every other page (Containers, Terminal, Files, Artifacts, Environment, MCP, Logs) sits under a collapsible **Advanced** group, open by default only when the current page is inside it; collapse it to an icon rail with <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>B</kbd>. On phones, a menu button opens it as a sheet and tabs run along the bottom.
 - **Theme color.** **Settings → Appearance** picks the interface's primary color (buttons, links, active navigation, focus rings, chart accents) from 16 Tailwind-based presets: Jade (the default), Blue, Indigo, Violet, Purple, Pink, Rose, Red, Orange, Amber, Green, Emerald, Teal, Cyan, Sky and Slate. A pick recolors every page at once, in light and dark mode, and is saved with the other settings; pages are rendered in the saved color, so there is no flash of the default on load.
 - **Home.** The Projects page is a dashboard: **Needs you** (cards waiting on you: a question, a failure, a scheduled retry, unanswered feedback, a stalled card, or Done but unpushed), **Live agents**, every project with git status and success rate (pinned ones first), 24-hour and 7-day run stats with a sparkline, an activity feed, a getting-started checklist, and quick actions with go-to key hints. Unpinned projects follow the pinned ones under an **Other projects** toggle, expanded by default, and the project filter searches both. Pin or unpin a project from its ⋯ menu or right-click menu on the dashboard, or right-click it in the sidebar.
 - **Recent projects.** The sidebar's **Your projects** lists your 10 most recently opened projects, in the dashboard's order rather than sorted by time (projects never opened only fill spots left over); **All projects** leads to the others. Opening a project's board records the time on the server, so the order follows you across devices.
@@ -131,7 +150,7 @@ Press <kbd>?</kbd> anywhere for the cheat sheet; type to filter it. <kbd>⌘</kb
 | | <kbd>?</kbd> | Keyboard shortcuts (filterable) |
 | | <kbd>⌘B</kbd> | Collapse or expand the sidebar |
 | Go to | <kbd>G</kbd> then <kbd>P</kbd> or <kbd>H</kbd> | Projects home |
-| | <kbd>G</kbd> then <kbd>V</kbd> / <kbd>D</kbd> / <kbd>X</kbd> / <kbd>F</kbd> / <kbd>A</kbd> / <kbd>M</kbd> / <kbd>K</kbd> / <kbd>T</kbd> / <kbd>L</kbd> / <kbd>S</kbd> | Visualize / Containers / Terminal / Files / Artifacts / Memory / Credentials / Stats / Logs / Settings |
+| | <kbd>G</kbd> then <kbd>V</kbd> / <kbd>D</kbd> / <kbd>X</kbd> / <kbd>F</kbd> / <kbd>A</kbd> / <kbd>K</kbd> / <kbd>T</kbd> / <kbd>L</kbd> / <kbd>S</kbd> | Visualize / Containers / Terminal / Files / Artifacts / Environment / Stats / Logs / Settings |
 | Board | <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> or <kbd>K</kbd><kbd>J</kbd><kbd>H</kbd><kbd>L</kbd> | Previous / next card, column left / right |
 | | <kbd>1</kbd> / <kbd>2</kbd> / <kbd>3</kbd> | Jump to To do / In progress / Done |
 | | <kbd>Home</kbd> / <kbd>End</kbd> | First / last card of the column |
@@ -177,20 +196,6 @@ Press <kbd>?</kbd> anywhere for the cheat sheet; type to filter it. <kbd>⌘</kb
 
 The command palette lists the actions of the focused or open card first, then **Recent**. Search is fuzzy; typing an action and a card name (`stop login`) offers that action on matching cards, and the **Board** group has **Stop all running** and **Start all To do**.
 
-## Persistent memory (agentmemory)
-
-AgentMan integrates [agentmemory](https://github.com/rohitg00/agentmemory) so card agents remember what earlier runs learned about a project.
-
-1. Install it once on the server host: `npx -y @agentmemory/agentmemory@latest` (or `npm i -g @agentmemory/agentmemory`).
-2. Connect omp to it: **Settings → Memory → Connect OMP**, or run `agentmemory connect omp --with-mcp`.
-
-- `omp-ui up` and the supervisor start the memory server when it is installed (an enabled `systemctl --user` unit `agentmemory` is used instead when present), and the supervisor checks it again every 5 minutes (`OMP_UI_MEMORY_CHECK_MS`). **Settings → Memory** shows its status and can start it.
-- Its REST API listens on `127.0.0.1:3111` and its live viewer on `127.0.0.1:3113`, on the server host's loopback only.
-- Without API keys, recall uses BM25 keyword search. For semantic recall computed on the machine, set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env`.
-- Card runs store and recall memories under their board's project (the board folder's git root name or `AGENTMEMORY_PROJECT_NAME`), shared with your own omp sessions in that folder. Each run's session is titled `<card title> (card <id>)`. Helper agents (advisor, chat assistant, change summaries) don't capture or recall anything.
-- The **Memory** page (`/memory`, <kbd>G</kbd> then <kbd>M</kbd>, or **Memory** in the sidebar) browses and searches memories and sessions and shows store stats.
-- `AGENTMEMORY_ENABLED` (`auto`, the default, starts it when installed; `true` also warns when it is missing; `false` never starts it), `AGENTMEMORY_URL`, `AGENTMEMORY_VIEWER_URL`, `AGENTMEMORY_PROJECT_NAME` and `OMP_UI_MEMORY_CHECK_MS` are in [Configuration](#configuration); Docker setup is under [Docker](#docker).
-
 ## Shipping changes
 
 A card has two ship buttons. Each acts on every project folder with changes; neither asks for confirmation. Agents also push to main or open a PR/MR on their own when the card or your feedback explicitly asks for it.
@@ -221,8 +226,8 @@ AgentMan has user accounts with two roles, **admin** and **user**. The first acc
 - **Sign in** with your username or email and password. **Settings → Security** changes your own password and signs out your other devices.
 - **Settings → Users** (admins only): add users (username, optional email, role, password), edit them, activate or deactivate them, set their password, or delete them. Deleting a user either transfers their projects and credentials to another user (the current admin by default) or deletes them with all their cards. Admins cannot delete, demote or deactivate their own account, and at least one active admin always remains. Changing a user's password, role or active state, or deleting them, signs them out at once, including live updates and the terminal.
 - **Own data.** Each user sees only their own projects and their cards, comments, runs, credentials and files; admins see everyone's. AgentMan's data directory is off-limits to users in the folder picker, the Files page and project folders.
-- **Shared settings.** OMP settings, AI providers, Memory, Notifications, Menu and Appearance apply to everyone: admins change them, users see them read-only. Agent, Orchestration, data cleanup and chat integration settings are admin-only.
-- **Admin-only tools.** Terminal, Containers, Logs and the Memory browser are hidden from users.
+- **Shared settings.** OMP settings, AI providers, Notifications, Menu and Appearance apply to everyone: admins change them, users see them read-only. Agent, Orchestration, data cleanup and chat integration settings are admin-only.
+- **Admin-only tools.** Terminal, Containers and Logs are hidden from users.
 - **Upgrading** from a single-password install: the old admin password becomes the password of user `admin`, every existing project, card and credential is assigned to the first admin, and everyone signs in once more after the upgrade.
 
 ## Credentials
@@ -246,10 +251,16 @@ AgentMan never asks for your AI or Git logins; it uses what this machine already
 - AgentMan's own secrets (`ADMIN_PASSWORD`, `AUTH_SECRET`, `DATABASE_URL`, `POSTGRES_PASSWORD`, `OMP_UI_*`, …) are removed from the environment of agents and git commands.
 - `omp-ui doctor` lists what it found (names only, never values).
 
+### Environment variables
+
+The **Environment** page (`/env`, <kbd>G</kbd> then <kbd>K</kbd>, or **Environment** in the sidebar; admins only) keeps your own `KEY=value` variables, and every agent AgentMan starts (card runs, chat, helpers, the in-app terminal's omp processes) gets them in its environment, on top of the server's own (yours win on a clash).
+
+- Add a variable with the row at the top, edit a value in place (saved on blur or <kbd>Enter</kbd>), reveal or hide it with the eye, delete it with the bin. Paste `.env`-style text (`KEY=value`, `export KEY=value`, `#` comments, quotes) into the key field or **Paste a .env file** to add many at once.
+- Names must match `[A-Za-z_][A-Za-z0-9_]*`; AgentMan's own secrets (`AUTH_SECRET`, `OMP_UI_*`, …) are refused. Values are encrypted with the key described below and apply to the next run without a restart.
+
 ### Saved credentials (MCP servers and services)
 
-The **Credentials** page (`/credentials`, <kbd>G</kbd> then <kbd>K</kbd>, or **Credentials** in the sidebar) keeps keys and tokens for popular MCP servers and services (GitHub, GitLab, Slack, Notion, Linear, OpenAI, Anthropic, AWS, Cloudflare, Stripe, Postgres, Brave Search, a custom MCP server over HTTP, …).
-
+Connecting a server on the **MCP** page saves its keys and tokens (GitHub, GitLab, Slack, Notion, Linear, OpenAI, Anthropic, AWS, Cloudflare, Stripe, Postgres, Brave Search, a custom MCP server over HTTP, …) as a credential.
 - Each provider's form checks the fields before saving (required values, key formats, URLs) and shows a ready-to-copy `mcpServers` config snippet; secrets in it stay `${ENV_VAR}` placeholders.
 - Credentials are stored in AgentMan's database; secret values are encrypted (AES-256-GCM) and only ever sent back masked. The key is `CREDENTIALS_KEY` (any non-empty string) or else one generated into `DATA_DIR/credentials.key` on first use. Back up that file (or the variable) with the database: with another key the stored secrets cannot be decrypted, the credentials show as failing, and their secrets must be entered again.
 - Every credential can be tested before saving or at any time. Those with automatic checks on (the default) are re-checked every 10 minutes and show **healthy**, **failing** or **untested**.
@@ -420,7 +431,6 @@ To see it, look for `[supervisor …] health check failed (n/3)` and `server is 
 - `omp-ui docker up --postgres` (or `--mongo`) saves the choice to `.env`, so plain `docker compose up -d` keeps using it.
 - `omp-ui deploy --host me@server` copies the project, including `.env`, to `~/omp-ui` on the server and runs `docker compose up -d --build` there.
 - To pin versions: `docker compose build --build-arg OMP_VERSION=v18.19.0 --build-arg GLAB_VERSION=v1.130.0`.
-- **Memory (opt-in):** set `AGENTMEMORY_VERSION=latest` in `.env` (the `AGENTMEMORY_VERSION` build arg) and run `docker compose build` to include agentmemory in the image; its state lives in the `agentmemory` volume. On start, the container runs `agentmemory connect omp`, which writes into the `~/.omp` config mounted from your computer; set `AGENTMEMORY_CONNECT_OMP=false` to avoid that.
 - **Start on boot:** the containers come back after a crash or reboot when the Docker daemon starts at boot. See [Start on boot and self-healing](#start-on-boot-and-self-healing).
 
 ## Use it from anywhere
@@ -446,10 +456,6 @@ To see it, look for `[supervisor …] health check failed (n/3)` and `server is 
 | `OMP_PATH` | `omp` | omp executable |
 | `MAX_AGENTS` | `auto` | Agents running at once: `auto` (from CPU cores and free memory) or a fixed number 1–16 |
 | `OMP_EXTRA_ARGS` | – | Extra omp flags, e.g. `--thinking=high` |
-| `AGENTMEMORY_ENABLED` | `auto` | Start the agentmemory server: `auto` (when installed), `true` (also warn when missing) or `false`. See [Persistent memory](#persistent-memory-agentmemory) |
-| `AGENTMEMORY_URL` / `AGENTMEMORY_VIEWER_URL` | `http://127.0.0.1:3111` / `http://127.0.0.1:3113` | agentmemory REST API and viewer |
-| `AGENTMEMORY_PROJECT_NAME` | – | One memory project for every card, instead of the board folder's git root name |
-| `OMP_UI_MEMORY_CHECK_MS` | `300000` | How often the supervisor re-checks the memory server (ms; `0` = only at boot) |
 | `OMP_UI_HEALTH_URL` | `http://<HOST>:<PORT>/api/v1/health` | URL the supervisor probes. See [Start on boot and self-healing](#start-on-boot-and-self-healing) |
 | `OMP_UI_HEALTH_INTERVAL_MS` | `15000` | Time between health probes (ms) |
 | `OMP_UI_HEALTH_TIMEOUT_MS` | `10000` | Timeout per health probe (ms) |
@@ -463,7 +469,7 @@ To see it, look for `[supervisor …] health check failed (n/3)` and `server is 
 | `OMP_UI_CPU_SUSTAIN_SEC` | `30` | CPU averaging window, seconds |
 | `OMP_UI_RESOURCE_RESTART_MIN` | `0` | Graceful restart after memory pressure lasted this many whole minutes, once no agent runs and cards are queued; `0` = never |
 | `GH_TOKEN` / `GITLAB_TOKEN` | – | Git hosting tokens (instead of `gh` / `glab` login). Usually exported in your shell; see [Credentials](#credentials) |
-| `CREDENTIALS_KEY` | `DATA_DIR/credentials.key` | Encryption key for secrets on the Credentials page. See [Saved credentials](#saved-credentials-mcp-servers-and-services) |
+| `CREDENTIALS_KEY` | `DATA_DIR/credentials.key` | Encryption key for saved secrets (environment variables, MCP credentials, AI provider keys). See [Saved credentials](#saved-credentials-mcp-servers-and-services) |
 | `VINEXT_TRUST_PROXY` | – | `1` behind a reverse proxy |
 
 ## Security

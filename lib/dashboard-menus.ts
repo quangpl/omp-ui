@@ -10,8 +10,8 @@ import { DASHBOARD_MENU_IDS, type DashboardMenuId } from "@/lib/types";
 // publishes saves so every menu updates without a reload. Admin-only pages are hidden from regular
 // users on top of that.
 
-/** Pages backed by admin-only APIs (terminal, docker, logs, agent memory): their links show to admins only. */
-export const ADMIN_ONLY_HREFS: readonly string[] = ["/containers", "/terminal", "/logs", "/memory"];
+/** Pages backed by admin-only APIs (terminal, docker, logs): their links show to admins only. */
+export const ADMIN_ONLY_HREFS: readonly string[] = ["/containers", "/terminal", "/logs"];
 
 /** What the navigation may show: the chosen optional sections, and whether admin-only pages count. */
 export interface MenuVisibility {

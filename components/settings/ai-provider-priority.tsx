@@ -99,9 +99,8 @@ export function AiProviderPriority({ data }: { data: AiProvidersResponse }) {
       });
     // Quota is a hint here: a failed read just shows no "out of quota" badges.
     api.stats
-      .ai()
-      .then((stats) => {
-        if (!cancelled) setOutOfQuota(quotaBlocks(stats.quota.providers, Date.now()));
+      .ai(false, (event) => {
+        if (!cancelled && event.type === "quota") setOutOfQuota(quotaBlocks(event.quota.providers, Date.now()));
       })
       .catch(() => {});
     return () => {
