@@ -25,7 +25,7 @@
     "omp-selfhost",
     "omp-web-ui"
   ],
-  "homepage": "https://github.com/quangpl/omp-ui#readme",
+  "homepage": "https://omp-ui.quang.asia",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/quangpl/omp-ui.git"
