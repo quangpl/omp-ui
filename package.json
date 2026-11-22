@@ -1,6 +1,6 @@
 {
   "name": "omp-ui",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "OMP UI: self-hosted OMP web UI, OMP kanban board and OMP workflow for the omp AI coding agent. Turn cards into pull requests.",
   "keywords": [
     "omp",
