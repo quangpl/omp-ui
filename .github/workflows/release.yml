@@ -1,8 +1,8 @@
 name: Release
 
-# Every push to main ships a downloadable build on GitHub Releases:
-# - package.json version not released yet → release `v<version>` (+ npm publish when NPM_TOKEN is set)
-# - already released → refresh the rolling `nightly` prerelease
+# Every push to main ships to GitHub Releases and npm:
+# - package.json version not released yet → GitHub release `v<version>` + npm `latest`
+# - already released → GitHub `nightly` prerelease + npm `<version>-nightly.<run>` under the `next` tag
 on:
   push:
     branches: [main]
@@ -19,6 +19,9 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -29,32 +32,35 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:unit
-      # npm pack runs prepack (vite build), so the tarball ships dist/.
-      - name: Pack
-        id: pack
+      - name: Pick version
+        id: v
         run: |
           version=$(node -p "require('./package.json').version")
-          npm pack
-          cp "omp-ui-$version.tgz" omp-ui.tgz
+          if gh release view "v$version" >/dev/null 2>&1 && npm view "omp-ui@$version" version >/dev/null 2>&1; then
+            version="$version-nightly.$GITHUB_RUN_NUMBER"
+            npm version "$version" --no-git-tag-version
+            echo "kind=nightly" >> "$GITHUB_OUTPUT"
+          else
+            echo "kind=release" >> "$GITHUB_OUTPUT"
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if gh release view "v$version" >/dev/null 2>&1; then echo "new=false" >> "$GITHUB_OUTPUT"; else echo "new=true" >> "$GITHUB_OUTPUT"; fi
-        env:
-          GH_TOKEN: ${{ github.token }}
-      - name: Release v${{ steps.pack.outputs.version }}
-        if: steps.pack.outputs.new == 'true'
-        run: gh release create "v${{ steps.pack.outputs.version }}" omp-ui.tgz "omp-ui-${{ steps.pack.outputs.version }}.tgz" --target "$GITHUB_SHA" --title "OMP-UI v${{ steps.pack.outputs.version }}" --generate-notes --latest
-        env:
-          GH_TOKEN: ${{ github.token }}
-      - name: Publish to npm
-        if: steps.pack.outputs.new == 'true' && env.NODE_AUTH_TOKEN != ''
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - name: Refresh nightly prerelease
-        if: steps.pack.outputs.new == 'false'
+      # npm pack runs prepack (vite build), so the tarball ships dist/.
+      - name: Pack
+        run: |
+          npm pack
+          cp "omp-ui-${{ steps.v.outputs.version }}.tgz" omp-ui.tgz
+      - name: GitHub release v${{ steps.v.outputs.version }}
+        if: steps.v.outputs.kind == 'release'
+        run: gh release view "v${{ steps.v.outputs.version }}" >/dev/null 2>&1 || gh release create "v${{ steps.v.outputs.version }}" omp-ui.tgz "omp-ui-${{ steps.v.outputs.version }}.tgz" --target "$GITHUB_SHA" --title "OMP-UI v${{ steps.v.outputs.version }}" --generate-notes --latest
+      - name: GitHub nightly prerelease
+        if: steps.v.outputs.kind == 'nightly'
         run: |
           gh release delete nightly --cleanup-tag --yes || true
-          gh release create nightly omp-ui.tgz --target "$GITHUB_SHA" --prerelease --title "OMP-UI nightly" \
-            --notes "Latest build of main ($GITHUB_SHA). Install: \`npm i -g https://github.com/${{ github.repository }}/releases/download/nightly/omp-ui.tgz\`"
-        env:
-          GH_TOKEN: ${{ github.token }}
+          gh release create nightly omp-ui.tgz --target "$GITHUB_SHA" --prerelease --title "OMP-UI nightly (${{ steps.v.outputs.version }})" \
+            --notes "Latest build of main ($GITHUB_SHA). Install: \`npm i -g omp-ui@next\`"
+      - name: Publish to npm
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then echo "::error::NPM_TOKEN secret is not set"; exit 1; fi
+          if npm view "omp-ui@${{ steps.v.outputs.version }}" version >/dev/null 2>&1; then echo "Already on npm"; exit 0; fi
+          tag=latest; [ "${{ steps.v.outputs.kind }}" = nightly ] && tag=next
+          npm publish "omp-ui-${{ steps.v.outputs.version }}.tgz" --provenance --access public --tag "$tag"
