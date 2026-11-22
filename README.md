@@ -1,23 +1,24 @@
-# OMP-UI
+# OMP-UI: the OMP web UI, OMP kanban board and OMP workflow, self-hosted
 
 [![npm version](https://img.shields.io/npm/v/omp-ui.svg)](https://www.npmjs.com/package/omp-ui)
 [![CI](https://github.com/quangpl/omp-ui/actions/workflows/ci.yml/badge.svg)](https://github.com/quangpl/omp-ui/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node >=24](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org)
 
-**OMP-UI is a self-hosted kanban web UI for [omp](https://omp.sh/docs) (oh-my-pi), the AI coding agent.** Manage work as cards on a kanban board, let an agent build each card in your repository, review it through comments and ship it as a pull request. Developer-friendly: CLI, REST API, keyboard shortcuts. Follow every run live from your desktop or phone.
+**OMP-UI is the self-hosted OMP UI for [omp](https://omp.sh/docs) (oh-my-pi), the AI coding agent.** It gives omp a web interface: an OMP kanban board where each card is a task, an OMP workflow that takes every card from plan to pull request, and an OMP web dashboard you can open from your desktop or phone. Self-host OMP-UI on your own machine or server with one command, `npx omp-ui`.
 
-![OMP-UI kanban board for omp AI coding agents](docs/images/board.png)
+![OMP UI: the OMP kanban board with cards in To do, In progress and Done](docs/images/board.png)
 
 ## Features
 
-- **Kanban board.** Cards move through To do, In progress and Done as agents work on them.
-- **Standard delivery flow.** Each card follows plan, build, review, ship: describe the idea, an agent builds it, you review it through comments, then ship a reviewable increment as a PR or a push.
-- **Developer-friendly.** Start with `npx omp-ui`, open pull requests (GitHub) or merge requests (GitLab), script it with the [REST API](docs/API.md) and drive the board with keyboard shortcuts.
-- **Live view.** Watch agent output as it happens, on desktop or phone.
+- **OMP kanban board.** Cards move through To do, In progress and Done as omp agents work on them.
+- **OMP workflow from plan to pull request.** Describe the idea, an omp agent builds it, you review it through comments, then ship it as a PR or a push. Conflicts with the base branch are resolved automatically.
+- **OMP web UI on any device.** Watch agent output live in the browser, on desktop or phone.
+- **Self-host OMP in one command.** `npx omp-ui` starts it under pm2 with SQLite by default. Docker is supported too.
+- **Developer-friendly.** A CLI, a [REST API](docs/API.md), keyboard shortcuts, and GitHub pull requests or GitLab merge requests.
 - **Schedulers and stats.** Recurring cards on a cron schedule, plus usage and cost stats.
 - **Cluster mode.** Spread agent runs across several machines ([details](docs/CLUSTER.md)).
-- **Self-hosted, MIT.** Runs on your machine with SQLite by default; Docker and pm2 supported.
+- **Open source.** MIT licensed.
 
 ## Screenshots
 
@@ -51,7 +52,7 @@ curl -fsSL https://omp.sh/install | sh
 omp            # run once and sign in to an AI provider
 ```
 
-## Quick start
+## Quick start: self-host OMP-UI
 
 ```sh
 npx omp-ui
@@ -89,14 +90,14 @@ Settings and data live in `~/.omp-ui`. SQLite is the default database, so you do
 | `omp-ui update` | Update to the latest version and restart |
 | `omp-ui help` | List every command |
 
-## Using it
+## The OMP workflow on the kanban board
 
 1. **Create a project.** Pick a folder or clone a Git repository.
 2. **Add a card.** Describe the task in your own words, and an agent starts working on it.
 3. **Give feedback.** Comment on the card. The agent reads your comments and keeps going.
 4. **Ship it.** Click **Create PR**, **Push to main** or **Push to current branch**.
 
-## Access from anywhere
+## Open the OMP web UI from anywhere
 
 OMP-UI runs commands on your machine. Before exposing it, set a strong admin password with `omp-ui passwd`.
 
@@ -123,11 +124,25 @@ The link changes every time it starts. For a permanent address on your own domai
 
 If you use Tailscale, Cloudflare or another proxy, add `VINEXT_TRUST_PROXY=1` to `~/.omp-ui/.env`, then run `omp-ui restart`.
 
-## Docker
+## Self-host OMP-UI with Docker
 
 ```sh
 docker compose up -d   # then open http://localhost:3000
 ```
+
+## FAQ
+
+**What is OMP-UI?**
+A web UI for omp. It runs omp agents on cards from an OMP kanban board and shows their work in the browser.
+
+**Is there an official OMP UI or OMP web interface?**
+omp itself is a terminal tool. OMP-UI is an open-source OMP web UI built on top of it.
+
+**Can I self-host OMP?**
+Yes. OMP-UI runs on your own machine or server: `npx omp-ui`, pm2 or Docker. Your code and data stay with you.
+
+**How does the OMP workflow work?**
+Plan, build, review, ship: write a card, an omp agent builds it in your repository, you review it through comments, then you open a pull request or push.
 
 ## Learn more
 

@@ -1,7 +1,7 @@
 {
   "name": "omp-ui",
   "version": "0.1.1",
-  "description": "Self-hosted kanban web UI for the omp (oh-my-pi) AI coding agent: plan, build, review, ship cards as PRs. Developer-friendly CLI and REST API.",
+  "description": "OMP UI: self-hosted OMP web UI, OMP kanban board and OMP workflow for the omp AI coding agent. Turn cards into pull requests.",
   "keywords": [
     "omp",
     "omp-ui",
@@ -18,7 +18,12 @@
     "agent-orchestration",
     "sdlc",
     "kanban-board",
-    "devtools"
+    "devtools",
+    "omp-kanban",
+    "omp-workflow",
+    "omp-web",
+    "omp-selfhost",
+    "omp-web-ui"
   ],
   "homepage": "https://github.com/quangpl/omp-ui#readme",
   "repository": {
