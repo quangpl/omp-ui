@@ -42,7 +42,7 @@ import {
 
 const VALID_TOKEN = "123456789:AAEhBOweik6ad9r_QXMENQjcrGbqCr4K-xx";
 const TOKEN_SECRET_PART = VALID_TOKEN.split(":")[1];
-const BOT_USERNAME = "agentman_test_bot";
+const BOT_USERNAME = "omp_ui_test_bot";
 const NEW_PASSWORD = "a-brand-new-admin-password";
 /** Password of "bob", a regular (non-admin) account. */
 const BOB_PASSWORD = "bobs-own-password";
@@ -53,7 +53,7 @@ const STREAM_THINKING = "Planning the change.";
 const REPLY_TIMEOUT = 10_000;
 const RUN_TIMEOUT = 15_000;
 /** Start of every chat assistant prompt (lib/server/chat/assistant.ts buildPrompt). */
-const CHAT_PROMPT = "You are AgentMan's chat assistant";
+const CHAT_PROMPT = "You are OMP-UI's chat assistant";
 /** The assistant's placeholder, edited with its progress and then replaced by its answer. */
 const PLACEHOLDER = "🤔 Working on it…";
 const CANCELLED = "⏹ Cancelled.";
@@ -125,7 +125,7 @@ async function fakeTelegram(token: string, method: string, body: Record<string, 
   const ok = (result: unknown) => tgResponse({ ok: true, result });
   switch (method) {
     case "getMe":
-      return ok({ id: 123456789, is_bot: true, first_name: "AgentMan Test", username: BOT_USERNAME });
+      return ok({ id: 123456789, is_bot: true, first_name: "OMP-UI Test", username: BOT_USERNAME });
     case "deleteWebhook":
     case "setWebhook":
     case "setMyCommands":
@@ -241,7 +241,7 @@ function isActive(task: Task): boolean {
 // ---------------------------------------------------------------------------------------------
 // Chat assistant helpers
 
-/** A message asking the fake omp's chat assistant to call these AgentMan tools. */
+/** A message asking the fake omp's chat assistant to call these OMP-UI tools. */
 function calls(...list: { toolName: string; arguments: Record<string, unknown> }[]): string {
   return `<calls>${JSON.stringify(list)}</calls>`;
 }
@@ -259,9 +259,9 @@ function toolResults(answer: string): ToolResult[] {
   return JSON.parse(match[1]) as ToolResult[];
 }
 
-/** Id of the card an agentman_create_card result describes. */
+/** Id of the card an omp_ui_create_card result describes. */
 function createdId(result: ToolResult): string {
-  expect(result, JSON.stringify(result)).toMatchObject({ toolName: "agentman_create_card", isError: false });
+  expect(result, JSON.stringify(result)).toMatchObject({ toolName: "omp_ui_create_card", isError: false });
   return (JSON.parse(result.text) as { card: { id: string } }).card.id;
 }
 
@@ -330,7 +330,7 @@ describe("Telegram bot", () => {
     await setupAdmin();
     await createBoard("alpha-board");
     await createBoard("beta-board");
-    // The order agentman_list_boards numbers them in; the first is a chat's default board.
+    // The order omp_ui_list_boards numbers them in; the first is a chat's default board.
     boards = await (await getRepo()).listBoards();
     expect(boards.map((b) => b.name).sort()).toEqual(["alpha-board", "beta-board"]);
   });
@@ -406,7 +406,7 @@ describe("Telegram bot", () => {
 
     const loginId = tg.nextIncomingMessageId;
     const welcome = await say(`/login ${ADMIN_PASSWORD}`);
-    expect(welcome).toContain("AgentMan connected");
+    expect(welcome).toContain("OMP-UI connected");
     expect(welcome).toContain("just tell me");
     expect(tg.deletes).toContainEqual({ chat_id: "42", message_id: loginId });
 
@@ -435,18 +435,18 @@ describe("Telegram bot", () => {
   });
 
   it("lists the boards through its tools, showing its progress meanwhile", async () => {
-    const placeholder = await ask(`show my boards ${calls({ toolName: "agentman_list_boards", arguments: {} })}`);
+    const placeholder = await ask(`show my boards ${calls({ toolName: "omp_ui_list_boards", arguments: {} })}`);
     const answer = await answerOf(placeholder);
-    expect(toolResults(answer)).toMatchObject([{ toolName: "agentman_list_boards", isError: false }]);
+    expect(toolResults(answer)).toMatchObject([{ toolName: "omp_ui_list_boards", isError: false }]);
     for (const board of boards) expect(answer).toContain(board.name);
-    expect(tg.edits).toContainEqual({ chat_id: "42", message_id: placeholder, text: "🤔 Using AgentMan's tools" });
+    expect(tg.edits).toContainEqual({ chat_id: "42", message_id: placeholder, text: "🤔 Using OMP-UI's tools" });
   });
 
   it("creates and starts a card on the default board, streaming its run into the chat", async () => {
     const repo = await getRepo();
     const editsFrom = tg.edits.length;
     const placeholder = await ask(
-      `add a test card and start it ${calls({ toolName: "agentman_create_card", arguments: { title: "Test card", start: true } })}`,
+      `add a test card and start it ${calls({ toolName: "omp_ui_create_card", arguments: { title: "Test card", start: true } })}`,
     );
     const answer = await answerOf(placeholder);
     const id = createdId(toolResults(answer)[0]);
@@ -483,12 +483,12 @@ describe("Telegram bot", () => {
     const repo = await getRepo();
     const [first, second] = boards;
     const selected = toolResults(
-      await chat(`switch to ${second.name} ${calls({ toolName: "agentman_select_board", arguments: { board: second.name } })}`),
+      await chat(`switch to ${second.name} ${calls({ toolName: "omp_ui_select_board", arguments: { board: second.name } })}`),
     );
-    expect(selected).toMatchObject([{ toolName: "agentman_select_board", isError: false }]);
+    expect(selected).toMatchObject([{ toolName: "omp_ui_select_board", isError: false }]);
     expect(selected[0].text).toContain(second.name);
 
-    const note = `note this down ${calls({ toolName: "agentman_create_card", arguments: { title: "Other" } })}`;
+    const note = `note this down ${calls({ toolName: "omp_ui_create_card", arguments: { title: "Other" } })}`;
     const id = createdId(toolResults(await chat(note))[0]);
     const onSecond = await repo.listTasks(second.id);
     expect(onSecond.map((t) => [t.id, t.title, t.status])).toEqual([[id, "Other", "todo"]]);
@@ -498,12 +498,12 @@ describe("Telegram bot", () => {
   });
 
   it("lists the cards of the selected board, or of the board asked for", async () => {
-    const selected = await chat(`what is on my board? ${calls({ toolName: "agentman_list_cards", arguments: {} })}`);
+    const selected = await chat(`what is on my board? ${calls({ toolName: "omp_ui_list_cards", arguments: {} })}`);
     expect(selected).toContain("Other");
     expect(selected).not.toContain("Test card");
 
     const named = await chat(
-      `and on the first one? ${calls({ toolName: "agentman_list_cards", arguments: { board: boards[0].name } })}`,
+      `and on the first one? ${calls({ toolName: "omp_ui_list_cards", arguments: { board: boards[0].name } })}`,
     );
     expect(named).toContain("Test card");
     expect(named).toContain(firstCard.id);
@@ -512,7 +512,7 @@ describe("Telegram bot", () => {
 
   it("/stop <cardId> stops a running card", async () => {
     const answer = await chat(
-      `start a slow one ${calls({ toolName: "agentman_create_card", arguments: { title: "Stop me [fake:slow]", start: true } })}`,
+      `start a slow one ${calls({ toolName: "omp_ui_create_card", arguments: { title: "Stop me [fake:slow]", start: true } })}`,
     );
     const id = createdId(toolResults(answer)[0]);
     await waitFor(async () => (await getTask(id)).agentState === "running", RUN_TIMEOUT);
@@ -570,7 +570,7 @@ describe("Telegram bot", () => {
     expect(await say("show my boards")).toContain("/login");
 
     // Logging in again starts a fresh conversation.
-    expect(await say(`/login ${ADMIN_PASSWORD}`)).toContain("AgentMan connected");
+    expect(await say(`/login ${ADMIN_PASSWORD}`)).toContain("OMP-UI connected");
     const fresh = "hello again";
     expect(await chat(fresh)).toBe(`Chat reply: ${fresh}`);
     expect(promptFor(fresh)).not.toContain("Recent conversation");
@@ -593,7 +593,7 @@ describe("Telegram bot", () => {
     expect(await say(`/login ${BOB_PASSWORD}`, bobChat)).toContain("Wrong username or password");
     expect(await say("/login bob not-his-password", bobChat)).toContain("Wrong username or password");
     const loginId = tg.nextIncomingMessageId;
-    expect(await say(`/login bob ${BOB_PASSWORD}`, bobChat)).toContain("AgentMan connected ✅ as bob");
+    expect(await say(`/login bob ${BOB_PASSWORD}`, bobChat)).toContain("OMP-UI connected ✅ as bob");
     expect(tg.deletes).toContainEqual({ chat_id: "77", message_id: loginId });
     expect((await chatStatus()).telegram.authorizedUsers).toBe(2);
 
@@ -601,7 +601,7 @@ describe("Telegram bot", () => {
     await updateChatState(await getRepo(), (state) => {
       state.selectedBoards["telegram:77"] = boards[0].id;
     });
-    const listMine = `list my boards ${calls({ toolName: "agentman_list_boards", arguments: {} })}`;
+    const listMine = `list my boards ${calls({ toolName: "omp_ui_list_boards", arguments: {} })}`;
     const mine = await chat(listMine, bobChat);
     expect(mine).toContain("bob-board");
     for (const board of boards) expect(mine).not.toContain(board.name);
@@ -613,24 +613,24 @@ describe("Telegram bot", () => {
     const foreign = toolResults(
       await chat(
         `peek ${calls(
-          { toolName: "agentman_read_card", arguments: { cardId: firstCard.id } },
-          { toolName: "agentman_list_cards", arguments: { board: boards[0].id } },
-          { toolName: "agentman_select_board", arguments: { board: boards[1].id } },
+          { toolName: "omp_ui_read_card", arguments: { cardId: firstCard.id } },
+          { toolName: "omp_ui_list_cards", arguments: { board: boards[0].id } },
+          { toolName: "omp_ui_select_board", arguments: { board: boards[1].id } },
         )}`,
         bobChat,
       ),
     );
     expect(foreign.map((r) => [r.toolName, r.isError])).toEqual([
-      ["agentman_read_card", true],
-      ["agentman_list_cards", true],
-      ["agentman_select_board", true],
+      ["omp_ui_read_card", true],
+      ["omp_ui_list_cards", true],
+      ["omp_ui_select_board", true],
     ]);
     expect(JSON.stringify(foreign)).not.toContain(firstCard.title);
     expect(await say(`/stop ${firstCard.id}`, bobChat)).toContain("No card matches");
 
     // His cards land on his board, and he can stop them.
     const answer = await chat(
-      `start a slow one ${calls({ toolName: "agentman_create_card", arguments: { title: "Bob slow [fake:slow]", start: true } })}`,
+      `start a slow one ${calls({ toolName: "omp_ui_create_card", arguments: { title: "Bob slow [fake:slow]", start: true } })}`,
       bobChat,
     );
     const id = createdId(toolResults(answer)[0]);
@@ -639,7 +639,7 @@ describe("Telegram bot", () => {
     await waitFor(async () => (await getTask(id)).agentState === "running", RUN_TIMEOUT);
 
     // The admin sees every account's boards.
-    const all = await chat(`every board ${calls({ toolName: "agentman_list_boards", arguments: {} })}`);
+    const all = await chat(`every board ${calls({ toolName: "omp_ui_list_boards", arguments: {} })}`);
     for (const name of ["bob-board", ...boards.map((b) => b.name)]) expect(all).toContain(name);
 
     // Once bob logged out, his card's outcome is no longer relayed to his chat.
@@ -671,7 +671,7 @@ describe("Telegram bot", () => {
   });
 
   it("disconnect stops the bot and forgets the token; a reconnect greets logged-in users", async () => {
-    expect(await say(`/login ${NEW_PASSWORD}`)).toContain("AgentMan connected");
+    expect(await say(`/login ${NEW_PASSWORD}`)).toContain("OMP-UI connected");
 
     const off = await api<ChatPlatformStatus>(disconnectRoute, "POST", "/chat/telegram/disconnect");
     expect(off.status, JSON.stringify(off.body)).toBe(200);
@@ -686,7 +686,7 @@ describe("Telegram bot", () => {
     const on = await connect(VALID_TOKEN);
     expect(on.status, JSON.stringify(on.body)).toBe(200);
     expect(on.body.state).toBe("connected");
-    const greeting = await waitFor(() => sentSince(from).find((t) => t.includes("AgentMan connected")), REPLY_TIMEOUT);
+    const greeting = await waitFor(() => sentSince(from).find((t) => t.includes("OMP-UI connected")), REPLY_TIMEOUT);
     expect(greeting).toContain("just tell me");
     // Nobody wrote to the bot meanwhile.
     expect(tg.nextUpdateId).toBe(updatesBefore);

@@ -2,7 +2,7 @@
 
 // Stats → Optimize: the live resource guard (memory/CPU holds on queued cards), then analyze what
 // uses CPU, memory and disk on the server and free it (end leftover processes, close idle helper
-// agents, clean AgentMan leftovers and Docker caches).
+// agents, clean OMP-UI leftovers and Docker caches).
 import { useState } from "react";
 import Link from "next/link";
 import {
@@ -61,7 +61,7 @@ import { cn } from "@/lib/utils";
 const TOP_ROWS = 8;
 
 const TAGS: Record<ProcessTag, { label: string; className: string } | null> = {
-  server: { label: "AgentMan", className: "bg-primary/10 text-primary" },
+  server: { label: "OMP-UI", className: "bg-primary/10 text-primary" },
   "card-agent": { label: "Card agent", className: "bg-primary/10 text-primary" },
   helper: { label: "Helper agent", className: "bg-muted text-muted-foreground" },
   "orphan-agent": { label: "Orphaned agent", className: "bg-destructive/10 text-destructive" },
@@ -277,7 +277,7 @@ export function OptimizeSection({
           </Notice>
         ) : (
           <EmptyState icon={<ScanSearchIcon />} title="Check the server's health">
-            Lists top CPU and memory processes, agent leftovers, and space AgentMan and Docker can reclaim. Nothing
+            Lists top CPU and memory processes, agent leftovers, and space OMP-UI and Docker can reclaim. Nothing
             changes until you pick an action.
           </EmptyState>
         )
@@ -783,7 +783,7 @@ function ProcessesPanel({
 
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-b-2xl border-t bg-muted/30 px-4 py-3 sm:px-5">
         <p className="min-w-0 text-xs text-pretty text-muted-foreground tabular-nums">
-          AgentMan server {formatBytes(memory.server.rssBytes)} (heap {formatBytes(memory.server.heapUsedBytes)}) ·{" "}
+          OMP-UI server {formatBytes(memory.server.rssBytes)} (heap {formatBytes(memory.server.heapUsedBytes)}) ·{" "}
           {memory.idleHelpers.count} idle helper agent{memory.idleHelpers.count === 1 ? "" : "s"}
           {memory.idleHelpers.count > 0 && ` (${formatBytes(memory.idleHelpers.rssBytes)})`}
         </p>
@@ -909,7 +909,7 @@ function StoragePanel({
       <div className={cn(PANEL, "min-w-0")}>
         <PanelHeader
           title="Storage cleanup"
-          note={storage.dataBytes !== null ? `AgentMan data ${formatBytes(storage.dataBytes)}` : undefined}
+          note={storage.dataBytes !== null ? `OMP-UI data ${formatBytes(storage.dataBytes)}` : undefined}
         />
         <ul className="divide-y">
           {pending.map((item) => (

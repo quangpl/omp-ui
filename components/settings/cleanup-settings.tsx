@@ -110,7 +110,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-/** Settings → Data cleanup: prune leftover AgentMan data weekly or monthly, or right now. */
+/** Settings → Data cleanup: prune leftover OMP-UI data weekly or monthly, or right now. */
 export function CleanupSettingsSection() {
   const [status, setStatus] = useState<CleanupStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -219,7 +219,7 @@ export function CleanupSettingsSection() {
       id="cleanup"
       icon={<BrushCleaningIcon />}
       title="Data cleanup"
-      description="Remove AgentMan leftovers on a schedule: orphaned files and worktrees, stale drafts, caches and old logs. Docker prunes stay manual under Stats → Optimize."
+      description="Remove OMP-UI leftovers on a schedule: orphaned files and worktrees, stale drafts, caches and old logs. Docker prunes stay manual under Stats → Optimize."
     >
       {loadError ? (
         <SettingsPanel className="flex flex-col items-start gap-3 p-4 sm:flex-row sm:items-center sm:p-5">

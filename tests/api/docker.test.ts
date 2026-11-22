@@ -106,7 +106,7 @@ describe("GET /docker", () => {
     expect(res.status).toBe(401);
   });
 
-  it("lists containers, compose projects (incl. AgentMan stacks that are down) and resources", async () => {
+  it("lists containers, compose projects (incl. OMP-UI stacks that are down) and resources", async () => {
     const stackDir = path.join(env().dataDir, "compose", "parked");
     mkdirSync(stackDir, { recursive: true });
     writeFileSync(path.join(stackDir, "compose.yaml"), "services: {}\n");
@@ -240,7 +240,7 @@ describe("POST /docker/compose", () => {
     expect(existsSync(path.join(env().dataDir, "compose", "broken"))).toBe(false);
   });
 
-  it("refuses to take over a compose project created outside AgentMan", async () => {
+  it("refuses to take over a compose project created outside OMP-UI", async () => {
     const res = await api<{ error: string }>(composeRoute, "POST", "/docker/compose", {
       body: { name: "shop", yaml: "services: {}\n" },
     });

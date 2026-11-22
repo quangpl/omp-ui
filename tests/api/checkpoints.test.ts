@@ -48,7 +48,7 @@ function makeRepo(name: string): string {
 }
 
 function refs(folder: string, taskId: string): string[] {
-  const out = git(folder, "for-each-ref", "--format=%(refname)", `refs/agentman/checkpoints/${taskId}/`);
+  const out = git(folder, "for-each-ref", "--format=%(refname)", `refs/omp-ui/checkpoints/${taskId}/`);
   return out ? out.split("\n") : [];
 }
 
@@ -85,7 +85,7 @@ describe("git checkpoints (lib/server/checkpoints)", () => {
     expect(files).toEqual(expect.arrayContaining(["README.md", "new.txt", "staged.txt", "src/app.ts"]));
     expect(files).not.toContain("debug.log");
     expect(git(work, "show", `${checkpoint!.sha}:README.md`)).toBe("# changed");
-    expect(refs(work, TASK_ID)).toEqual([`refs/agentman/checkpoints/${TASK_ID}/${checkpoint!.id}`]);
+    expect(refs(work, TASK_ID)).toEqual([`refs/omp-ui/checkpoints/${TASK_ID}/${checkpoint!.id}`]);
 
     expect(await listCheckpoints([work], TASK_ID)).toEqual([checkpoint]);
     expect(await listCheckpoints([work], "another-task")).toEqual([]);

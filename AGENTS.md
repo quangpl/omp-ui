@@ -8,7 +8,7 @@ containers, volumes and images, scratch files, background processes, and work-in
 that the Report does not link. Keep only the summary with its Report, the files it links, and the changes the task
 asked for. Never delete anything you did not create: pre-existing files, user uploads, other cards' changes, Docker
 resources that were already there, or permanent infrastructure (`tests/`, `e2e/`, `Dockerfile`, `docker-compose.yml`).
-Mark Docker resources you start for the task (`docker compose -p task-<card id>`, `--label agentman.task=<card id>`) and
-remove them before finishing; AgentMan removes marked leftovers when a run finishes the card or the card is deleted.
+Mark Docker resources you start for the task (`docker compose -p task-<card id>`, `--label omp-ui.task=<card id>`) and
+remove them before finishing; OMP-UI removes marked leftovers when a run finishes the card or the card is deleted.
 Don't mark a container the task should leave running, or its image.
 Full policy: [docs/TASK-CLEANUP.md](docs/TASK-CLEANUP.md).

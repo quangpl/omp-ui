@@ -55,7 +55,7 @@ export async function fetchDeepSeekBalance(
   if (!key) return null;
   try {
     const res = await fetchImpl(DEEPSEEK_BALANCE_URL, {
-      headers: { authorization: `Bearer ${key}`, "user-agent": "agentman-stats" },
+      headers: { authorization: `Bearer ${key}`, "user-agent": "omp-ui-stats" },
       signal: AbortSignal.timeout(DEEPSEEK_BALANCE_TIMEOUT_MS),
     });
     if (!res.ok) return null;

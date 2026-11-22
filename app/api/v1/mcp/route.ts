@@ -4,7 +4,7 @@ import { connectMcpServer, listMcpServers, parseMcpConnectInput } from "@/lib/se
 
 export const dynamic = "force-dynamic";
 
-/** Connected servers (sorted by name), mcp.json's path and problems, and the entries AgentMan does not manage. */
+/** Connected servers (sorted by name), mcp.json's path and problems, and the entries OMP-UI does not manage. */
 export const GET = withApi(async ({ repo }) => json(await listMcpServers(repo)));
 
 /**

@@ -13,7 +13,7 @@ import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-/** The AgentMan mark: a gamepad on a round tile. Same artwork as `public/icon.png`. */
+/** The OMP-UI mark: a gamepad on a round tile. Same artwork as `public/icon.png`. */
 export function LogoMark({ className }: { className?: string }) {
   return <img src="/icon-192.png" alt="" aria-hidden="true" className={cn("size-7 shrink-0 rounded-full", className)} />;
 }

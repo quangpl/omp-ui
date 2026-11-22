@@ -591,7 +591,7 @@ function SystemInfoSection() {
         <div className="space-y-4">
           <SettingsPanel>
             <dl className="divide-y">
-              <InfoRow label="AgentMan version">
+              <InfoRow label="OMP-UI version">
                 <dd className="font-mono text-xs tabular-nums">{info.version}</dd>
               </InfoRow>
               <InfoRow label="Database">
@@ -832,7 +832,7 @@ function ApiAccessSection() {
               <code className="rounded bg-background px-1 py-0.5 font-mono text-xs break-all text-foreground">
                 Authorization: Bearer &lt;token&gt;
               </code>
-              . Reference: <code className="font-mono text-xs text-foreground">docs/API.md</code> in the AgentMan
+              . Reference: <code className="font-mono text-xs text-foreground">docs/API.md</code> in the OMP-UI
               repository.
             </p>
           </div>

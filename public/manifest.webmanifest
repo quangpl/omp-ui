@@ -1,6 +1,6 @@
 {
-  "name": "AgentMan",
-  "short_name": "AgentMan",
+  "name": "OMP-UI",
+  "short_name": "OMP-UI",
   "description": "Self-hosted kanban board for running and steering omp coding agents.",
   "id": "/",
   "start_url": "/",

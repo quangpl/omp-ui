@@ -1,5 +1,5 @@
 // The chat assistant: every message an authorized chat user writes (other than /login, /logout,
-// /stop) goes to a short omp helper agent that controls AgentMan through the `agentman_*` host
+// /stop) goes to a short omp helper agent that controls OMP-UI through the `omp_ui_*` host
 // tools below and answers in the chat. One request at a time per chat; later messages wait in order.
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -46,7 +46,7 @@ const MIN_ID_PREFIX = 4;
 const MAX_CANDIDATES = 10;
 const MAX_DESCRIPTION = 20_000;
 const MAX_MESSAGE = 4000;
-/** Cards `agentman_list_cards` returns before summarizing the rest. */
+/** Cards `omp_ui_list_cards` returns before summarizing the rest. */
 const MAX_LISTED_CARDS = 60;
 const RECENT_COMMENTS = 10;
 const MAX_SUMMARY = 3000;
@@ -197,7 +197,7 @@ async function ask(
     label: "chat assistant",
     onActivity,
     writing: "Writing the answer…",
-    // Only the agentman_* tools: chat text and card content never get to read server files.
+    // Only the omp_ui_* tools: chat text and card content never get to read server files.
     tools: "",
     hostTools: {
       tools: CHAT_ASSISTANT_TOOLS,
@@ -232,20 +232,20 @@ async function buildPrompt(env: ChatUserEnv, msg: IncomingChatMessage): Promise<
   const history = state.memory.get(memoryKey(msg.platform, msg.chatId, env.user.id)) ?? [];
   const account =
     env.user.role === "admin"
-      ? `AgentMan's administrator "${env.user.username}" (they see every account's boards)`
-      : `AgentMan user "${env.user.username}" (they see only their own boards)`;
+      ? `OMP-UI's administrator "${env.user.username}" (they see every account's boards)`
+      : `OMP-UI user "${env.user.username}" (they see only their own boards)`;
   return [
-    "You are AgentMan's chat assistant. AgentMan runs omp coding agents on projects. Each project is a board of cards in three columns: To do, In progress, Done. Each card is a piece of work with its own omp agent; starting a card's agent moves it to In progress.",
-    `The user is the authenticated ${account}, writing to you from ${platform}${msg.isPrivate ? " (direct message)" : " (group or server channel)"}. They control AgentMan by talking to you in plain language.`,
+    "You are OMP-UI's chat assistant. OMP-UI runs omp coding agents on projects. Each project is a board of cards in three columns: To do, In progress, Done. Each card is a piece of work with its own omp agent; starting a card's agent moves it to In progress.",
+    `The user is the authenticated ${account}, writing to you from ${platform}${msg.isPrivate ? " (direct message)" : " (group or server channel)"}. They control OMP-UI by talking to you in plain language.`,
     "",
     "How to work:",
-    "- Do what the user asks with the agentman_* tools instead of describing how to do it. Look things up (agentman_list_boards, agentman_list_cards, agentman_read_card) before acting when you need ids or context.",
+    "- Do what the user asks with the omp_ui_* tools instead of describing how to do it. Look things up (omp_ui_list_boards, omp_ui_list_cards, omp_ui_read_card) before acting when you need ids or context.",
     "- Cards and boards can be named by id, by a unique id prefix (at least 4 characters), and boards also by name or number.",
     "- When the user asks for work to be done, create a card with a clear title and a self-contained description, and start it unless they only want it noted. A card's agent does not see this conversation.",
     "- Cards you start (or message) stream their agent's output into this chat automatically; do not wait for them.",
     "- Never delete anything; there is no tool for it.",
     "- Ask a short question only when the request is truly ambiguous (e.g. several boards fit and none is selected).",
-    `- Schedulers create a card on a board on a cron schedule; the scheduler's prompt is each card's whole brief and its agent starts at once. Create one with agentman_create_scheduler, change, pause or resume one with agentman_update_scheduler, find them with agentman_list_schedulers. Times are wall-clock times in the scheduler's time zone: the one the user names, else ${serverTimeZone()} (this server's). After creating or changing one, repeat its name, schedule in words, time zone and next run times from the tool result so the user can correct it.`,
+    `- Schedulers create a card on a board on a cron schedule; the scheduler's prompt is each card's whole brief and its agent starts at once. Create one with omp_ui_create_scheduler, change, pause or resume one with omp_ui_update_scheduler, find them with omp_ui_list_schedulers. Times are wall-clock times in the scheduler's time zone: the one the user names, else ${serverTimeZone()} (this server's). After creating or changing one, repeat its name, schedule in words, time zone and next run times from the tool result so the user can correct it.`,
     "- Reply in the user's language, in plain text for a chat app (no tables, no headings), at most about 1200 characters. Confirm what you did and give card ids as their first 8 characters.",
     "",
     `Now: ${new Date().toISOString()}`,
@@ -264,16 +264,16 @@ async function buildPrompt(env: ChatUserEnv, msg: IncomingChatMessage): Promise<
 
 // ---- Tools ----
 
-/** `set_host_tools` definitions of the AgentMan tools (JSON Schema parameters). */
+/** `set_host_tools` definitions of the OMP-UI tools (JSON Schema parameters). */
 export const CHAT_ASSISTANT_TOOLS = [
   {
-    name: "agentman_list_boards",
+    name: "omp_ui_list_boards",
     label: "List boards",
-    description: "List AgentMan's boards (projects): number, id, name, folder, card counts per column. Marks this chat's default board.",
+    description: "List OMP-UI's boards (projects): number, id, name, folder, card counts per column. Marks this chat's default board.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
   {
-    name: "agentman_select_board",
+    name: "omp_ui_select_board",
     label: "Select board",
     description: "Make a board this chat's default (used when a request names no board).",
     parameters: {
@@ -284,7 +284,7 @@ export const CHAT_ASSISTANT_TOOLS = [
     },
   },
   {
-    name: "agentman_list_cards",
+    name: "omp_ui_list_cards",
     label: "List cards",
     description: "List a board's cards (id, title, column, agent state, waits-for) and the agent queue. Defaults to this chat's board.",
     parameters: {
@@ -297,7 +297,7 @@ export const CHAT_ASSISTANT_TOOLS = [
     },
   },
   {
-    name: "agentman_read_card",
+    name: "omp_ui_read_card",
     label: "Read card",
     description: "Read one card: description, column, agent state, latest run (status, summary or error) and recent comments.",
     parameters: {
@@ -308,7 +308,7 @@ export const CHAT_ASSISTANT_TOOLS = [
     },
   },
   {
-    name: "agentman_create_card",
+    name: "omp_ui_create_card",
     label: "Create card",
     description:
       "Create a card. With start=true its agent starts working on it (In progress) and its output streams into this chat; otherwise it waits in To do.",
@@ -325,7 +325,7 @@ export const CHAT_ASSISTANT_TOOLS = [
     },
   },
   {
-    name: "agentman_run_card",
+    name: "omp_ui_run_card",
     label: "Run card",
     description: "Start (or queue) a card's agent; its output streams into this chat.",
     parameters: {
@@ -336,7 +336,7 @@ export const CHAT_ASSISTANT_TOOLS = [
     },
   },
   {
-    name: "agentman_stop_card",
+    name: "omp_ui_stop_card",
     label: "Stop card",
     description: "Stop a card's running or queued agent; the card stays in its column.",
     parameters: {
@@ -347,7 +347,7 @@ export const CHAT_ASSISTANT_TOOLS = [
     },
   },
   {
-    name: "agentman_message_card",
+    name: "omp_ui_message_card",
     label: "Message card",
     description:
       "Send feedback to a card's agent as the user: steered into its live run, or it resumes the card's agent (its output then streams into this chat).",
@@ -359,7 +359,7 @@ export const CHAT_ASSISTANT_TOOLS = [
     },
   },
   {
-    name: "agentman_move_card",
+    name: "omp_ui_move_card",
     label: "Move card",
     description: "Move a card to another column. Moving to In progress may start its agent; moving to To do or Done stops a running agent.",
     parameters: {
@@ -370,7 +370,7 @@ export const CHAT_ASSISTANT_TOOLS = [
     },
   },
   {
-    name: "agentman_list_schedulers",
+    name: "omp_ui_list_schedulers",
     label: "List schedulers",
     description: "List schedulers (id, name, board, schedule in words, time zone, next runs, active or paused, prompt preview).",
     parameters: {
@@ -380,7 +380,7 @@ export const CHAT_ASSISTANT_TOOLS = [
     },
   },
   {
-    name: "agentman_create_scheduler",
+    name: "omp_ui_create_scheduler",
     label: "Create scheduler",
     description:
       "Create a scheduler: on every match of its cron (in its time zone) it creates a card on the board from its prompt and starts that card's agent. Returns it with its schedule in words and next run times.",
@@ -395,7 +395,7 @@ export const CHAT_ASSISTANT_TOOLS = [
     },
   },
   {
-    name: "agentman_update_scheduler",
+    name: "omp_ui_update_scheduler",
     label: "Update scheduler",
     description:
       "Change a scheduler: only the fields given change. enabled=false pauses it, enabled=true resumes it. Returns it with its schedule in words and next run times.",
@@ -412,7 +412,7 @@ export const CHAT_ASSISTANT_TOOLS = [
   },
 ] as const;
 
-/** Run one AgentMan tool for the chat; the returned text is the tool result. Throws for a tool error. */
+/** Run one OMP-UI tool for the chat; the returned text is the tool result. Throws for a tool error. */
 export async function runChatTool(
   env: ChatEnv,
   ctx: ChatToolContext,
@@ -423,7 +423,7 @@ export async function runChatTool(
   signal.throwIfAborted();
   const { repo, manager } = env;
   switch (name) {
-    case "agentman_list_boards": {
+    case "omp_ui_list_boards": {
       const boards = await repo.listBoards();
       const current = (await chatBoard(env, ctx, ""))?.id;
       return JSON.stringify({
@@ -437,7 +437,7 @@ export async function runChatTool(
         })),
       });
     }
-    case "agentman_select_board": {
+    case "omp_ui_select_board": {
       const board = await chatBoard(env, ctx, requiredString(args, "board"));
       if (!board) throw new Error(NO_BOARDS);
       await updateChatState(repo, (s) => {
@@ -445,7 +445,7 @@ export async function runChatTool(
       });
       return `This chat now uses board "${board.name}" (${board.id}).`;
     }
-    case "agentman_list_cards": {
+    case "omp_ui_list_cards": {
       const board = await chatBoard(env, ctx, optionalString(args, "board"));
       if (!board) throw new Error(NO_BOARDS);
       const status = optionalStatus(args);
@@ -462,7 +462,7 @@ export async function runChatTool(
         queue: { running: runningCards.filter(Boolean).length, queued: queuedCards.filter(Boolean).length },
       });
     }
-    case "agentman_read_card": {
+    case "omp_ui_read_card": {
       const task = await resolveCard(env, requiredString(args, "cardId"));
       const [runs, comments] = await Promise.all([repo.listRuns(task.id), repo.listComments(task.id)]);
       const latest = runs.reduce<(typeof runs)[number] | null>((a, b) => (!a || b.startedAt > a.startedAt ? b : a), null);
@@ -481,7 +481,7 @@ export async function runChatTool(
         comments: comments.slice(-RECENT_COMMENTS).map((c) => ({ author: c.author, body: clip(c.body, 500), at: c.createdAt })),
       });
     }
-    case "agentman_create_card": {
+    case "omp_ui_create_card": {
       const title = parseTitle(requiredString(args, "title"));
       const description = optionalString(args, "description");
       if (description.length > MAX_DESCRIPTION) throw new Error(`description is longer than ${MAX_DESCRIPTION} characters`);
@@ -495,18 +495,18 @@ export async function runChatTool(
         card: { id: task.id, title: task.title, board: board.name, status: STATUS_LABELS[task.status], agentState: task.agentState },
       });
     }
-    case "agentman_run_card": {
+    case "omp_ui_run_card": {
       const task = await startCard(env, ctx, await resolveCard(env, requiredString(args, "cardId")));
       return JSON.stringify({ card: cardSummary(task), streaming: true });
     }
-    case "agentman_stop_card": {
+    case "omp_ui_stop_card": {
       const task = await resolveCard(env, requiredString(args, "cardId"));
       unwatchCard(ctx.platform, ctx.chatId, task.id);
       if (task.agentState !== "running" && task.agentState !== "queued") return `"${task.title}" is not running.`;
       const stopped = (await manager.stop(task.id)) ?? task;
       return JSON.stringify({ card: cardSummary(stopped), stopped: true });
     }
-    case "agentman_message_card": {
+    case "omp_ui_message_card": {
       const task = await resolveCard(env, requiredString(args, "cardId"));
       const body = requiredString(args, "message");
       if (body.length > MAX_MESSAGE) throw new Error(`message is longer than ${MAX_MESSAGE} characters`);
@@ -518,7 +518,7 @@ export async function runChatTool(
       await manager.onComment(counted, comment);
       return JSON.stringify({ card: cardSummary((await repo.getTask(task.id)) ?? counted), messageSent: true });
     }
-    case "agentman_move_card": {
+    case "omp_ui_move_card": {
       const previous = await resolveCard(env, requiredString(args, "cardId"));
       const status = optionalStatus(args);
       if (!status) throw new Error(`status must be one of: ${TASK_STATUSES.join(", ")}`);
@@ -530,14 +530,14 @@ export async function runChatTool(
       await manager.onTaskMoved(task, previous.status);
       return JSON.stringify({ card: cardSummary((await repo.getTask(task.id)) ?? task), moved: true });
     }
-    case "agentman_list_schedulers": {
+    case "omp_ui_list_schedulers": {
       const boards = await repo.listBoards();
       const query = optionalString(args, "board");
       const board = query ? resolveBoard(boards, query) : null;
       const schedulers = await repo.listSchedulers(board?.id);
       return JSON.stringify({ schedulers: schedulers.map((s) => schedulerForAgent(s, boards)) });
     }
-    case "agentman_create_scheduler": {
+    case "omp_ui_create_scheduler": {
       const board = await chatBoard(env, ctx, optionalString(args, "board"));
       if (!board) throw new Error(NO_BOARDS);
       const fields = schedulerFields(args);
@@ -546,7 +546,7 @@ export async function runChatTool(
       const scheduler = await createScheduler(repo, { ...draft });
       return JSON.stringify({ created: schedulerForAgent(scheduler, await repo.listBoards()) });
     }
-    case "agentman_update_scheduler": {
+    case "omp_ui_update_scheduler": {
       const current = await resolveScheduler(env, requiredString(args, "schedulerId"));
       const fields = schedulerFields(args);
       const query = optionalString(args, "board");
@@ -569,7 +569,7 @@ export async function runChatTool(
   }
 }
 
-const NO_BOARDS = "There are no boards yet: create a project in AgentMan first.";
+const NO_BOARDS = "There are no boards yet: create a project in OMP-UI first.";
 
 /** This server's IANA time zone (schedulers created from chat default to it), else UTC. */
 function serverTimeZone(): string {
@@ -600,7 +600,7 @@ async function resolveScheduler(env: ChatEnv, query: string): Promise<Scheduler>
   if (candidates.length > 1) {
     throw new Error(`"${query}" matches several schedulers: ${candidates.map((s) => `${s.id} ${s.name}`).join("; ")}`);
   }
-  throw new Error(`No scheduler matches "${query}". Use agentman_list_schedulers to find its id.`);
+  throw new Error(`No scheduler matches "${query}". Use omp_ui_list_schedulers to find its id.`);
 }
 
 /** Start a card's agent and stream it to the chat (watch first so no output is missed). */

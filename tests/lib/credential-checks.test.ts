@@ -263,10 +263,10 @@ describe("probeCredential: telegram", () => {
   const TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw";
 
   it("authenticates with getMe and names the bot", async () => {
-    const fetchImpl = mockFetch(respond({ ok: true, result: { id: 1, is_bot: true, first_name: "AgentMan", username: "agentman_bot" } }));
+    const fetchImpl = mockFetch(respond({ ok: true, result: { id: 1, is_bot: true, first_name: "OMP-UI", username: "omp_ui_bot" } }));
     const result = await probeCredential(telegram, { token: TOKEN }, { fetchImpl });
 
-    expect(result).toEqual({ ok: true, message: "Authenticated as @agentman_bot" });
+    expect(result).toEqual({ ok: true, message: "Authenticated as @omp_ui_bot" });
     expect(sent(fetchImpl).url).toBe(`https://api.telegram.org/bot${TOKEN}/getMe`);
   });
 

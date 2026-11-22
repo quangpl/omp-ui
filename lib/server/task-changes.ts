@@ -1,7 +1,7 @@
 // What each card changed in a shared project folder. Cards work in the project folders on whatever
 // branch is checked out, next to the user and other cards, so a card's own changes are recorded
 // per run: a tree snapshot of every git folder when the run starts and when it ends, kept as
-// commits under refs/agentman/task-runs/<taskId>/<runKey>/{start,end}. "Create PR" replays only
+// commits under refs/omp-ui/task-runs/<taskId>/<runKey>/{start,end}. "Create PR" replays only
 // those start→end differences on top of the repo's default branch. Snapshots go through a private
 // index (see checkpoints.ts): the user's branch, index and working tree are never touched.
 import fs from "node:fs/promises";
@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { COMMIT_CONFIG, SAFE_SEGMENT, git, mustGit, snapshotTree } from "@/lib/server/checkpoints";
 
-const REF_ROOT = "refs/agentman/task-runs";
+const REF_ROOT = "refs/omp-ui/task-runs";
 
 export type RunPhase = "start" | "end";
 
@@ -39,7 +39,7 @@ export async function recordRunSnapshot(
     try {
       const recorded = await snapshotTree(folder);
       if (!recorded) continue;
-      const message = `AgentMan run ${input.phase}\n\nTask: ${input.taskId}\nFolder: ${folder}\n`;
+      const message = `OMP-UI run ${input.phase}\n\nTask: ${input.taskId}\nFolder: ${folder}\n`;
       const sha = (await mustGit(folder, [...COMMIT_CONFIG, "commit-tree", recorded.tree, "-m", message])).trim();
       await mustGit(folder, ["update-ref", `${taskPrefix(input.taskId)}${input.runKey}/${input.phase}`, sha]);
       saved++;
@@ -101,7 +101,7 @@ export async function taskChangesTree(
   const top = (await mustGit(dir, ["rev-parse", "--show-toplevel"])).trim();
   const baseTree = (await mustGit(dir, ["rev-parse", `${base.commit}^{tree}`])).trim();
 
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "agentman-task-changes-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ui-task-changes-"));
   try {
     const env = { GIT_INDEX_FILE: path.join(tmp, "index") };
     await mustGit(dir, ["read-tree", baseTree], env);
@@ -139,7 +139,7 @@ export async function taskChangePatches(folder: string, taskId: string): Promise
   const intervals = SAFE_SEGMENT.test(taskId) ? await readIntervals(dir, taskId) : [];
   if (intervals.length === 0) {
     throw new NoTrackedChangesError(
-      "AgentMan has no record of what this card changed here (it ran before changes were tracked, or in another checkout).",
+      "OMP-UI has no record of what this card changed here (it ran before changes were tracked, or in another checkout).",
     );
   }
   // Only a card whose last run has no recorded end needs the folder as it is now.

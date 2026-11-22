@@ -208,7 +208,7 @@ function ServerRow({
                   </span>
                 </TooltipTrigger>
                 <TooltipContent className="max-w-72">
-                  mcp.json does not hold this entry as AgentMan wrote it (edited by hand, or the write failed). Repair
+                  mcp.json does not hold this entry as OMP-UI wrote it (edited by hand, or the write failed). Repair
                   rewrites it.
                 </TooltipContent>
               </Tooltip>
@@ -385,7 +385,7 @@ function EmptyState({ onBrowseCatalog }: { onBrowseCatalog: () => void }) {
 }
 
 /**
- * The servers AgentMan wrote into mcp.json: status, tools, enable switch, test and remove. `servers`
+ * The servers OMP-UI wrote into mcp.json: status, tools, enable switch, test and remove. `servers`
  * is null while the first load runs. Tests are owned by the page (so "Test all" shows here too).
  */
 export function McpServerList({

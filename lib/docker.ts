@@ -55,7 +55,7 @@ function dockerBin(): string {
   return process.env.DOCKER_BIN?.trim() || "docker";
 }
 
-/** DATA_DIR/compose: one folder per compose project created from AgentMan. */
+/** DATA_DIR/compose: one folder per compose project created from OMP-UI. */
 export function composeRoot(): string {
   return path.join(dataDir(), "compose");
 }
@@ -243,7 +243,7 @@ export function explainDockerError(stderr: string, code?: string | number | null
   if (code === "EACCES") return "Can't run `docker`: permission denied.";
   const text = stderr.trim();
   if (/permission denied.*docker(\.sock|\s+daemon\s+socket)/i.test(text)) {
-    return "No access to the Docker socket. Add the user running AgentMan to the docker group, then restart AgentMan.";
+    return "No access to the Docker socket. Add the user running OMP-UI to the docker group, then restart OMP-UI.";
   }
   if (/cannot connect to the docker daemon|is the docker daemon running|docker daemon is not running/i.test(text)) {
     return "The Docker daemon is not running. Start it on this server.";
@@ -486,7 +486,7 @@ interface RawNetwork {
   Scope: string;
 }
 
-/** Project folders created from AgentMan (DATA_DIR/compose/<name>/compose.yaml). */
+/** Project folders created from OMP-UI (DATA_DIR/compose/<name>/compose.yaml). */
 function managedProjects(): string[] {
   try {
     return fs
@@ -863,7 +863,7 @@ async function listComposeProjects(): Promise<RawComposeProject[]> {
   return composeLsJson(result.stdout);
 }
 
-/** `-p <name> -f <file>…` for a project: AgentMan's own folder first, else what compose recorded. */
+/** `-p <name> -f <file>…` for a project: OMP-UI's own folder first, else what compose recorded. */
 async function composeTarget(name: string): Promise<{ args: string[]; files: string[]; managed: boolean }> {
   const managedFile = managedComposeFile(name);
   if (fs.existsSync(managedFile)) {
@@ -986,7 +986,7 @@ export async function composeAction(
   });
 }
 
-/** `down` (optionally removing volumes) and, for AgentMan projects, delete their folder. */
+/** `down` (optionally removing volumes) and, for OMP-UI projects, delete their folder. */
 export async function removeComposeProject(
   name: string,
   removeVolumes: boolean,

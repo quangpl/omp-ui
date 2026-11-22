@@ -20,7 +20,7 @@ export interface ChatAuthorizedUser {
   platform: ChatPlatform;
   userId: string;
   userName: string;
-  /** The chat the user last logged in from; "AgentMan connected" goes there. */
+  /** The chat the user last logged in from; "OMP-UI connected" goes there. */
   chatId: string;
   /** The omp-ui account (users table id) the chat user acts as. */
   accountId: string;
@@ -231,7 +231,7 @@ export async function authorizeUser(
   user: Omit<ChatAuthorizedUser, "accountEpoch" | "epoch" | "authorizedAt">,
 ): Promise<void> {
   const [epoch, account] = await Promise.all([currentTokenEpoch(), repo.getUserAuth(user.accountId)]);
-  if (!account?.isActive) throw new Error("This AgentMan account is no longer available.");
+  if (!account?.isActive) throw new Error("This OMP-UI account is no longer available.");
   await updateChatState(repo, (state) => {
     state.authorized = state.authorized.filter((u) => !(u.platform === user.platform && u.userId === user.userId));
     state.authorized.push({ ...user, accountEpoch: account.tokenEpoch, epoch, authorizedAt: new Date().toISOString() });

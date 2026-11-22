@@ -1,4 +1,4 @@
-// Server-only scheduled cleanup of AgentMan's own data (Settings → Cleanup), behind
+// Server-only scheduled cleanup of OMP-UI's own data (Settings → Cleanup), behind
 // `GET|POST /api/v1/settings/cleanup`. Runs the lib/maintenance.ts cleanups chosen in the settings
 // weekly, monthly or on demand; Docker prunes stay manual on the Maintenance page. The outcome
 // of the last run and the schedule's anchor persist in the settings table under `cleanup_state`.

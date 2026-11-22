@@ -1,5 +1,5 @@
 #!/bin/sh
-# AgentMan launcher: forwards everything to the Node CLI in bin/omp-ui.mjs.
+# OMP-UI launcher: forwards everything to the Node CLI in bin/omp-ui.mjs.
 #   ./omp-ui up        set up, install, build and start (one command)
 #   ./omp-ui --help    all commands
 set -e

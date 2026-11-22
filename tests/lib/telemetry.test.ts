@@ -167,7 +167,7 @@ describe("telemetry exporter", () => {
     expect(headers["content-type"]).toBe("application/json");
     expect(headers["x-api-key"]).toBe("abc 123");
     expect(headers["x-team"]).toBe("core");
-    expect(attr(body.resourceSpans[0]!.resource, "service.name")).toBe("agentman");
+    expect(attr(body.resourceSpans[0]!.resource, "service.name")).toBe("omp-ui");
 
     const spans = spansOf(body);
     const root = spans.find((s) => !s.parentSpanId)!;
@@ -180,16 +180,16 @@ describe("telemetry exporter", () => {
     expect(attr(root, "gen_ai.operation.name")).toBe("invoke_agent");
     expect(attr(root, "gen_ai.agent.name")).toBe("omp");
     expect(attr(root, "gen_ai.request.model")).toBe("anthropic/claude-sonnet-4-5");
-    expect(attr(root, "agentman.task.id")).toBe("task-1");
-    expect(attr(root, "agentman.board.id")).toBe("board-1");
-    expect(attr(root, "agentman.run.id")).toBe("run-1");
-    expect(attr(root, "agentman.run.status")).toBe("succeeded");
+    expect(attr(root, "omp_ui.task.id")).toBe("task-1");
+    expect(attr(root, "omp_ui.board.id")).toBe("board-1");
+    expect(attr(root, "omp_ui.run.id")).toBe("run-1");
+    expect(attr(root, "omp_ui.run.status")).toBe("succeeded");
     // The whole run's spend: main session (1.5) plus the scout subagent (0.25).
-    expect(attr(root, "agentman.cost_usd")).toBe(1.75);
-    expect(attr(root, "agentman.session.cost_usd")).toBe(1.5);
-    expect(attr(root, "agentman.session.tokens")).toBe("30000");
-    expect(attr(root, "agentman.subagents.tokens")).toBe("1200");
-    expect(attr(root, "agentman.context.tokens")).toBe("5000");
+    expect(attr(root, "omp_ui.cost_usd")).toBe(1.75);
+    expect(attr(root, "omp_ui.session.cost_usd")).toBe(1.5);
+    expect(attr(root, "omp_ui.session.tokens")).toBe("30000");
+    expect(attr(root, "omp_ui.subagents.tokens")).toBe("1200");
+    expect(attr(root, "omp_ui.context.tokens")).toBe("5000");
     expect(attr(root, "error.type")).toBeUndefined();
     expect(root.events?.map((e) => [e.name, attr(e, "exception.message")])).toEqual([["exception", "Tool crashed"]]);
 
@@ -203,13 +203,13 @@ describe("telemetry exporter", () => {
     expect([tools[0]!.startTimeUnixNano, tools[0]!.endTimeUnixNano]).toEqual([`${T0 + 1_000}000000`, `${T0 + 3_000}000000`]);
     expect(tools[1]!.endTimeUnixNano).toBe(`${T0 + 7_000}000000`);
     expect(attr(tools[0]!, "gen_ai.tool.name")).toBe("bash");
-    expect(attr(tools[0]!, "agentman.tool.detail")).toBe("pnpm test");
+    expect(attr(tools[0]!, "omp_ui.tool.detail")).toBe("pnpm test");
 
     const sub = spans.find((s) => s.name === "invoke_agent scout")!;
     expect(sub.parentSpanId).toBe(root.spanId);
     expect(sub.startTimeUnixNano).toBe(`${T0 + 4_000}000000`);
     expect(attr(sub, "gen_ai.request.model")).toBe("anthropic/haiku");
-    expect(attr(sub, "agentman.subagent.tokens")).toBe("1200");
+    expect(attr(sub, "omp_ui.subagent.tokens")).toBe("1200");
   });
 
   it("marks a failed run as an error", async () => {
@@ -218,7 +218,7 @@ describe("telemetry exporter", () => {
     expect(requests).toHaveLength(1);
     const root = spansOf(requests[0]!.body).find((s) => !s.parentSpanId)!;
     expect(root.status).toEqual({ code: 2, message: "omp exited with code 1" });
-    expect(attr(root, "agentman.run.status")).toBe("failed");
+    expect(attr(root, "omp_ui.run.status")).toBe("failed");
     expect(attr(root, "error.type")).toBe("agent_failed");
     expect(attr(root, "error.message")).toBe("omp exited with code 1");
   });
@@ -245,7 +245,7 @@ describe("exportTestSpan", () => {
   it("sends one span and reports the collector's answer", async () => {
     await expect(exportTestSpan(endpoint)).resolves.toEqual({ ok: true, status: 200, error: null });
     expect(requests).toHaveLength(1);
-    expect(spansOf(requests[0]!.body).map((s) => s.name)).toEqual(["agentman.test"]);
+    expect(spansOf(requests[0]!.body).map((s) => s.name)).toEqual(["omp_ui.test"]);
   });
 
   it("reports failures instead of throwing", async () => {

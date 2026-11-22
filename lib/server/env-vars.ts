@@ -66,7 +66,7 @@ function mutate(repo: Repository, fn: (store: Store) => void): Promise<EnvVarsRe
 
 function badKey(key: string): string | null {
   if (!ENV_KEY_PATTERN.test(key)) return "must match [A-Za-z_][A-Za-z0-9_]*";
-  if (SECRET_ENV_KEYS.includes(key) || key.startsWith("OMP_UI_")) return "is reserved for AgentMan";
+  if (SECRET_ENV_KEYS.includes(key) || key.startsWith("OMP_UI_")) return "is reserved for OMP-UI";
   return null;
 }
 

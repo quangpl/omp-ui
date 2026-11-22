@@ -19,7 +19,7 @@ export interface ChatBotInfo {
   applicationId?: string;
   /** Discord only: hex Ed25519 public key that signs interaction webhooks. */
   publicKey?: string;
-  /** Discord only: user id of the application owner (DMed "AgentMan connected" on connect). */
+  /** Discord only: user id of the application owner (DMed "OMP-UI connected" on connect). */
   ownerId?: string;
 }
 

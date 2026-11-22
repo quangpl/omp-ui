@@ -38,8 +38,8 @@ import {
 /** Path of the Telegram webhook route; a webhook URL given as a base gets it appended. */
 const TELEGRAM_WEBHOOK_PATH = "/api/v1/chat/telegram/webhook";
 const MAX_TOKEN_LENGTH = 512;
-const CONNECTED_TEXT = "AgentMan connected ✅ — just tell me what you want, e.g. \"show my boards\".";
-const OWNER_TEXT = "AgentMan connected ✅ — send /login <username> <password> here to take control.";
+const CONNECTED_TEXT = "OMP-UI connected ✅ — just tell me what you want, e.g. \"show my boards\".";
+const OWNER_TEXT = "OMP-UI connected ✅ — send /login <username> <password> here to take control.";
 
 type DiscordAdapter = ChatAdapter & { sendDirect(userId: string, text: string): Promise<void> };
 type TelegramWebhook = { url: string; secret: string } | null;

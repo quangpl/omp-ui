@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Self-healing supervisor for the AgentMan server:
+// Self-healing supervisor for the OMP-UI server:
 //   node bin/supervisor.mjs <command> [args…]        e.g. node bin/supervisor.mjs node server.js
 //
 // - Restarts the server whenever it exits unexpectedly (crash, OOM kill, force restart below),

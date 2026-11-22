@@ -336,7 +336,7 @@ export async function gitStatus(
 /**
  * Discard every uncommitted change in `folder`: `git reset --hard HEAD` restores tracked and
  * staged files, `git clean -fd` deletes untracked files and directories. Unpushed commits, git
- * checkpoints (refs/agentman/…) and ignored files are left alone.
+ * checkpoints (refs/omp-ui/…) and ignored files are left alone.
  */
 export async function discardChanges(folder: string): Promise<void> {
   return withFolderLock(folder, async () => {
@@ -533,7 +533,7 @@ function label(folder: string): string {
 async function identityArgs(folder: string): Promise<string[]> {
   const email = await git(folder, ["config", "user.email"]);
   if (email.ok && email.stdout.trim()) return [];
-  return ["-c", "user.name=AgentMan", "-c", "user.email=agentman@localhost"];
+  return ["-c", "user.name=OMP-UI", "-c", "user.email=omp-ui@localhost"];
 }
 
 /** Commit everything if the tree is dirty; returns the new commit sha or null. */
@@ -760,7 +760,7 @@ async function pushResolvedChanges(
 ): Promise<string> {
   const patches = await taskChangePatches(folder, input.taskId);
   const top = (await git(folder, ["rev-parse", "--show-toplevel"])).stdout.trim();
-  const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "agentman-pr-"));
+  const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-ui-pr-"));
   const wt = path.join(tmp, "wt");
   const must = async (args: string[], timeout = QUICK_TIMEOUT_MS) => {
     const res = await git(wt, args, timeout);

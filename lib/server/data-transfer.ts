@@ -1,4 +1,4 @@
-// Settings → Data transfer: move a whole AgentMan server to another machine. An export is one
+// Settings → Data transfer: move a whole OMP-UI server to another machine. An export is one
 // `.tar.gz` holding manifest.json, every database table as JSON lines of driver-independent domain
 // records (db/<table>.jsonl, so an export from SQLite imports into PostgreSQL or MongoDB and back),
 // DATA_DIR/files (card and project shared files) and DATA_DIR/credentials.key (the key that seals
@@ -47,7 +47,7 @@ import {
 } from "@/lib/types";
 import { APP_VERSION } from "@/lib/version";
 
-const FORMAT = "agentman-data";
+const FORMAT = "omp-ui-data";
 /** Bump when an older server could no longer read what this one writes. */
 const FORMAT_VERSION = 1;
 const MANIFEST = "manifest.json";
@@ -151,7 +151,7 @@ async function writeTable(repo: Repository, table: DataTable, file: string): Pro
 
 /** Write an export of everything `repo` and DATA_DIR hold to `file` (a `.tar.gz`). */
 async function writeArchive(repo: Repository, file: string): Promise<Manifest> {
-  const staging = await fs.mkdtemp(path.join(os.tmpdir(), "agentman-export-"));
+  const staging = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ui-export-"));
   try {
     await fs.mkdir(path.join(staging, "db"));
     const counts = {} as Record<DataTable, number>;
@@ -188,8 +188,8 @@ async function writeArchive(repo: Repository, file: string): Promise<Manifest> {
 
 /** GET /data-transfer/export: the export as a download; the temporary archive is deleted once sent. */
 export async function exportResponse(repo: Repository): Promise<Response> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "agentman-download-"));
-  const name = `agentman-data-${fileStamp(new Date())}.tar.gz`;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ui-download-"));
+  const name = `omp-ui-data-${fileStamp(new Date())}.tar.gz`;
   const file = path.join(dir, name);
   try {
     await writeArchive(repo, file);
@@ -502,7 +502,7 @@ function parseManifest(text: string): Manifest {
     throw new HttpError(400, "Invalid archive: manifest.json is not JSON");
   }
   const m = raw as Partial<Manifest> | null;
-  if (!m || m.format !== FORMAT) throw new HttpError(400, "This is not an AgentMan data export");
+  if (!m || m.format !== FORMAT) throw new HttpError(400, "This is not an OMP-UI data export");
   if (typeof m.version !== "number" || m.version < 1 || m.version > FORMAT_VERSION) {
     throw new HttpError(400, `The export has format version ${String(m.version)}; this server reads up to ${FORMAT_VERSION}. Update this server first.`);
   }
@@ -524,7 +524,7 @@ async function readArchive(archive: string, dir: string): Promise<{ manifest: Ma
   try {
     manifestText = await fs.readFile(path.join(dir, MANIFEST), "utf8");
   } catch {
-    throw new HttpError(400, "This is not an AgentMan data export (manifest.json is missing)");
+    throw new HttpError(400, "This is not an OMP-UI data export (manifest.json is missing)");
   }
   const manifest = parseManifest(manifestText);
   const data = {} as Record<DataTable, unknown[]>;

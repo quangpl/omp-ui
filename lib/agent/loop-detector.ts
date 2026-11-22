@@ -133,7 +133,7 @@ export class LoopDetector {
 /** The steer message sent on the first detection; the next loop fails the run. */
 export function loopSteerMessage(detection: LoopDetection): string {
   return [
-    `AgentMan loop detection: you are repeating yourself (${detection.summary}).`,
+    `OMP-UI loop detection: you are repeating yourself (${detection.summary}).`,
     "Repeating it will not give a different result. Try a different approach now, or if you are",
     "blocked, stop and explain what is blocking you. If you keep looping, this run will be stopped.",
   ].join(" ");

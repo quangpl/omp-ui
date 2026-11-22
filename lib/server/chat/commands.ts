@@ -1,6 +1,6 @@
 // Chat messages, identical on every platform. Only three commands: `/login`, `/logout`, `/stop`;
 // everything else an authorized user writes goes to the chat assistant (assistant.ts), which
-// controls AgentMan in natural language. Adapters hand every received message to `handleChatMessage`.
+// controls OMP-UI in natural language. Adapters hand every received message to `handleChatMessage`.
 import { DEFAULT_ADMIN_USERNAME, authenticate } from "@/lib/auth";
 import { scopeRepo } from "@/lib/db/scoped";
 import { cancelChatAssistant, forgetChatConversation, resolveCard, runChatAssistant } from "./assistant";
@@ -14,14 +14,14 @@ export const CHAT_COMMANDS: readonly { name: string; args: string; description: 
   {
     name: "login",
     args: "[username] <password>",
-    description: "Connect this chat with your AgentMan account (username or email; default: admin)",
+    description: "Connect this chat with your OMP-UI account (username or email; default: admin)",
   },
-  { name: "logout", args: "", description: "Disconnect this chat from AgentMan" },
+  { name: "logout", args: "", description: "Disconnect this chat from OMP-UI" },
   { name: "stop", args: "[cardId]", description: "Stop a card's agent, or cancel the current request" },
 ];
 
 const LOGIN_USAGE = "/login <username> <password>";
-const LOGIN_HINT = `🔒 Send ${LOGIN_USAGE} first (your AgentMan account controls what you can see and do).`;
+const LOGIN_HINT = `🔒 Send ${LOGIN_USAGE} first (your OMP-UI account controls what you can see and do).`;
 const EXAMPLES = [
   "show my boards",
   "create a card on omp-ui to fix the login page and start it",
@@ -96,7 +96,7 @@ function parseCommand(text: string): { name: string; arg: string } | null {
 
 function introText(authorized: boolean): string {
   const lines = [
-    "Tell me in plain words what you want AgentMan to do: look at boards and cards, create cards, start or stop agents, send feedback to a card's agent. Started cards stream their output here.",
+    "Tell me in plain words what you want OMP-UI to do: look at boards and cards, create cards, start or stop agents, send feedback to a card's agent. Started cards stream their output here.",
     "",
     "For example:",
     ...EXAMPLES.map((example) => `• ${example}`),
@@ -186,7 +186,7 @@ async function login(env: ChatEnv, msg: IncomingChatMessage, arg: string): Promi
   });
   recheckChatAccess(msg.platform, msg.userId);
   await msg.reply(
-    `AgentMan connected ✅ as ${user.username} — just tell me what you want, e.g. "show my boards".${warning}`,
+    `OMP-UI connected ✅ as ${user.username} — just tell me what you want, e.g. "show my boards".${warning}`,
     { ephemeral: true },
   );
 }

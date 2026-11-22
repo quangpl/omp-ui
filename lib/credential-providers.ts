@@ -648,7 +648,7 @@ export const CREDENTIAL_PROVIDERS: readonly CredentialProvider[] = [
       args: ["-y", "@brave/brave-search-mcp-server"],
       source: "https://github.com/brave/brave-search-mcp-server",
     },
-    healthCheck: "GET https://api.search.brave.com/res/v1/web/search?q=agentman&count=1 (X-Subscription-Token header)",
+    healthCheck: "GET https://api.search.brave.com/res/v1/web/search?q=omp-ui&count=1 (X-Subscription-Token header)",
   },
   {
     id: "tavily",

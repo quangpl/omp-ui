@@ -152,7 +152,7 @@ export function McpConnectDialog({
               <DialogHeader className="px-5 pt-5 pr-12 pb-4 max-md:pr-14">
                 <DialogTitle>Connect {shown.providerId}</DialogTitle>
                 <DialogDescription>
-                  This version of AgentMan has no MCP server template for {shown.providerId}.
+                  This version of OMP-UI has no MCP server template for {shown.providerId}.
                 </DialogDescription>
               </DialogHeader>
               <DialogFooter className={FOOTER_CLASS}>
@@ -330,7 +330,7 @@ function ConnectForm({
             {entry.requires && (
               <p className="flex items-start gap-1.5">
                 <ServerIcon className="mt-px size-3.5 shrink-0" aria-hidden="true" />
-                Runs on the AgentMan server with {entry.requires}.
+                Runs on the OMP-UI server with {entry.requires}.
               </p>
             )}
           </div>

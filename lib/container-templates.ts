@@ -1,4 +1,4 @@
-// One-click apps that ship with AgentMan: popular images from Docker Hub with sensible defaults
+// One-click apps that ship with OMP-UI: popular images from Docker Hub with sensible defaults
 // (ports, volumes, env) and a few common compose stacks. The Containers page merges these with
 // the Portainer app catalog fetched at runtime (see lib/docker-catalog.ts).
 import type { ContainerTemplate } from "@/lib/docker-types";

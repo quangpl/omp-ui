@@ -1,9 +1,9 @@
 // Server-only store behind `/api/v1/mcp/**` (the /mcp page). Each connected MCP server is a record
 // in the settings table under `mcp_servers` (name, provider, backing credential, enabled, last
 // probe) and an entry in omp's user MCP config (`<omp agent dir>/mcp.json`), so every omp agent
-// AgentMan starts gets its tools. Secrets never reach mcp.json or the store: entries reference
+// OMP-UI starts gets its tools. Secrets never reach mcp.json or the store: entries reference
 // them as `${OMPUI_MCP_<SERVER>_<FIELD>}` placeholders and the decrypted values go to the agent
-// environment cache in lib/server/mcp-env.ts. Entries AgentMan does not manage and unknown
+// environment cache in lib/server/mcp-env.ts. Entries OMP-UI does not manage and unknown
 // top-level keys in mcp.json are kept verbatim; an unparsable mcp.json is reported, never overwritten.
 //
 // NOTE: like credentials.ts, never use an import from lib/server/http.ts at module evaluation time.
@@ -130,7 +130,7 @@ function envVarName(server: string, fieldKey: string): string {
 }
 
 /**
- * The entry AgentMan writes for `record`: secrets as placeholders (only those the credential holds,
+ * The entry OMP-UI writes for `record`: secrets as placeholders (only those the credential holds,
  * plus required ones), switched off when disabled or when its credential is deleted or unreadable.
  */
 function fileEntry(record: StoredMcpServer, credential: CredentialValues | undefined): McpServerConfig {
@@ -428,7 +428,7 @@ async function probeAndStore(repo: Repository, record: StoredMcpServer, credenti
 // ---------------------------------------------------------------------------------------------
 // API
 
-/** Every managed server with its status, plus the mcp.json entries AgentMan does not manage. */
+/** Every managed server with its status, plus the mcp.json entries OMP-UI does not manage. */
 export async function listMcpServers(repo: Repository): Promise<McpServersResponse> {
   return response(await loadState(repo));
 }

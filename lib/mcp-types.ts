@@ -1,4 +1,4 @@
-// MCP servers AgentMan connects to every agent (the /mcp page). Each connected server is one entry
+// MCP servers OMP-UI connects to every agent (the /mcp page). Each connected server is one entry
 // in omp's user MCP config (`<omp agent dir>/mcp.json`) backed by a saved credential (the
 // /credentials store). Shared by the client and the server: no Node imports here.
 
@@ -6,7 +6,7 @@ import type { CredentialProviderId, CredentialSummary } from "@/lib/credential-t
 
 /**
  * Secrets never reach mcp.json: an entry references them as `${OMPUI_MCP_<SERVER>_<FIELD>}`
- * placeholders (omp expands `${VAR}` when it loads the file), and AgentMan puts the decrypted
+ * placeholders (omp expands `${VAR}` when it loads the file), and OMP-UI puts the decrypted
  * values into the environment of every omp process it starts. Not `OMP_UI_`: `childEnv` strips that.
  */
 export const MCP_ENV_PREFIX = "OMPUI_MCP_";
@@ -21,13 +21,13 @@ export interface McpCatalogEntry {
   popular: boolean;
   /** Short capability tags, e.g. ["Issues", "Pull requests", "Code search"]. */
   capabilities: string[];
-  /** What the AgentMan host must have installed, e.g. "Node.js (npx)" or "Python (uvx)"; absent for hosted servers. */
+  /** What the OMP-UI host must have installed, e.g. "Node.js (npx)" or "Python (uvx)"; absent for hosted servers. */
   requires?: string;
   /** One line shown in the connect dialog, e.g. which scopes the token needs. */
   setupHint?: string;
 }
 
-/** One `mcpServers` entry exactly as AgentMan writes it to omp's mcp.json. */
+/** One `mcpServers` entry exactly as OMP-UI writes it to omp's mcp.json. */
 export type McpServerConfig =
   | {
       type: "stdio";
@@ -87,7 +87,7 @@ export interface McpServerSummary {
   /** Why it is failing / in error, else null. */
   statusMessage: string | null;
   transport: "stdio" | "http";
-  /** The entry AgentMan writes for it (secrets as placeholders, safe to show and copy). */
+  /** The entry OMP-UI writes for it (secrets as placeholders, safe to show and copy). */
   config: McpServerConfig;
   /** mcp.json currently holds exactly `config` under `name`. */
   synced: boolean;
@@ -97,7 +97,7 @@ export interface McpServerSummary {
   updatedAt: string;
 }
 
-/** An mcp.json entry AgentMan does not manage (added by hand, `/mcp add`, …). Read-only. */
+/** An mcp.json entry OMP-UI does not manage (added by hand, `/mcp add`, …). Read-only. */
 export interface McpExternalServer {
   name: string;
   /** "stdio" | "http" | "sse", or "unknown". */

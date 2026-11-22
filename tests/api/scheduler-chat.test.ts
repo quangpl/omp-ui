@@ -63,7 +63,7 @@ function doneOf(events: SchedulerChatEvent[]): { draft: SchedulerDraft | null; r
 }
 
 const propose = (args: Record<string, unknown>) =>
-  calls({ toolName: "agentman_propose_scheduler", arguments: { prompt: "Update the dependencies", cron: NEW_YEAR, ...args } });
+  calls({ toolName: "omp_ui_propose_scheduler", arguments: { prompt: "Update the dependencies", cron: NEW_YEAR, ...args } });
 
 beforeAll(async () => {
   await freshEnv();
@@ -163,7 +163,7 @@ describe("POST /schedulers/chat", () => {
       .map((line) => JSON.parse(line) as { kind: string; prompt?: string })
       .filter((entry) => entry.kind === "helper" && entry.prompt?.includes("make it 3:00"))
       .at(-1)?.prompt;
-    expect(prompt).toMatch(/^You are AgentMan's scheduler assistant/);
+    expect(prompt).toMatch(/^You are OMP-UI's scheduler assistant/);
     expect(prompt).toContain("the user's time zone: Europe/Berlin");
     expect(prompt).toContain(`Default project: Shop (${shop.id.slice(0, 8)})`);
     expect(prompt).toContain(`Blog (${blog.id.slice(0, 8)}, ${blog.workdir})`);
@@ -192,7 +192,7 @@ describe("chat assistant scheduler tools", () => {
     ) as Record<string, Record<string, unknown>>;
 
   it("creates, updates (pause, reschedule) and lists schedulers, echoing the schedule", async () => {
-    const { created } = await run("agentman_create_scheduler", {
+    const { created } = await run("omp_ui_create_scheduler", {
       prompt: "Triage new issues",
       cron: NEW_YEAR,
       timezone: "Europe/Berlin",
@@ -209,24 +209,24 @@ describe("chat assistant scheduler tools", () => {
     expect(created.nextRuns).toHaveLength(3);
     const id = created.id as string;
 
-    const { updated } = await run("agentman_update_scheduler", { schedulerId: id.slice(0, 8), enabled: false, cron: "0 9 1 1 *" });
+    const { updated } = await run("omp_ui_update_scheduler", { schedulerId: id.slice(0, 8), enabled: false, cron: "0 9 1 1 *" });
     expect(updated).toMatchObject({ id, enabled: false, cron: "0 9 1 1 *", schedule: "At 09:00 on January 1" });
     const saved = await (await getRepo()).getScheduler(id);
     expect(saved).toMatchObject({ enabled: false, nextRunAt: null });
 
     // By exact name too.
-    const { updated: resumed } = await run("agentman_update_scheduler", { schedulerId: "triage new issues", enabled: true });
+    const { updated: resumed } = await run("omp_ui_update_scheduler", { schedulerId: "triage new issues", enabled: true });
     expect(resumed).toMatchObject({ enabled: true });
 
-    const { schedulers } = (await run("agentman_list_schedulers", { board: "Blog" })) as unknown as {
+    const { schedulers } = (await run("omp_ui_list_schedulers", { board: "Blog" })) as unknown as {
       schedulers: Record<string, unknown>[];
     };
     expect(schedulers.map((s) => s.id)).toEqual([id]);
   });
 
   it("refuses schedules that never fire and unknown schedulers", async () => {
-    await expect(run("agentman_create_scheduler", { prompt: "x", cron: "0 0 30 2 *" })).rejects.toThrow(/never matches/);
-    await expect(run("agentman_update_scheduler", { schedulerId: "nope-nope", enabled: false })).rejects.toThrow(
+    await expect(run("omp_ui_create_scheduler", { prompt: "x", cron: "0 0 30 2 *" })).rejects.toThrow(/never matches/);
+    await expect(run("omp_ui_update_scheduler", { schedulerId: "nope-nope", enabled: false })).rejects.toThrow(
       /No scheduler matches/,
     );
   });

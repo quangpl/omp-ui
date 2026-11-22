@@ -15,7 +15,7 @@ const IS_LINUX = process.platform === "linux";
 const TEST_TIMEOUT = 15_000;
 const STOP_TIMEOUT_MS = 1_000;
 
-// Fake AgentMan server. Every instance appends its pid to $FAKE_DIR/pids. FAKE_MODE applies to the
+// Fake OMP-UI server. Every instance appends its pid to $FAKE_DIR/pids. FAKE_MODE applies to the
 // first instance only (later ones are always healthy):
 //   healthy        — answers {"ok":true}
 //   flaky          — answers once, then 500 {"ok":false,"error":"db down"}

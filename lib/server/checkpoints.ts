@@ -1,5 +1,5 @@
 // Git checkpoints: before each run (Settings → gitCheckpoints) every git project folder of the card
-// is snapshotted as a commit under refs/agentman/checkpoints/<taskId>/<id>, so a run that wrecks
+// is snapshotted as a commit under refs/omp-ui/checkpoints/<taskId>/<id>, so a run that wrecks
 // the files can be rolled back from the card. Snapshots go through a temporary index file: the
 // user's branch, index, stash and working tree are never touched, and ignored files are skipped.
 import { execFile } from "node:child_process";
@@ -13,13 +13,13 @@ import type { TaskCheckpoint } from "@/lib/types";
 /** `git add -A` hashes every file whose stat data the temporary index lacks (no seed index). */
 const GIT_TIMEOUT_MS = 2 * 60_000;
 const MAX_BUFFER = 64 * 1024 * 1024;
-const REF_ROOT = "refs/agentman/checkpoints";
+const REF_ROOT = "refs/omp-ui/checkpoints";
 /** Newest snapshots kept per card and repository; older refs are deleted. */
 export const MAX_CHECKPOINTS_PER_TASK = 20;
 /** Task ids and checkpoint ids become ref name segments: keep them to safe characters. */
 export const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-/** Snapshots are AgentMan's own commits: no identity lookup, never signed (no prompts). */
-export const COMMIT_CONFIG = ["-c", "user.name=AgentMan", "-c", "user.email=agentman@localhost", "-c", "commit.gpgsign=false"];
+/** Snapshots are OMP-UI's own commits: no identity lookup, never signed (no prompts). */
+export const COMMIT_CONFIG = ["-c", "user.name=OMP-UI", "-c", "user.email=omp-ui@localhost", "-c", "commit.gpgsign=false"];
 const GITLINK_MODE = "160000";
 
 export const BEFORE_RESTORE_LABEL = "Before restore";
@@ -85,7 +85,7 @@ const META_KEYS = { task: "Task", run: "Run", folder: "Folder", label: "Label", 
 function commitMessage(folder: string, meta: CheckpointMeta, createdAt: string, filesChanged: number): string {
   const label = meta.label.replace(/\s+/g, " ").trim();
   return [
-    `AgentMan checkpoint: ${label}`,
+    `OMP-UI checkpoint: ${label}`,
     "",
     `${META_KEYS.task}: ${meta.taskId}`,
     `${META_KEYS.run}: ${meta.runId ?? "-"}`,
@@ -182,7 +182,7 @@ async function snapshotTreeLocked(folder: string): Promise<{ tree: string; head:
   const headResult = await git(folder, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
   const head = headResult.ok ? headResult.stdout.trim() : null;
 
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "agentman-checkpoint-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ui-checkpoint-"));
   try {
     // A private index: `git add -A` then records the folder's tracked and untracked files (minus
     // ignored ones) as they are in the working tree, without disturbing what the user has staged.
@@ -336,7 +336,7 @@ export async function restoreCheckpoint(folder: string, taskId: string, id: stri
     for (const file of removed) await removeFile(dir, file);
     if (restored.length > 0) {
       for (const file of restored) insideFolder(dir, file);
-      const list = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "agentman-restore-")), "paths");
+      const list = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "omp-ui-restore-")), "paths");
       try {
         await fs.writeFile(list, restored.join("\0"));
         // Only the changed paths are written (untouched files keep their mtimes); the index stays.

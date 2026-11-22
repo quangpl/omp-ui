@@ -121,7 +121,7 @@ function scrollToId(id: string) {
   document.getElementById(id)?.scrollIntoView({ block: "start", behavior: reduced ? "auto" : "smooth" });
 }
 
-/** Read-only list of the mcp.json entries AgentMan does not manage. */
+/** Read-only list of the mcp.json entries OMP-UI does not manage. */
 function ExternalServers({ servers }: { servers: McpExternalServer[] }) {
   const [open, setOpen] = useState(false);
   return (
@@ -136,8 +136,8 @@ function ExternalServers({ servers }: { servers: McpExternalServer[] }) {
       </Collapsible.Trigger>
       <Collapsible.Content className="px-3 pb-3 sm:px-4 sm:pb-4">
         <p className="mb-2 text-xs text-pretty text-muted-foreground">
-          Added outside AgentMan (by hand, <code className="font-mono">/mcp add</code>, other tools). Agents load them
-          too; AgentMan leaves them untouched.
+          Added outside OMP-UI (by hand, <code className="font-mono">/mcp add</code>, other tools). Agents load them
+          too; OMP-UI leaves them untouched.
         </p>
         <ul className="divide-y rounded-xl bg-card ring-1 ring-foreground/10" aria-label="Other servers in mcp.json">
           {servers.map((server) => (
@@ -300,7 +300,7 @@ export default function McpPage() {
                 ) : (
                   "omp's mcp.json"
                 )}{" "}
-                and load in every agent AgentMan starts; running agents pick them up on their next run.
+                and load in every agent OMP-UI starts; running agents pick them up on their next run.
               </p>
             </div>
 

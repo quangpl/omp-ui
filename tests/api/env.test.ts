@@ -14,7 +14,7 @@ describe("/env", () => {
   });
   afterAll(teardown);
 
-  it("rejects invalid keys and AgentMan's own secrets", async () => {
+  it("rejects invalid keys and OMP-UI's own secrets", async () => {
     for (const key of ["1BAD", "has space", "AUTH_SECRET", "OMP_UI_X"]) {
       const res = await api(envRoute, "PUT", "/env", { body: { vars: { [key]: "x" } } });
       expect(res.status, key).toBe(400);

@@ -60,7 +60,7 @@ export const OMP_CONFIG_SCHEMA: readonly OmpConfigField[] = [
   role(
     "default",
     "Default model",
-    "Used unless a board or AgentMan's default model picks another. A thinking level set here overrides the default thinking level.",
+    "Used unless a board or OMP-UI's default model picks another. A thinking level set here overrides the default thinking level.",
   ),
   role("smol", "Fast model (smol)", "Lightweight work."),
   role("slow", "Reasoning model (slow)", "Thorough analysis."),

@@ -250,7 +250,7 @@ export function RestartServerDialog() {
                 ) : (
                   <>
                     <p>
-                      Stops AgentMan, rebuilds it from the current sources and starts it again. The app is unavailable
+                      Stops OMP-UI, rebuilds it from the current sources and starts it again. The app is unavailable
                       for about a minute.
                     </p>
                     {status.running > 0 && (

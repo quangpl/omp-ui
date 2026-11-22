@@ -39,8 +39,8 @@ const MAX_RUNS = 200;
 const MAX_TOOLS_PER_RUN = 1_000;
 const MAX_ERRORS_PER_RUN = 100;
 const MAX_ATTR_TEXT = 500;
-const SCOPE_NAME = "agentman";
-const SERVICE_NAME = "agentman";
+const SCOPE_NAME = "omp-ui";
+const SERVICE_NAME = "omp-ui";
 const AGENT_NAME = "omp";
 
 /** OTLP span status codes. */
@@ -421,27 +421,27 @@ function buildRunPayload(trace: RunTrace): unknown {
       "gen_ai.operation.name": "invoke_agent",
       "gen_ai.agent.name": AGENT_NAME,
       "gen_ai.request.model": trace.model,
-      "agentman.task.id": trace.taskId,
-      "agentman.task.title": trace.title,
-      "agentman.board.id": trace.boardId,
-      "agentman.run.id": trace.runId,
-      "agentman.run.status": run.status,
+      "omp_ui.task.id": trace.taskId,
+      "omp_ui.task.title": trace.title,
+      "omp_ui.board.id": trace.boardId,
+      "omp_ui.run.id": trace.runId,
+      "omp_ui.run.status": run.status,
       "error.type": failed ? (run.status === "aborted" ? "aborted" : "agent_failed") : null,
       "error.message": errorMessage,
-      // `agentman.cost_usd` is the whole run's spend: the main omp session plus every subagent.
+      // `omp_ui.cost_usd` is the whole run's spend: the main omp session plus every subagent.
       // omp reports the session's tokens only as a total, so no gen_ai.usage.input/output split.
-      "agentman.cost_usd":
+      "omp_ui.cost_usd":
         trace.sessionUsage || costs.length > 0
           ? (trace.sessionUsage?.costUsd ?? 0) + costs.reduce((a, b) => a + b, 0)
           : null,
-      "agentman.session.cost_usd": trace.sessionUsage?.costUsd,
-      "agentman.session.tokens": trace.sessionUsage?.tokens,
-      "agentman.subagents.tokens": tokens.length > 0 ? tokens.reduce((a, b) => a + b, 0) : null,
-      "agentman.subagents.count": subagents.length || null,
-      "agentman.tools.count": trace.tools.length + trace.droppedTools || null,
-      "agentman.tools.dropped": trace.droppedTools || null,
-      "agentman.context.tokens": trace.context?.tokens,
-      "agentman.context.window": trace.context?.contextWindow || null,
+      "omp_ui.session.cost_usd": trace.sessionUsage?.costUsd,
+      "omp_ui.session.tokens": trace.sessionUsage?.tokens,
+      "omp_ui.subagents.tokens": tokens.length > 0 ? tokens.reduce((a, b) => a + b, 0) : null,
+      "omp_ui.subagents.count": subagents.length || null,
+      "omp_ui.tools.count": trace.tools.length + trace.droppedTools || null,
+      "omp_ui.tools.dropped": trace.droppedTools || null,
+      "omp_ui.context.tokens": trace.context?.tokens,
+      "omp_ui.context.window": trace.context?.contextWindow || null,
     }),
     events: trace.errors.map((e) => ({
       timeUnixNano: nanos(clamp(e.at)),
@@ -463,7 +463,7 @@ function buildRunPayload(trace: RunTrace): unknown {
       attributes: attributes({
         "gen_ai.operation.name": "execute_tool",
         "gen_ai.tool.name": tool.name,
-        "agentman.tool.detail": tool.detail,
+        "omp_ui.tool.detail": tool.detail,
       }),
       status: { code: STATUS_UNSET },
     }),
@@ -487,11 +487,11 @@ function buildRunPayload(trace: RunTrace): unknown {
         "gen_ai.agent.id": snapshot.id,
         "gen_ai.agent.description": snapshot.description,
         "gen_ai.request.model": snapshot.model,
-        "agentman.subagent.status": snapshot.status,
-        "agentman.subagent.tokens": snapshot.tokens,
-        "agentman.subagent.requests": snapshot.requests,
-        "agentman.subagent.tools.count": snapshot.toolCount,
-        "agentman.cost_usd": snapshot.cost,
+        "omp_ui.subagent.status": snapshot.status,
+        "omp_ui.subagent.tokens": snapshot.tokens,
+        "omp_ui.subagent.requests": snapshot.requests,
+        "omp_ui.subagent.tools.count": snapshot.toolCount,
+        "omp_ui.cost_usd": snapshot.cost,
         "error.type": snapshot.status === "failed" ? "subagent_failed" : null,
       }),
       status:
@@ -565,11 +565,11 @@ export async function exportTestSpan(endpoint: string): Promise<TelemetryPostRes
   const span: OtlpSpan = {
     traceId: randomBytes(16).toString("hex"),
     spanId: newSpanId(),
-    name: "agentman.test",
+    name: "omp_ui.test",
     kind: KIND_INTERNAL,
     startTimeUnixNano: nanos(now - 1),
     endTimeUnixNano: nanos(now),
-    attributes: attributes({ "agentman.test": true }),
+    attributes: attributes({ "omp_ui.test": true }),
     status: { code: STATUS_OK },
   };
   return postOtlp(endpoint.trim(), payload([span]));

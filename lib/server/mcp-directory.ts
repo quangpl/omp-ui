@@ -164,7 +164,7 @@ export function mergeEntries(lists: McpDirectoryEntry[][]): McpDirectoryEntry[] 
 
 async function fetchXml(url: string, fetchImpl: typeof fetch): Promise<string> {
   const res = await fetchImpl(url, {
-    headers: { accept: "application/xml, text/xml;q=0.9", "user-agent": "AgentMan (omp-ui)" },
+    headers: { accept: "application/xml, text/xml;q=0.9", "user-agent": "OMP-UI (omp-ui)" },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`${new URL(url).pathname} answered ${res.status}`);

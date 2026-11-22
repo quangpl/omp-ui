@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { buildPrBody } from "@/lib/pr-body";
 
-const FOOTER = "---\nCreated from AgentMan";
+const FOOTER = "---\nCreated from OMP-UI";
 
 describe("buildPrBody", () => {
   it("keeps the prose, turns the report into verification bullets and collapses the task", () => {
@@ -40,7 +40,7 @@ describe("buildPrBody", () => {
     expect(body).not.toContain("<details>");
   });
 
-  it("replaces AgentMan-relative links with their text and keeps absolute links", () => {
+  it("replaces OMP-UI-relative links with their text and keeps absolute links", () => {
     const body = buildPrBody(
       "Task",
       "See [log](/api/v1/tasks/x/files/log.txt) and [docs](https://example.com/docs).",

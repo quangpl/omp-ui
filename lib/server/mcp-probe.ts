@@ -29,7 +29,7 @@ const PROTOCOL_VERSION = "2025-06-18";
 const INITIALIZE_PARAMS = {
   protocolVersion: PROTOCOL_VERSION,
   capabilities: {},
-  clientInfo: { name: "agentman", version: "1" },
+  clientInfo: { name: "omp-ui", version: "1" },
 };
 
 /** One way of exchanging JSON-RPC messages with a server. */
@@ -231,7 +231,7 @@ class StdioTransport implements Transport {
 
   private spawnError(err: NodeJS.ErrnoException): string {
     if (err.code === "ENOENT") {
-      return `${this.config.command} not found on the AgentMan server — install it (e.g. Node.js for npx, uv for uvx)`;
+      return `${this.config.command} not found on the OMP-UI server — install it (e.g. Node.js for npx, uv for uvx)`;
     }
     return `Cannot start ${this.config.command}: ${err.message}`;
   }

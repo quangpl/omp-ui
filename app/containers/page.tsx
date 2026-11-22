@@ -425,7 +425,7 @@ export default function ContainersPage() {
     setConfirm({
       title: project.managed ? `Delete the ${project.name} stack?` : `Take ${project.name} down?`,
       description: project.managed
-        ? "Removes its containers and networks and deletes its compose file from AgentMan's data folder."
+        ? "Removes its containers and networks and deletes its compose file from OMP-UI's data folder."
         : "Removes its containers and networks. The compose file on disk is untouched.",
       confirmLabel: project.managed ? "Delete stack" : "Down",
       destructive: true,
@@ -510,7 +510,7 @@ export default function ContainersPage() {
                 retrying={refreshing}
                 onRetry={() => void manualRefresh()}
               >
-                The AgentMan server did not respond.
+                The OMP-UI server did not respond.
               </ProblemPanel>
             ) : (
               <PageSkeleton />
@@ -523,7 +523,7 @@ export default function ContainersPage() {
               retrying={refreshing}
               onRetry={() => void manualRefresh()}
             >
-              AgentMan uses the server's <code className="font-mono text-xs">docker</code> CLI. Set{" "}
+              OMP-UI uses the server's <code className="font-mono text-xs">docker</code> CLI. Set{" "}
               <code className="font-mono text-xs">DOCKER_BIN</code> to use another binary.
             </ProblemPanel>
           ) : (

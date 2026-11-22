@@ -1205,7 +1205,7 @@ describe("AgentManager collaboration and workspaces", () => {
     const [spawned] = argvEntries();
     expect(flagValues(spawned?.argv, "--cwd")).toEqual([workdir]);
     expect(git("branch", "--show-current")).toBe("feature");
-    const refs = () => git("for-each-ref", "--format=%(refname)", `refs/agentman/task-runs/${task.id}/`).split("\n");
+    const refs = () => git("for-each-ref", "--format=%(refname)", `refs/omp-ui/task-runs/${task.id}/`).split("\n");
     // The end snapshot is taken right after the run is released.
     await vi.waitFor(() => expect(refs().filter((ref) => ref.endsWith("/end"))).toHaveLength(1), { timeout: 20_000 });
     expect(refs().filter((ref) => ref.endsWith("/start"))).toHaveLength(1);

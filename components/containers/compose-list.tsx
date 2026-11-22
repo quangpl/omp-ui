@@ -52,7 +52,7 @@ export function ComposeList({
         count={projects.length > 0 ? projects.length : undefined}
         description={
           projects.length > 0
-            ? `${upCount} up · stacks created here live in AgentMan's data folder; other projects on this host are listed too`
+            ? `${upCount} up · stacks created here live in OMP-UI's data folder; other projects on this host are listed too`
             : undefined
         }
         actions={
@@ -112,7 +112,7 @@ export function ComposeList({
                       </button>
                       {p.managed && (
                         <Badge variant="secondary" className="font-normal">
-                          AgentMan
+                          OMP-UI
                         </Badge>
                       )}
                     </div>

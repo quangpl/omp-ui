@@ -360,7 +360,7 @@ export const api = {
     removeNode: (id: string) =>
       request<{ ok: true }>(`/cluster/nodes/${encodeURIComponent(id)}`, { method: "DELETE" }),
   },
-  /** Telegram / Discord bots that control AgentMan from chat (Settings → Chat integrations). */
+  /** Telegram / Discord bots that control OMP-UI from chat (Settings → Chat integrations). */
   chat: {
     status: () => request<ChatStatusResponse>("/chat/status"),
     /** Validate and store the bot token, then start the bot; 400 with the reason for a bad token. */
@@ -370,7 +370,7 @@ export const api = {
     disconnect: (platform: ChatPlatform) =>
       request<ChatPlatformStatus>(`/chat/${platform}/disconnect`, { method: "POST" }),
   },
-  /** Scheduled cleanup of AgentMan data (Settings → Cleanup); schedule and targets save via `settings.update`. */
+  /** Scheduled cleanup of OMP-UI data (Settings → Cleanup); schedule and targets save via `settings.update`. */
   cleanup: {
     status: () => request<CleanupStatus>("/settings/cleanup"),
     /** Clean up now (default: the saved targets); 409 while a cleanup is running. */
@@ -819,7 +819,7 @@ export const api = {
     composeFile: (name: string) => request<ComposeFile>(`/docker/compose/${encodeURIComponent(name)}`),
     composeLogs: (name: string, tail = 300) =>
       request<{ logs: string }>(`/docker/compose/${encodeURIComponent(name)}/logs?tail=${tail}`),
-    /** Create or redeploy an AgentMan compose project (`up -d`). */
+    /** Create or redeploy an OMP-UI compose project (`up -d`). */
     deployCompose: (spec: ComposeDeploySpec, onLine?: (line: string) => void) =>
       dockerJob("/docker/compose", { method: "POST", json: spec }, onLine),
     composeAction: (name: string, action: ComposeAction, onLine?: (line: string) => void) =>

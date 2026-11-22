@@ -1,4 +1,4 @@
-// Decrypted MCP secrets for the omp processes AgentMan starts. lib/server/mcp.ts fills the cache at
+// Decrypted MCP secrets for the omp processes OMP-UI starts. lib/server/mcp.ts fills the cache at
 // boot and after every MCP or credential change; spawn sites merge `await mcpAgentEnv()` into their
 // child environment so the `${OMPUI_MCP_…}` placeholders in omp's mcp.json resolve. No imports:
 // agent modules use this without pulling in the database or the credential store.

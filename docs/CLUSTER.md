@@ -1,4 +1,4 @@
-# Cluster mode
+# OMP-UI cluster mode
 
 Cluster mode spreads card agents over several machines. One omp-ui server is the **primary**: it keeps
 the database, serves the UI, runs the agent queue and dispatches runs. Every other machine is a

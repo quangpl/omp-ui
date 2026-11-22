@@ -61,7 +61,7 @@
 // pooled and reused across prompts via new_session. They log "helper_argv" at startup instead of
 // "argv", every prompt as a "helper" entry {argv, cwd, prompt}, and other commands as
 // "helper_command" instead of "command", so card-run assertions only see card runs. A helper prompt
-// starting with "You are AgentMan's chat assistant" (or "…scheduler assistant") is answered by
+// starting with "You are OMP-UI's chat assistant" (or "…scheduler assistant") is answered by
 // chatAssistant: it calls the host tools the message lists as `<calls>[…]</calls>` and answers
 // "Chat reply: …"; `[fake-chat:slow]` never answers, `[fake-chat:fail]` exits 1 (see chatAssistant).
 //
@@ -173,7 +173,7 @@ if (argv[0] === "login") {
 /** A pooled helper worker (summary agent, chat assistant) rather than a card run. */
 const helper = argv.includes("--no-session");
 
-/** Environment variables whose values the "argv" entry records (credentials in, AgentMan secrets out). */
+/** Environment variables whose values the "argv" entry records (credentials in, OMP-UI secrets out). */
 const LOGGED_ENV = [
   "HOME",
   "SSH_AUTH_SOCK",
@@ -461,11 +461,11 @@ function waitForHostResult(id) {
 }
 
 /**
- * The chat assistant (a helper prompt starting with "You are AgentMan's chat assistant"): takes the
+ * The chat assistant (a helper prompt starting with "You are OMP-UI's chat assistant"): takes the
  * message between the <new-message> and </new-message> lines. When it holds
- * `<calls>[{"toolName", "arguments"}]</calls>`, it reports one tool call (intent "Using AgentMan's
+ * `<calls>[{"toolName", "arguments"}]</calls>`, it reports one tool call (intent "Using OMP-UI's
  * tools"), calls those host tools one after another (`"$created"` in arguments becomes the id of
- * the card the last agentman_create_card made, from its `{card: {id}}` result), then answers
+ * the card the last omp_ui_create_card made, from its `{card: {id}}` result), then answers
  * `Chat reply: <JSON list of {toolName, isError, text}>`; otherwise it answers `Chat reply: <message>`.
  * A `[fake-chat:<mode>]` marker in the message changes that:
  *   slow         reports the tool call, then never answers (until aborted or killed).
@@ -482,7 +482,7 @@ async function chatAssistant(prompt) {
   const match = /<calls>([\s\S]*?)<\/calls>/.exec(text);
   const calls = match ? JSON.parse(match[1]) : [];
   if (calls.length > 0 || modes.includes("slow")) {
-    emit({ type: "tool_execution_start", toolCallId: "chat-1", toolName: "agentman", args: {}, intent: "Using AgentMan's tools" });
+    emit({ type: "tool_execution_start", toolCallId: "chat-1", toolName: "omp-ui", args: {}, intent: "Using OMP-UI's tools" });
   }
   if (modes.includes("slow")) return;
   if (calls.length === 0) {
@@ -498,7 +498,7 @@ async function chatAssistant(prompt) {
     const reply = await waitForHostResult(id);
     if (run !== current) return;
     const result = reply.result?.content?.map((c) => c.text).join("") ?? "";
-    if (call.toolName === "agentman_create_card" && !reply.isError) created = JSON.parse(result).card.id;
+    if (call.toolName === "omp_ui_create_card" && !reply.isError) created = JSON.parse(result).card.id;
     results.push({ toolName: call.toolName, isError: reply.isError === true, text: result });
   }
   finishRun(assistant(`Chat reply: ${JSON.stringify(results)}`, "stop"));
@@ -585,7 +585,7 @@ async function startPrompt(command) {
   emit({ type: "agent_start" });
   emit({ type: "turn_start" });
   const helperPrompt = String(command.message ?? "");
-  if (helper && /^You are AgentMan's (chat|scheduler) assistant/.test(helperPrompt)) {
+  if (helper && /^You are OMP-UI's (chat|scheduler) assistant/.test(helperPrompt)) {
     await chatAssistant(helperPrompt);
     return;
   }

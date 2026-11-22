@@ -1,16 +1,16 @@
 // Default PR/MR description: the agent's summary in short, its verification lines, and the task
-// collapsed below. AgentMan-relative images and links are dropped (they don't resolve on the forge).
+// collapsed below. OMP-UI-relative images and links are dropped (they don't resolve on the forge).
 import { clip } from "@/lib/card-draft";
 import { reportField, splitReport } from "@/lib/report";
 
 const SUMMARY_MAX = 1500;
 const DESCRIPTION_MAX = 2000;
-const FOOTER = "---\nCreated from AgentMan";
+const FOOTER = "---\nCreated from OMP-UI";
 
 const FENCE = /^([ \t]*)(`{3,}|~{3,})/;
 /**
  * An inline code span (group 1, kept as is) or a markdown image / link (group 2 "!", group 3 its
- * text) whose URL is AgentMan-relative ("/api/v1/…", not protocol-relative "//"). One level of
+ * text) whose URL is OMP-UI-relative ("/api/v1/…", not protocol-relative "//"). One level of
  * nested brackets in the text and parens in the URL; bounded repeats keep long lines linear.
  */
 const PROSE_LINK = new RegExp(
@@ -48,7 +48,7 @@ function rewriteLink(match: string, ticks: string | undefined, bang: string, lab
   return bang ? "" : label.replace(PROSE_LINK, rewriteLink);
 }
 
-/** Drop AgentMan-relative images and keep only the text of such links, outside code. */
+/** Drop OMP-UI-relative images and keep only the text of such links, outside code. */
 function stripRelative(text: string): string {
   let fence: Fence | null = null;
   return text

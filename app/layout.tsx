@@ -13,9 +13,25 @@ const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
 const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
 
 export const metadata: Metadata = {
-  title: { default: "AgentMan", template: "%s · AgentMan" },
-  description: "Self-hosted kanban board for running and steering omp coding agents.",
-  applicationName: "AgentMan",
+  title: { default: "OMP-UI", template: "%s · OMP-UI" },
+  description:
+    "Self-hosted web UI for the omp AI coding agent: a kanban board where cards become live agent runs in your repos, with pull requests, schedulers and stats.",
+  keywords: ["omp", "oh-my-pi", "AI coding agent", "kanban", "self-hosted", "agent UI", "pull requests"],
+  authors: [{ name: "quang" }],
+  openGraph: {
+    type: "website",
+    siteName: "OMP-UI",
+    title: "OMP-UI",
+    description: "Self-hosted web UI for the omp AI coding agent: kanban board, live agent runs, PRs.",
+    images: ["/icon.png"],
+  },
+  twitter: {
+    card: "summary",
+    title: "OMP-UI",
+    description: "Self-hosted web UI for the omp AI coding agent: kanban board, live agent runs, PRs.",
+    images: ["/icon.png"],
+  },
+  applicationName: "OMP-UI",
   manifest: "/manifest.webmanifest",
   icons: {
     icon: [
@@ -24,7 +40,7 @@ export const metadata: Metadata = {
     ],
     apple: "/apple-touch-icon.png",
   },
-  appleWebApp: { capable: true, title: "AgentMan", statusBarStyle: "default" },
+  appleWebApp: { capable: true, title: "OMP-UI", statusBarStyle: "default" },
 };
 
 export const viewport: Viewport = {

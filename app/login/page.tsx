@@ -133,7 +133,7 @@ export default function LoginPage() {
     <main className="pt-safe pb-safe px-safe grid min-h-dvh md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
       {/* Brand panel: md+ only, so phones get the form first. */}
       <aside
-        aria-label="About AgentMan"
+        aria-label="About OMP-UI"
         className={cn(
           "relative hidden overflow-hidden border-r bg-muted/40 md:flex md:flex-col md:justify-between md:gap-10 md:p-10 lg:p-14",
           // Subtle dotted floor-plan texture, faded toward the bottom.
@@ -142,7 +142,7 @@ export default function LoginPage() {
       >
         <div className="relative flex items-center gap-2.5">
           <LogoMark className="size-8" />
-          <span className="text-base font-semibold tracking-tight">AgentMan</span>
+          <span className="text-base font-semibold tracking-tight">OMP-UI</span>
         </div>
 
         <div className="relative max-w-md space-y-10">
@@ -177,7 +177,7 @@ export default function LoginPage() {
         <div className="flex items-center justify-between gap-2 p-2 pl-4 md:justify-end">
           <div className="flex items-center gap-2 md:hidden">
             <LogoMark className="size-7" />
-            <span className="text-sm font-semibold tracking-tight">AgentMan</span>
+            <span className="text-sm font-semibold tracking-tight">OMP-UI</span>
           </div>
           <ThemeToggle />
         </div>
@@ -186,7 +186,7 @@ export default function LoginPage() {
           <div className="animate-page-in mx-auto w-full max-w-sm md:mx-0">
             <div className="mb-8 space-y-2">
               <h1 className="text-2xl font-semibold tracking-tight">
-                {isSetup ? "Welcome to AgentMan" : "Sign in to AgentMan"}
+                {isSetup ? "Welcome to OMP-UI" : "Sign in to OMP-UI"}
               </h1>
               <p className="text-sm text-muted-foreground">
                 {mode === "loading"

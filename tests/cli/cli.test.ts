@@ -780,7 +780,7 @@ describe("up on a fresh project", () => {
       expect(r.code, r.output).toBe(0);
       expect(r.stdout).toContain("First run — creating .env");
       expect(r.stdout).not.toContain("Installing dependencies");
-      expect(r.stdout).not.toContain("Building AgentMan");
+      expect(r.stdout).not.toContain("Building OMP-UI");
       expect(r.stdout).toContain("Server is up");
       expect(r.stdout).toContain(`http://localhost:${port}`);
       expect(r.stdout).toContain("Next steps");

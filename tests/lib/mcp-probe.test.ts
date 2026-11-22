@@ -101,11 +101,11 @@ describe("probeMcpServer: stdio", () => {
   });
 
   it("explains a missing command", async () => {
-    const result = await probeMcpServer({ type: "stdio", command: "agentman-no-such-command", args: [] });
+    const result = await probeMcpServer({ type: "stdio", command: "omp-ui-no-such-command", args: [] });
     expect(result).toMatchObject({
       ok: false,
       message:
-        "agentman-no-such-command not found on the AgentMan server — install it (e.g. Node.js for npx, uv for uvx)",
+        "omp-ui-no-such-command not found on the OMP-UI server — install it (e.g. Node.js for npx, uv for uvx)",
     });
   });
 });
@@ -137,7 +137,7 @@ describe("probeMcpServer: http", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "initialize",
-      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "agentman", version: "1" } },
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "omp-ui", version: "1" } },
     });
     expect(initialize.headers.get("content-type")).toBe("application/json");
     expect(initialize.headers.get("accept")).toBe("application/json, text/event-stream");

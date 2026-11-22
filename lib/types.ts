@@ -527,7 +527,7 @@ export interface AppSettings {
    * interrupted by a server restart still uses its maxAutoRetries budget. Needs autoRetry.
    */
   persistentRetry: boolean;
-  /** Run the AgentMan-data cleanup automatically; "off" (default) leaves it to "Clean up now". */
+  /** Run the OMP-UI-data cleanup automatically; "off" (default) leaves it to "Clean up now". */
   cleanupSchedule: CleanupSchedule;
   /** What scheduled and manual "Clean up now" runs remove (default: every safe target). */
   cleanupTargets: ScheduledCleanupId[];
@@ -702,7 +702,7 @@ export const CLUSTER_RESTART_LIMITS = { min: 60, max: 86_400 } as const;
 export const REDACTED_SECRET = "********";
 
 export const CHAT_PLATFORMS = ["telegram", "discord"] as const;
-/** Chat apps that can control AgentMan (Settings → Chat integrations). */
+/** Chat apps that can control OMP-UI (Settings → Chat integrations). */
 export type ChatPlatform = (typeof CHAT_PLATFORMS)[number];
 export type ChatConnectionState = "disconnected" | "connecting" | "connected" | "error";
 
@@ -814,11 +814,11 @@ export interface ArtifactProjectResults {
 export const BROWSER_MODES = ["off", "headless", "visible", "relay"] as const;
 export type BrowserMode = (typeof BROWSER_MODES)[number];
 
-/** How often the scheduled AgentMan-data cleanup runs (Settings → Cleanup). */
+/** How often the scheduled OMP-UI-data cleanup runs (Settings → Cleanup). */
 export const CLEANUP_SCHEDULES = ["off", "weekly", "monthly"] as const;
 export type CleanupSchedule = (typeof CLEANUP_SCHEDULES)[number];
 
-/** AgentMan-data cleanups a schedule may run (Docker prunes stay manual on the Maintenance page). */
+/** OMP-UI-data cleanups a schedule may run (Docker prunes stay manual on the Maintenance page). */
 export const SCHEDULED_CLEANUP_IDS = [
   "orphan-card-files",
   "orphan-board-files",
@@ -1614,7 +1614,7 @@ export interface SystemStats {
 // Maintenance: GET /stats/maintenance (analyze) and POST /stats/maintenance (clean up / free)
 
 /**
- * What a process is to AgentMan:
+ * What a process is to OMP-UI:
  * - server: this server or one of its ancestors (supervisor, pm2…); never ended from the UI
  * - card-agent: a running card's omp agent (stop the card instead)
  * - helper: a pooled omp helper (advisor, queue planner…) of this server
@@ -1688,7 +1688,7 @@ export interface CleanupItem {
   empty: boolean;
 }
 
-/** Space used outside AgentMan's own data; shown for context, never deleted from the UI. */
+/** Space used outside OMP-UI's own data; shown for context, never deleted from the UI. */
 export interface StorageUsage {
   label: string;
   path: string;
@@ -2026,7 +2026,7 @@ export interface OmpModel {
 /**
  * A git snapshot of one project folder's files (tracked and untracked, minus ignored ones) taken
  * before a card's run or before a restore. Stored as a commit under
- * `refs/agentman/checkpoints/<taskId>/<id>` without touching the branch, index or working tree.
+ * `refs/omp-ui/checkpoints/<taskId>/<id>` without touching the branch, index or working tree.
  */
 export interface TaskCheckpoint {
   /** Ref name tail; unique per task and repository. */

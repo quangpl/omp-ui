@@ -1,4 +1,4 @@
-# AgentMan (omp-ui) as a systemd *user* service: starts at boot, restarts on crash.
+# OMP-UI (omp-ui) as a systemd *user* service: starts at boot, restarts on crash.
 #
 # `omp-ui systemd install` (or `omp-ui up --systemd`) fills in the ROOT, NODE and PATH
 # placeholders, writes ~/.config/systemd/user/omp-ui.service, enables and starts it.
@@ -16,7 +16,7 @@
 # agents (boot recovery resumes them), and whatever is left after TimeoutStopSec is SIGKILLed.
 
 [Unit]
-Description=AgentMan (omp-ui) kanban board for omp coding agents
+Description=OMP-UI (omp-ui) kanban board for omp coding agents
 After=network-online.target
 Wants=network-online.target
 

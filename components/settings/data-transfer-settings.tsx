@@ -125,7 +125,7 @@ export function DataTransferSettingsSection() {
       id="data"
       icon={<ArchiveRestoreIcon />}
       title="Data transfer"
-      description="Move AgentMan to another server: export every project, card, comment, run, scheduler, user, setting and shared file as one archive, then import it on the new server."
+      description="Move OMP-UI to another server: export every project, card, comment, run, scheduler, user, setting and shared file as one archive, then import it on the new server."
     >
       {loadError ? (
         <SettingsPanel className="flex flex-col items-start gap-3 p-4 sm:flex-row sm:items-center sm:p-5">

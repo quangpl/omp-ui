@@ -1,4 +1,4 @@
-// PM2 config for AgentMan — works on a fresh clone:
+// PM2 config for OMP-UI — works on a fresh clone:
 //   pm2 start ecosystem.config.cjs        (or: omp-ui pm2 start)
 // Start on boot: pm2 save && pm2 startup (or: omp-ui pm2 save, omp-ui pm2 startup)
 //

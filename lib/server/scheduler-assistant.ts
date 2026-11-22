@@ -1,6 +1,6 @@
 // "Create with Agent" on the Schedulers page (POST /api/v1/schedulers/chat): the user describes a
 // scheduler in plain language and a short omp helper agent turns it into a validated draft through
-// the `agentman_propose_scheduler` host tool. Nothing is saved here: the page shows the draft and
+// the `omp_ui_propose_scheduler` host tool. Nothing is saved here: the page shows the draft and
 // the user creates it (POST /api/v1/schedulers) or keeps chatting to revise it. The conversation
 // lives in the browser and is sent whole with every turn.
 import { mkdir } from "node:fs/promises";
@@ -39,7 +39,7 @@ type Json = Record<string, unknown>;
 /** `set_host_tools` definitions of the scheduler assistant's tools (JSON Schema parameters). */
 export const SCHEDULER_ASSISTANT_TOOLS = [
   {
-    name: "agentman_propose_scheduler",
+    name: "omp_ui_propose_scheduler",
     label: "Propose scheduler",
     description:
       "Validate a complete scheduler and show it to the user as the draft they can create with one click (replaces the previous draft). Defaults: the user's time zone, the default project. Returns the draft with its schedule in words and the next run times, or the problem to fix.",
@@ -54,7 +54,7 @@ export const SCHEDULER_ASSISTANT_TOOLS = [
     },
   },
   {
-    name: "agentman_list_schedulers",
+    name: "omp_ui_list_schedulers",
     label: "List schedulers",
     description: "List the user's existing schedulers (name, project, schedule in words, time zone, next run, active or paused).",
     parameters: {
@@ -150,7 +150,7 @@ export async function runSchedulerAssistant(options: {
     label: "scheduler assistant",
     onActivity,
     writing: "Writing the answer…",
-    // Only the agentman_* tools: chat text never gets to read or change server files.
+    // Only the omp_ui_* tools: chat text never gets to read or change server files.
     tools: "",
     hostTools: {
       tools: SCHEDULER_ASSISTANT_TOOLS,
@@ -174,7 +174,7 @@ export async function runSchedulerTool(
   onActivity: (text: string) => void = () => undefined,
 ): Promise<{ text: string; draft?: SchedulerDraft }> {
   switch (name) {
-    case "agentman_propose_scheduler": {
+    case "omp_ui_propose_scheduler": {
       onActivity(PROPOSING);
       const boards = await repo.listBoards();
       const project = typeof args.project === "string" ? args.project.trim() : "";
@@ -202,7 +202,7 @@ export async function runSchedulerTool(
         draft,
       };
     }
-    case "agentman_list_schedulers": {
+    case "omp_ui_list_schedulers": {
       const boards = await repo.listBoards();
       const project = typeof args.project === "string" ? args.project.trim() : "";
       const board = project ? resolveBoard(boards, project) : null;
@@ -234,8 +234,8 @@ function buildPrompt(request: SchedulerChatRequest, boards: BoardWithCounts[], d
   const draft = request.draft;
   const draftBoard = draft ? boards.find((board) => board.id === draft.boardId) : undefined;
   return [
-    "You are AgentMan's scheduler assistant. AgentMan runs omp coding agents on projects. A scheduler creates a new card on a project on a cron schedule; each card's agent starts at once with the scheduler's prompt as its whole brief and does the work in the project's folders.",
-    'The user is on the Schedulers page and describes, in plain language, a scheduler they want. Turn it into a scheduler draft with agentman_propose_scheduler. The user reviews the draft and clicks "Create scheduler" themselves; you cannot create, change, run or delete schedulers.',
+    "You are OMP-UI's scheduler assistant. OMP-UI runs omp coding agents on projects. A scheduler creates a new card on a project on a cron schedule; each card's agent starts at once with the scheduler's prompt as its whole brief and does the work in the project's folders.",
+    'The user is on the Schedulers page and describes, in plain language, a scheduler they want. Turn it into a scheduler draft with omp_ui_propose_scheduler. The user reviews the draft and clicks "Create scheduler" themselves; you cannot create, change, run or delete schedulers.',
     "",
     "How to work:",
     "- Propose as soon as you know what the agent should do each time. Pick sensible defaults for anything not said (09:00, the default project, the user's time zone, repeating forever, active) and mention the ones that matter. Ask one short question instead only when what the agent should do, or which project, is truly unclear.",

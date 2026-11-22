@@ -18,7 +18,7 @@ export const dynamic = "force-dynamic";
  * The card's agent session as a Hermes-style ShareGPT trajectory: one NDJSON line download.
  * `runId` limits it to one run of the session (404 when the run is not the card's); `compress=1`
  * compresses it to `maxTokens` (default 15,250) like Hermes' trajectory compressor. Known secret
- * values (AI provider keys, MCP credentials, git host tokens, AgentMan's own secrets) and common
+ * values (AI provider keys, MCP credentials, git host tokens, OMP-UI's own secrets) and common
  * token shapes are replaced by `[REDACTED]`. 413 above 64 MB of session; 429 while two exports run.
  */
 export const GET = withApi<{ id: string }>(async ({ req, repo, params }) => {

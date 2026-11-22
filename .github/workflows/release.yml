@@ -1,0 +1,61 @@
+name: Release
+
+# Every push to main ships a downloadable build on GitHub Releases:
+# - package.json version not released yet → release `v<version>` (+ npm publish when NPM_TOKEN is set)
+# - already released → refresh the rolling `nightly` prerelease
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write # npm provenance
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
+      # npm pack runs prepack (vite build), so the tarball ships dist/.
+      - name: Pack
+        id: pack
+        run: |
+          version=$(node -p "require('./package.json').version")
+          npm pack
+          cp "omp-ui-$version.tgz" omp-ui.tgz
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" >/dev/null 2>&1; then echo "new=false" >> "$GITHUB_OUTPUT"; else echo "new=true" >> "$GITHUB_OUTPUT"; fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Release v${{ steps.pack.outputs.version }}
+        if: steps.pack.outputs.new == 'true'
+        run: gh release create "v${{ steps.pack.outputs.version }}" omp-ui.tgz "omp-ui-${{ steps.pack.outputs.version }}.tgz" --target "$GITHUB_SHA" --title "OMP-UI v${{ steps.pack.outputs.version }}" --generate-notes --latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Publish to npm
+        if: steps.pack.outputs.new == 'true' && env.NODE_AUTH_TOKEN != ''
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Refresh nightly prerelease
+        if: steps.pack.outputs.new == 'false'
+        run: |
+          gh release delete nightly --cleanup-tag --yes || true
+          gh release create nightly omp-ui.tgz --target "$GITHUB_SHA" --prerelease --title "OMP-UI nightly" \
+            --notes "Latest build of main ($GITHUB_SHA). Install: \`npm i -g https://github.com/${{ github.repository }}/releases/download/nightly/omp-ui.tgz\`"
+        env:
+          GH_TOKEN: ${{ github.token }}

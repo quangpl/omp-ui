@@ -43,7 +43,7 @@ test("no horizontal scrolling on Projects, Stats, Settings and a board", async (
   await expectNoHorizontalScroll(page);
 
   await page.goto("/settings");
-  await expect(page.getByText("AgentMan version")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("OMP-UI version")).toBeVisible({ timeout: 15_000 });
   await expectNoHorizontalScroll(page);
 
   await page.goto(`/b/${board.id}`);
@@ -77,7 +77,7 @@ test("bottom tabs navigate the top-level sections and are hidden on a board", as
   await tabs.getByRole("link", { name: "Settings" }).click();
   await page.waitForURL((url) => url.pathname === "/settings");
   await expect(tabs.getByRole("link", { name: "Settings" })).toHaveAttribute("aria-current", "page");
-  await expect(page.getByText("AgentMan version")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("OMP-UI version")).toBeVisible({ timeout: 15_000 });
 
   await tabs.getByRole("link", { name: "Projects" }).click();
   await page.waitForURL((url) => url.pathname === "/");

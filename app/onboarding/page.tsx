@@ -27,7 +27,7 @@ function OmpStep() {
   const omp = info?.omp;
   return (
     <div className="space-y-3 text-sm">
-      <p className="text-muted-foreground">AgentMan runs your tasks with the omp coding agent.</p>
+      <p className="text-muted-foreground">OMP-UI runs your tasks with the omp coding agent.</p>
       {error ? (
         <p className="text-destructive">{error}</p>
       ) : !omp ? (
@@ -58,7 +58,7 @@ function OmpStep() {
 }
 
 export default function OnboardingPage() {
-  useDocumentTitle("Set up AgentMan");
+  useDocumentTitle("Set up OMP-UI");
   const router = useRouter();
   const { isAdmin, loading } = useCurrentUser();
   const [step, setStep] = useState(0);
@@ -85,7 +85,7 @@ export default function OnboardingPage() {
 
   return (
     <div className="flex min-h-dvh flex-col">
-      <AppHeader title="Set up AgentMan" />
+      <AppHeader title="Set up OMP-UI" />
       <main className="px-safe pb-safe flex-1">
         <div className="mx-auto w-full max-w-2xl space-y-6 px-4 py-8">
           <p className="text-sm text-muted-foreground">

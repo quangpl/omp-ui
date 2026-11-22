@@ -14,7 +14,7 @@ import {
 import type { ChatConnectionState } from "@/lib/types";
 
 const API = "https://discord.com/api/v10";
-const USER_AGENT = "DiscordBot (https://github.com, 1.0) AgentMan";
+const USER_AGENT = "DiscordBot (https://github.com, 1.0) OMP-UI";
 const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_MESSAGE_LENGTH = 2000;
 /** VIEW_CHANNEL | SEND_MESSAGES | READ_MESSAGE_HISTORY. */
@@ -459,7 +459,7 @@ export function createDiscordAdapter(
     sendPayload(socket, 2, {
       token,
       intents,
-      properties: { os: process.platform, browser: "agentman", device: "agentman" },
+      properties: { os: process.platform, browser: "omp-ui", device: "omp-ui" },
     });
   }
 

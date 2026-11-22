@@ -35,7 +35,7 @@ const APP_ID = "app1";
 const OWNER_ID = "owner1";
 const USER = { id: "user1", username: "alice" };
 const DM_CHANNEL = "dm-user1";
-/** A second Discord user, signing in to a regular (non-admin) AgentMan account. */
+/** A second Discord user, signing in to a regular (non-admin) OMP-UI account. */
 const BOB = { id: "user2", username: "bob" };
 const BOB_DM = "dm-user2";
 const BOB_PASSWORD = "bobs-own-password";
@@ -70,7 +70,7 @@ function discordResponse(method: string, path: string, auth: string | null, body
   let m: RegExpExecArray | null;
 
   if (method === "GET" && path === "/users/@me") {
-    return authed ? Response.json({ id: BOT_ID, username: "agentman_bot", global_name: null, bot: true }) : unauthorized();
+    return authed ? Response.json({ id: BOT_ID, username: "omp_ui_bot", global_name: null, bot: true }) : unauthorized();
   }
   if (method === "GET" && path === "/oauth2/applications/@me") {
     return authed
@@ -155,7 +155,7 @@ async function assistantAnswer(channelId: string, index: number): Promise<string
   );
 }
 
-/** `<calls>` block making the fake omp's chat assistant call these AgentMan tools. */
+/** `<calls>` block making the fake omp's chat assistant call these OMP-UI tools. */
 function toolCalls(...calls: { toolName: string; arguments: Record<string, unknown> }[]): string {
   return `<calls>${JSON.stringify(calls)}</calls>`;
 }
@@ -209,7 +209,7 @@ class FakeGatewaySocket {
       this.dispatch("READY", {
         session_id: "session-1",
         resume_gateway_url: "wss://fake.resume",
-        user: { id: BOT_ID, username: "agentman_bot", bot: true },
+        user: { id: BOT_ID, username: "omp_ui_bot", bot: true },
       });
     } else if (payload.op === 1) {
       this.push({ op: 11, d: null });
@@ -350,7 +350,7 @@ describe("Discord chat integration", () => {
       () => find("POST", "/users/@me/channels").some((r) => bodyField(r.body, "recipient_id") === OWNER_ID),
       WAIT_MS,
     );
-    expect(await messageAt("dm-owner", 0)).toContain("AgentMan connected");
+    expect(await messageAt("dm-owner", 0)).toContain("OMP-UI connected");
 
     expect((await chatStatus()).state).toBe("connected");
     expect((await settings()).discordBotToken).toBe(REDACTED_SECRET);
@@ -366,12 +366,12 @@ describe("Discord chat integration", () => {
 
     const loginId = sendDm(`/login ${ADMIN_PASSWORD}`);
     // Index 1: the locked message never reached the assistant (no placeholder in between).
-    expect(await messageAt(DM_CHANNEL, 1)).toContain("AgentMan connected");
+    expect(await messageAt(DM_CHANNEL, 1)).toContain("OMP-UI connected");
     // The message carrying the password is deleted.
     expect(find("DELETE", `/channels/${DM_CHANNEL}/messages/${loginId}`)).toHaveLength(1);
     expect((await chatStatus()).authorizedUsers).toBe(1);
 
-    sendDm(`list them ${toolCalls({ toolName: "agentman_list_boards", arguments: {} })}`);
+    sendDm(`list them ${toolCalls({ toolName: "omp_ui_list_boards", arguments: {} })}`);
     const answer = await assistantAnswer(DM_CHANNEL, 2);
     expect(answer).toMatch(/^Chat reply: /);
     expect(answer).toContain(board.name);
@@ -385,7 +385,7 @@ describe("Discord chat integration", () => {
 
   it("creates a card when asked in a DM and answers with its id", async () => {
     const index = messagesTo(DM_CHANNEL).length;
-    sendDm(`add a card ${toolCalls({ toolName: "agentman_create_card", arguments: { title: "Discord card" } })}`);
+    sendDm(`add a card ${toolCalls({ toolName: "omp_ui_create_card", arguments: { title: "Discord card" } })}`);
     const answer = await assistantAnswer(DM_CHANNEL, index);
     const tasks = await (await getRepo()).listTasks(board.id);
     expect(tasks.map((t) => t.title)).toEqual(["Discord card"]);
@@ -468,10 +468,10 @@ describe("Discord chat integration", () => {
     });
     const loginPath = `/webhooks/${APP_ID}/itok-login/messages/@original`;
     const login = await waitFor(() => requests.find((r) => r.method === "PATCH" && r.path === loginPath), WAIT_MS);
-    expect(bodyField(login.body, "content")).toContain("AgentMan connected ✅ as bob");
+    expect(bodyField(login.body, "content")).toContain("OMP-UI connected ✅ as bob");
     expect((await chatStatus()).authorizedUsers).toBe(2);
 
-    sendDm(`mine? ${toolCalls({ toolName: "agentman_list_boards", arguments: {} })}`, { channel: BOB_DM, author: BOB });
+    sendDm(`mine? ${toolCalls({ toolName: "omp_ui_list_boards", arguments: {} })}`, { channel: BOB_DM, author: BOB });
     const listed = await assistantAnswer(BOB_DM, 0);
     expect(listed).toContain("bob-board");
     expect(listed).not.toContain(board.name);
@@ -480,8 +480,8 @@ describe("Discord chat integration", () => {
     const index = messagesTo(BOB_DM).length;
     sendDm(
       `note it ${toolCalls(
-        { toolName: "agentman_create_card", arguments: { title: "Bob card" } },
-        { toolName: "agentman_list_cards", arguments: { board: board.id } },
+        { toolName: "omp_ui_create_card", arguments: { title: "Bob card" } },
+        { toolName: "omp_ui_list_cards", arguments: { board: board.id } },
       )}`,
       { channel: BOB_DM, author: BOB },
     );

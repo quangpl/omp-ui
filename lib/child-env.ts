@@ -1,7 +1,7 @@
 // Environment for every child process the server starts (omp agents, git/gh/glab, omp usage/stats).
 // Children inherit the host user's environment verbatim — HOME, SSH_AUTH_SOCK, GH_TOKEN, provider
 // API keys, proxies, … — so omp, git, gh and glab use whatever credentials the user already has.
-// AgentMan's own secrets are stripped: an agent can read its environment. Provider values saved
+// OMP-UI's own secrets are stripped: an agent can read its environment. Provider values saved
 // in Settings → AI Providers (lib/server/ai-providers.ts) override the inherited ones, and the
 // custom variables set on the Environment page (lib/server/env-vars.ts) override both.
 // Remote runs (cluster mode) get only the forwardable part (remoteChildEnv): the node supplies its
@@ -9,7 +9,7 @@
 import os from "node:os";
 import { AI_PROVIDERS } from "@/lib/ai-providers";
 
-/** AgentMan's own secrets; never passed to child processes. */
+/** OMP-UI's own secrets; never passed to child processes. */
 export const SECRET_ENV_KEYS: readonly string[] = [
   "ADMIN_PASSWORD",
   "AUTH_SECRET",
@@ -20,7 +20,7 @@ export const SECRET_ENV_KEYS: readonly string[] = [
   "CREDENTIALS_KEY",
 ];
 
-/** Any key with this prefix is AgentMan configuration and is stripped too. */
+/** Any key with this prefix is OMP-UI configuration and is stripped too. */
 const SECRET_ENV_PREFIX = "OMP_UI_";
 
 /** MCP credentials the server hands its omp children (lib/server/mcp-env.ts). */
@@ -47,7 +47,7 @@ export function setUserEnv(values: Record<string, string>): void {
   g.__ompUiUserEnv = { ...values };
 }
 
-/** A copy of `process.env` without AgentMan's secrets, with saved provider values and `extra` applied on top. */
+/** A copy of `process.env` without OMP-UI's secrets, with saved provider values and `extra` applied on top. */
 export function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) {
@@ -65,7 +65,7 @@ export function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv 
 /**
  * What a remote run (cluster mode) takes from this server: the saved provider values and custom variables, every AI
  * provider env var (Settings → AI Providers definitions) and MCP credential set in the server's
- * environment, then `extra`. The node layers it over its own childEnv(); AgentMan's secrets and
+ * environment, then `extra`. The node layers it over its own childEnv(); OMP-UI's secrets and
  * configuration, PATH and HOME are never forwarded.
  */
 export function remoteChildEnv(extra: Record<string, string> = {}): Record<string, string> {

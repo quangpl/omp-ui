@@ -22,9 +22,9 @@ const fail = (message) => {
   process.stderr.write("Error response from daemon: " + message + "\\n");
   process.exit(1);
 };
-const LABEL = "label=agentman.task=card-1";
+const LABEL = "label=omp-ui.task=card-1";
 const PROJECT = "label=com.docker.compose.project=task-card-1";
-const LABEL_2 = "label=agentman.task=card-2";
+const LABEL_2 = "label=omp-ui.task=card-2";
 const PROJECT_2 = "label=com.docker.compose.project=task-card-2";
 const TABLE = {
   ps: { [LABEL]: ["c1", "c2"], [PROJECT]: ["c2", "c3"] },
@@ -150,7 +150,7 @@ describe("removeTaskDockerResources", () => {
     expect(result).toEqual({ containers: 0, networks: 0, volumes: 0, images: 0, errors: [] });
 
     const used = new Set(dockerCalls().map((args) => args[args.indexOf("--filter") + 1]));
-    expect([...used].sort()).toEqual(["label=agentman.task=ABC-1", "label=com.docker.compose.project=task-abc-1"]);
+    expect([...used].sort()).toEqual(["label=com.docker.compose.project=task-abc-1", "label=omp-ui.task=ABC-1"]);
   });
 
   it("returns null when docker is not available", async () => {

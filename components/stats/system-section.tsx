@@ -332,7 +332,7 @@ function HostPanel({ stats, className }: { stats: SystemStats; className?: strin
     ["Uptime", formatDuration(host.uptimeSec)],
     ["CPU model", cpu.model],
     ["Node", host.nodeVersion],
-    ["AgentMan", app.version],
+    ["OMP-UI", app.version],
     ["Database", DB_NAMES[app.db]],
   ];
   if (disk) details.push(["Data disk", disk.path]);

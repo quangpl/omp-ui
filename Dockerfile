@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# AgentMan — kanban control panel for omp coding agents, with omp baked in.
+# OMP-UI — kanban control panel for omp coding agents, with omp baked in.
 #   docker compose up -d          (recommended; see docker-compose.yml)
 #   docker build -t omp-ui .      (optional: --build-arg OMP_VERSION=v18.19.0 to pin omp)
 
@@ -88,8 +88,8 @@ RUN usermod -l omp -d /home/omp -m node \
  && mkdir -p /data /workspace /home/omp/.omp /home/omp/.config/gh /home/omp/.cache/ssh \
  && chown -R omp:omp /data /workspace /home/omp \
  && git config --system --add safe.directory '*' \
- && git config --system user.name "AgentMan agent" \
- && git config --system user.email "agentman@localhost" \
+ && git config --system user.name "OMP-UI agent" \
+ && git config --system user.email "omp-ui@localhost" \
  && mkdir -p /etc/ssh/ssh_config.d \
  && printf 'Host *\n  StrictHostKeyChecking accept-new\n  UserKnownHostsFile /home/omp/.cache/ssh/known_hosts ~/.ssh/known_hosts\n' \
       > /etc/ssh/ssh_config.d/omp-ui.conf

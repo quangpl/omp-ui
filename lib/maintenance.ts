@@ -1,6 +1,6 @@
 // Server-only maintenance behind `GET|POST /api/v1/stats/maintenance`: analyze what uses CPU,
 // memory and disk, then free it. Processes come from /proc on Linux (two samples, so CPU is the
-// current rate) or `ps` elsewhere. Storage cleanup only touches AgentMan's own data under DATA_DIR
+// current rate) or `ps` elsewhere. Storage cleanup only touches OMP-UI's own data under DATA_DIR
 // and Docker's prune commands; other big folders (omp sessions, tool caches) are reported, never
 // deleted.
 import { execFile } from "node:child_process";
@@ -258,7 +258,7 @@ function classify(list: RawProcess[]): Classified[] {
       tag = taskId ? "card-agent" : "helper";
     } else if (isOmp(p) && p.command.includes("--mode rpc") && configTaskId(p.command, runtimeDir)) {
       // An agent of this DATA_DIR this server does not run. Its parent died (re-parented to init)
-      // when the server that started it crashed; a live parent means another AgentMan instance.
+      // when the server that started it crashed; a live parent means another OMP-UI instance.
       const parent = byPid.get(p.ppid);
       taskId = configTaskId(p.command, runtimeDir);
       tag = !parent || p.ppid <= 1 || INIT_NAMES[parent.name] === true ? "orphan-agent" : "omp";
@@ -345,7 +345,7 @@ async function killProcesses(pids: number[]): Promise<MaintenanceStepResult[]> {
     if (!target.killable) {
       const why =
         target.tag === "server"
-          ? "it runs AgentMan itself"
+          ? "it runs OMP-UI itself"
           : target.tag === "card-agent"
             ? "it is a running card's agent — stop the card instead"
             : "it belongs to another user";
@@ -878,7 +878,7 @@ function recommend(report: Omit<MaintenanceReport, "recommendations">): Maintena
       detail:
         storage.safeBytes > 0
           ? `Safe cleanup frees about ${bytesText(storage.safeBytes)}. Also review the larger folders below.`
-          : "Little to clean in AgentMan's data. Review the larger folders below.",
+          : "Little to clean in OMP-UI's data. Review the larger folders below.",
       action: safeIds.length > 0 ? { kind: "cleanup", ids: safeIds } : null,
       actionLabel: safeIds.length > 0 ? "Clean up safe items" : null,
     });
@@ -888,7 +888,7 @@ function recommend(report: Omit<MaintenanceReport, "recommendations">): Maintena
       area: "storage",
       severity: "info",
       title: `${bytesText(storage.safeBytes)} can be freed safely`,
-      detail: "Leftovers and caches AgentMan and Docker no longer need.",
+      detail: "Leftovers and caches OMP-UI and Docker no longer need.",
       action: { kind: "cleanup", ids: safeIds },
       actionLabel: "Clean up safe items",
     });
@@ -898,7 +898,7 @@ function recommend(report: Omit<MaintenanceReport, "recommendations">): Maintena
   return out.sort((a, b) => rank[a.severity] - rank[b.severity]);
 }
 
-/** Full analysis: processes (sampled ~0.5 s), memory, AgentMan storage, Docker and recommendations. */
+/** Full analysis: processes (sampled ~0.5 s), memory, OMP-UI storage, Docker and recommendations. */
 export async function analyzeSystem(repo: Repository, manager: AgentManager): Promise<MaintenanceReport> {
   const started = Date.now();
   const ctx = context(repo, manager);

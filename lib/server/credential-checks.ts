@@ -27,14 +27,14 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_MESSAGE_LENGTH = 200;
 /** Health-check bodies are tiny; stop reading anything bigger (an HTML error page, a stream). */
 const MAX_BODY_CHARS = 256 * 1024;
-const USER_AGENT = "agentman-credential-check";
+const USER_AGENT = "omp-ui-credential-check";
 /** Field keys that hold secrets even if a provider template forgets to mark them `secret`. */
 const SECRET_KEYS = ["apiKey", "token", "apiToken", "secretAccessKey", "sessionToken", "connectionString"];
 const MCP_INITIALIZE = JSON.stringify({
   jsonrpc: "2.0",
   id: 1,
   method: "initialize",
-  params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "agentman", version: "1" } },
+  params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "omp-ui", version: "1" } },
 });
 
 interface ProbeContext {
@@ -837,7 +837,7 @@ async function probeStripe(ctx: ProbeContext, key: string): Promise<CredentialPr
 }
 
 async function probeBrave(ctx: ProbeContext, key: string): Promise<CredentialProbeResult> {
-  const res = await request(ctx, "https://api.search.brave.com/res/v1/web/search?q=agentman&count=1", {
+  const res = await request(ctx, "https://api.search.brave.com/res/v1/web/search?q=omp-ui&count=1", {
     headers: { "x-subscription-token": key },
   });
   if (!res.ok) return httpFailure(res, isRejection(res) || /token/i.test(errorDetail(res)));

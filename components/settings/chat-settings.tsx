@@ -131,7 +131,7 @@ const PLATFORMS: Record<
       <>Copy the token it gives you (or its whole reply), paste it here and click Connect.</>,
       <>
         Open your bot and send <code className={CODE}>/login &lt;username&gt; &lt;password&gt;</code>; it answers
-        &ldquo;AgentMan connected&rdquo;. Then just tell it what you want.
+        &ldquo;OMP-UI connected&rdquo;. Then just tell it what you want.
       </>,
     ],
   },
@@ -391,7 +391,7 @@ function ChatPlatformPanel({
                   inputMode="url"
                   value={webhookUrl}
                   onChange={(e) => setWebhookUrl(e.target.value)}
-                  placeholder="https://agentman.example.com"
+                  placeholder="https://omp-ui.example.com"
                   autoComplete="off"
                   spellCheck={false}
                   className={cn(FIELD, "font-mono")}
@@ -415,8 +415,8 @@ function ChatPlatformPanel({
 
 /**
  * Settings → Chat integrations: connect a Telegram and/or Discord bot by pasting its token. After
- * `/login <username> <password>` a chat controls AgentMan in natural language as that omp-ui account
- * (an omp assistant with AgentMan tools manages its boards and cards; started cards stream their
+ * `/login <username> <password>` a chat controls OMP-UI in natural language as that omp-ui account
+ * (an omp assistant with OMP-UI tools manages its boards and cards; started cards stream their
  * output). Status is re-read every 5 s while mounted.
  */
 export function ChatSettingsSection() {
@@ -460,7 +460,7 @@ export function ChatSettingsSection() {
       id="chat"
       icon={<MessageCircleIcon />}
       title="Chat integrations"
-      description="Control AgentMan from Telegram or Discord: create cards, check status, start and stop agents, and get their output streamed to the chat."
+      description="Control OMP-UI from Telegram or Discord: create cards, check status, start and stop agents, and get their output streamed to the chat."
     >
       {loadError && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-destructive" role="alert">
@@ -509,7 +509,7 @@ export function ChatSettingsSection() {
       <SettingsPanel>
         <SettingsGroup title="How to use" className="space-y-3">
           <p className="text-xs text-pretty text-muted-foreground">
-            Just write what you want. An AgentMan assistant (an omp agent using the default model from Settings →
+            Just write what you want. An OMP-UI assistant (an omp agent using the default model from Settings →
             Agent) lists boards and cards, creates, starts, stops, moves and messages cards, then replies. Started
             cards stream their output into the chat.
           </p>

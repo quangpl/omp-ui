@@ -109,7 +109,7 @@ export async function readSessionFile(file: string | null, maxBytes: number): Pr
 /**
  * Secret values an agent may have seen, to redact from exported trajectories: AI provider keys
  * (inherited or saved in Settings → AI Providers), MCP credentials, git host and registry tokens,
- * and AgentMan's own secrets.
+ * and OMP-UI's own secrets.
  */
 export async function exportSecrets(): Promise<string[]> {
   const env = childEnv();
