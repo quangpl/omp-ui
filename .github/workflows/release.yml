@@ -66,4 +66,9 @@ jobs:
           tag=latest; [ "${{ steps.v.outputs.kind }}" = nightly ] && tag=next
           # npm only accepts provenance from public repositories.
           prov=--provenance; [ "${{ github.event.repository.private }}" = true ] && prov=
-          npm publish "omp-ui-${{ steps.v.outputs.version }}.tgz" $prov --access public --tag "$tag"
+          # A version waiting for approval (npm staged publishing) is invisible to `npm view`; that's done, not an error.
+          set -o pipefail
+          npm publish "omp-ui-${{ steps.v.outputs.version }}.tgz" $prov --access public --tag "$tag" 2>&1 | tee publish.log || {
+            grep -q "previously staged version" publish.log && echo "Already staged; approve it on npmjs.com." && exit 0
+            exit 1
+          }
