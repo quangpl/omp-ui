@@ -44,3 +44,14 @@ If you use an AI coding agent on this repo, see [AGENTS.md](AGENTS.md) for proje
 ## Conduct and security
 
 Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
+## Releasing
+
+Maintainers release from an up-to-date `main` with a clean tree:
+
+```sh
+pnpm release          # patch: 0.1.1 → 0.1.2
+pnpm release minor    # or major, or an exact version like 1.0.0
+```
+
+It bumps `package.json`, dates the `## [Unreleased]` section of `CHANGELOG.md`, commits and pushes to `main`. The push runs the Release workflow, which creates the GitHub release and publishes to npm. If staged publishing is on for the package, approve the version on npmjs.com.
