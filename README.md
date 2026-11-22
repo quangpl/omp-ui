@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/omp-ui.svg)](https://www.npmjs.com/package/omp-ui)
 [![CI](https://github.com/quangpl/omp-ui/actions/workflows/ci.yml/badge.svg)](https://github.com/quangpl/omp-ui/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![node >=24](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org)
+[![node >=22.13](https://img.shields.io/badge/node-%3E%3D22.13-brightgreen.svg)](https://nodejs.org)
 
 **OMP-UI is the self-hosted OMP UI for [omp](https://omp.sh/docs) (oh-my-pi), the AI coding agent.** It gives omp a web interface: an OMP kanban board where each card is a task, an OMP workflow that takes every card from plan to pull request, and an OMP web dashboard you can open from your desktop or phone. Self-host OMP-UI on your own machine or server with one command, `npx omp-ui`.
 
@@ -46,7 +46,7 @@
 
 ## Requirements
 
-- Node.js 24 or newer
+- Node.js 22.13 or newer
 - omp, installed and signed in:
 
 ```sh
@@ -77,6 +77,12 @@ npm i -g https://github.com/quangpl/omp-ui/releases/download/nightly/omp-ui.tgz 
 ```
 
 Settings and data live in `~/.omp-ui`. SQLite is the default database, so you don't need to set one up.
+
+`omp-ui: command not found` after a global install means npm's global bin folder is not on your `PATH`. Add it, for example in `~/.zshrc`:
+
+```sh
+export PATH="$(npm prefix -g)/bin:$PATH"
+```
 
 ## Basic commands
 

@@ -83,7 +83,7 @@
     "omp-ui": "bin/omp-ui.mjs"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=22.13"
   },
   "files": [
     "bin",

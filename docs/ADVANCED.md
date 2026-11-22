@@ -31,7 +31,7 @@ The sections below describe running from a source checkout with `./omp-ui`.
 
 `up` asks for a password for the `admin` account, then installs, builds and starts OMP-UI. It prints a local link and one for your phone on the same Wi-Fi. Add more accounts later in **Settings → Users** (see [Users](#users)).
 
-Requires **Node.js 24+** and **omp**, installed and signed in:
+Requires **Node.js 22.13 or newer** and **omp**, installed and signed in:
 
 ```sh
 curl -fsSL https://omp.sh/install | sh   # install omp

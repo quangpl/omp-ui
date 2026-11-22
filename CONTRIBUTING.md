@@ -4,7 +4,7 @@ Thanks for helping out! OMP-UI is a self-hosted web UI / kanban board for the [o
 
 ## Prerequisites
 
-- Node.js 24+
+- Node.js 22.13 or newer
 - pnpm (version pinned in `package.json` under `packageManager`)
 - [omp](https://omp.sh) installed and on your `PATH`
 

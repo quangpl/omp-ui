@@ -4,7 +4,7 @@
 // shared join token, then AES-256-GCM encrypted frames (HKDF-derived per-direction keys, counter
 // IVs). On top: JSON messages routed by `t` prefix, binary frames (file chunks), request/reply via
 // `rid`, and an automatic heartbeat that measures latency and closes silent channels. Only node:
-// built-ins (runs unchanged on any Node 24 node).
+// built-ins (runs unchanged on any Node 22.13+ node).
 import {
   createCipheriv,
   createDecipheriv,

@@ -31,8 +31,8 @@ const DIST_DIR = path.join(ROOT, "dist");
 /** The previous build while a new one is being made (restored if the build fails). */
 const PREV_DIST_DIR = path.join(ROOT, "dist.prev");
 const VITE_BIN = path.join(ROOT, "node_modules", "vite", "bin", "vite.js");
-const MIN_NODE = 24;
-const NODE_MAJOR = Number(process.versions.node.split(".")[0]);
+const MIN_NODE = "22.13";
+const NODE_OK = (([major, minor]) => major > 22 || (major === 22 && minor >= 13))(process.versions.node.split(".").map(Number));
 const IS_WIN = process.platform === "win32";
 const OMP_INSTALL_CMD = "curl -fsSL https://omp.sh/install | sh";
 const CLOUDFLARED_DOWNLOADS =
@@ -462,11 +462,14 @@ function isAlive(pid) {
   }
 }
 
-/** Guard against pid reuse: on Linux confirm the command line looks like ours. */
+/** Guard against pid reuse: confirm the command line looks like ours (Linux /proc, else `ps`). */
 function cmdlineMatches(pid, needles) {
-  if (process.platform !== "linux") return true;
+  if (process.platform === "win32") return true;
   try {
-    const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+    const cmd =
+      process.platform === "linux"
+        ? fs.readFileSync(`/proc/${pid}/cmdline`, "utf8")
+        : spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout ?? "";
     return needles.some((n) => cmd.includes(n));
   } catch {
     return false;
@@ -693,9 +696,9 @@ function validatePassword(pw) {
 // ─── Checks ─────────────────────────────────────────────────────────────────
 
 function requireNode() {
-  if (NODE_MAJOR < MIN_NODE) {
+  if (!NODE_OK) {
     throw new CliError(`Node.js ${MIN_NODE}+ is required (found ${process.versions.node}).`, {
-      hint: "Install Node 24: https://nodejs.org/en/download  (or: nvm install 24)",
+      hint: `Install Node ${MIN_NODE}+: https://nodejs.org/en/download  (or: nvm install 22)`,
     });
   }
 }
@@ -761,7 +764,7 @@ async function initProject(values, { fromUp = false } = {}) {
   if (!fromUp) {
     console.log(`\n${c.bold("OMP-UI setup")} ${c.dim(`→ ${rel(ENV_FILE)}`)}\n`);
   }
-  if (NODE_MAJOR < MIN_NODE) {
+  if (!NODE_OK) {
     log.warn(`Node.js ${MIN_NODE}+ is required to run OMP-UI (found ${process.versions.node}).`);
   }
 
@@ -2298,7 +2301,7 @@ const COMMANDS = {
       };
       console.log(`\n${c.bold("omp-ui doctor")} ${c.dim(ROOT)}\n`);
 
-      row(NODE_MAJOR >= MIN_NODE ? "ok" : "fail", "Node.js", NODE_MAJOR >= MIN_NODE ? `v${process.versions.node}` : `v${process.versions.node} — need ${MIN_NODE}+ (https://nodejs.org)`);
+      row(NODE_OK ? "ok" : "fail", "Node.js", NODE_OK ? `v${process.versions.node}` : `v${process.versions.node} — need ${MIN_NODE}+ (https://nodejs.org)`);
 
       const cfg = loadConfig();
       if (cfg.hasEnvFile) {
@@ -2338,7 +2341,8 @@ const COMMANDS = {
       row(fs.existsSync(workspace) ? "ok" : "warn", "Projects folder", fs.existsSync(workspace) ? workspace : `${workspace} missing — it is created on first use`);
 
       const pm2Global = toolVersion("pm2");
-      row(pm2Global || which("npx") ? "ok" : "info", "pm2", pm2Global ? `v${pm2Global}` : which("npx") ? c.dim("not installed globally — `npx -y pm2` is used (npm i -g pm2 for boot start)") : c.dim("not installed (optional) — npm i -g pm2"));
+      const pm2Bundled = !pm2Global && (() => { try { return pm2Command()[0] === process.execPath; } catch { return false; } })();
+      row(pm2Global || which("npx") || pm2Bundled ? "ok" : "info", "pm2", pm2Global ? `v${pm2Global}` : pm2Bundled ? c.dim("not installed globally — bundled pm2 is used (npm i -g pm2 for boot start)") : which("npx") ? c.dim("not installed globally — `npx -y pm2` is used (npm i -g pm2 for boot start)") : c.dim("not installed (optional) — npm i -g pm2"));
 
       const pnpm = toolVersion("pnpm");
       row(pnpm ? "ok" : "info", "pnpm", pnpm ? `v${pnpm}` : c.dim("not found (corepack/npm used instead)"));

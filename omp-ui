@@ -16,15 +16,15 @@ done
 dir=$(cd "$(dirname "$self")" && pwd)
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "omp-ui: Node.js 24+ is required, but 'node' was not found on PATH." >&2
-  echo "  Install it from https://nodejs.org/en/download  (or: nvm install 24 / fnm install 24)" >&2
+  echo "omp-ui: Node.js 22.13+ is required, but 'node' was not found on PATH." >&2
+  echo "  Install it from https://nodejs.org/en/download  (or: nvm install 22 / fnm install 22)" >&2
   exit 127
 fi
 
-major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
-if [ "$major" -lt 24 ] 2>/dev/null; then
-  echo "omp-ui: Node.js 24+ is required (found $(node --version 2>/dev/null || echo unknown))." >&2
-  echo "  Upgrade: https://nodejs.org/en/download  (or: nvm install 24 && nvm use 24)" >&2
+ok=$(node -p 'const [a, b] = process.versions.node.split(".").map(Number); a > 22 || (a === 22 && b >= 13)' 2>/dev/null || echo false)
+if [ "$ok" != true ]; then
+  echo "omp-ui: Node.js 22.13+ is required (found $(node --version 2>/dev/null || echo unknown))." >&2
+  echo "  Upgrade: https://nodejs.org/en/download  (or: nvm install 22 && nvm use 22)" >&2
   exit 1
 fi
 
