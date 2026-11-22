@@ -1,7 +1,12 @@
 name: Bug report
-description: Something isn't working
+description: Report something that doesn't work in OMP-UI
+title: "[Bug]: "
 labels: [bug]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Run `omp-ui doctor` first; it catches most setup problems. Search [existing issues](https://github.com/quangpl/omp-ui/issues) before filing.
   - type: input
     id: version
     attributes:

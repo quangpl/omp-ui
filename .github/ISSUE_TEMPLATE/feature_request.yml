@@ -1,5 +1,6 @@
 name: Feature request
-description: Suggest an idea
+description: Suggest an idea or improvement for OMP-UI
+title: "[Feature]: "
 labels: [enhancement]
 body:
   - type: textarea
