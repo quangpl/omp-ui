@@ -168,12 +168,12 @@ function GlobalNewCardDialog({
 
   const board = boards?.find((b) => b.id === boardId);
 
-  const create: CreateFromText = async (text, { parallelize, ignoreMemory }) => {
+  const create: CreateFromText = async (text) => {
     if (!board) {
       toast.error("Pick a project first");
       return false;
     }
-    const task = await createCardFromText(board.id, text, { parallelize, ignoreMemory });
+    const task = await createCardFromText(board.id, text);
     if (!task) return false;
     localStorage.setItem(LAST_BOARD_KEY, board.id);
     toastCardAdded(task, {

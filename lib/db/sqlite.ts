@@ -94,7 +94,6 @@ CREATE TABLE IF NOT EXISTS boards (
   extra_folders TEXT NOT NULL DEFAULT '[]',
   model TEXT,
   auto_run INTEGER NOT NULL DEFAULT 1,
-  worktrees INTEGER NOT NULL DEFAULT 0,
   push_branch TEXT NOT NULL DEFAULT 'main',
   default_branches TEXT NOT NULL DEFAULT '{}',
   pinned INTEGER NOT NULL DEFAULT 0,
@@ -125,8 +124,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   resources TEXT,
   session_usage TEXT,
   scheduler_id TEXT,
-  parallelize INTEGER,
-  ignore_memory INTEGER NOT NULL DEFAULT 0,
   user_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -240,7 +237,6 @@ function toBoard(r: Row): Board {
     extraFolders: parseFolderList(r.extra_folders),
     model: strOrNull(r.model),
     autoRun: num(r.auto_run) !== 0,
-    worktrees: num(r.worktrees) !== 0,
     pushBranch: strOrNull(r.push_branch) ?? DEFAULT_PUSH_BRANCH,
     defaultBranches: parseBranchMap(r.default_branches),
     pinned: num(r.pinned) !== 0,
@@ -273,8 +269,6 @@ function toTask(r: Row): Task {
     resources: parseAgentResources(r.resources),
     usage: parseTaskUsage(r.session_usage),
     schedulerId: strOrNull(r.scheduler_id),
-    parallelize: r.parallelize == null ? null : num(r.parallelize) !== 0,
-    ignoreMemory: r.ignore_memory != null && num(r.ignore_memory) !== 0,
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
     commentCount: num(r.comment_count),
@@ -439,7 +433,6 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       "extra_folders",
       "model",
       "auto_run",
-      "worktrees",
       "push_branch",
       "default_branches",
       "pinned",
@@ -456,7 +449,6 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       JSON.stringify(b.extraFolders),
       b.model,
       bit(b.autoRun),
-      bit(b.worktrees),
       b.pushBranch,
       JSON.stringify(b.defaultBranches),
       bit(b.pinned),
@@ -489,8 +481,6 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       "resources",
       "session_usage",
       "scheduler_id",
-      "parallelize",
-      "ignore_memory",
       "user_id",
       "created_at",
       "updated_at",
@@ -520,8 +510,6 @@ const DATA_COLUMNS: { [T in DataTable]: TableSpec<DataRows[T]> } = {
       jsonOrNull(t.resources),
       jsonOrNull(t.usage),
       t.schedulerId,
-      t.parallelize == null ? null : bit(t.parallelize),
-      bit(t.ignoreMemory),
       t.userId,
       t.createdAt,
       t.updatedAt,
@@ -659,7 +647,6 @@ export class SqliteRepository implements Repository {
     // Migrations for databases created before these columns existed.
     this.addMissingColumns("boards", [
       ["extra_folders", "TEXT NOT NULL DEFAULT '[]'"],
-      ["worktrees", "INTEGER NOT NULL DEFAULT 0"],
       ["push_branch", "TEXT NOT NULL DEFAULT 'main'"],
       ["default_branches", "TEXT NOT NULL DEFAULT '{}'"],
       ["pinned", "INTEGER NOT NULL DEFAULT 0"],
@@ -676,8 +663,6 @@ export class SqliteRepository implements Repository {
       ["resources", "TEXT"],
       ["session_usage", "TEXT"],
       ["scheduler_id", "TEXT"],
-      ["parallelize", "INTEGER"],
-      ["ignore_memory", "INTEGER NOT NULL DEFAULT 0"],
       ["user_id", "TEXT"],
     ]);
     this.addMissingColumns("comments", [
@@ -910,7 +895,6 @@ export class SqliteRepository implements Repository {
       extraFolders: input.extraFolders ?? [],
       model: input.model ?? null,
       autoRun: input.autoRun ?? true,
-      worktrees: input.worktrees ?? false,
       pushBranch: input.pushBranch ?? DEFAULT_PUSH_BRANCH,
       defaultBranches: input.defaultBranches ?? {},
       pinned: false,
@@ -920,7 +904,7 @@ export class SqliteRepository implements Repository {
       updatedAt: now,
     };
     this.stmt(
-      "INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, worktrees, push_branch, default_branches, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO boards (id, name, workdir, extra_folders, model, auto_run, push_branch, default_branches, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       board.id,
       board.name,
@@ -928,7 +912,6 @@ export class SqliteRepository implements Repository {
       JSON.stringify(board.extraFolders),
       board.model,
       board.autoRun ? 1 : 0,
-      board.worktrees ? 1 : 0,
       board.pushBranch,
       JSON.stringify(board.defaultBranches),
       board.userId,
@@ -945,7 +928,6 @@ export class SqliteRepository implements Repository {
       ["extra_folders", patch.extraFolders === undefined ? undefined : JSON.stringify(patch.extraFolders)],
       ["model", patch.model],
       ["auto_run", patch.autoRun === undefined ? undefined : patch.autoRun ? 1 : 0],
-      ["worktrees", patch.worktrees === undefined ? undefined : patch.worktrees ? 1 : 0],
       ["push_branch", patch.pushBranch],
       [
         "default_branches",
@@ -1015,8 +997,8 @@ export class SqliteRepository implements Repository {
       }
       // The card inherits its board's owner.
       this.stmt(
-        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, created_by_task_id, scheduler_id, parallelize, ignore_memory, user_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks (id, board_id, title, description, status, position, agent_state, created_by_task_id, scheduler_id, user_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?)`,
       ).run(
         id,
         input.boardId,
@@ -1026,8 +1008,6 @@ export class SqliteRepository implements Repository {
         position,
         input.createdByTaskId ?? null,
         input.schedulerId ?? null,
-        input.parallelize == null ? null : input.parallelize ? 1 : 0,
-        input.ignoreMemory ? 1 : 0,
         this.ownerOf("boards", input.boardId),
         now,
         now,
@@ -1054,7 +1034,6 @@ export class SqliteRepository implements Repository {
       ["retry_at", patch.retryAt],
       ["todos", patch.todos === undefined ? undefined : JSON.stringify(patch.todos)],
       ["review", patch.review === undefined ? undefined : patch.review === null ? null : JSON.stringify(patch.review)],
-      ["ignore_memory", patch.ignoreMemory === undefined ? undefined : patch.ignoreMemory ? 1 : 0],
       [
         "resources",
         patch.resources === undefined ? undefined : patch.resources === null ? null : JSON.stringify(patch.resources),

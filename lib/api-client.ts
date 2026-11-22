@@ -58,7 +58,6 @@ import type {
   TaskCheckpoint,
   TaskReviewResult,
   TaskStatus,
-  TaskWorkspace,
   AuthStatus,
   CreateUserRequest,
   DeleteUserResult,
@@ -547,7 +546,6 @@ export const api = {
       extraFolders?: string[];
       model?: string | null;
       autoRun?: boolean;
-      worktrees?: boolean;
       pushBranch?: string;
       defaultBranches?: Record<string, string>;
     }) =>
@@ -560,7 +558,6 @@ export const api = {
         extraFolders: string[];
         model: string | null;
         autoRun: boolean;
-        worktrees: boolean;
         pushBranch: string;
         defaultBranches: Record<string, string>;
         pinned: boolean;
@@ -672,21 +669,11 @@ export const api = {
         description?: string;
         status?: TaskStatus;
         position?: number;
-        /** Whether the run prompt invites parallel subagents; null/omitted = on. */
-        parallelize?: boolean | null;
-        /** Whether the card's runs start omp without agentmemory (no recall, capture or memory tools); omitted = false. */
-        ignoreMemory?: boolean;
       },
     ) => request<Task>(`/boards/${boardId}/tasks`, { method: "POST", json: input }),
-    /**
-     * A card from free text, created in In progress with the text as typed and its agent started.
-     * `parallelize` false: the run prompt doesn't tell the agent it may split the work across parallel subagents (omitted = on).
-     * `ignoreMemory` true: the card's runs start omp without agentmemory (omitted = false).
-     */
-    createFromText: (
-      boardId: string,
-      input: { text: string; position?: number; parallelize?: boolean; ignoreMemory?: boolean },
-    ) => request<Task>(`/boards/${boardId}/tasks`, { method: "POST", json: input }),
+    /** A card from free text, created in In progress with the text as typed and its agent started. */
+    createFromText: (boardId: string, input: { text: string; position?: number }) =>
+      request<Task>(`/boards/${boardId}/tasks`, { method: "POST", json: input }),
     get: (id: string) => request<TaskDetail>(`/tasks/${id}`),
     update: (
       id: string,
@@ -695,8 +682,6 @@ export const api = {
         description: string;
         status: TaskStatus;
         position: number;
-        /** Run omp without agentmemory from the card's next run. */
-        ignoreMemory: boolean;
         /** Only null is accepted: dismisses the agent's question. */
         question: null;
       }>,
@@ -717,13 +702,6 @@ export const api = {
       input: { decision: "approve" | "request_changes"; note?: string | null; hash?: string | null },
     ) => request<TaskReviewResult>(`/tasks/${id}/review`, { method: "POST", json: input }),
     runs: (id: string) => request<Run[]>(`/tasks/${id}/runs`),
-    /** The card's dedicated workspace (worktree per git project folder). */
-    workspace: (id: string) => request<TaskWorkspace>(`/tasks/${id}/workspace`),
-    /** Delete the card's worktrees and their local branches (refused while its agent runs). */
-    removeWorkspace: (id: string) =>
-      request<TaskWorkspace>(`/tasks/${id}/workspace`, { method: "DELETE" }),
-    /** Git status of the folders the card ships from: its worktrees, else the project folders. */
-    git: (id: string) => request<GitStatus[]>(`/tasks/${id}/git`),
     /** The card's code changes (uncommitted plus commits ahead of the base branch), per repo. */
     diff: (id: string, init?: { signal?: AbortSignal }) => request<TaskDiff>(`/tasks/${id}/diff`, init),
     /** One/two-sentence summary of the changes; `pending` while the summary agent writes it. `regenerate` drops the cached one. */
@@ -843,10 +821,10 @@ export const api = {
     /** Commit the task's changes and push to the branch each folder is already on (all changed folders). */
     pushCurrent: (taskId: string, input: { message?: string; folders?: string[] } = {}) =>
       request<GitActionResult>(`/tasks/${taskId}/git/push-current`, { method: "POST", json: input }),
-    /** Discard the task's uncommitted changes in the folders it ships from (worktrees, else project folders). */
+    /** Discard the task's uncommitted changes in the project folders. */
     discard: (taskId: string) =>
       request<GitDiscardResult>(`/tasks/${taskId}/git/discard`, { method: "POST", json: {} }),
-    /** Commit to a new branch, push, and open a PR (GitHub) / MR (GitLab). */
+    /** Push a branch off the default branch with only this card's changes, and open a PR (GitHub) / MR (GitLab). */
     pr: (taskId: string, input: { title?: string; body?: string; folders?: string[] } = {}) =>
       request<GitActionResult>(`/tasks/${taskId}/git/pr`, { method: "POST", json: input }),
   },

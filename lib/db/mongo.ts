@@ -89,8 +89,6 @@ interface BoardDoc {
   extraFolders?: string[];
   model: string | null;
   autoRun: boolean;
-  /** Missing on documents created before dedicated workspaces. */
-  worktrees?: boolean;
   /** Missing on documents created before configurable push branches. */
   pushBranch?: string | null;
   /** Per-repo default branch, folder → branch. Missing on documents created before it existed. */
@@ -134,10 +132,6 @@ interface TaskDoc {
   usage?: TaskUsage | null;
   /** Missing on documents created before schedulers. */
   schedulerId?: string | null;
-  /** Missing on documents created before the parallelize toggle. */
-  parallelize?: boolean | null;
-  /** Missing on documents created before the ignore-memory toggle (counts as false). */
-  ignoreMemory?: boolean;
   /** Copied from the board on create. Missing on documents created before multi-user support. */
   userId?: string | null;
   createdAt: string;
@@ -259,7 +253,6 @@ function toBoard(d: BoardDoc): Board {
     extraFolders: parseFolderList(d.extraFolders),
     model: d.model ?? null,
     autoRun: d.autoRun,
-    worktrees: d.worktrees ?? false,
     pushBranch: d.pushBranch ?? DEFAULT_PUSH_BRANCH,
     defaultBranches: parseBranchMap(d.defaultBranches),
     pinned: d.pinned ?? false,
@@ -292,8 +285,6 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     resources: parseAgentResources(d.resources),
     usage: parseTaskUsage(d.usage),
     schedulerId: d.schedulerId ?? null,
-    parallelize: d.parallelize ?? null,
-    ignoreMemory: d.ignoreMemory === true,
     userId: d.userId ?? null,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
@@ -395,7 +386,6 @@ const BOARD_PATCH_KEYS = [
   "extraFolders",
   "model",
   "autoRun",
-  "worktrees",
   "pushBranch",
   "defaultBranches",
   "pinned",
@@ -417,7 +407,6 @@ const TASK_PATCH_KEYS = [
   "review",
   "resources",
   "usage",
-  "ignoreMemory",
 ] as const satisfies readonly (keyof UpdateTaskInput)[];
 const RUN_PATCH_KEYS = ["status", "summary", "error", "endedAt"] as const satisfies readonly (keyof UpdateRunInput)[];
 const SCHEDULER_PATCH_KEYS = [
@@ -752,7 +741,6 @@ export class MongoRepository implements Repository {
       extraFolders: input.extraFolders ?? [],
       model: input.model ?? null,
       autoRun: input.autoRun ?? true,
-      worktrees: input.worktrees ?? false,
       pushBranch: input.pushBranch ?? DEFAULT_PUSH_BRANCH,
       defaultBranches: input.defaultBranches ?? {},
       pinned: false,
@@ -859,8 +847,6 @@ export class MongoRepository implements Repository {
       resources: null,
       usage: null,
       schedulerId: input.schedulerId ?? null,
-      parallelize: input.parallelize ?? null,
-      ignoreMemory: input.ignoreMemory ?? false,
       userId: board.userId ?? null,
       createdAt: now,
       updatedAt: now,

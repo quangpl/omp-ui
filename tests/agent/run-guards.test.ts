@@ -42,7 +42,6 @@ const ENV_KEYS = [
   "FAKE_OMP_SCENARIO",
   "FAKE_OMP_SESSION_DIR",
   "FAKE_OMP_MODEL_ROLES",
-  "FAKE_OMP_PLAN",
   "FAKE_OMP_COST_PER_MESSAGE",
   "OMP_UI_RETRY_BASE_MS",
   "OMP_UI_QUOTA_RETRY_BASE_MS",
@@ -69,7 +68,7 @@ function guardSettings(patch: Partial<AppSettings> = {}): AppSettings {
 }
 
 function guardState(patch: Partial<RunGuardState> = {}): RunGuardState {
-  return { launchedAt: T0, lastActivityAt: T0, waitingOnHost: false, costUsd: 0, tokens: 0, ...patch };
+  return { launchedAt: T0, lastActivityAt: T0, costUsd: 0, tokens: 0, ...patch };
 }
 
 describe("evaluateRunGuards", () => {
@@ -106,11 +105,6 @@ describe("evaluateRunGuards", () => {
       message: "No activity from the agent for 20 min (stall watchdog)",
       retry: true,
     });
-  });
-
-  it("exempts a run waiting on a board tool from the stall watchdog", () => {
-    const settings = guardSettings({ stallWatchdog: true, stallTimeoutMinutes: 20 });
-    expect(evaluateRunGuards(guardState({ waitingOnHost: true }), settings, T0 + 600 * MINUTE)).toBeNull();
   });
 
   it("stops a run over its USD or token budget without a retry; 0 means no cap", () => {
@@ -174,7 +168,7 @@ describe("evaluateWrapUp", () => {
     const settings = guardSettings({ wrapUpNudge: true, wrapUpPercent: 80, runTimeLimit: true, runTimeLimitMinutes: 120 });
     // 120 settings-minutes = 1,200 ms; 80 % = 960 ms.
     expect(evaluateWrapUp(guardState(), settings, T0 + 959)).toBeNull();
-    expect(evaluateWrapUp(guardState({ waitingOnHost: true }), settings, T0 + 960)).toEqual({
+    expect(evaluateWrapUp(guardState(), settings, T0 + 960)).toEqual({
       guard: "time",
       percent: 80,
       detail: "96 of 120 min",
@@ -249,7 +243,6 @@ describe("evaluateWrapUp", () => {
     const time = wrapUpSteerMessage({ guard: "time", percent: 85, detail: "102 of 120 min" });
     expect(time).toContain("85% of your run time limit (102 of 120 min)");
     expect(time).toMatch(/do not start new work/);
-    expect(time).toMatch(/Report/);
     expect(wrapUpSteerMessage({ guard: "budget", percent: 90, detail: "$4.50 of $5.00" })).toContain(
       "90% of your run budget ($4.50 of $5.00)",
     );
@@ -329,13 +322,6 @@ describe("run guards through the agent manager", () => {
     return logEntries().filter((e) => e.kind === "command" && e.command?.type === "prompt").length;
   }
 
-  /** The prompts that started card runs (steers excluded), in order. */
-  function runPrompts(): string[] {
-    return logEntries()
-      .filter((e) => e.kind === "command" && e.command?.type === "prompt" && !e.command.streamingBehavior)
-      .map((e) => e.command?.message ?? "");
-  }
-
   /** The `--config` overlay each card run was started with, in spawn order. */
   function runConfigs(): Record<string, unknown>[] {
     return logEntries()
@@ -396,7 +382,6 @@ describe("run guards through the agent manager", () => {
     delete process.env.MAX_AGENTS;
     delete process.env.OMP_EXTRA_ARGS;
     delete process.env.FAKE_OMP_MODEL_ROLES;
-    delete process.env.FAKE_OMP_PLAN;
     delete process.env.FAKE_OMP_COST_PER_MESSAGE;
     delete process.env.OMP_UI_QUOTA_RETRY_BASE_MS;
     process.env.OMP_UI_RETRY_BASE_MS = "50";
@@ -531,19 +516,6 @@ describe("run guards through the agent manager", () => {
     expect(steers[0]!.message).toContain("Wrap up now");
     // The run's prompt plus the one nudge.
     expect(promptsReceived()).toBe(2);
-  });
-
-  it("tells an automatic retry why the previous run failed", async () => {
-    await updateAppSettings(repo, { stallWatchdog: true, stallTimeoutMinutes: 2, maxAutoRetries: 1 });
-    const { task } = await startCard("Hangs once", "slow");
-
-    const [first, retry] = await waitFor(() => {
-      const prompts = runPrompts();
-      return prompts.length === 2 ? prompts : null;
-    }, "the automatic retry to get its prompt");
-    expect((await getTask(task.id)).autoRetries).toBe(1);
-    expect(first).not.toContain("The previous run failed");
-    expect(retry).toContain("The previous run failed: No activity from the agent for 2 min (stall watchdog).");
   });
 
   it("passes the orchestration limits to omp in the run's config overlay", async () => {

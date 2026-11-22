@@ -60,16 +60,12 @@ export const OMP_CONFIG_SCHEMA: readonly OmpConfigField[] = [
   role(
     "default",
     "Default model",
-    "Used unless a board, AgentMan's default model or auto-select picks another. A thinking level set here overrides the default thinking level.",
+    "Used unless a board or AgentMan's default model picks another. A thinking level set here overrides the default thinking level.",
   ),
-  role("smol", "Fast model (smol)", "Lightweight work. AgentMan's auto-select runs small edits on it."),
-  role(
-    "slow",
-    "Reasoning model (slow)",
-    "Thorough analysis. Auto-select runs debugging, performance, security and architecture cards on it.",
-  ),
+  role("smol", "Fast model (smol)", "Lightweight work."),
+  role("slow", "Reasoning model (slow)", "Thorough analysis."),
   role("plan", "Plan model", "Architectural planning in plan mode."),
-  role("designer", "Designer model", "UI work. Auto-select runs UI cards on it when set."),
+  role("designer", "Designer model", "UI work."),
   role("task", "Subagent model (task)", "Subagents the agent spawns with its task tool."),
   role("vision", "Vision model", "Reads images for models without vision support."),
   role("advisor", "Advisor model", "Reviews each turn when the advisor is enabled."),
@@ -284,18 +280,6 @@ export async function agentDir(ompPath: string): Promise<string> {
     throw new HttpError(502, `omp config path failed: ${cliError(result)}`);
   }
   return dir;
-}
-
-/** One effective setting (`omp config get <key> --json`) as omp resolves it in `cwd` (project over user). */
-export async function getOmpSetting(ompPath: string, key: string, cwd: string): Promise<unknown> {
-  const result = await runOmp(ompPath, ["config", "get", key, "--json"], { cwd });
-  if (result.code !== 0) throw new HttpError(400, cliError(result));
-  const start = result.stdout.indexOf("{");
-  try {
-    const data: unknown = JSON.parse(result.stdout.slice(start === -1 ? 0 : start));
-    if (data && typeof data === "object" && "value" in data) return data.value;
-  } catch {}
-  throw new HttpError(502, `omp config get ${key} returned unexpected output; is omp up to date?`);
 }
 
 // ─── file access ─────────────────────────────────────────────────────────────

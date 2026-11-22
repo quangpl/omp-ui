@@ -1,6 +1,6 @@
 // Replication of the primary's state to every replica (sync scope `repl`, down only), so any
 // replica can be promoted with the primary's data. The primary pushes, per replica, a SQLite
-// snapshot of its database (when the db or its -wal changed), DATA_DIR/files, the card worktrees,
+// snapshot of its database (when the db or its -wal changed), DATA_DIR/files,
 // the cluster session dirs, every board's project folders (to the replica's mirror), the omp
 // agent dir pack and the git/npm auth pack, plus the secrets the replica needs (`repl.secrets`).
 // Each completed round has a sequence number (`repl.seq`), which ranks replicas in elections. The
@@ -244,22 +244,6 @@ async function projectFolders(): Promise<string[]> {
   return folders.filter((p) => !folders.some((other) => other !== p && isWithin(p, other)));
 }
 
-/** DATA_DIR/workspaces/<taskId>/<folder>: one git worktree each. */
-async function workspaceFolders(): Promise<string[]> {
-  const root = path.join(dataDir(), "workspaces");
-  const tasks = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
-  const nested = await Promise.all(
-    tasks
-      .filter((entry) => entry.isDirectory())
-      .map(async (entry) => {
-        const taskDir = path.join(root, entry.name);
-        const folders = await fs.readdir(taskDir, { withFileTypes: true }).catch(() => []);
-        return folders.filter((f) => f.isDirectory()).map((f) => path.join(taskDir, f.name));
-      }),
-  );
-  return nested.flat();
-}
-
 /**
  * The folders of one round for `node` (the database snapshot in `dbDir` when given, the files
  * when `withFiles`) and the path map that rewrites pointer files (.git) for the node.
@@ -285,9 +269,6 @@ async function replicationPlan(
   if (withFiles) {
     add("files", path.join(data, "files"), onNode(path.join(data, "files")), "raw");
     add("sessions", cluster.sessions, onNode(cluster.sessions), "raw");
-    for (const folder of await workspaceFolders()) {
-      add(`workspace:${path.relative(data, folder)}`, folder, onNode(folder), "tree");
-    }
     for (const [folder, nodePath] of projects) {
       const id = createHash("sha256").update(canonicalPath(folder)).digest("hex").slice(0, 16);
       add(`project:${id}`, folder, nodePath, "tree");

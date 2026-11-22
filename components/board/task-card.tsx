@@ -4,7 +4,6 @@ import { type CSSProperties, memo, type MouseEvent, type ReactNode, type Ref, us
 import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
 import {
   Bot,
-  BrainOff,
   CircleHelp,
   Clock,
   ListChecks,
@@ -391,15 +390,6 @@ export const TaskCard = memo(function TaskCard({
               >
                 <Bot className="size-3" aria-hidden />
                 <span className="sr-only">Created by an agent</span>
-              </span>
-            )}
-            {task.ignoreMemory && (
-              <span
-                className="inline-flex size-5 items-center justify-center rounded-full bg-muted text-muted-foreground"
-                title="Agent memory off"
-              >
-                <BrainOff className="size-3" aria-hidden />
-                <span className="sr-only">Agent memory off</span>
               </span>
             )}
             {task.openCommentCount > 0 && (

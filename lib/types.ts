@@ -87,12 +87,6 @@ export interface Board {
   /** When true, moving a card into "In progress" starts the agent automatically. */
   autoRun: boolean;
   /**
-   * Dedicated workspaces: each card's agent works in its own git worktree of every project
-   * folder that is a git repository (branch `omp/<card>`), so parallel cards never share a
-   * working tree. Non-git folders stay shared. Default false.
-   */
-  worktrees: boolean;
-  /**
    * Branch "Push to main" lands on in every project repo (`git push origin HEAD:<pushBranch>`),
    * created on the remote when missing. Create PR still targets each repo's own default branch.
    * A valid git branch name (`isValidBranchName` in lib/push-branch.ts). Default "main".
@@ -100,7 +94,7 @@ export interface Board {
   pushBranch: string;
   /**
    * Default branch per project repo, keyed by folder (`workdir` + `extraFolders`, absolute). It is
-   * the branch a card's worktree is created from and the base "Create PR" targets. A repo with no
+   * the base "Create PR" targets. A repo with no
    * entry uses its own origin/HEAD, then a local/remote `main`/`master`, then "main" (see
    * `lib/default-branch.ts`). Keys are always a subset of the project's folders. Default {}.
    */
@@ -183,17 +177,6 @@ export interface Task {
   openCommentCount: number;
   /** Scheduler whose run created this card; null when a person or an agent created it. */
   schedulerId: string | null;
-  /**
-   * Whether the card's runs may split the work across parallel subagents (the New task form's
-   * "Parallelize" toggle). null (cards created without a choice) counts as true.
-   */
-  parallelize: boolean | null;
-  /**
-   * Whether the card's agent runs without agentmemory (the "Ignore memory" toggle): no recall from past
-   * sessions, nothing from its runs saved to memory, no memory tools. Default false. Takes effect from the
-   * next run.
-   */
-  ignoreMemory: boolean;
   /** Owning user, inherited from the board (see Board.userId). */
   userId: string | null;
 }
@@ -525,29 +508,13 @@ export interface AppSettings {
   /** Default `--model` when a board has none. Empty = omp default. */
   defaultModel: string;
   /**
-   * When a board has no model: pick one per run from the task (omp's `smol` role for small edits,
-   * `slow` for hard problems, `designer` for UI work), falling back to `defaultModel`.
-   */
-  autoModel: boolean;
-  /**
    * Authenticated providers agents run on, in order (lib/provider-priority.ts): the first is the
    * Main provider, used while it has quota; later ones only take over while it is out of quota.
    * Replaces `defaultModel` when set; a board's pinned model still wins. Empty = off.
    */
   providerPriority: ProviderPriorityEntry[];
-  /**
-   * Smart queue: when several cards of a project wait in the agent queue, a planner agent orders
-   * them (quick wins and urgent work first). Cards run independently: no card waits for another.
-   */
-  smartQueue: boolean;
   /** What a card's agent may do with a web browser (omp's `browser` tool). */
   browser: BrowserMode;
-  /**
-   * Prepend AgentMan's system prompt (SDLC workflow, quality gates, cleanup, summary and report
-   * instructions) to every task sent to omp. Off: the task is forwarded to omp exactly as
-   * written, with nothing added.
-   */
-  useSystemPrompt: boolean;
   /**
    * Retry failed runs automatically (resuming the omp session) with exponential backoff, and
    * resume interrupted and failed In progress cards when the server restarts.
@@ -858,7 +825,6 @@ export const SCHEDULED_CLEANUP_IDS = [
   "orphan-card-files",
   "orphan-board-files",
   "orphan-workspaces",
-  "shipped-workspaces",
   "run-configs",
   "drafts",
   "diff-cache",
@@ -872,17 +838,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ompPath: "omp",
   approvalMode: "yolo",
   defaultModel: "",
-  autoModel: true,
   providerPriority: [],
-  smartQueue: true,
   browser: "headless",
-  useSystemPrompt: true,
   autoRetry: true,
   maxAutoRetries: 5,
   persistentRetry: true,
   cleanupSchedule: "off",
-  // Worktrees of shipped cards may still be wanted; they are opt-in.
-  cleanupTargets: SCHEDULED_CLEANUP_IDS.filter((id) => id !== "shipped-workspaces"),
+  cleanupTargets: [...SCHEDULED_CLEANUP_IDS],
   taskCompletionNotifications: false,
   visibleDashboardMenus: [...DASHBOARD_MENU_IDS],
   primaryColor: DEFAULT_PRIMARY_COLOR,
@@ -1067,26 +1029,6 @@ export interface SharedFiles {
   files: SharedFile[];
 }
 
-/** One project folder of a card's dedicated workspace (GET /tasks/:id/workspace). */
-export interface WorkspaceFolder {
-  /** Project folder on the board. */
-  source: string;
-  /** Where the agent works: the worktree, or `source` for a non-git (shared) folder. */
-  path: string;
-  /** Worktree branch; null for a shared folder. */
-  branch: string | null;
-  /** True when `path` is a dedicated git worktree. */
-  isolated: boolean;
-  /** False until the card's first run creates the worktree. */
-  exists: boolean;
-}
-
-export interface TaskWorkspace {
-  /** Board has dedicated workspaces on (Board.worktrees). */
-  enabled: boolean;
-  folders: WorkspaceFolder[];
-}
-
 /** One entry of the agent queue (GET /queue). */
 export interface QueueEntry {
   taskId: string;
@@ -1094,10 +1036,6 @@ export interface QueueEntry {
   boardName: string;
   title: string;
   state: "running" | "queued";
-  /** Held until the smart-queue planner has ordered its project's queued cards. */
-  planning: boolean;
-  /** Why the smart-queue planner put the card where it is (one line); null when not planned. */
-  planNote: string | null;
   /** Card whose agent created this card (Task.createdByTaskId); null when a person did. */
   createdByTaskId: string | null;
   /** SDLC progress derived from the card's todo list (lib/sdlc.ts); null until the agent keeps one. */
@@ -1153,8 +1091,6 @@ export interface QueueSnapshot {
   running: QueueEntry[];
   /** Start order. */
   queued: QueueEntry[];
-  /** Projects whose queued cards the smart-queue planner is ordering right now. */
-  planning: { boardId: string; boardName: string }[];
 }
 
 /** A machine resource the resource guard watches. */
@@ -1729,7 +1665,6 @@ export const CLEANUP_IDS = [
   "orphan-card-files",
   "orphan-board-files",
   "orphan-workspaces",
-  "shipped-workspaces",
   "run-configs",
   "drafts",
   "diff-cache",
@@ -2121,7 +2056,7 @@ export interface MemoryStats {
 export interface TaskCheckpoint {
   /** Ref name tail; unique per task and repository. */
   id: string;
-  /** Project folder (or the card's worktree of it) the snapshot was taken in. */
+  /** Project folder the snapshot was taken in. */
   folder: string;
   /** Commit sha of the snapshot. */
   sha: string;

@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import {
   ArrowUp,
   Check,
@@ -33,7 +33,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { ApiRequestError, api } from "@/lib/api-client";
-import type { AgentState, Comment, GitActionResult, GitBranches, GitDiscardResult, GitStatus, Task } from "@/lib/types";
+import type { Comment, GitActionResult, GitBranches, GitDiscardResult, GitStatus, Task } from "@/lib/types";
 import { errorMessage } from "@/components/board/format";
 
 /** Last path segment, for compact folder labels. */
@@ -513,39 +513,6 @@ function BranchPicker({
   );
 }
 
-/**
- * Git status of the folders a card ships from (its worktrees on boards with dedicated
- * workspaces). Loaded while `enabled`; re-read when the agent's state changes and on `refresh()`.
- */
-export function useTaskGitStatus(
-  taskId: string,
-  enabled: boolean,
-  agentState: AgentState | undefined,
-): { statuses: GitStatus[] | null; refresh: () => void } {
-  const [statuses, setStatuses] = useState<GitStatus[] | null>(null);
-  const [version, setVersion] = useState(0);
-
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    api.tasks.git(taskId).then(
-      (next) => {
-        if (!cancelled) setStatuses(next);
-      },
-      () => {
-        // Same as the board-level status: unreadable git info shows as "nothing to ship".
-        if (!cancelled) setStatuses([]);
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [taskId, enabled, agentState, version]);
-
-  const refresh = useCallback(() => setVersion((n) => n + 1), []);
-  return { statuses, refresh };
-}
-
 export type ShipAction = "pr" | "push" | "push-current";
 
 /** User-facing names for a set of repos: "PR" vs GitLab's "MR", and the project's push branch a push lands on. */
@@ -611,14 +578,13 @@ export async function shipTask(
 
 /**
  * "Ship" panel on a card: open a PR/MR, push straight to the project's push branch, or push to the
- * branch each repo is already on. Acts on every project folder with changes (or the card's
- * worktrees when `fromWorkspace`); results link out per folder.
+ * branch each repo is already on. Acts on every project folder; "Create PR" ships only this card's
+ * changes, on top of the default branch. Results link out per folder.
  */
 export function ShipActions({
   task,
   statuses,
   pushBranch,
-  fromWorkspace = false,
   onShipped,
   onDiscarded,
 }: {
@@ -626,8 +592,6 @@ export function ShipActions({
   statuses: GitStatus[] | null;
   /** The project's push branch: where "Push to …" lands the card's changes. */
   pushBranch: string;
-  /** `statuses` describe the card's dedicated workspace rather than the project folders. */
-  fromWorkspace?: boolean;
   /** Called after an action finishes, with the agent comment the server posted. */
   onShipped: (comment: Comment) => void;
   /** Called after the discard-changes action finishes so the card re-reads git status. */
@@ -639,7 +603,6 @@ export function ShipActions({
   const repos = statuses?.filter((status) => status.isRepo) ?? [];
   const { prNoun, pushTarget } = shipLabels(repos, pushBranch);
   const agentActive = task.agentState === "running" || task.agentState === "queued";
-  const hasChanges = repos.some((repo) => repo.dirty || repo.ahead > 0);
   const noRemote = !canShip(repos);
   /** A folder on a detached HEAD has no branch to push to; the button needs at least one that has. */
   const hasCurrentBranch = repos.some((repo) => repo.branch !== null);
@@ -651,7 +614,7 @@ export function ShipActions({
       <ShipFrame>
         <p className="flex items-center gap-2 text-sm text-muted-foreground">
           <LoaderCircle className="size-4 animate-spin" />
-          {fromWorkspace ? "Checking the workspace's git status…" : "Checking the project's git status…"}
+          Checking the project&apos;s git status…
         </p>
       </ShipFrame>
     );
@@ -661,9 +624,7 @@ export function ShipActions({
     return (
       <ShipFrame>
         <p className="text-sm text-muted-foreground">
-          {fromWorkspace
-            ? "No git repositories in this card's workspace; nothing to ship."
-            : "This project's folders aren't git repositories; nothing to ship."}
+          This project&apos;s folders aren&apos;t git repositories; nothing to ship.
         </p>
       </ShipFrame>
     );
@@ -683,14 +644,7 @@ export function ShipActions({
     ? "Wait for the agent to finish before shipping."
     : noRemote
       ? "Add a git remote (origin) to push or open a pull request."
-      : !hasChanges
-        ? "No uncommitted or unpushed changes."
-        : prOpensBrowser
-          ? "Opens a pre-filled PR page in your browser"
-          : `Commits all changes${repos.length > 1 ? ` in ${repos.length} folders` : ""}, then opens a ${prNoun} or pushes to ${pushTarget} / the current branch.`;
-  const workspaceBranches = [
-    ...new Set(repos.flatMap((repo) => (repo.branch ? [repo.branch] : []))),
-  ];
+      : `Create ${prNoun} opens a branch off the default branch with only this card's changes${prOpensBrowser ? " and a pre-filled page in your browser" : ""}; your checked-out branch stays as it is. The push buttons commit everything in ${repos.length > 1 ? `the ${repos.length} folders` : "the folder"}.`;
   const changedFiles = repos.reduce((sum, repo) => sum + (repo.dirty ? repo.changedFiles : 0), 0);
   const unpushed = repos.reduce((sum, repo) => sum + repo.ahead, 0);
   const summary = [
@@ -708,19 +662,6 @@ export function ShipActions({
         ) : null
       }
     >
-      {fromWorkspace && (
-        <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-          <GitBranch className="size-3.5 shrink-0" />
-          <span className="min-w-0 truncate">
-            From this card&apos;s workspace
-            {workspaceBranches.length > 0 && (
-              <>
-                : <span className="font-mono text-foreground">{workspaceBranches.join(", ")}</span>
-              </>
-            )}
-          </span>
-        </p>
-      )}
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         <Button
           className="h-11 w-full min-w-0 transition-transform active:scale-[0.98] sm:col-span-2 md:h-9"

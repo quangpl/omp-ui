@@ -22,7 +22,6 @@ import * as taskPrRoute from "@/app/api/v1/tasks/[id]/git/pr/route";
 import * as taskPushRoute from "@/app/api/v1/tasks/[id]/git/push/route";
 import * as taskPushCurrentRoute from "@/app/api/v1/tasks/[id]/git/push-current/route";
 import * as taskDiscardRoute from "@/app/api/v1/tasks/[id]/git/discard/route";
-import * as taskGitRoute from "@/app/api/v1/tasks/[id]/git/route";
 import * as taskRoute from "@/app/api/v1/tasks/[id]/route";
 import * as taskRunRoute from "@/app/api/v1/tasks/[id]/run/route";
 import * as taskStopRoute from "@/app/api/v1/tasks/[id]/stop/route";
@@ -39,7 +38,7 @@ import type {
   GitSwitchResult,
   Task,
 } from "@/lib/types";
-import { ensureWorkspace } from "@/lib/workspaces";
+import { newRunKey, recordRunSnapshot } from "@/lib/server/task-changes";
 
 interface Repo {
   work: string;
@@ -92,6 +91,14 @@ async function createTask(boardId: string, title: string): Promise<Task> {
   });
   expect(res.status).toBe(201);
   return res.body;
+}
+
+/** What an agent run records around its work (the manager does this): start snapshot, `work`, end snapshot. */
+async function simulateRun(taskId: string, folders: string[], work: () => void): Promise<void> {
+  const runKey = newRunKey(`run${Math.random().toString(36).slice(2, 8)}`);
+  await recordRunSnapshot(folders, { taskId, runKey, phase: "start" });
+  work();
+  await recordRunSnapshot(folders, { taskId, runKey, phase: "end" });
 }
 
 async function gitAction(action: "push" | "push-current" | "pr", taskId: string, body: Record<string, unknown> = {}) {
@@ -296,10 +303,21 @@ describe("git status and quick actions", () => {
   );
 
   it(
-    "Create PR pushes a new omp/... branch (no PR CLI for this host) and leaves main untouched",
+    "Create PR pushes a new omp/... branch off the default branch with only the card's changes, leaving main and the checked-out branch untouched",
     async () => {
       const mainBefore = remoteHead(app.bare, "main").sha;
-      writeFileSync(path.join(app.work, "pr.txt"), "pull request change\n");
+      // The project sits on a feature branch with an unrelated unpushed commit and an uncommitted
+      // file when the card runs; another change lands after the card is done.
+      git(app.work, "checkout", "-b", "feature");
+      writeFileSync(path.join(app.work, "unrelated.txt"), "earlier work\n");
+      git(app.work, "add", "-A");
+      git(app.work, "commit", "-m", "Unrelated work");
+      writeFileSync(path.join(app.work, "wip.txt"), "uncommitted, not the card's\n");
+      await simulateRun(task.id, [app.work, lib.work, notes], () => {
+        writeFileSync(path.join(app.work, "pr.txt"), "pull request change\n");
+        writeFileSync(path.join(app.work, "README.md"), "# app\n\ncard edit\n");
+      });
+      writeFileSync(path.join(app.work, "later.txt"), "someone else\n");
 
       const res = await gitAction("pr", task.id, { title: "Greeting PR" });
       expect(res.status).toBe(200);
@@ -317,8 +335,20 @@ describe("git status and quick actions", () => {
       expect(remoteBranch.sha).toBe(appResult.commit);
       expect(remoteBranch.subject).toBe("Greeting PR");
       expect(remoteHead(app.bare, "main").sha).toBe(mainBefore);
-      // The folder stays on the new branch.
-      expect(git(app.work, "rev-parse", "--abbrev-ref", "HEAD")).toBe(branch);
+      // One commit on top of the default branch with only the card's two files.
+      expect(git(app.bare, "--git-dir", app.bare, "log", "-1", "--format=%P", branch)).toBe(mainBefore);
+      expect(git(app.bare, "--git-dir", app.bare, "diff", "--name-only", "main", branch).split("\n").sort()).toEqual([
+        "README.md",
+        "pr.txt",
+      ]);
+      // The folder stays on its branch, with its commits and uncommitted files as they were.
+      expect(git(app.work, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature");
+      expect(git(app.work, "diff", "--name-only")).toBe("README.md");
+      expect(git(app.work, "ls-files", "--others", "--exclude-standard").split("\n").sort()).toEqual([
+        "later.txt",
+        "pr.txt",
+        "wip.txt",
+      ]);
 
       expect(libResult.skipped).toBe(true);
       expect(notesResult.skipped).toBe(true);
@@ -330,6 +360,16 @@ describe("git status and quick actions", () => {
       expect(nothing.status).toBe(200);
       expect(nothing.body.results).toEqual([expect.objectContaining({ folder: lib.work, skipped: true })]);
       expect(nothing.body.comment.body).toContain("Nothing to put in a pull request");
+
+      // A card with no recorded run in a folder can't tell its changes from anyone else's.
+      const untracked = await createTask(board.id, "Never ran");
+      const refused = await gitAction("pr", untracked.id, { folders: [app.work] });
+      expect(refused.status).toBe(200);
+      expect(refused.body.results).toEqual([
+        expect.objectContaining({ folder: app.work, skipped: false, error: expect.stringContaining("no record") }),
+      ]);
+
+      git(app.work, "checkout", "-f", "main");
     },
     GIT_TIMEOUT,
   );
@@ -545,7 +585,8 @@ describe("git status and quick actions", () => {
         defaultBranches: { [repo.work]: "develop" },
       });
       const ghTask = await createTask(ghBoard.id, "Widget polish");
-      writeFileSync(path.join(repo.work, "widget.txt"), "shiny\n");
+      git(repo.work, "push", "origin", "main:develop");
+      await simulateRun(ghTask.id, [repo.work], () => writeFileSync(path.join(repo.work, "widget.txt"), "shiny\n"));
 
       // PATH without gh/glab; git itself is still reachable.
       const bin = tempDir("bin-without-gh");
@@ -1340,50 +1381,4 @@ describe("git init", () => {
     expect(res.body[0]).toMatchObject({ folder: main, isRepo: true, remoteUrl: null, dirty: false });
     expect(res.body[1]).toMatchObject({ folder: extra, isRepo: true, remoteUrl: null, dirty: false });
   });
-});
-
-// ---------------------------------------------------------------------------------------------
-
-describe("card worktrees", () => {
-  it(
-    "ships from the card's worktree and targets that repo's configured default branch",
-    async () => {
-      await freshEnv();
-      await setupAdmin();
-      const repo = makeRepo("wt-app");
-      // Looks like GitHub to the server, so Create PR links a compare page; pushes go to the
-      // local bare repo (no network).
-      git(repo.work, "remote", "set-url", "origin", "ssh://git@github.invalid/acme/wt-app.git");
-      git(repo.work, "remote", "set-url", "--push", "origin", repo.bare);
-      const board = await createBoard({
-        name: "Worktrees",
-        workdir: repo.work,
-        autoRun: false,
-        worktrees: true,
-        defaultBranches: { [repo.work]: "develop" },
-      });
-      const task = await createTask(board.id, "Worktree polish");
-
-      const { workspace } = await ensureWorkspace(board, task);
-      const worktree = workspace.folders[0].path;
-      expect(worktree).not.toBe(repo.work);
-      writeFileSync(path.join(worktree, "wt.txt"), "worktree change\n");
-
-      const status = await api<GitStatus[]>(taskGitRoute, "GET", `/tasks/${task.id}/git`, {
-        params: { id: task.id },
-      });
-      expect(status.body).toEqual([expect.objectContaining({ folder: worktree, isRepo: true, defaultBranch: "develop" })]);
-
-      const res = await gitAction("pr", task.id);
-      expect(res.status).toBe(200);
-      const [result] = res.body.results;
-      expect(result.folder).toBe(worktree);
-      expect(result.error).toBeNull();
-      const branch = result.branch as string;
-      expect(branch).toMatch(/^omp\/worktree-polish-[0-9a-f]{6}$/);
-      // The repo's own default branch is main (origin/HEAD): the project's choice wins.
-      expect(result.url).toBe(`https://github.invalid/acme/wt-app/compare/develop...${branch}?expand=1`);
-    },
-    GIT_TIMEOUT,
-  );
 });

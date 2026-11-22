@@ -5,7 +5,6 @@ import Link from "next/link";
 import {
   AlignLeft,
   ArrowUp,
-  BrainOff,
   CalendarClock,
   ChevronRight,
   CircleHelp,
@@ -57,7 +56,6 @@ import {
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Kbd } from "@/components/ui/kbd";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -83,10 +81,9 @@ import { DetailUsage, hasUsage } from "@/components/board/agent-usage";
 import { useTaskDiff } from "@/components/board/code-changes";
 import { CodeReview } from "@/components/board/code-review";
 import { quickActionForKey, quickActionsFor, type QuickActionId } from "@/components/board/quick-actions";
-import { ShipActions, canShip, shipLabels, shipTask, useTaskGitStatus } from "@/components/board/ship-actions";
+import { ShipActions, canShip, shipLabels, shipTask } from "@/components/board/ship-actions";
 import { AgentStateBadge } from "@/components/board/task-card";
 import { CreatedByNote, DelegatedCards } from "@/components/board/task-relations";
-import { WorkspaceSection } from "@/components/board/task-workspace";
 import { CheckpointsPanel } from "@/components/board/checkpoints-panel";
 import { isQuotaError } from "@/lib/quota";
 import { todoProgress } from "@/lib/todos";
@@ -99,7 +96,7 @@ export interface TaskDetailProps {
   taskId: string | null;
   /** Live copy of the card from the board state (preferred over the fetched one). */
   boardTask: Task | undefined;
-  /** The card's board (dedicated workspaces on/off). */
+  /** The card's board. */
   board: Board;
   /** Every card of the board, for delegation and agent-to-agent messages. */
   tasks: Task[];
@@ -112,10 +109,7 @@ export interface TaskDetailProps {
   removeTask: (taskId: string) => void;
   /** Sends the card back to To do (stopping its agent). Toasts its own errors. */
   revertToTodo: (taskId: string) => Promise<void>;
-  /**
-   * Git status of the board's folders (null while loading), for the Ship panel. Unused on boards
-   * with dedicated workspaces: those ship from the card's own worktrees.
-   */
+  /** Git status of the board's folders (null while loading), for the Ship panel. */
   gitStatuses: GitStatus[] | null;
   /** Called after a push/PR so the board can re-read git status. */
   onGitChanged: () => void;
@@ -501,12 +495,6 @@ function TaskDetailBody({
   };
 
   const task = boardTask && detail ? newerTask(detail.task, boardTask) : (boardTask ?? detail?.task);
-  // Dedicated workspaces: ship from the card's worktrees instead of the project folders.
-  const workspaceGit = useTaskGitStatus(
-    taskId,
-    board.worktrees && (task?.status === "done" || shipRequested),
-    task?.agentState,
-  );
   const diffState = useTaskDiff(
     taskId,
     task?.agentState,
@@ -609,7 +597,6 @@ function TaskDetailBody({
   const save = async (patch: {
     title?: string;
     description?: string;
-    ignoreMemory?: boolean;
   }) => {
     try {
       const updated = await api.tasks.update(task.id, patch);
@@ -642,7 +629,6 @@ function TaskDetailBody({
     if (!outcome) return;
     // Brand-new comment: the SSE copy, if it already arrived, wins. task.updated strikes the title.
     applyCommentResponse(outcome.comment, Number.NEGATIVE_INFINITY);
-    if (board.worktrees) workspaceGit.refresh();
     onGitChanged();
   };
 
@@ -818,15 +804,6 @@ function TaskDetailBody({
                 Pushed
               </span>
             )}
-            {task.ignoreMemory && (
-              <span
-                title="Agent memory off for this card"
-                className="inline-flex h-6 items-center gap-1 rounded-full bg-muted px-2 text-xs font-medium text-muted-foreground"
-              >
-                <BrainOff className="size-3" />
-                Memory off
-              </span>
-            )}
           </div>
           {task.createdByTaskId && (
             <div className="mt-2">
@@ -901,19 +878,14 @@ function TaskDetailBody({
           {shipVisible && (
             <ShipActions
               task={task}
-              statuses={board.worktrees ? workspaceGit.statuses : gitStatuses}
+              statuses={gitStatuses}
               pushBranch={board.pushBranch}
-              fromWorkspace={board.worktrees}
               onShipped={(comment) => {
                 // Brand-new comment: the SSE copy, if it already arrived, wins.
                 applyCommentResponse(comment, Number.NEGATIVE_INFINITY);
-                if (board.worktrees) workspaceGit.refresh();
                 onGitChanged();
               }}
-              onDiscarded={() => {
-                if (board.worktrees) workspaceGit.refresh();
-                onGitChanged();
-              }}
+              onDiscarded={onGitChanged}
             />
           )}
 
@@ -975,22 +947,6 @@ function TaskDetailBody({
                 <span className="text-muted-foreground">Not yet</span>
               )}
             </MetaItem>
-            <MetaItem label="Agent memory">
-              <span
-                className="inline-flex items-center gap-2"
-                title="Ignore memory: no recall, nothing saved. Takes effect from the next run."
-              >
-                <Switch
-                  size="sm"
-                  checked={Boolean(task.ignoreMemory)}
-                  onCheckedChange={(checked) => void save({ ignoreMemory: checked })}
-                  aria-label="Ignore memory"
-                />
-                <span className={task.ignoreMemory ? undefined : "text-muted-foreground"}>
-                  {task.ignoreMemory ? "Ignored" : "Used"}
-                </span>
-              </span>
-            </MetaItem>
           </dl>
 
           <TodoListSection task={task} />
@@ -998,8 +954,7 @@ function TaskDetailBody({
           <DescriptionEditor task={task} onSave={(description) => save({ description })} />
 
           <DelegatedCards task={task} cards={tasks} onOpenCard={onOpenTask} />
-          {board.worktrees && <WorkspaceSection task={task} onRemoved={workspaceGit.refresh} />}
-          <CheckpointsPanel task={task} onRestored={workspaceGit.refresh} />
+          <CheckpointsPanel task={task} onRestored={onGitChanged} />
           <DetailSection icon={Paperclip} title="Files">
             <p className="text-xs text-muted-foreground">
               The agent reads these files and saves its outputs and screenshots here.

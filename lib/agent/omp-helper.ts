@@ -1,4 +1,4 @@
-// Short omp helper agents (the advisor, the queue planner, the chat assistant) over
+// Short omp helper agents (the advisor, the chat assistant) over
 // omp's native RPC protocol (`omp --mode rpc`, JSONL on stdio), on warm pooled workers: streaming
 // tool activity, optionally steering the agent to answer or serving host tools, resolving with its
 // final assistant text.

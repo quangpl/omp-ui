@@ -142,18 +142,10 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
     }
     patch.defaultModel = model.trim();
   }
-  if (body.autoModel !== undefined) {
-    if (typeof body.autoModel !== "boolean") throw new HttpError(400, "autoModel must be a boolean");
-    patch.autoModel = body.autoModel;
-  }
   if (body.providerPriority !== undefined) {
     const parsed = parseProviderPriority(body.providerPriority);
     if (!parsed.ok) throw new HttpError(400, parsed.error);
     patch.providerPriority = parsed.entries;
-  }
-  if (body.smartQueue !== undefined) {
-    if (typeof body.smartQueue !== "boolean") throw new HttpError(400, "smartQueue must be a boolean");
-    patch.smartQueue = body.smartQueue;
   }
   if (body.autoRetry !== undefined) {
     if (typeof body.autoRetry !== "boolean") throw new HttpError(400, "autoRetry must be a boolean");
@@ -176,10 +168,6 @@ function parsePatch(body: Record<string, unknown>): Partial<AppSettings> {
       throw new HttpError(400, `browser must be one of: ${BROWSER_MODES.join(", ")}`);
     }
     patch.browser = mode as BrowserMode;
-  }
-  if (body.useSystemPrompt !== undefined) {
-    if (typeof body.useSystemPrompt !== "boolean") throw new HttpError(400, "useSystemPrompt must be a boolean");
-    patch.useSystemPrompt = body.useSystemPrompt;
   }
   if (body.cleanupSchedule !== undefined) {
     const schedule = body.cleanupSchedule;

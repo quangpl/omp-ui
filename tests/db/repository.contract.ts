@@ -263,7 +263,6 @@ export function runRepositoryContract(
           extraFolders: [],
           model: null,
           autoRun: true,
-          worktrees: false,
           pushBranch: "main",
           lastAccessedAt: null,
         });
@@ -274,7 +273,7 @@ export function runRepositoryContract(
         expect(await repo.getBoard(board.id)).toEqual(board);
       });
 
-      it("round-trips explicit fields including extraFolders, worktrees, pushBranch and defaultBranches", async () => {
+      it("round-trips explicit fields including extraFolders, pushBranch and defaultBranches", async () => {
         const branches = { "/work/front": "develop", "/work/back": "release/2.x" };
         const board = await repo.createBoard({
           name: "Full",
@@ -282,7 +281,6 @@ export function runRepositoryContract(
           extraFolders: ["/work/back", "/work/shared lib"],
           model: "sonnet",
           autoRun: false,
-          worktrees: true,
           pushBranch: "release/1.x",
           defaultBranches: branches,
         });
@@ -291,16 +289,14 @@ export function runRepositoryContract(
           extraFolders: ["/work/back", "/work/shared lib"],
           model: "sonnet",
           autoRun: false,
-          worktrees: true,
           pushBranch: "release/1.x",
           defaultBranches: branches,
         });
         expect(await repo.getBoard(board.id)).toEqual(board);
 
-        const off = await repo.updateBoard(board.id, { worktrees: false });
+        const off = await repo.updateBoard(board.id, { autoRun: true });
         expect(off).toMatchObject({
-          worktrees: false,
-          autoRun: false,
+          autoRun: true,
           pushBranch: "release/1.x",
           defaultBranches: branches,
         });
@@ -311,8 +307,7 @@ export function runRepositoryContract(
           pushBranch: "develop",
           extraFolders: ["/work/back", "/work/shared lib"],
           model: "sonnet",
-          autoRun: false,
-          worktrees: false,
+          autoRun: true,
           defaultBranches: branches,
         });
         expect(await repo.getBoard(board.id)).toEqual(develop);
@@ -466,8 +461,6 @@ export function runRepositoryContract(
           lastRunId: null,
           createdByTaskId: null,
           schedulerId: null,
-          parallelize: null,
-          ignoreMemory: false,
           todos: [],
           review: null,
           resources: null,
@@ -1314,36 +1307,6 @@ export function runRepositoryContract(
         expect((await repo.updateTask(scheduled.id, { title: "renamed" }))!.schedulerId).toBe(scheduler.id);
       });
 
-      it("round-trips Task.parallelize (true, false, or null when omitted)", async () => {
-        const board = await newBoard();
-        const on = await repo.createTask({ boardId: board.id, title: "on", parallelize: true });
-        const off = await repo.createTask({ boardId: board.id, title: "off", parallelize: false });
-        const unset = await repo.createTask({ boardId: board.id, title: "unset" });
-
-        expect([on.parallelize, off.parallelize, unset.parallelize]).toEqual([true, false, null]);
-        expect(await repo.getTask(on.id)).toEqual(on);
-        expect(await repo.getTask(off.id)).toEqual(off);
-        expect(await repo.getTask(unset.id)).toEqual(unset);
-        expect(await repo.listTasks(board.id)).toEqual([on, off, unset]);
-      });
-
-      it("round-trips Task.ignoreMemory (true, false, or false when omitted) and patches it", async () => {
-        const board = await newBoard();
-        const on = await repo.createTask({ boardId: board.id, title: "on", ignoreMemory: true });
-        const off = await repo.createTask({ boardId: board.id, title: "off", ignoreMemory: false });
-        const unset = await repo.createTask({ boardId: board.id, title: "unset" });
-
-        expect([on.ignoreMemory, off.ignoreMemory, unset.ignoreMemory]).toEqual([true, false, false]);
-        expect(await repo.getTask(on.id)).toEqual(on);
-        expect(await repo.getTask(off.id)).toEqual(off);
-        expect(await repo.getTask(unset.id)).toEqual(unset);
-
-        expect((await repo.updateTask(unset.id, { ignoreMemory: true }))!.ignoreMemory).toBe(true);
-        expect((await repo.getTask(unset.id))!.ignoreMemory).toBe(true);
-        expect((await repo.updateTask(unset.id, { ignoreMemory: false }))!.ignoreMemory).toBe(false);
-        expect((await repo.getTask(unset.id))!.ignoreMemory).toBe(false);
-      });
-
       it("creates scheduler runs and lists them newest first, scoped and limited", async () => {
         const board = await newBoard();
         const scheduler = await newScheduler(board.id, "a");
@@ -1766,15 +1729,13 @@ export function runRepositoryContract(
         const owner = await newUser("owner", { email: "owner@example.com" });
         await repo.setSetting("app_settings", '{"maxAgents":3}');
         const board = await repo.createBoard({ name: "Exported", workdir: "/work/exported", userId: owner.id });
-        await repo.updateBoard(board.id, { extraFolders: ["/work/api"], pinned: true, worktrees: true });
+        await repo.updateBoard(board.id, { extraFolders: ["/work/api"], pinned: true });
         const parent = await repo.createTask({ boardId: board.id, title: "parent" });
         const task = await repo.createTask({
           boardId: board.id,
           title: "child",
           status: "in_progress",
           createdByTaskId: parent.id,
-          parallelize: false,
-          ignoreMemory: true,
         });
         await repo.updateTask(task.id, {
           todos: [{ name: "Testing", tasks: [{ content: "Run tests", status: "completed" }] }],

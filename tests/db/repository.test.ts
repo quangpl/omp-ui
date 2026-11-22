@@ -50,7 +50,7 @@ describe("sqlite migration", () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ui-migrate-"));
     const file = path.join(dir, "omp-ui.db");
     try {
-      // Schema as it was before extra folders, worktrees, dependencies, agent messages and users.
+      // Schema as it was before extra folders, dependencies, agent messages and users.
       const old = new DatabaseSync(file);
       old.exec(`
         CREATE TABLE boards (id TEXT PRIMARY KEY, name TEXT NOT NULL, workdir TEXT NOT NULL, model TEXT,
@@ -74,7 +74,6 @@ describe("sqlite migration", () => {
       try {
         expect(await repo.getBoard("b1")).toMatchObject({
           extraFolders: [],
-          worktrees: false,
           pushBranch: "main",
           defaultBranches: {},
           userId: null,
