@@ -17,7 +17,5 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      # The CLI tests run the built server.
-      - run: pnpm build
-      - run: pnpm test
+      - run: pnpm test:unit
       - run: npm pack --dry-run

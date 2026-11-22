@@ -159,7 +159,12 @@ async function seedIndex(folder: string, parent: string | null, indexFile: strin
   const paths = await mustGit(folder, ["rev-parse", "--show-prefix", "--git-path", "index"]);
   const [prefix = "", gitPath = ""] = paths.split("\n");
   try {
-    await fs.copyFile(path.resolve(folder, gitPath), indexFile);
+    const source = path.resolve(folder, gitPath);
+    await fs.copyFile(source, indexFile);
+    // Keep the index's mtime: git rechecks "racily clean" entries (edited in the same second the
+    // index was written) only when they are not older than the index file itself.
+    const { atime, mtime } = await fs.stat(source);
+    await fs.utimes(indexFile, atime, mtime);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     if (parent) await mustGit(folder, ["read-tree", parent], env);
