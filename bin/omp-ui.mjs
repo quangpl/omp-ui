@@ -1637,7 +1637,7 @@ async function deployRemote(values) {
   console.log(`\n  ${c.green("➜")} ${c.cyan(c.bold(`http://${server}:${cfg.port}`))}\n`);
   console.log(c.bold("Next steps"));
   console.log(`  ${c.dim("·")} Sign omp in on the server (once): ${c.cyan(`ssh -t ${host} "cd ${dir} && docker compose exec -u omp omp-ui omp"`)}`);
-  console.log(`  ${c.dim("·")} Put a TLS reverse proxy in front for public access (see README)`);
+  console.log(`  ${c.dim("·")} Put a TLS reverse proxy in front for public access (see docs/ADVANCED.md)`);
   if (values.public) console.log(`  ${c.dim("·")} Tunnel URL: ${c.cyan(`ssh ${host} "cd ${dir} && docker compose logs tunnel"`)}`);
   console.log("");
 }
