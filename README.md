@@ -78,7 +78,7 @@ npm i -g https://github.com/quangpl/omp-ui/releases/download/nightly/omp-ui.tgz 
 
 Settings and data live in `~/.omp-ui`. SQLite is the default database, so you don't need to set one up.
 
-`omp-ui: command not found` after a global install means npm's global bin folder is not on your `PATH`. Add it, for example in `~/.zshrc`:
+If npm's global bin folder is not on your `PATH` (common with Homebrew's `node@22`), the install links `omp-ui` into a folder that is, such as `/usr/local/bin` or `~/.local/bin`, so the command works right away. If no such folder is writable, it adds the bin folder to your shell's rc file instead; open a new terminal or run `source ~/.zshrc`. Installs with `--ignore-scripts` skip this step; add it yourself:
 
 ```sh
 export PATH="$(npm prefix -g)/bin:$PATH"
