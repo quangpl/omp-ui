@@ -7,6 +7,8 @@
 
 **OMP-UI is the self-hosted OMP UI for [omp](https://omp.sh/docs) (oh-my-pi), the AI coding agent.** It gives omp a web interface: an OMP kanban board where each card is a task, an OMP workflow that takes every card from plan to pull request, and an OMP web dashboard you can open from your desktop or phone. Self-host OMP-UI on your own machine or server with one command, `npx omp-ui`.
 
+**npm package:** [omp-ui on npm](https://www.npmjs.com/package/omp-ui) · **Releases:** [GitHub Releases](https://github.com/quangpl/omp-ui/releases)
+
 ![OMP UI: the OMP kanban board with cards in To do, In progress and Done](docs/images/board.png)
 
 ## Features
