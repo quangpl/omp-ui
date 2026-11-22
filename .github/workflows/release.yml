@@ -64,4 +64,6 @@ jobs:
           npm install -g npm@latest
           if npm view "omp-ui@${{ steps.v.outputs.version }}" version >/dev/null 2>&1; then echo "Already on npm"; exit 0; fi
           tag=latest; [ "${{ steps.v.outputs.kind }}" = nightly ] && tag=next
-          npm publish "omp-ui-${{ steps.v.outputs.version }}.tgz" --provenance --access public --tag "$tag"
+          # npm only accepts provenance from public repositories.
+          prov=--provenance; [ "${{ github.event.repository.private }}" = true ] && prov=
+          npm publish "omp-ui-${{ steps.v.outputs.version }}.tgz" $prov --access public --tag "$tag"
