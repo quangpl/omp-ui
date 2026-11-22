@@ -78,10 +78,10 @@ npm i -g https://github.com/quangpl/omp-ui/releases/download/nightly/omp-ui.tgz 
 
 Settings and data live in `~/.omp-ui`. SQLite is the default database, so you don't need to set one up.
 
-If npm's global bin folder is not on your `PATH` (common with Homebrew's `node@22`), the install links `omp-ui` into a folder that is, such as `/usr/local/bin` or `~/.local/bin`, so the command works right away. If no such folder is writable, it adds the bin folder to your shell's rc file instead; open a new terminal or run `source ~/.zshrc`. Installs with `--ignore-scripts` skip this step; add it yourself:
+If npm's global bin folder is not on your `PATH` (common with Homebrew's `node@22`), the install links `omp-ui` into a folder that is, such as `/usr/local/bin` or `~/.local/bin`, and prints a one-line command that adds the folder to your shell config and reloads it. Run that command and `omp-ui` works right away. You can also run it yourself:
 
 ```sh
-export PATH="$(npm prefix -g)/bin:$PATH"
+echo "export PATH=\"$(npm prefix -g)/bin:\$PATH\"" >> ~/.zshrc && source ~/.zshrc
 ```
 
 ## Basic commands

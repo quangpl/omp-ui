@@ -10,7 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const CLI = fileURLToPath(new URL("./omp-ui.mjs", import.meta.url));
-const MARK = "# Added by omp-ui: npm's global bin folder";
+const MARK = "# added by omp-ui";
 
 /** The terminal's PATH: npm only prepends node_modules/.bin folders and node-gyp-bin for scripts. */
 export function userPath(envPath = process.env.PATH ?? "") {
@@ -48,20 +48,22 @@ function linkIntoPath(dirs) {
   return null;
 }
 
-/** Append the bin folder to the user's shell rc file once; returns the file. */
-function addToShellRc(binDir) {
-  const home = os.homedir();
-  const shell = path.basename(process.env.SHELL ?? "");
-  const [rc, line] =
-    shell === "fish"
-      ? [path.join(home, ".config", "fish", "config.fish"), `fish_add_path ${binDir}`]
-      : [path.join(home, shell === "bash" ? ".bashrc" : ".zshrc"), `export PATH="${binDir}:$PATH"`];
-  const current = fs.existsSync(rc) ? fs.readFileSync(rc, "utf8") : "";
-  if (!current.includes(line)) {
-    fs.mkdirSync(path.dirname(rc), { recursive: true });
-    fs.appendFileSync(rc, `\n${MARK}\n${line}\n`);
+/** The one-liner that adds the bin folder to the user's shell config and reloads it. */
+export function pathCommand(binDir, shell = path.basename(process.env.SHELL ?? "")) {
+  if (shell === "fish") return `fish_add_path ${binDir}`;
+  const rc = shell === "bash" ? "~/.bashrc" : "~/.zshrc";
+  return `echo 'export PATH="${binDir}:$PATH"  ${MARK}' >> ${rc} && source ${rc}`;
+}
+
+/** npm hides install-script output, so talk to the terminal directly when there is one. */
+function tell(text) {
+  try {
+    const fd = fs.openSync("/dev/tty", "w");
+    fs.writeSync(fd, `${text}\n`);
+    fs.closeSync(fd);
+  } catch {
+    console.log(text);
   }
-  return rc;
 }
 
 function main() {
@@ -73,12 +75,19 @@ function main() {
   if (dirs.includes(binDir)) return;
 
   const link = linkIntoPath(dirs);
-  if (link) {
-    console.log(`omp-ui: linked ${link} so the command works right away. Run: omp-ui`);
-    return;
-  }
-  const rc = addToShellRc(binDir);
-  console.log(`omp-ui: added ${binDir} to PATH in ${rc}. Open a new terminal, or run: source ${rc}`);
+  const lines = [
+    "",
+    "  omp-ui is installed, but npm's global bin folder is not on your PATH:",
+    `    ${binDir}`,
+    "",
+    link ? `  We linked ${link}, so ${"`omp-ui`"} should already work. To add the folder for good, run:` : "  Run this once to add it and reload your shell:",
+    "",
+    `    ${pathCommand(binDir)}`,
+    "",
+    "  Then start OMP-UI:  omp-ui",
+    "",
+  ];
+  tell(lines.join("\n"));
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
