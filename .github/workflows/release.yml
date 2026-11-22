@@ -60,7 +60,8 @@ jobs:
             --notes "Latest build of main ($GITHUB_SHA). Install: \`npm i -g omp-ui@next\`"
       - name: Publish to npm
         run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then echo "::error::NPM_TOKEN secret is not set"; exit 1; fi
+          # Trusted Publishing (OIDC) needs npm >= 11.5.1; NPM_TOKEN is only a fallback.
+          npm install -g npm@latest
           if npm view "omp-ui@${{ steps.v.outputs.version }}" version >/dev/null 2>&1; then echo "Already on npm"; exit 0; fi
           tag=latest; [ "${{ steps.v.outputs.kind }}" = nightly ] && tag=next
           npm publish "omp-ui-${{ steps.v.outputs.version }}.tgz" --provenance --access public --tag "$tag"
