@@ -7,7 +7,8 @@ export const dynamic = "force-dynamic";
 
 /**
  * AI quota, prepaid balances and usage as NDJSON `AiStatsEvent`s: `providers` at once, then each part
- * the moment it is read (omp usage, omp stats and the provider APIs run side by side).
+ * the moment it is read (omp usage, omp stats and the provider APIs run side by side). With a Main
+ * provider (the first of `providerPriority`) every part covers that provider only.
  * `?refresh=1` bypasses the 60 s cache.
  */
 export const GET = withApi(async ({ req, repo }) => {
@@ -15,8 +16,9 @@ export const GET = withApi(async ({ req, repo }) => {
   return ndjsonResponse<AiStatsEvent>(
     async (send) => {
       const { ompPath, providerPriority } = await getAppSettings(repo);
-      send({ type: "providers", activeProviders: providerPriority.map((entry) => entry.provider) });
-      const sections = readAiSections(ompPath, refresh === "1" || refresh === "true");
+      const main = providerPriority[0]?.provider ?? null;
+      send({ type: "providers", activeProviders: main ? [main] : [] });
+      const sections = readAiSections(ompPath, refresh === "1" || refresh === "true", main);
       await Promise.all([
         sections.quota.then(({ at, value }) => send({ type: "quota", at, quota: value })),
         sections.balances.then(({ at, value }) => send({ type: "balances", at, balances: value })),

@@ -608,7 +608,12 @@ function UsageOverview({ usage }: { usage: AiStats["usage"] }) {
 
   return (
     <div className={cn(PANEL, "@container animate-card-in")} style={stagger(5)}>
-      <PanelHeader title="Usage overview" note="Totals across all recorded omp sessions" />
+      <PanelHeader
+        title="Usage overview"
+        note={
+          usage.scope ? `Main provider · ${providerName(usage.scope.provider)}` : "Totals across all recorded omp sessions"
+        }
+      />
       <div className="grid grid-cols-2 @xl:grid-cols-3">
         <StatTile label="Spend" value={usd.format(totals.costUsd)} note={`${wholeNumber.format(totals.requests)} requests`} />
         <StatTile
@@ -650,6 +655,12 @@ function UsageOverview({ usage }: { usage: AiStats["usage"] }) {
             <Sparkline values={spend} label="Spend per hour" />
           </div>
         </div>
+      )}
+      {usage.scope && !usage.scope.breakdowns && (
+        <p className="border-t px-4 py-3 text-xs text-muted-foreground sm:px-5">
+          omp does not split agents, projects and spend per hour by provider, so they are hidden while another provider
+          has usage.
+        </p>
       )}
       {agents.length > 0 && (
         <div className="space-y-3 border-t px-4 py-4 sm:px-5">

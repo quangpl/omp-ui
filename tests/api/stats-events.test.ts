@@ -174,6 +174,7 @@ describe("GET /stats/ai", () => {
     expect(stats.usage).toEqual({
       available: false,
       error: "omp is not installed",
+      scope: null,
       totals: null,
       byModel: [],
       byAgent: [],
@@ -318,6 +319,40 @@ describe("GET /stats/ai", () => {
       const refreshed = await aiStats("?refresh=1");
       expect(invocations()).toHaveLength(4);
       expect(refreshed.quota.providers).toEqual(first.quota.providers);
+
+      // With a Main provider, everything is that provider's alone; omp cannot split folders by provider.
+      const set = await api(settingsRoute, "PATCH", "/settings", {
+        body: { providerPriority: [{ provider: "openai" }, { provider: "anthropic" }] },
+      });
+      expect(set.status).toBe(200);
+      const { events, stats: main } = await aiEvents();
+      expect(events[0]).toEqual({ type: "providers", activeProviders: ["openai"] });
+      expect(main.quota.providers).toEqual([]);
+      expect(main.usage.scope).toEqual({ provider: "openai", breakdowns: false });
+      expect(main.usage.byModel.map((m) => m.model)).toEqual(["pricey"]);
+      expect(main.usage.totals).toEqual({
+        requests: 2,
+        failedRequests: 0,
+        inputTokens: 200,
+        outputTokens: 100,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsd: 1,
+        cacheRate: 0,
+        cacheSavings: null,
+        avgTokensPerSecond: null,
+        avgTtftMs: null,
+        firstAt: null,
+        lastAt: null,
+      });
+      expect(main.usage.byFolder).toEqual([]);
+      expect(main.usage.byAgent).toEqual([]);
+      expect(main.usage.series).toEqual([]);
+      expect(invocations()).toHaveLength(4); // scoping reads the cached omp output
+
+      await api(settingsRoute, "PATCH", "/settings", { body: { providerPriority: [{ provider: "anthropic" }] } });
+      expect((await aiStats()).quota.providers.map((p) => p.provider)).toEqual(["anthropic"]);
+      await api(settingsRoute, "PATCH", "/settings", { body: { providerPriority: [] } });
     });
 
     it("reports a failing or unreadable omp command per section without failing the request", async () => {
@@ -338,6 +373,7 @@ describe("GET /stats/ai", () => {
       expect(stats.usage).toEqual({
         available: false,
         error: "omp stats returned output that could not be read",
+        scope: null,
         totals: null,
         byModel: [],
         byAgent: [],

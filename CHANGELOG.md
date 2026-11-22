@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Stats (quota, balances, usage totals and per-model table) cover only the Main AI provider from Settings → AI Providers; agents, projects and hourly spend are hidden while another provider has usage, as omp cannot split them.
+
 ## [0.1.6] - 2026-11-22
 
 ### Added

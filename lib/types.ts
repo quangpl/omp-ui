@@ -1929,6 +1929,11 @@ export interface AiStats {
   usage: {
     available: boolean;
     error: string | null;
+    /**
+     * Set when the numbers cover only the Main provider. `breakdowns` is false when `byAgent`, `byFolder`
+     * and `series` are empty because omp cannot split them by provider and another provider has usage.
+     */
+    scope: { provider: string; breakdowns: boolean } | null;
     totals: {
       requests: number;
       failedRequests: number;

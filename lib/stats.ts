@@ -247,27 +247,75 @@ function mapQuota(data: unknown): AiProviderQuota[] {
   });
 }
 
-function mapUsage(data: unknown): AiStats["usage"] {
+/**
+ * Totals of `omp stats` model rows merged into one `overall`-shaped object. Sums are exact; the
+ * averages are weighted by requests (omp weights by the requests that have a value) and the cache
+ * saving, a share of input cost, by prompt tokens.
+ */
+function mergeModelTotals(models: Record<string, unknown>[]): Record<string, unknown> {
+  const sum = (key: string) => models.reduce((total, m) => total + (num(m[key]) ?? 0), 0);
+  const weighted = (key: string, weight: (m: Record<string, unknown>) => number): number | null => {
+    let total = 0;
+    let weights = 0;
+    for (const m of models) {
+      const value = num(m[key]);
+      const w = weight(m);
+      if (value === null || w <= 0) continue;
+      total += value * w;
+      weights += w;
+    }
+    return weights > 0 ? total / weights : null;
+  };
+  const input = sum("totalInputTokens");
+  const cacheRead = sum("totalCacheReadTokens");
+  const stamps = (key: string) => models.flatMap((m) => num(m[key]) ?? []).filter((t) => t > 0);
+  const first = stamps("firstTimestamp");
+  const last = stamps("lastTimestamp");
+  return {
+    totalRequests: sum("totalRequests"),
+    failedRequests: sum("failedRequests"),
+    totalInputTokens: input,
+    totalOutputTokens: sum("totalOutputTokens"),
+    totalCacheReadTokens: cacheRead,
+    totalCacheWriteTokens: sum("totalCacheWriteTokens"),
+    totalCost: sum("totalCost"),
+    cacheRate: input + cacheRead > 0 ? cacheRead / (input + cacheRead) : 0,
+    cacheSavings: weighted("cacheSavings", (m) => (num(m.totalInputTokens) ?? 0) + (num(m.totalCacheReadTokens) ?? 0)),
+    avgTokensPerSecond: weighted("avgTokensPerSecond", (m) => num(m.totalRequests) ?? 0),
+    avgTtft: weighted("avgTtft", (m) => num(m.totalRequests) ?? 0),
+    firstTimestamp: first.length > 0 ? Math.min(...first) : null,
+    lastTimestamp: last.length > 0 ? Math.max(...last) : null,
+  };
+}
+
+/**
+ * `omp stats --json` as `AiStats["usage"]`. With `provider` (the Main provider) only that provider's
+ * usage counts: its models and their merged totals. omp reports agents, projects and the hourly
+ * series without a provider split, so they are kept only while every request ran on `provider` and
+ * dropped (`scope.breakdowns: false`) once another provider has usage, rather than showing numbers
+ * that include it.
+ */
+function mapUsage(data: unknown, provider: string | null = null): AiStats["usage"] {
   const root = obj(data);
-  const overall = obj(root.overall);
-  const byModel: AiModelUsage[] = arr(root.byModel).map((raw) => {
-    const m = obj(raw);
-    return {
-      provider: str(m.provider) ?? "unknown",
-      model: str(m.model) ?? "unknown",
-      requests: num(m.totalRequests) ?? 0,
-      inputTokens: num(m.totalInputTokens) ?? 0,
-      outputTokens: num(m.totalOutputTokens) ?? 0,
-      cacheReadTokens: num(m.totalCacheReadTokens) ?? 0,
-      costUsd: num(m.totalCost) ?? 0,
-      failedRequests: num(m.failedRequests) ?? 0,
-      cacheRate: num(m.cacheRate),
-      avgTtftMs: num(m.avgTtft),
-      avgTokensPerSecond: num(m.avgTokensPerSecond),
-    };
-  });
+  const rawModels = arr(root.byModel).map(obj);
+  const scoped = provider === null ? rawModels : rawModels.filter((m) => (str(m.provider) ?? "unknown") === provider);
+  const hideBreakdowns = scoped.length < rawModels.length;
+  const overall = hideBreakdowns ? mergeModelTotals(scoped) : obj(root.overall);
+  const byModel: AiModelUsage[] = scoped.map((m) => ({
+    provider: str(m.provider) ?? "unknown",
+    model: str(m.model) ?? "unknown",
+    requests: num(m.totalRequests) ?? 0,
+    inputTokens: num(m.totalInputTokens) ?? 0,
+    outputTokens: num(m.totalOutputTokens) ?? 0,
+    cacheReadTokens: num(m.totalCacheReadTokens) ?? 0,
+    costUsd: num(m.totalCost) ?? 0,
+    failedRequests: num(m.failedRequests) ?? 0,
+    cacheRate: num(m.cacheRate),
+    avgTtftMs: num(m.avgTtft),
+    avgTokensPerSecond: num(m.avgTokensPerSecond),
+  }));
   byModel.sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
-  const byAgent: AiAgentUsage[] = arr(root.byAgentType).map((raw) => {
+  const byAgent: AiAgentUsage[] = (hideBreakdowns ? [] : arr(root.byAgentType)).map((raw) => {
     const a = obj(raw);
     return {
       agent: str(a.agentType) ?? "unknown",
@@ -279,7 +327,7 @@ function mapUsage(data: unknown): AiStats["usage"] {
     };
   });
   byAgent.sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
-  const byFolder: AiFolderUsage[] = arr(root.byFolder).map((raw) => {
+  const byFolder: AiFolderUsage[] = (hideBreakdowns ? [] : arr(root.byFolder)).map((raw) => {
     const f = obj(raw);
     return {
       folder: str(f.folder) ?? "unknown",
@@ -293,7 +341,7 @@ function mapUsage(data: unknown): AiStats["usage"] {
     };
   });
   byFolder.sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
-  const series: AiUsagePoint[] = arr(root.timeSeries).flatMap((raw) => {
+  const series: AiUsagePoint[] = (hideBreakdowns ? [] : arr(root.timeSeries)).flatMap((raw) => {
     const p = obj(raw);
     const at = iso(p.timestamp);
     return at
@@ -301,24 +349,34 @@ function mapUsage(data: unknown): AiStats["usage"] {
       : [];
   });
   series.sort((a, b) => a.at.localeCompare(b.at));
-  const totals = root.overall
-    ? {
-        requests: num(overall.totalRequests) ?? 0,
-        failedRequests: num(overall.failedRequests) ?? 0,
-        inputTokens: num(overall.totalInputTokens) ?? 0,
-        outputTokens: num(overall.totalOutputTokens) ?? 0,
-        cacheReadTokens: num(overall.totalCacheReadTokens) ?? 0,
-        cacheWriteTokens: num(overall.totalCacheWriteTokens) ?? 0,
-        costUsd: num(overall.totalCost) ?? 0,
-        cacheRate: num(overall.cacheRate),
-        cacheSavings: num(overall.cacheSavings),
-        avgTokensPerSecond: num(overall.avgTokensPerSecond),
-        avgTtftMs: num(overall.avgTtft),
-        firstAt: iso(overall.firstTimestamp),
-        lastAt: iso(overall.lastTimestamp),
-      }
-    : null;
-  return { available: true, error: null, totals, byModel, byAgent, byFolder, series };
+  const totals =
+    root.overall || hideBreakdowns
+      ? {
+          requests: num(overall.totalRequests) ?? 0,
+          failedRequests: num(overall.failedRequests) ?? 0,
+          inputTokens: num(overall.totalInputTokens) ?? 0,
+          outputTokens: num(overall.totalOutputTokens) ?? 0,
+          cacheReadTokens: num(overall.totalCacheReadTokens) ?? 0,
+          cacheWriteTokens: num(overall.totalCacheWriteTokens) ?? 0,
+          costUsd: num(overall.totalCost) ?? 0,
+          cacheRate: num(overall.cacheRate),
+          cacheSavings: num(overall.cacheSavings),
+          avgTokensPerSecond: num(overall.avgTokensPerSecond),
+          avgTtftMs: num(overall.avgTtft),
+          firstAt: iso(overall.firstTimestamp),
+          lastAt: iso(overall.lastTimestamp),
+        }
+      : null;
+  return {
+    available: true,
+    error: null,
+    scope: provider === null ? null : { provider, breakdowns: !hideBreakdowns },
+    totals,
+    byModel,
+    byAgent,
+    byFolder,
+    series,
+  };
 }
 
 async function loadQuota(ompPath: string): Promise<AiStats["quota"]> {
@@ -328,11 +386,24 @@ async function loadQuota(ompPath: string): Promise<AiStats["quota"]> {
     : { available: false, error: usage.error, providers: [] };
 }
 
-async function loadUsage(ompPath: string): Promise<AiStats["usage"]> {
-  const stats = await runOmpJson(ompPath, ["stats", "--json"]);
-  return stats.ok
-    ? mapUsage(stats.data)
-    : { available: false, error: stats.error, totals: null, byModel: [], byAgent: [], byFolder: [], series: [] };
+/** `omp stats --json` as read, before any provider scoping: the cache holds this, so every scope reuses one read. */
+function loadUsage(ompPath: string): Promise<OmpResult> {
+  return runOmpJson(ompPath, ["stats", "--json"]);
+}
+
+function usageFromResult(result: OmpResult, provider: string | null): AiStats["usage"] {
+  return result.ok
+    ? mapUsage(result.data, provider)
+    : {
+        available: false,
+        error: result.error,
+        scope: null,
+        totals: null,
+        byModel: [],
+        byAgent: [],
+        byFolder: [],
+        series: [],
+      };
 }
 
 type Section = "quota" | "balances" | "usage";
@@ -371,15 +442,26 @@ function cachedSection<T>(section: Section, ompPath: string, refresh: boolean, l
   return promise;
 }
 
-/** Quota, balances and usage as three independent promises, so a caller can use each as it settles. */
-export function readAiSections(ompPath: string, refresh = false) {
+/**
+ * Quota, balances and usage as three independent promises, so a caller can use each as it settles.
+ * With `provider` (the Main provider) every part covers that provider only; without it, all of them.
+ */
+export function readAiSections(ompPath: string, refresh = false, provider: string | null = null) {
+  const scope = <T>(read: Read<T>, pick: (value: T) => T): Read<T> => ({
+    at: read.at,
+    value: provider === null ? read.value : pick(read.value),
+  });
   return {
-    quota: cachedSection("quota", ompPath, refresh, () => loadQuota(ompPath)),
+    quota: cachedSection("quota", ompPath, refresh, () => loadQuota(ompPath)).then((read) =>
+      scope(read, (quota) => ({ ...quota, providers: quota.providers.filter((p) => p.provider === provider) })),
+    ),
     balances: cachedSection("balances", ompPath, refresh, async () => {
       const deepseek = await fetchDeepSeekBalance(childEnv());
       return deepseek ? [deepseek] : [];
-    }),
-    usage: cachedSection("usage", ompPath, refresh, () => loadUsage(ompPath)),
+    }).then((read) => scope(read, (balances) => balances.filter((b) => b.provider === provider))),
+    usage: cachedSection("usage", ompPath, refresh, () => loadUsage(ompPath)).then(
+      (read): Read<AiStats["usage"]> => ({ at: read.at, value: usageFromResult(read.value, provider) }),
+    ),
   };
 }
 
