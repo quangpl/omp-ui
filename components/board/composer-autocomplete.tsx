@@ -12,7 +12,7 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
-import { BookOpen, FileText, Folder, Zap } from "lucide-react";
+import { BookOpen, FileText, Folder, KeyRound, Zap } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/lib/api-client";
 import {
@@ -66,7 +66,10 @@ function cacheFiles(key: string, hits: ProjectFileHit[]): void {
 }
 
 /** One pickable row: a skill or shortcut ("/" and "skill://") or a project file ("@"). */
-type Entry = { type: "skill"; item: SlashItem; label: string } | { type: "file"; hit: ProjectFileHit };
+type Entry =
+  | { type: "skill"; item: SlashItem; label: string }
+  | { type: "file"; hit: ProjectFileHit }
+  | { type: "env"; name: string };
 
 /** File results for the "@" token starting at `start`; `key` is the search they answer. */
 interface FileResults {
@@ -301,7 +304,11 @@ function WordGhost({
         <div
           ref={restRef}
           className="absolute inset-x-0"
-          style={{ top: spot?.top ?? 0, textIndent: 0, visibility: spot ? undefined : "hidden" }}
+          style={{
+            top: spot?.top ?? 0,
+            textIndent: 0,
+            visibility: spot ? undefined : "hidden",
+          }}
         >
           <span ref={probeRef} />
           {/* Atomic, so the suffix still drops to the next line when not even one letter fits on the caret's. */}
@@ -320,6 +327,7 @@ const MENU_LABELS: Record<AutocompleteToken["trigger"], { hint: string; aria: st
   slash: { hint: "OMP skills & shortcuts", aria: "OMP skills and shortcuts" },
   mention: { hint: "Project files", aria: "Project files" },
   "skill-url": { hint: "Skills", aria: "Skills" },
+  env: { hint: "Environment variables", aria: "Environment variables" },
 };
 
 export interface ComposerAutocomplete {
@@ -369,7 +377,11 @@ export function useComposerAutocomplete(
     enabled = true,
     boardId = null,
     onPickFile,
-  }: { enabled?: boolean; boardId?: string | null; onPickFile?: (hit: ProjectFileHit) => void } = {},
+  }: {
+    enabled?: boolean;
+    boardId?: string | null;
+    onPickFile?: (hit: ProjectFileHit) => void;
+  } = {},
 ): ComposerAutocomplete {
   const [skills, setSkills] = useState<OmpSkill[] | null>(null);
   const [token, setToken] = useState<AutocompleteToken | null>(null);
@@ -403,6 +415,20 @@ export function useComposerAutocomplete(
     };
   }, []);
 
+  // Variable names are fetched when the first "$" token opens, once per mount; a failure (403 for non-admins) means none.
+  const [envKeys, setEnvKeys] = useState<string[] | null>(null);
+  const envRequestedRef = useRef(false);
+  const envTrigger = token?.trigger === "env";
+  useEffect(() => {
+    if (!envTrigger || envRequestedRef.current) return;
+    envRequestedRef.current = true;
+    api.env
+      .list()
+      .then((response) => response.vars.map((v) => v.key))
+      .catch(() => [])
+      .then(setEnvKeys);
+  }, [envTrigger]);
+
   useEffect(() => {
     let active = true;
     fetchWordModel().then((model) => {
@@ -431,7 +457,14 @@ export function useComposerAutocomplete(
     if (RTL_SCRIPT.test(el.value.slice(paragraphStart, paragraphEnd === -1 ? undefined : paragraphEnd))) return null;
     const suffix = suggestWord(wordModel, el.value, query);
     if (!suffix) return null;
-    return { value: el.value, query, suffix, box: ghostBox(el), scrollTop: el.scrollTop, scrollLeft: el.scrollLeft };
+    return {
+      value: el.value,
+      query,
+      suffix,
+      box: ghostBox(el),
+      scrollTop: el.scrollTop,
+      scrollLeft: el.scrollLeft,
+    };
   };
 
   const sync = () => {
@@ -487,7 +520,16 @@ export function useComposerAutocomplete(
     const el = ref.current;
     if (!suggesting || !el) return;
     const onScroll = () => {
-      flushSync(() => setWord((current) => current && { ...current, scrollTop: el.scrollTop, scrollLeft: el.scrollLeft }));
+      flushSync(() =>
+        setWord(
+          (current) =>
+            current && {
+              ...current,
+              scrollTop: el.scrollTop,
+              scrollLeft: el.scrollLeft,
+            },
+        ),
+      );
     };
     el.addEventListener("scroll", onScroll);
     const observer =
@@ -541,6 +583,14 @@ export function useComposerAutocomplete(
 
   const entries = useMemo<Entry[]>(() => {
     if (!token) return [];
+    if (token.trigger === "env") {
+      const q = token.query.toLowerCase();
+      const lower = (envKeys ?? []).map((name) => [name, name.toLowerCase()] as const);
+      return [
+        ...lower.filter(([, l]) => l.startsWith(q)),
+        ...lower.filter(([, l]) => !l.startsWith(q) && l.includes(q)),
+      ].map<Entry>(([name]) => ({ type: "env", name }));
+    }
     if (token.trigger === "mention") return (fileHits ?? []).map<Entry>((hit) => ({ type: "file", hit }));
     if (!skills) return [];
     if (token.trigger === "slash") {
@@ -551,11 +601,18 @@ export function useComposerAutocomplete(
       }));
     }
     const skillItems = slashItems(skills).filter((item) => item.kind === "skill");
-    return filterSlashItems(skillItems, token.query).map<Entry>((item) => ({ type: "skill", item, label: item.insert }));
-  }, [skills, token, fileHits]);
+    return filterSlashItems(skillItems, token.query).map<Entry>((item) => ({
+      type: "skill",
+      item,
+      label: item.insert,
+    }));
+  }, [skills, token, fileHits, envKeys]);
 
-  const loading = token?.trigger === "mention" ? fileHits === null : skills === null;
-  const open = token !== null && (entries.length > 0 || loading);
+  const loading =
+    token?.trigger === "mention" ? fileHits === null : token?.trigger === "env" ? envKeys === null : skills === null;
+  // A bare "$" with no variables defined shows where to add them; later queries stay quiet (`$5`).
+  const envEmpty = token?.trigger === "env" && envKeys?.length === 0 && token.query === "";
+  const open = token !== null && (entries.length > 0 || loading || envEmpty);
 
   useEffect(() => setIndex(0), [token?.trigger, token?.start, token?.query]);
   useEffect(() => {
@@ -573,7 +630,13 @@ export function useComposerAutocomplete(
             // A directory keeps the caret inside the token so its children list right away.
             trailingSpace: entry.hit.kind !== "dir",
           })
-        : applyCompletion(el.value, token, entry.item.insert);
+        : entry.type === "env"
+          ? applyCompletion(
+              el.value,
+              token,
+              el.value.startsWith("${", token.start) ? `\${${entry.name}}` : `$${entry.name}`,
+            )
+          : applyCompletion(el.value, token, entry.item.insert);
     setText(next.text);
     setToken(null);
     requestAnimationFrame(() => {
@@ -670,12 +733,33 @@ export function useComposerAutocomplete(
       <ul ref={listRef} role="listbox" aria-label={labels.aria} className="max-h-48 overflow-y-auto p-1">
         {entries.length === 0 ? (
           <li className="px-2 py-1.5 text-xs text-muted-foreground">
-            {token?.trigger === "mention" ? "Searching files…" : "Loading skills…"}
+            {token?.trigger === "mention" ? (
+              "Searching files…"
+            ) : token?.trigger === "env" ? (
+              envKeys === null ? (
+                "Loading variables…"
+              ) : (
+                <>
+                  No environment variables. Add them in{" "}
+                  <a href="/env" className="underline" onMouseDown={(event) => event.preventDefault()}>
+                    Environment
+                  </a>
+                </>
+              )
+            ) : (
+              "Loading skills…"
+            )}
           </li>
         ) : (
           entries.map((entry, i) => (
             <li
-              key={entry.type === "file" ? `file:${entry.hit.insert}` : entry.item.insert}
+              key={
+                entry.type === "file"
+                  ? `file:${entry.hit.insert}`
+                  : entry.type === "env"
+                    ? `env:${entry.name}`
+                    : entry.item.insert
+              }
               role="option"
               aria-selected={i === selected}
             >
@@ -690,7 +774,13 @@ export function useComposerAutocomplete(
                 onMouseEnter={() => setIndex(i)}
                 onClick={() => apply(entry)}
               >
-                {entry.type === "file" ? <FileRow hit={entry.hit} /> : <SkillRow item={entry.item} label={entry.label} />}
+                {entry.type === "file" ? (
+                  <FileRow hit={entry.hit} />
+                ) : entry.type === "env" ? (
+                  <EnvRow name={entry.name} />
+                ) : (
+                  <SkillRow item={entry.item} label={entry.label} />
+                )}
               </button>
             </li>
           ))
@@ -720,7 +810,15 @@ export function useComposerAutocomplete(
     </div>
   ) : null;
 
-  return { menu, open, onKeyDown, onSelect: sync, ghost, suggestion, suggesting };
+  return {
+    menu,
+    open,
+    onKeyDown,
+    onSelect: sync,
+    ghost,
+    suggestion,
+    suggesting,
+  };
 }
 
 const BADGE = "shrink-0 rounded-full border px-1.5 py-px text-[10px] font-normal text-muted-foreground";
@@ -750,6 +848,16 @@ function FileRow({ hit }: { hit: ProjectFileHit }) {
       <span className="truncate">{hit.path}</span>
       {hit.folder && <span className={BADGE}>{hit.folder}</span>}
       <span className={cn("ml-auto", BADGE)}>{hit.kind === "dir" ? "folder" : "file"}</span>
+    </span>
+  );
+}
+
+function EnvRow({ name }: { name: string }) {
+  return (
+    <span className="flex w-full items-center gap-1.5 text-xs font-medium">
+      <KeyRound className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="truncate font-mono">{name}</span>
+      <span className={cn("ml-auto", BADGE)}>env var</span>
     </span>
   );
 }

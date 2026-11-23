@@ -7,6 +7,7 @@ import { AppHeader } from "@/components/app-header";
 import { formatRelative, useNow } from "@/components/board/format";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AgentHub } from "@/components/visualize/agent-hub";
 import { ControlRoom } from "@/components/visualize/control-room";
 import { FactoryFloor, FLOOR_GRID } from "@/components/visualize/factory-floor";
 import { useLiveAgents } from "@/components/visualize/use-live-agents";
@@ -99,6 +100,7 @@ export default function VisualizePage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [hubRefreshKey, setHubRefreshKey] = useState(0);
   const now = useNow(CLOCK_TICK_MS);
   const { live, onEvent } = useLiveAgents(dashboard?.queue.running.map((entry) => entry.taskId) ?? []);
 
@@ -134,6 +136,7 @@ export default function VisualizePage() {
 
   async function refresh() {
     setRefreshing(true);
+    setHubRefreshKey((key) => key + 1);
     await load();
     setRefreshing(false);
   }
@@ -196,6 +199,7 @@ export default function VisualizePage() {
               <ControlRoom dashboard={dashboard} live={live} now={now} />
               <FactoryFloor dashboard={dashboard} live={live} now={now} />
               <Worksites dashboard={dashboard} now={now} />
+              <AgentHub refreshKey={hubRefreshKey} />
             </div>
           )}
         </div>

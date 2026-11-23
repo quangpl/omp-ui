@@ -1,8 +1,17 @@
 "use client";
 
-import { Check, CircleAlert, CircleCheck, CircleDashed, History, LoaderCircle, MessageSquareWarning } from "lucide-react";
-import { useState } from "react";
+import {
+  Check,
+  CircleAlert,
+  CircleCheck,
+  CircleDashed,
+  History,
+  LoaderCircle,
+  MessageSquareWarning,
+} from "lucide-react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
+import { useComposerAutocomplete } from "@/components/board/composer-autocomplete";
 import { BaseNote, Counts, type DiffSummaryState, SummaryBar } from "@/components/board/code-changes";
 import { errorMessage, formatDateTime, formatRelative, useNow } from "@/components/board/format";
 import { Button } from "@/components/ui/button";
@@ -35,16 +44,25 @@ export function reviewStatus(
 ): { kind: ReviewStatusKind; label: string } {
   if (!review) return { kind: "awaiting", label: "Awaiting review" };
   if (review.decision === "changes_requested") {
-    return { kind: "changes_requested", label: active ? "Changes requested · agent working" : "Changes requested" };
+    return {
+      kind: "changes_requested",
+      label: active ? "Changes requested · agent working" : "Changes requested",
+    };
   }
   if (diff && review.hash && review.hash !== diff.hash) return { kind: "stale", label: "Approved · changed since" };
   return { kind: "approved", label: "Approved" };
 }
 
 const PILL_STYLES: Record<ReviewStatusKind, { className: string; icon: typeof Check }> = {
-  awaiting: { className: "border bg-background text-foreground", icon: CircleDashed },
+  awaiting: {
+    className: "border bg-background text-foreground",
+    icon: CircleDashed,
+  },
   approved: { className: "bg-success/10 text-success", icon: CircleCheck },
-  stale: { className: "border border-dashed bg-muted/50 text-muted-foreground", icon: History },
+  stale: {
+    className: "border border-dashed bg-muted/50 text-muted-foreground",
+    icon: History,
+  },
   changes_requested: {
     className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
     icon: CircleAlert,
@@ -78,6 +96,11 @@ export function ReviewBar({
   const [busy, setBusy] = useState<Busy>(null);
   const [requestOpen, setRequestOpen] = useState(false);
   const [note, setNote] = useState("");
+  const noteRef = useRef<HTMLTextAreaElement>(null);
+  const slash = useComposerAutocomplete(noteRef, note, setNote, {
+    enabled: requestOpen && busy !== "request_changes",
+    boardId: task.boardId,
+  });
 
   const review = task.review;
   const status = reviewStatus(review, diff, active);
@@ -92,11 +115,16 @@ export function ReviewBar({
     setBusy("approve");
     const wasDone = task.status === "done";
     try {
-      const result = await api.tasks.review(task.id, { decision: "approve", hash: diff?.hash ?? null });
+      const result = await api.tasks.review(task.id, {
+        decision: "approve",
+        hash: diff?.hash ?? null,
+      });
       toast.success("Changes approved", wasDone ? undefined : { description: "Card moved to Done" });
       onReviewed(result);
     } catch (err) {
-      toast.error("Couldn't approve the changes", { description: errorMessage(err) });
+      toast.error("Couldn't approve the changes", {
+        description: errorMessage(err),
+      });
     } finally {
       setBusy(null);
     }
@@ -117,7 +145,9 @@ export function ReviewBar({
       setNote("");
       onReviewed(result);
     } catch (err) {
-      toast.error("Couldn't request changes", { description: errorMessage(err) });
+      toast.error("Couldn't request changes", {
+        description: errorMessage(err),
+      });
     } finally {
       setBusy(null);
     }
@@ -223,22 +253,30 @@ export function ReviewBar({
               <DialogTitle>Request changes</DialogTitle>
               <DialogDescription>The agent gets your note as feedback and starts working on it.</DialogDescription>
             </DialogHeader>
-            <Textarea
-              autoFocus
-              required
-              value={note}
-              disabled={busy === "request_changes"}
-              placeholder="What should change?"
-              aria-label="Requested changes"
-              className="max-h-[40dvh] min-h-28 resize-none bg-background text-base md:text-sm"
-              onChange={(event) => setNote(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                  event.preventDefault();
-                  void requestChanges();
-                }
-              }}
-            />
+            <div className="relative">
+              <Textarea
+                ref={noteRef}
+                autoFocus
+                required
+                value={note}
+                disabled={busy === "request_changes"}
+                placeholder="What should change?"
+                aria-label="Requested changes"
+                className="max-h-[40dvh] min-h-28 resize-none bg-background text-base md:text-sm"
+                onChange={(event) => setNote(event.target.value)}
+                onSelect={slash.onSelect}
+                onKeyDown={(event) => {
+                  if (slash.onKeyDown(event)) return;
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    void requestChanges();
+                  }
+                }}
+              />
+              {slash.ghost}
+            </div>
+            {slash.suggestion}
+            {slash.menu}
             <DialogFooter>
               <Button
                 type="button"

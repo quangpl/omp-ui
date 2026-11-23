@@ -18,6 +18,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useComposerAutocomplete } from "@/components/board/composer-autocomplete";
 import { errorMessage } from "@/components/board/format";
 import { RichText } from "@/components/board/rich-text";
 import { SchedulePreview, browserTimeZone } from "@/components/schedulers/schedule-fields";
@@ -75,6 +76,10 @@ export function SchedulerChat({
   const controllerRef = useRef<AbortController | null>(null);
   const nextIdRef = useRef(1);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const slash = useComposerAutocomplete(inputRef, input, setInput, {
+    enabled: true,
+    boardId: boardId || undefined,
+  });
   const endRef = useRef<HTMLLIElement>(null);
   const [timezone] = useState(browserTimeZone);
   const busy = activity !== null;
@@ -96,7 +101,10 @@ export function SchedulerChat({
     try {
       const result = await api.schedulers.chat(
         {
-          messages: history.map((turn) => ({ role: turn.role, text: turn.text })),
+          messages: history.map((turn) => ({
+            role: turn.role,
+            text: turn.text,
+          })),
           timezone,
           boardId,
           draft: [...history].reverse().find((turn) => turn.draft)?.draft ?? null,
@@ -107,7 +115,15 @@ export function SchedulerChat({
         controller.signal,
       );
       if (controllerRef.current !== controller) return;
-      setTurns((prev) => [...prev, { id: nextIdRef.current++, role: "assistant", text: result.reply, draft: result.draft }]);
+      setTurns((prev) => [
+        ...prev,
+        {
+          id: nextIdRef.current++,
+          role: "assistant",
+          text: result.reply,
+          draft: result.draft,
+        },
+      ]);
     } catch (err) {
       // Superseded by "Start over": that conversation is gone.
       if (controllerRef.current !== controller) return;
@@ -277,24 +293,31 @@ export function SchedulerChat({
           }}
         >
           <div className="flex items-end gap-2 rounded-2xl border bg-background p-1.5 pl-1 shadow-xs transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
-            <Textarea
-              ref={inputRef}
-              value={input}
-              rows={1}
-              autoFocus
-              placeholder={
-                latestDraftTurn ? "Ask for changes, e.g. “make it 10:00 on Fridays only”…" : "e.g. Every weekday at 9:00, triage new issues…"
-              }
-              aria-label="Message the scheduler agent"
-              className="max-h-40 min-h-11 resize-none border-0 bg-transparent px-2.5 py-2.5 text-base shadow-none focus-visible:ring-0 md:min-h-9 md:py-2 md:text-sm dark:bg-transparent"
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  send(input);
+            <div className="relative min-w-0 flex-1">
+              <Textarea
+                ref={inputRef}
+                value={input}
+                rows={1}
+                autoFocus
+                placeholder={
+                  latestDraftTurn
+                    ? "Ask for changes, e.g. “make it 10:00 on Fridays only”…"
+                    : "e.g. Every weekday at 9:00, triage new issues…"
                 }
-              }}
-            />
+                aria-label="Message the scheduler agent"
+                className="max-h-40 min-h-11 resize-none border-0 bg-transparent px-2.5 py-2.5 text-base shadow-none focus-visible:ring-0 md:min-h-9 md:py-2 md:text-sm dark:bg-transparent"
+                onChange={(event) => setInput(event.target.value)}
+                onSelect={slash.onSelect}
+                onKeyDown={(event) => {
+                  if (slash.onKeyDown(event)) return;
+                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    send(input);
+                  }
+                }}
+              />
+              {slash.ghost}
+            </div>
             {busy ? (
               <Button
                 type="button"
@@ -320,6 +343,8 @@ export function SchedulerChat({
               </Button>
             )}
           </div>
+          {slash.suggestion}
+          {slash.menu}
           <p className="mt-1.5 flex items-center justify-between gap-3 px-1 text-xs text-muted-foreground">
             <span className="min-w-0">Times are in {timezone} unless you name another time zone.</span>
             <span className="flex shrink-0 items-center gap-1 max-md:hidden" aria-hidden>
