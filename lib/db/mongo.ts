@@ -17,6 +17,7 @@ import type {
   Task,
   TaskReview,
   TaskStatus,
+  TaskPullRequest,
   TaskUsage,
   TodoPhase,
   User,
@@ -55,6 +56,7 @@ import {
   normalizeRecentRunLimit,
   nowIso,
   parseAgentResources,
+  parseTaskPullRequests,
   parseTaskUsage,
   parseBranchMap,
   parseFolderList,
@@ -119,6 +121,8 @@ interface TaskDoc {
   createdByTaskId?: string | null;
   /** Missing on documents created before "pushed" cards. */
   pushedAt?: string | null;
+  /** Missing on documents created before pull requests were stored. */
+  pullRequests?: TaskPullRequest[];
   /** Missing on documents created before automatic retries. */
   autoRetries?: number;
   retryAt?: string | null;
@@ -278,6 +282,7 @@ function toTask(d: TaskDoc, stats: CommentStats | undefined): Task {
     lastRunId: d.lastRunId ?? null,
     createdByTaskId: d.createdByTaskId ?? null,
     pushedAt: d.pushedAt ?? null,
+    pullRequests: parseTaskPullRequests(d.pullRequests),
     autoRetries: d.autoRetries ?? 0,
     retryAt: d.retryAt ?? null,
     todos: parseTodoPhases(d.todos),
@@ -401,6 +406,7 @@ const TASK_PATCH_KEYS = [
   "sessionFile",
   "lastRunId",
   "pushedAt",
+  "pullRequests",
   "autoRetries",
   "retryAt",
   "todos",
@@ -840,6 +846,7 @@ export class MongoRepository implements Repository {
       lastRunId: null,
       createdByTaskId: input.createdByTaskId ?? null,
       pushedAt: null,
+      pullRequests: [],
       autoRetries: 0,
       retryAt: null,
       todos: [],

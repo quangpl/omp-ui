@@ -482,6 +482,18 @@ export function runRepositoryContract(
         expect((await repo.listTasks(board.id)).find((t) => t.id === child.id)).toEqual(child);
       });
 
+      it("round-trips the card's pull requests", async () => {
+        const board = await newBoard();
+        const task = await repo.createTask({ boardId: board.id, title: "Ship" });
+        expect(task.pullRequests).toEqual([]);
+        const pullRequests = [{ folder: "/work/app", url: "https://github.com/acme/app/pull/3" }];
+
+        const updated = await repo.updateTask(task.id, { pullRequests });
+        expect(updated!.pullRequests).toEqual(pullRequests);
+        expect(await repo.getTask(task.id)).toEqual(updated);
+        expect((await repo.updateTask(task.id, { pullRequests: [] }))!.pullRequests).toEqual([]);
+      });
+
       it("round-trips the agent's todo list", async () => {
         const board = await newBoard();
         const task = await repo.createTask({ boardId: board.id, title: "Plan" });

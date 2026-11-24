@@ -719,9 +719,16 @@ function compareUrl(status: GitStatus, base: string, branch: string): string | n
   return null;
 }
 
+const PULL_REQUEST_URL = /\/pull\/\d+|\/merge_requests\/\d+/;
+
+/** True for a link to an existing PR/MR (not the pre-filled "compare" / "new merge request" page). */
+export function isPullRequestUrl(url: string): boolean {
+  return PULL_REQUEST_URL.test(url);
+}
+
 function findUrl(output: string): string | null {
   const urls = output.match(/https?:\/\/[^\s"'<>]+/g) ?? [];
-  return urls.find((u) => /\/pull\/\d+|merge_requests\/\d+/.test(u)) ?? urls.at(-1) ?? null;
+  return urls.find(isPullRequestUrl) ?? urls.at(-1) ?? null;
 }
 
 /** The commit `base` resolves to on this repo, refreshed from origin when it can be reached. */

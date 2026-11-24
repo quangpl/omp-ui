@@ -51,6 +51,7 @@ import {
   normalizeRecentRunLimit,
   nowIso,
   parseAgentResources,
+  parseTaskPullRequests,
   parseTaskUsage,
   parseBranchMap,
   parseFolderList,
@@ -122,6 +123,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   last_run_id TEXT,
   created_by_task_id TEXT,
   pushed_at TEXT,
+  pull_requests TEXT NOT NULL DEFAULT '[]',
   auto_retries INTEGER NOT NULL DEFAULT 0,
   retry_at TEXT,
   todos TEXT NOT NULL DEFAULT '[]',
@@ -136,6 +138,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by_task_id TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pushed_at TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pull_requests TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS auto_retries INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS retry_at TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS todos TEXT NOT NULL DEFAULT '[]';
@@ -273,6 +276,7 @@ interface TaskRow {
   last_run_id: string | null;
   created_by_task_id: string | null;
   pushed_at: string | null;
+  pull_requests: string;
   auto_retries: number;
   retry_at: string | null;
   todos: string;
@@ -401,6 +405,7 @@ function toTask(r: TaskRow): Task {
     lastRunId: r.last_run_id,
     createdByTaskId: r.created_by_task_id,
     pushedAt: r.pushed_at,
+    pullRequests: parseTaskPullRequests(r.pull_requests),
     autoRetries: Number(r.auto_retries),
     retryAt: r.retry_at,
     todos: parseTodoPhases(r.todos),
@@ -575,13 +580,13 @@ const TABLE_SPECS: { [T in DataTable]: TableSpec<T> } = {
     },
     columns: [
       "id", "board_id", "title", "description", "status", "position", "agent_state", "agent_error", "question",
-      "session_file", "last_run_id", "created_by_task_id", "pushed_at", "auto_retries", "retry_at",
+      "session_file", "last_run_id", "created_by_task_id", "pushed_at", "pull_requests", "auto_retries", "retry_at",
       "todos", "review", "resources", "session_usage", "scheduler_id",
       "created_at", "updated_at", "user_id",
     ],
     values: (t) => [
       t.id, t.boardId, t.title, t.description, t.status, t.position, t.agentState, t.agentError, t.question,
-      t.sessionFile, t.lastRunId, t.createdByTaskId, t.pushedAt, t.autoRetries,
+      t.sessionFile, t.lastRunId, t.createdByTaskId, t.pushedAt, JSON.stringify(t.pullRequests), t.autoRetries,
       t.retryAt, JSON.stringify(t.todos), jsonOrNull(t.review), jsonOrNull(t.resources), jsonOrNull(t.usage),
       t.schedulerId, t.createdAt, t.updatedAt, t.userId,
     ],
@@ -1009,6 +1014,7 @@ export class PostgresRepository implements Repository {
       ["session_file", patch.sessionFile],
       ["last_run_id", patch.lastRunId],
       ["pushed_at", patch.pushedAt],
+      ["pull_requests", patch.pullRequests === undefined ? undefined : JSON.stringify(patch.pullRequests)],
       ["auto_retries", patch.autoRetries],
       ["retry_at", patch.retryAt],
       ["todos", patch.todos === undefined ? undefined : JSON.stringify(patch.todos)],

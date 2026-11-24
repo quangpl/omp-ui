@@ -6,6 +6,7 @@ import {
   type Task,
   type TaskReview,
   type TaskStatus,
+  type TaskPullRequest,
   type TaskUsage,
 } from "@/lib/types";
 
@@ -229,6 +230,30 @@ export function parseTaskUsage(value: unknown): TaskUsage | null {
   }
   if (typeof r.updatedAt !== "string") return null;
   return { ...figures, updatedAt: r.updatedAt };
+}
+
+/**
+ * Stored pull requests: a JSON array string (SQL drivers) or an array (MongoDB). Malformed input
+ * yields []; entries without a folder and an http(s) url are dropped.
+ */
+export function parseTaskPullRequests(value: unknown): TaskPullRequest[] {
+  let list = value;
+  if (typeof value === "string") {
+    try {
+      list = JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(list)) return [];
+  const out: TaskPullRequest[] = [];
+  for (const entry of list) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { folder, url } = entry as Record<string, unknown>;
+    if (typeof folder !== "string" || !folder || typeof url !== "string" || !/^https?:\/\//i.test(url)) continue;
+    out.push({ folder, url });
+  }
+  return out;
 }
 
 /**

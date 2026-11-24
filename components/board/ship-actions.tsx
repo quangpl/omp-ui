@@ -663,14 +663,30 @@ export function ShipActions({
       }
     >
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <Button
-          className="h-11 w-full min-w-0 transition-transform active:scale-[0.98] sm:col-span-2 md:h-9"
-          disabled={agentActive || busy !== null || noRemote}
-          onClick={() => void run("pr")}
-        >
-          {busy === "pr" ? <LoaderCircle className="animate-spin" /> : <GitPullRequest />}
-          <span className="truncate">{busy === "pr" ? `Creating ${prNoun}…` : `Create ${prNoun}`}</span>
-        </Button>
+        {task.pullRequests.length > 0 ? (
+          <div className="flex min-w-0 flex-col gap-2 sm:col-span-2">
+            {task.pullRequests.map((pr) => (
+              <Button key={pr.folder} asChild className="h-11 w-full min-w-0 md:h-9">
+                <a href={pr.url} target="_blank" rel="noopener noreferrer" title={pr.url}>
+                  <GitPullRequest />
+                  <span className="truncate">
+                    {task.pullRequests.length > 1 ? `Open ${prNoun} · ${folderName(pr.folder)}` : `Open ${prNoun}`}
+                  </span>
+                  <ExternalLink className="ml-auto" />
+                </a>
+              </Button>
+            ))}
+          </div>
+        ) : (
+          <Button
+            className="h-11 w-full min-w-0 transition-transform active:scale-[0.98] sm:col-span-2 md:h-9"
+            disabled={agentActive || busy !== null || noRemote}
+            onClick={() => void run("pr")}
+          >
+            {busy === "pr" ? <LoaderCircle className="animate-spin" /> : <GitPullRequest />}
+            <span className="truncate">{busy === "pr" ? `Creating ${prNoun}…` : `Create ${prNoun}`}</span>
+          </Button>
+        )}
         <Button
           variant="outline"
           className="h-11 w-full min-w-0 transition-transform active:scale-[0.98] md:h-9"
@@ -703,7 +719,7 @@ export function ShipActions({
       )}
       <p className="text-xs leading-relaxed text-muted-foreground">{hint}</p>
 
-      {result && <ShipResults result={result} prNoun={prNoun} />}
+      {result && <ShipResults result={result} prNoun={prNoun} linked={task.pullRequests.map((pr) => pr.url)} />}
     </ShipFrame>
   );
 }
@@ -726,7 +742,7 @@ function ShipFrame({ children, aside }: { children: ReactNode; aside?: ReactNode
   );
 }
 
-function ShipResults({ result, prNoun }: { result: GitActionResult; prNoun: string }) {
+function ShipResults({ result, prNoun, linked }: { result: GitActionResult; prNoun: string; linked: string[] }) {
   const multiple = result.results.length > 1;
   return (
     <ul className="flex flex-col gap-2 border-t pt-2.5">
@@ -761,7 +777,7 @@ function ShipResults({ result, prNoun }: { result: GitActionResult; prNoun: stri
               )}
             </div>
           </div>
-          {entry.url && !entry.error && (
+          {entry.url && !entry.error && !linked.includes(entry.url) && (
             <Button asChild variant="outline" className="h-11 w-full sm:w-auto sm:self-start md:h-8">
               <a href={entry.url} target="_blank" rel="noopener noreferrer">
                 <ExternalLink />
