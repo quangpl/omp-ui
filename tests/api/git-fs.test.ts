@@ -2,9 +2,24 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { api, env, freshEnv, setupAdmin, teardown, tempDir, waitFor } from "./helpers";
+
+// lib/git.ts freezes its child environment (PATH included) when first imported, so the fake `gh`
+// that stands in for GitHub's CLI must be on PATH before that import. Tests enable it by putting
+// `fakeGhDir` on the live PATH (the CLI is only used when the live PATH has it).
+const fakeGhDir = vi.hoisted(() => {
+  const fs = process.getBuiltinModule("node:fs");
+  const os = process.getBuiltinModule("node:os");
+  const nodePath = process.getBuiltinModule("node:path");
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "omp-fake-gh-"));
+  fs.writeFileSync(nodePath.join(dir, "gh"), "#!/bin/sh\necho https://github.invalid/acme/gadgets/pull/7\n", {
+    mode: 0o755,
+  });
+  process.env.PATH = `${dir}${nodePath.delimiter}${process.env.PATH ?? ""}`;
+  return dir;
+});
 
 import * as boardGitRoute from "@/app/api/v1/boards/[id]/git/route";
 import * as boardRoute from "@/app/api/v1/boards/[id]/route";
@@ -617,6 +632,36 @@ describe("git status and quick actions", () => {
           subject: "Widget polish",
         });
         expect(res.body.comment.body).toContain(result.url);
+        expect((await taskDetail(ghTask.id)).task.pullRequests).toEqual([]);
+      } finally {
+        process.env.PATH = originalPath;
+      }
+    },
+    GIT_TIMEOUT,
+  );
+
+  it(
+    "Create PR saves the opened PR on the card; the compare-page fallback is not saved",
+    async () => {
+      const repo = makeRepo("gadgets");
+      git(repo.work, "remote", "set-url", "origin", "ssh://git@github.invalid/acme/gadgets.git");
+      git(repo.work, "remote", "set-url", "--push", "origin", repo.bare);
+      const prBoard = await createBoard({ name: "Gadgets", workdir: repo.work, autoRun: false });
+      const prTask = await createTask(prBoard.id, "Gadget polish");
+      await simulateRun(prTask.id, [repo.work], () => writeFileSync(path.join(repo.work, "gadget.txt"), "shiny\n"));
+
+      // git plus the fake `gh`, which "opens" PR #7.
+      const bin = tempDir("bin-with-gh");
+      const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+      if (!existsSync(path.join(bin, "git"))) symlinkSync(realGit, path.join(bin, "git"));
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${bin}${path.delimiter}${fakeGhDir}`;
+      try {
+        const res = await gitAction("pr", prTask.id);
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(res.body.results[0].url).toBe("https://github.invalid/acme/gadgets/pull/7");
+        const saved = (await taskDetail(prTask.id)).task.pullRequests;
+        expect(saved).toEqual([{ folder: repo.work, url: "https://github.invalid/acme/gadgets/pull/7" }]);
       } finally {
         process.env.PATH = originalPath;
       }

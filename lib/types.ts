@@ -116,6 +116,14 @@ export interface BoardWithCounts extends Board {
   runningCount: number;
 }
 
+/** A pull/merge request opened for a card's changes in one project folder ("Create PR/MR"). */
+export interface TaskPullRequest {
+  /** Absolute path of the project folder whose repo the PR/MR belongs to. */
+  folder: string;
+  /** Link to the PR/MR itself (never a pre-filled "compare" page). */
+  url: string;
+}
+
 export interface Task {
   id: string;
   boardId: string;
@@ -141,6 +149,11 @@ export interface Task {
    * Cards with it set show a struck-through title.
    */
   pushedAt: string | null;
+  /**
+   * PRs/MRs opened for this card by "Create PR/MR", one per project folder (the latest wins when
+   * created again). Once set the Ship panel links to them instead of offering Create PR again.
+   */
+  pullRequests: TaskPullRequest[];
   /**
    * Automatic retries used since the card's last successful run or manual start (Run, feedback).
    * A run that fails, or is interrupted by a server restart, is retried while this is below

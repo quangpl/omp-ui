@@ -90,6 +90,7 @@ export type UpdateTaskInput = Partial<
     | "sessionFile"
     | "lastRunId"
     | "pushedAt"
+    | "pullRequests"
     | "autoRetries"
     | "retryAt"
     | "todos"
