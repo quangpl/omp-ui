@@ -330,6 +330,54 @@ export interface SubagentSnapshot {
 }
 
 /**
+ * One row of the Visualize page's agent hub (GET /agent-hub), the roster of omp's Agent Hub: a
+ * subagent of a recent run with its latest persisted state. Live progress of a running run
+ * comes over the event stream and replaces `snapshot` in the browser.
+ */
+export interface AgentHubAgent {
+  /** `<runId>:<snapshot.id>`, unique across runs. */
+  key: string;
+  runId: string;
+  taskId: string;
+  boardId: string;
+  boardName: string;
+  /** Card the run belongs to (the subagent's top-level parent). */
+  taskTitle: string;
+  runStatus: RunStatus;
+  /** Dot-qualified id of the spawning subagent (`Parent` of `Parent.Child`); null for a direct child of the card's agent. */
+  parentId: string | null;
+  /** Latest persisted state; a subagent still working when its run ended is reported `aborted`. */
+  snapshot: SubagentSnapshot;
+  /** When the subagent first appeared (ISO). */
+  startedAt: string;
+  /** Latest persisted change (ISO). */
+  lastActivityAt: string;
+}
+
+export type AgentHubActivityKind = "lifecycle" | "response" | "error" | "tool";
+
+/** One line of the agent hub's combined activity log. */
+export interface AgentHubActivity {
+  /** Unique and stable: `<agent key>:<n>`. */
+  id: string;
+  at: string;
+  /** `AgentHubAgent.key` of the subagent it belongs to. */
+  agentKey: string;
+  agentId: string;
+  kind: AgentHubActivityKind;
+  text: string;
+}
+
+/** GET /agent-hub. */
+export interface AgentHubData {
+  generatedAt: string;
+  /** Most recently active first. */
+  agents: AgentHubAgent[];
+  /** Newest first. */
+  activity: AgentHubActivity[];
+}
+
+/**
  * How full an agent's context window is: the agent's "mana" on the Visualize page is what is
  * left, `1 - tokens / contextWindow`.
  */
@@ -1567,6 +1615,24 @@ export interface GitDiscardFolderResult {
   discardedFiles: number;
   /** Error for this folder; other folders still proceed. */
   error: string | null;
+}
+
+/** Outcome for one folder of POST /boards/:id/git/pull. */
+export interface GitPullFolderResult {
+  folder: string;
+  /** Checked-out branch; null on a detached HEAD. */
+  branch: string | null;
+  /** Commits fast-forwarded from the upstream; 0 when up to date, skipped or failed. */
+  pulled: number;
+  /** Nothing to pull from: detached HEAD or the branch has no upstream. */
+  skipped: boolean;
+  /** Plain-language reason the pull failed (offline, diverged, conflicting local edits); other folders still proceed. */
+  error: string | null;
+}
+
+/** POST /boards/:id/git/pull: per-repo result of pulling the latest upstream changes. */
+export interface GitPullResult {
+  results: GitPullFolderResult[];
 }
 
 /** POST /boards/:id/git/discard and POST /tasks/:id/git/discard: per-repo result of discarding uncommitted changes. */

@@ -16,6 +16,7 @@ import type {
   DataImportResult,
   DataTransferStatus,
   ClusterJoinInfo,
+  AgentHubData,
   ClusterStatus,
   ClusterTestResult,
   AiStatsEvent,
@@ -32,6 +33,7 @@ import type {
   GitActionResult,
   GitBranches,
   GitDiscardResult,
+  GitPullResult,
   GitStatus,
   GitSwitchResult,
   MaintenanceAction,
@@ -310,6 +312,8 @@ export const api = {
   wordCompletions: () => request<{ model: WordModelData }>("/system/word-completions"),
   /** Home dashboard aggregate: projects, totals, cards needing attention, recent results, queue. */
   dashboard: () => request<Dashboard>("/dashboard"),
+  /** Visualize page's agent hub: subagents of recent runs and their activity log. */
+  agentHub: () => request<AgentHubData>("/agent-hub"),
   /** Artifacts page: every project with its final results in the period (newest result first). */
   artifacts: {
     projects: (period: ArtifactPeriod = {}) =>
@@ -774,6 +778,9 @@ export const api = {
     /** Header quick push: commit every project repo's changes and push to the project's push branch. */
     pushBoard: (boardId: string) =>
       request<BoardPushResult>(`/boards/${boardId}/git/push`, { method: "POST", json: {} }),
+    /** Header pull: fast-forward every project repo's checked-out branch to its upstream. */
+    pullBoard: (boardId: string) =>
+      request<GitPullResult>(`/boards/${boardId}/git/pull`, { method: "POST", json: {} }),
     /** Header quick discard: roll every project repo's working tree back to HEAD (uncommitted changes only). */
     discardBoard: (boardId: string) =>
       request<GitDiscardResult>(`/boards/${boardId}/git/discard`, { method: "POST", json: {} }),

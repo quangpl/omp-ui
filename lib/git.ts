@@ -9,7 +9,14 @@ import { DEFAULT_BRANCH } from "@/lib/default-branch";
 import { HttpError } from "@/lib/server/http";
 import { NoTrackedChangesError, taskChangePatches, taskChangesTree } from "@/lib/server/task-changes";
 import { isValidBranchName } from "@/lib/push-branch";
-import type { GitBranches, GitProvider, GitRepoActionResult, GitStatus, GitSwitchResult } from "@/lib/types";
+import type {
+  GitBranches,
+  GitProvider,
+  GitPullFolderResult,
+  GitRepoActionResult,
+  GitStatus,
+  GitSwitchResult,
+} from "@/lib/types";
 import { getWorkspaceRoot } from "@/lib/workspace";
 
 const QUICK_TIMEOUT_MS = 15_000;
@@ -382,14 +389,31 @@ export async function listBranches(folder: string): Promise<GitBranches> {
  * Fast-forward the checked-out branch to its upstream. A branch without an upstream is left as is;
  * a failed pull (offline, diverged, conflicting local edits) changes nothing and returns the reason.
  */
-async function pullCurrent(folder: string): Promise<Pick<GitSwitchResult, "pulled" | "pullError">> {
+async function pullCurrent(
+  folder: string,
+): Promise<Pick<GitSwitchResult, "pulled" | "pullError"> & { hasUpstream: boolean }> {
   const upstream = await git(folder, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
-  if (!upstream.ok) return { pulled: 0, pullError: null };
+  if (!upstream.ok) return { pulled: 0, pullError: null, hasUpstream: false };
   const before = (await git(folder, ["rev-parse", "HEAD"])).stdout.trim();
   const pull = await git(folder, ["pull", "--ff-only", "--no-rebase"], NETWORK_TIMEOUT_MS);
-  if (!pull.ok) return { pulled: 0, pullError: explain("git", pull) };
+  if (!pull.ok) return { pulled: 0, pullError: explain("git", pull), hasUpstream: true };
   const count = await git(folder, ["rev-list", "--count", `${before}..HEAD`]);
-  return { pulled: (count.ok && Number.parseInt(count.stdout, 10)) || 0, pullError: null };
+  return { pulled: (count.ok && Number.parseInt(count.stdout, 10)) || 0, pullError: null, hasUpstream: true };
+}
+
+/**
+ * Pull the latest upstream commits into the checked-out branch of `folder` (fast-forward only).
+ * `skipped`: nothing to pull from (detached HEAD or no upstream). A failed pull (offline, diverged,
+ * conflicting local edits) changes nothing and is reported in `error`.
+ */
+export function pullLatest(folder: string): Promise<GitPullFolderResult> {
+  return withFolderLock(folder, async () => {
+    const head = await git(folder, ["symbolic-ref", "--short", "-q", "HEAD"]);
+    const branch = (head.ok && head.stdout.trim()) || null;
+    if (!branch) return { folder, branch, pulled: 0, skipped: true, error: null };
+    const { pulled, pullError, hasUpstream } = await pullCurrent(folder);
+    return { folder, branch, pulled, skipped: !hasUpstream, error: pullError };
+  });
 }
 
 /**
@@ -413,8 +437,8 @@ export function switchBranch(
       );
       if (!result.ok) throw new HttpError(400, explain("git", result));
     }
-    const pull = await pullCurrent(folder);
-    return { ...(await gitStatus(folder, { defaultBranch })), ...pull };
+    const { pulled, pullError } = await pullCurrent(folder);
+    return { ...(await gitStatus(folder, { defaultBranch })), pulled, pullError };
   });
 }
 

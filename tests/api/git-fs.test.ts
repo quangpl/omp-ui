@@ -24,6 +24,7 @@ const fakeGhDir = vi.hoisted(() => {
 import * as boardGitRoute from "@/app/api/v1/boards/[id]/git/route";
 import * as boardRoute from "@/app/api/v1/boards/[id]/route";
 import * as boardPushRoute from "@/app/api/v1/boards/[id]/git/push/route";
+import * as boardPullRoute from "@/app/api/v1/boards/[id]/git/pull/route";
 import * as boardDiscardRoute from "@/app/api/v1/boards/[id]/git/discard/route";
 import * as boardBranchesRoute from "@/app/api/v1/boards/[id]/git/branches/route";
 import * as boardTasksRoute from "@/app/api/v1/boards/[id]/tasks/route";
@@ -49,6 +50,7 @@ import type {
   GitActionResult,
   GitBranches,
   GitDiscardResult,
+  GitPullResult,
   GitStatus,
   GitSwitchResult,
   Task,
@@ -757,6 +759,85 @@ describe("push to current branch", () => {
     },
     GIT_TIMEOUT,
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("pull latest changes", () => {
+  let app: Repo;
+  let lib: Repo;
+  let notes: string;
+  let board: Board;
+
+  async function boardPull(boardId: string) {
+    return api<GitPullResult & { error?: string }>(boardPullRoute, "POST", `/boards/${boardId}/git/pull`, {
+      body: {},
+      params: { id: boardId },
+    });
+  }
+
+  /** Commit `file` on origin/main from a throwaway clone. */
+  function pushUpstream(repo: Repo, file: string): void {
+    const clone = tempDir(path.join("clones", `${path.basename(repo.bare)}-${file}`));
+    git(clone, "clone", repo.bare, ".");
+    writeFileSync(path.join(clone, file), `${file}\n`);
+    git(clone, "add", "-A");
+    git(clone, "commit", "-m", `Add ${file}`);
+    git(clone, "push", "origin", "main");
+  }
+
+  beforeAll(async () => {
+    await freshEnv();
+    await setupAdmin();
+    app = makeRepo("app");
+    lib = makeRepo("lib");
+    notes = tempDir(path.join("projects", "notes"));
+    board = await createBoard({ name: "Pull", workdir: app.work, extraFolders: [lib.work, notes], autoRun: false });
+  });
+
+  it(
+    "fast-forwards each repo, keeps local edits, and reports a diverged repo without touching others",
+    async () => {
+      pushUpstream(app, "one.txt");
+      pushUpstream(app, "two.txt");
+      writeFileSync(path.join(app.work, "README.md"), "# app\n\nlocal edit\n");
+      // lib diverges: a local commit plus an upstream one cannot fast-forward.
+      pushUpstream(lib, "upstream.txt");
+      writeFileSync(path.join(lib.work, "local.txt"), "local\n");
+      git(lib.work, "add", "-A");
+      git(lib.work, "commit", "-m", "Local lib change");
+      const libHead = git(lib.work, "rev-parse", "HEAD");
+
+      const res = await boardPull(board.id);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const [appRes, libRes] = res.body.results;
+      expect(res.body.results).toHaveLength(2);
+      expect(appRes).toEqual({ folder: app.work, branch: "main", pulled: 2, skipped: false, error: null });
+      expect(libRes).toMatchObject({ folder: lib.work, branch: "main", pulled: 0, skipped: false });
+      expect(libRes.error).toEqual(expect.any(String));
+
+      expect(existsSync(path.join(app.work, "two.txt"))).toBe(true);
+      expect(git(app.work, "status", "--porcelain")).toBe("M README.md");
+      expect(git(lib.work, "rev-parse", "HEAD")).toBe(libHead);
+
+      const again = await boardPull(board.id);
+      expect(again.body.results[0]).toEqual({ folder: app.work, branch: "main", pulled: 0, skipped: false, error: null });
+    },
+    GIT_TIMEOUT,
+  );
+
+  it("skips a branch without an upstream and rejects a board with no git repositories", async () => {
+    git(app.work, "switch", "-c", "local-only");
+    const res = await boardPull(board.id);
+    expect(res.body.results[0]).toEqual({ folder: app.work, branch: "local-only", pulled: 0, skipped: true, error: null });
+
+    const noRepo = await createBoard({ name: "No repos", workdir: notes, extraFolders: [], autoRun: false });
+    const none = await boardPull(noRepo.id);
+    expect(none.status).toBe(400);
+    expect(none.body).toEqual({
+      error: "This project's folders aren't git repositories, so there is nothing to pull.",
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------------------------

@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronsUpDown,
   CircleCheck,
+  Download,
   ExternalLink,
   GitBranch,
   GitPullRequest,
@@ -47,8 +48,9 @@ function changesLabel(count: number): string {
 }
 
 /**
- * Compact header badge: current branch, plus a change-count chip. Tap the branch to list every
- * repo and switch any of them to another branch; tap the chip to commit and push everything.
+ * Compact header badge: current branch, a pull-latest button, plus a change-count chip and a
+ * discard button. Tap the branch to list every repo and switch any of them to another branch; tap
+ * the chip to commit and push everything.
  */
 export function GitIndicator({
   boardId,
@@ -138,6 +140,7 @@ export function GitIndicator({
           )}
         </PopoverContent>
       </Popover>
+      <PullLatestButton boardId={boardId} repos={repos} onPulled={onChanged} />
       {(changes > 0 || unpushed > 0) && (
         <>
           <QuickPushChip
@@ -159,6 +162,85 @@ export function GitIndicator({
         </>
       )}
     </div>
+  );
+}
+
+/** Header icon button: fast-forward every repo's checked-out branch to its upstream. */
+function PullLatestButton({
+  boardId,
+  repos,
+  onPulled,
+}: {
+  boardId: string;
+  repos: GitStatus[];
+  onPulled: () => void;
+}) {
+  const [pulling, setPulling] = useState(false);
+  const behind = repos.reduce((sum, repo) => sum + repo.behind, 0);
+  const hint = pulling
+    ? "Pulling…"
+    : behind > 0
+      ? `Pull latest changes (${behind} new ${behind === 1 ? "commit" : "commits"} upstream)`
+      : "Pull latest changes";
+
+  const pull = async () => {
+    if (pulling) return;
+    setPulling(true);
+    try {
+      const { results } = await api.git.pullBoard(boardId);
+      const failed = results.filter((r) => r.error);
+      const pulled = results.reduce((sum, r) => sum + r.pulled, 0);
+      if (failed.length > 0 && pulled === 0) {
+        toast.error("Couldn't pull the latest changes", {
+          description: failed.map((r) => `${folderName(r.folder)}: ${r.error}`).join("\n"),
+        });
+      } else if (failed.length > 0) {
+        toast.warning("Pulled some folders", {
+          description: failed.map((r) => `${folderName(r.folder)}: ${r.error}`).join("\n"),
+        });
+      } else if (pulled > 0) {
+        toast.success("Pulled the latest changes", {
+          description: `${pulled} new ${pulled === 1 ? "commit" : "commits"}.`,
+        });
+      } else {
+        toast("Already up to date", {
+          description: results.every((r) => r.skipped) ? "No branch tracks a remote branch to pull from." : undefined,
+        });
+      }
+    } catch (err) {
+      toast.error("Couldn't pull the latest changes", {
+        description:
+          err instanceof ApiRequestError && err.status === 409
+            ? "An agent is working in this project. Try again when it finishes."
+            : errorMessage(err),
+      });
+    } finally {
+      setPulling(false);
+      onPulled();
+    }
+  };
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={() => void pull()}
+          aria-disabled={pulling || undefined}
+          aria-busy={pulling || undefined}
+          aria-label={hint}
+          className="flex h-11 shrink-0 items-center rounded-md px-1.5 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 aria-disabled:cursor-default md:h-9"
+        >
+          {pulling ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+          {behind > 0 && !pulling && (
+            <span className="ml-1 rounded-full bg-sky-500/15 px-1.5 text-[11px] leading-5 font-medium text-sky-700 tabular-nums dark:text-sky-300">
+              {behind}
+            </span>
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{hint}</TooltipContent>
+    </Tooltip>
   );
 }
 

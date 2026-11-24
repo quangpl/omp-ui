@@ -9,8 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Project header: a **Pull latest changes** button next to the branch menu fast-forwards every project repo's current branch (`POST /boards/:id/git/pull`); it shows how many commits upstream is ahead. Discard all changes stays beside the changes chip.
 - Create PR/MR saves the opened PR/MR link on the card (`Task.pullRequests`); the Ship panel then shows **Open PR/MR** instead of asking to create it again.
 - Activity chat and agent log render images in place when the text links to one (`[shot](…png)`, a bare image URL, or an app file path in backticks) instead of showing only a file chip or path.
+- Visualize: the **Agent hub** section now shows the roster of omp's Agent Hub (subagents of recent runs with status, model, age, activity, cost/time/requests/tools/tokens, inspector, parent/child tree, activity log) instead of omp usage statistics, which stay on the Stats page (`GET /agent-hub`).
 
 ### Changed
 
