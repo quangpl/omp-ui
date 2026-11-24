@@ -13,10 +13,12 @@ import {
   discardChanges,
   gitStatus,
   isGitRepo,
+  isPullRequestUrl,
   pushToBranch,
   pushToCurrentBranch,
   type GitFolderOutcome,
 } from "@/lib/git";
+import type { UpdateTaskInput } from "@/lib/db/types";
 import { buildPrBody } from "@/lib/pr-body";
 import { HttpError, json, readJson, type ApiContext } from "@/lib/server/http";
 import { requireBoard, requireTask } from "@/lib/server/validate";
@@ -180,9 +182,17 @@ export async function runTaskGitAction(
     landed.length > 0 &&
     !results.some((r) => r.error) &&
     landed.every((r) => r.branch === board.pushBranch);
-  const fresh = pushed
-    ? await repo.updateTask(task.id, { pushedAt: new Date().toISOString() })
-    : await repo.getTask(task.id);
+  let patch: Parameters<typeof repo.updateTask>[1] | null = pushed ? { pushedAt: new Date().toISOString() } : null;
+  if (action === "pr") {
+    // Remember the PR/MRs that were really opened (not the pre-filled compare page the fallback
+    // returns) so the card links to them instead of offering "Create PR" again. A folder's newer PR wins.
+    const opened = results.filter((r) => !r.error && !r.skipped && r.url && isPullRequestUrl(r.url));
+    if (opened.length > 0) {
+      const kept = task.pullRequests.filter((pr) => !opened.some((r) => r.folder === pr.folder));
+      patch = { ...patch, pullRequests: [...kept, ...opened.map((r) => ({ folder: r.folder, url: r.url! }))] };
+    }
+  }
+  const fresh = patch ? await repo.updateTask(task.id, patch) : await repo.getTask(task.id);
   if (fresh) publish({ type: "task.updated", task: fresh });
 
   const response: GitActionResult = { action, results, comment };

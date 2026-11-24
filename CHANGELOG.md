@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Create PR/MR saves the opened PR/MR link on the card (`Task.pullRequests`); the Ship panel then shows **Open PR/MR** instead of asking to create it again.
+
 ### Changed
 
 - Stats (quota, balances, usage totals and per-model table) cover only the Main AI provider from Settings → AI Providers; agents, projects and hourly spend are hidden while another provider has usage, as omp cannot split them.

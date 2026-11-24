@@ -21,6 +21,7 @@ const task: Task = {
   schedulerId: null,
   userId: null,
   pushedAt: null,
+  pullRequests: [],
   autoRetries: 0,
   retryAt: null,
   todos: [],
