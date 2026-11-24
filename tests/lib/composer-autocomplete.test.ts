@@ -32,6 +32,41 @@ describe("autocompleteTokenAt", () => {
     expect(autocompleteTokenAt("see @src/", 9)).toEqual({ trigger: "mention", start: 4, end: 9, query: "src/" });
   });
 
+  it("matches $ env variables at the start and after whitespace", () => {
+    expect(autocompleteTokenAt("$GI", 3)).toEqual({
+      trigger: "env",
+      start: 0,
+      end: 3,
+      query: "GI",
+    });
+    expect(autocompleteTokenAt("use $GITHUB_T", 13)).toEqual({
+      trigger: "env",
+      start: 4,
+      end: 13,
+      query: "GITHUB_T",
+    });
+    expect(autocompleteTokenAt("$", 1)).toEqual({
+      trigger: "env",
+      start: 0,
+      end: 1,
+      query: "",
+    });
+  });
+
+  it("does not match $ mid-word", () => {
+    expect(autocompleteTokenAt("a$b", 3)).toBeNull();
+    expect(autocompleteTokenAt("costs 5$", 8)).toBeNull();
+  });
+
+  it("matches the braced ${ form", () => {
+    expect(autocompleteTokenAt("run ${GI", 8)).toEqual({
+      trigger: "env",
+      start: 4,
+      end: 8,
+      query: "GI",
+    });
+  });
+
   it("matches an opened quoted mention whose query may contain spaces", () => {
     const text = 'open @"My Docs/no';
     expect(autocompleteTokenAt(text, text.length)).toEqual({
