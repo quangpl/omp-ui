@@ -145,6 +145,25 @@ function InlineImage({ attachment, alt, ctx }: { attachment: Attachment; alt: st
   );
 }
 
+/** Plain text of inline nodes, used as an image's alt text / chip label. */
+function plainLabel(nodes: MdInline[]): string {
+  return nodes
+    .map((node) => {
+      switch (node.kind) {
+        case "text":
+        case "code":
+          return node.text;
+        case "image":
+          return node.alt;
+        case "url":
+          return node.url;
+        default:
+          return plainLabel(node.children);
+      }
+    })
+    .join("");
+}
+
 function renderNodes(nodes: MdInline[], ctx: InlineContext, keyPrefix: string): ReactNode[] {
   return nodes.map((node, index) => renderNode(node, ctx, `${keyPrefix}${index}`));
 }
@@ -153,12 +172,17 @@ function renderNode(node: MdInline, ctx: InlineContext, key: string): ReactNode 
   switch (node.kind) {
     case "text":
       return node.text;
-    case "code":
+    case "code": {
+      // An app-served image path in code (`/api/v1/tasks/<id>/files/shot.png`) still shows the image.
+      if (appFileOf(node.text) && isSafeUrl(node.text, "image") && attachmentKind(toAttachment(node.text)) === "image") {
+        return <InlineImage key={key} attachment={toAttachment(node.text)} alt="" ctx={ctx} />;
+      }
       return (
         <code key={key} className="rounded bg-foreground/[0.06] px-1 py-0.5 font-mono text-[0.85em]">
           {node.text}
         </code>
       );
+    }
     case "strong":
       return (
         <strong key={key} className="font-semibold">
@@ -185,9 +209,13 @@ function renderNode(node: MdInline, ctx: InlineContext, key: string): ReactNode 
     }
     case "link": {
       const label = renderNodes(node.children, ctx, `${key}-`);
-      if (!isSafeUrl(node.url, "link")) return <span key={key}>{label}</span>;
       if (isViewableUrl(node.url)) {
-        return <AttachmentChip key={key} attachment={toAttachment(node.url)} label={label} ctx={ctx} />;
+        const attachment = toAttachment(node.url);
+        // Links to images show the image itself (a chip only when a gallery shows them elsewhere).
+        if (attachmentKind(attachment) === "image") {
+          return <InlineImage key={key} attachment={attachment} alt={plainLabel(node.children)} ctx={ctx} />;
+        }
+        return <AttachmentChip key={key} attachment={attachment} label={label} ctx={ctx} />;
       }
       return node.url.startsWith("mailto:") ? (
         <a key={key} href={node.url} className={LINK_CLASS}>
@@ -201,12 +229,17 @@ function renderNode(node: MdInline, ctx: InlineContext, key: string): ReactNode 
     }
     case "url":
       if (!isSafeUrl(node.url, "link")) return node.url;
-      return isViewableUrl(node.url) ? (
-        <AttachmentChip key={key} attachment={toAttachment(node.url)} label={nameFromUrl(node.url)} ctx={ctx} />
+      if (!isViewableUrl(node.url)) {
+        return (
+          <a key={key} href={node.url} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}>
+            {node.url}
+          </a>
+        );
+      }
+      return attachmentKind(toAttachment(node.url)) === "image" ? (
+        <InlineImage key={key} attachment={toAttachment(node.url)} alt="" ctx={ctx} />
       ) : (
-        <a key={key} href={node.url} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}>
-          {node.url}
-        </a>
+        <AttachmentChip key={key} attachment={toAttachment(node.url)} label={nameFromUrl(node.url)} ctx={ctx} />
       );
   }
 }

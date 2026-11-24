@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Create PR/MR saves the opened PR/MR link on the card (`Task.pullRequests`); the Ship panel then shows **Open PR/MR** instead of asking to create it again.
+- Activity chat and agent log render images in place when the text links to one (`[shot](…png)`, a bare image URL, or an app file path in backticks) instead of showing only a file chip or path.
 
 ### Changed
 
