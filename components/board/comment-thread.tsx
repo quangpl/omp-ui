@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Textarea } from "@/components/ui/textarea";
+import { VoiceInputButton } from "@/components/voice-input-button";
 import { modKeyLabel } from "@/lib/hotkeys";
 import { cn } from "@/lib/utils";
 import type { Comment, ProjectFileHit, Run, SteerState, Task } from "@/lib/types";
@@ -380,6 +381,7 @@ export function CommentThread({
             />
             {slash.ghost}
           </div>
+          <VoiceInputButton className="size-11 rounded-xl md:size-9" value={body} onChange={setBody} disabled={sending} />
           <Button
             type="submit"
             size="icon"

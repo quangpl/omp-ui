@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { VoiceInputButton } from "@/components/voice-input-button";
 import { api } from "@/lib/api-client";
 import type { TaskDiff } from "@/lib/diff-types";
 import { modKeyLabel } from "@/lib/hotkeys";
@@ -262,7 +263,7 @@ export function ReviewBar({
                 disabled={busy === "request_changes"}
                 placeholder="What should change?"
                 aria-label="Requested changes"
-                className="max-h-[40dvh] min-h-28 resize-none bg-background text-base md:text-sm"
+                className="max-h-[40dvh] min-h-28 resize-none bg-background pr-10 text-base md:text-sm"
                 onChange={(event) => setNote(event.target.value)}
                 onSelect={slash.onSelect}
                 onKeyDown={(event) => {
@@ -274,6 +275,7 @@ export function ReviewBar({
                 }}
               />
               {slash.ghost}
+              <VoiceInputButton className="absolute right-1.5 bottom-1.5 size-7 rounded-md" value={note} onChange={setNote} disabled={busy === "request_changes"} />
             </div>
             {slash.suggestion}
             {slash.menu}

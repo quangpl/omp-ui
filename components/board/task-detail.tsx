@@ -58,6 +58,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { VoiceInputButton } from "@/components/voice-input-button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ApiRequestError, api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
@@ -1235,6 +1236,7 @@ function QuestionPanel({
             }
           }}
         />
+        <VoiceInputButton value={body} onChange={setBody} disabled={busy} className="size-11 md:size-9" />
         <Button
           type="submit"
           disabled={!body.trim() || busy}
@@ -1428,7 +1430,7 @@ function DescriptionEditor({
                 aria-label="Description"
                 value={draft}
                 placeholder="Add more detail for the agent: context, acceptance criteria, files to look at…"
-                className="max-h-[50dvh] min-h-24 resize-none leading-relaxed"
+                className="max-h-[50dvh] min-h-24 resize-none pr-10 leading-relaxed"
                 aria-autocomplete="list"
                 aria-expanded={slash.open}
                 data-suggesting={slash.suggesting || undefined}
@@ -1448,6 +1450,11 @@ function DescriptionEditor({
                 }}
               />
               {slash.ghost}
+              <VoiceInputButton
+                value={draft}
+                onChange={setDraft}
+                className="absolute right-1.5 bottom-1.5 size-7 rounded-md"
+              />
             </div>
             {slash.suggestion}
             {slash.menu}

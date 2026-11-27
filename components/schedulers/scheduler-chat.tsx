@@ -28,6 +28,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { VoiceInputButton } from "@/components/voice-input-button";
 import { api } from "@/lib/api-client";
 import type { BoardWithCounts, SchedulerDraft } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -318,6 +319,7 @@ export function SchedulerChat({
               />
               {slash.ghost}
             </div>
+            <VoiceInputButton className="size-11 rounded-xl md:size-9" value={input} onChange={setInput} disabled={busy} />
             {busy ? (
               <Button
                 type="button"

@@ -13,6 +13,7 @@ import {
 import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { VoiceInputButton } from "@/components/voice-input-button";
 import { useComposerAutocomplete } from "@/components/board/composer-autocomplete";
 import { cn } from "@/lib/utils";
 
@@ -149,8 +150,8 @@ export function NewTaskForm({
         className={
           page
             ? // Fixed sizing so the flex height wins over the content height and long text scrolls inside.
-              "min-h-24 flex-1 resize-none field-sizing-fixed text-base md:text-sm"
-            : "max-h-[45dvh] min-h-36 resize-none text-base md:text-sm"
+              "min-h-24 flex-1 resize-none field-sizing-fixed pr-10 text-base md:text-sm"
+            : "max-h-[45dvh] min-h-36 resize-none pr-10 text-base md:text-sm"
         }
         aria-autocomplete="list"
         aria-invalid={failed || undefined}
@@ -165,6 +166,7 @@ export function NewTaskForm({
         }}
       />
       {slash.ghost}
+      <VoiceInputButton className="absolute right-1.5 bottom-1.5 size-7 rounded-md" value={text} onChange={setText} disabled={busy} />
     </div>
   );
   const submitContent = (

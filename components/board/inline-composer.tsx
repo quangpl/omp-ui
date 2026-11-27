@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { VoiceInputButton } from "@/components/voice-input-button";
 import { useComposerAutocomplete } from "@/components/board/composer-autocomplete";
 
 /** Create a card from the composer's text; resolves true when it was created. */
@@ -80,7 +81,7 @@ export function InlineComposer({
           rows={2}
           placeholder="Type a title or describe the task…"
           aria-label="Card title"
-          className="max-h-48 min-h-16 resize-none bg-card shadow-xs"
+          className="max-h-48 min-h-16 resize-none bg-card pr-10 shadow-xs"
           onChange={(event) => setText(event.target.value)}
           onSelect={slash.onSelect}
           onKeyDown={(event) => {
@@ -99,6 +100,7 @@ export function InlineComposer({
           }}
         />
         {slash.ghost}
+        <VoiceInputButton className="absolute right-1.5 bottom-1.5 size-7 rounded-md" value={text} onChange={setText} disabled={busy} />
       </div>
       {slash.suggestion}
       {slash.menu}

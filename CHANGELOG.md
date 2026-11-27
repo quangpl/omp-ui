@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Voice input: a microphone button on the card composers (new task, inline add, description, answer, feedback, request changes) and the scheduler chat dictates into the field with the browser's speech recognition (Web Speech API); hidden where the browser has none.
 - Project header: a **Pull latest changes** button next to the branch menu fast-forwards every project repo's current branch (`POST /boards/:id/git/pull`); it shows how many commits upstream is ahead. Discard all changes stays beside the changes chip.
 - Card Ship panel: a **Pull latest changes** button beside **Discard all changes** fast-forwards the project repos (`POST /tasks/:id/git/pull`).
 - Create PR/MR saves the opened PR/MR link on the card (`Task.pullRequests`); the Ship panel then shows **Open PR/MR** instead of asking to create it again.
