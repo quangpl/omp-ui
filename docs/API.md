@@ -240,6 +240,7 @@ Git never prompts: commands run without a terminal (`GIT_TERMINAL_PROMPT=0`, SSH
 | POST | `/tasks/:id/git/push` | `{ message?, folders? }` | `GitActionResult` – “Push to main” |
 | POST | `/tasks/:id/git/push-current` | `{ message?, folders? }` | `GitActionResult` – “Push to current branch” |
 | POST | `/tasks/:id/git/pr` | `{ title?, body?, folders? }` | `GitActionResult` – “Create PR/MR” |
+| POST | `/tasks/:id/git/pull` | – | `{ results: GitPullFolderResult[] }` – “Pull latest changes” in the card's Ship panel, beside “Discard all changes”. Same per-repo `git pull --ff-only` as `/boards/:id/git/pull`, over the project folders. 409 while the card's agent is queued or running; 400 if none of the folders is a git repository |
 | POST | `/tasks/:id/git/discard` | – | `{ results: GitDiscardFolderResult[] }` – “Discard all changes” in the card's Ship panel. Acts on the project folders, discarding uncommitted changes (`git reset --hard HEAD` + `git clean -fd`) in each git repo; `discardedFiles` per folder, `error` on failure. 409 while the card's agent is queued or running; 400 if none of the folders is a git repository |
 | GET | `/tasks/:id/files` | – | `SharedFiles` of the card |
 | POST | `/tasks/:id/files?name=<file>` | raw file bytes | `SharedFiles` (201); replaces a file of the same name; max 100 MB |

@@ -34,7 +34,15 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { ApiRequestError, api } from "@/lib/api-client";
-import type { Comment, GitActionResult, GitBranches, GitDiscardResult, GitStatus, Task } from "@/lib/types";
+import type {
+  Comment,
+  GitActionResult,
+  GitBranches,
+  GitDiscardResult,
+  GitPullResult,
+  GitStatus,
+  Task,
+} from "@/lib/types";
 import { errorMessage } from "@/components/board/format";
 
 /** Last path segment, for compact folder labels. */
@@ -140,7 +148,12 @@ export function GitIndicator({
           )}
         </PopoverContent>
       </Popover>
-      <PullLatestButton boardId={boardId} repos={repos} onPulled={onChanged} />
+      <PullLatestButton
+        compact
+        pull={() => api.git.pullBoard(boardId)}
+        repos={repos}
+        onPulled={onChanged}
+      />
       {(changes > 0 || unpushed > 0) && (
         <>
           <QuickPushChip
@@ -165,15 +178,24 @@ export function GitIndicator({
   );
 }
 
-/** Header icon button: fast-forward every repo's checked-out branch to its upstream. */
+/**
+ * Fast-forwards every repo's checked-out branch to its upstream. The header shows it as a small
+ * icon button, the Ship panel as a labelled button beside "Discard all changes".
+ */
 function PullLatestButton({
-  boardId,
+  pull: request,
   repos,
+  disabled = false,
   onPulled,
+  compact = false,
 }: {
-  boardId: string;
+  /** Runs the pull request for the button's scope. */
+  pull: () => Promise<GitPullResult>;
   repos: GitStatus[];
+  disabled?: boolean;
   onPulled: () => void;
+  /** Small icon button (header) instead of a labelled button (Ship panel). */
+  compact?: boolean;
 }) {
   const [pulling, setPulling] = useState(false);
   const behind = repos.reduce((sum, repo) => sum + repo.behind, 0);
@@ -184,10 +206,10 @@ function PullLatestButton({
       : "Pull latest changes";
 
   const pull = async () => {
-    if (pulling) return;
+    if (pulling || disabled) return;
     setPulling(true);
     try {
-      const { results } = await api.git.pullBoard(boardId);
+      const { results } = await request();
       const failed = results.filter((r) => r.error);
       const pulled = results.reduce((sum, r) => sum + r.pulled, 0);
       if (failed.length > 0 && pulled === 0) {
@@ -219,6 +241,25 @@ function PullLatestButton({
       onPulled();
     }
   };
+
+  if (!compact) {
+    return (
+      <Button
+        variant="outline"
+        className="h-11 w-full min-w-0 transition-transform active:scale-[0.98] md:h-9"
+        disabled={disabled || pulling}
+        onClick={() => void pull()}
+      >
+        {pulling ? <LoaderCircle className="animate-spin" /> : <Download />}
+        <span className="truncate">{pulling ? "Pulling…" : "Pull latest changes"}</span>
+        {behind > 0 && !pulling && (
+          <span className="rounded-full bg-sky-500/15 px-1.5 text-[11px] leading-5 font-medium text-sky-700 tabular-nums dark:text-sky-300">
+            {behind}
+          </span>
+        )}
+      </Button>
+    );
+  }
 
   return (
     <Tooltip>
@@ -791,14 +832,22 @@ export function ShipActions({
           </span>
         </Button>
       </div>
-      {changedFiles > 0 && (
-        <DiscardChangesButton
-          discard={() => api.git.discard(task.id)}
+      <div className={cn("grid gap-2", changedFiles > 0 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1")}>
+        <PullLatestButton
+          pull={() => api.git.pull(task.id)}
           repos={repos}
           disabled={agentActive || busy !== null}
-          onDiscarded={onDiscarded}
+          onPulled={onDiscarded}
         />
-      )}
+        {changedFiles > 0 && (
+          <DiscardChangesButton
+            discard={() => api.git.discard(task.id)}
+            repos={repos}
+            disabled={agentActive || busy !== null}
+            onDiscarded={onDiscarded}
+          />
+        )}
+      </div>
       <p className="text-xs leading-relaxed text-muted-foreground">{hint}</p>
 
       {result && <ShipResults result={result} prNoun={prNoun} linked={task.pullRequests.map((pr) => pr.url)} />}

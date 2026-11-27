@@ -781,6 +781,9 @@ export const api = {
     /** Header pull: fast-forward every project repo's checked-out branch to its upstream. */
     pullBoard: (boardId: string) =>
       request<GitPullResult>(`/boards/${boardId}/git/pull`, { method: "POST", json: {} }),
+    /** Card pull: fast-forward every project repo's checked-out branch to its upstream. */
+    pull: (taskId: string) =>
+      request<GitPullResult>(`/tasks/${taskId}/git/pull`, { method: "POST", json: {} }),
     /** Header quick discard: roll every project repo's working tree back to HEAD (uncommitted changes only). */
     discardBoard: (boardId: string) =>
       request<GitDiscardResult>(`/boards/${boardId}/git/discard`, { method: "POST", json: {} }),
